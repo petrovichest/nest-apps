@@ -1,0 +1,26 @@
+{
+  "name": "@claudenest/server",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/index.ts src/runner-main.ts --format esm --platform node --target node24 --sourcemap --out-dir dist --clean --no-splitting",
+    "dev": "npm run build && node dist/index.js",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:systemd": "node scripts/systemd-smoke.mjs"
+  },
+  "dependencies": {
+    "@fastify/websocket": "^11.2.0",
+    "fastify": "^5.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

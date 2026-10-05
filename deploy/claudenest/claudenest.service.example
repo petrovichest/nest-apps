@@ -1,0 +1,17 @@
+[Unit]
+Description=ClaudeNest prototype API
+After=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/.local/share/claudenest/current
+EnvironmentFile=%h/.config/claudenest/server.env
+# Use the absolute Node 24 executable on this host.
+ExecStart=/absolute/path/to/node %h/.local/share/claudenest/current/apps/claude-server/dist/index.js
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=45
+UMask=0077
+
+[Install]
+WantedBy=default.target
