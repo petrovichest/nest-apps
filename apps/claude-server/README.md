@@ -64,10 +64,13 @@ An administrator can issue the new host certificate using the **existing** CA
 already trusted for `codex.home.arpa` and install the isolated vhost:
 
 ```sh
-sudo bash deploy/claudenest/install-lan.sh /absolute/existing-ca.crt /absolute/existing-ca.key
+sudo bash deploy/claudenest/install-lan.sh
 ```
 
-The script verifies that the supplied CA validates the existing Codex certificate,
+The read-only discovery helper searches local certificate directories for a unique
+matching CA/key pair and fails if unavailable or ambiguous. For another location or
+an encrypted CA key, supply the two absolute paths explicitly as arguments.
+The script verifies that the CA validates the existing Codex certificate,
 adds only the Claude host, validates Caddy's full candidate configuration, keeps
 a backup and reloads Caddy. Existing Codex blocks and its certificate remain intact.
 It never restarts either Nest service. The CA private key must stay outside Git.

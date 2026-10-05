@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # Run as administrator only after the local ClaudeNest release has passed checks.
-# Usage: sudo bash install-lan.sh /absolute/existing-ca.crt /absolute/existing-ca.key
+# Usage: sudo bash install-lan.sh [existing-ca.crt existing-ca.key]
 set -euo pipefail
-if [[ ${EUID} -ne 0 || $# -ne 2 ]]; then
-  echo 'Usage: sudo bash install-lan.sh /absolute/existing-ca.crt /absolute/existing-ca.key' >&2
+if [[ ${EUID} -ne 0 || ( $# -ne 0 && $# -ne 2 ) ]]; then
+  echo 'Usage: sudo bash install-lan.sh [existing-ca.crt existing-ca.key]' >&2
   exit 2
 fi
-ca_cert=$1
-ca_key=$2
+if [[ $# -eq 0 ]]; then
+  script_directory=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+  pair=$(bash "$script_directory/find-lan-ca.sh")
+  IFS=$'\t' read -r ca_cert ca_key <<< "$pair"
+else
+  ca_cert=$1
+  ca_key=$2
+fi
 caddy_config=/etc/caddy/Caddyfile
 codex_cert=/etc/caddy/certs/codex.home.arpa.crt
 cert_directory=/etc/caddy/certs
@@ -32,7 +38,7 @@ EXTENSIONS
 serial=$(openssl rand -hex 16)
 openssl x509 -req -in "$temporary/claude.csr" -CA "$ca_cert" -CAkey "$ca_key" \
   -set_serial "0x$serial" -days 365 -sha256 -extfile "$temporary/extensions" \
-  -out "$temporary/claude.crt" >/dev/null 2>&1
+  -out "$temporary/claude.crt" >/dev/null
 openssl verify -CAfile "$ca_cert" "$temporary/claude.crt" >/dev/null
 install -o root -g caddy -m 0644 "$temporary/claude.crt" "$cert_directory/claude.home.arpa.crt"
 install -o root -g caddy -m 0640 "$temporary/claude.key" "$cert_directory/claude.home.arpa.key"
