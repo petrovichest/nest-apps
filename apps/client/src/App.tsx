@@ -1606,7 +1606,7 @@ function Sidebar({
           <SlidersIcon />
           {t("Настройки")}
         </NavLink>
-        {application.capabilities.appUpdates && (
+        {application.capabilities.appUpdates && !application.isClaude && (
           <NavLink
             aria-label={
               updateAvailable ? t("Доступно обновление CodexNest") : t("Обновление CodexNest")

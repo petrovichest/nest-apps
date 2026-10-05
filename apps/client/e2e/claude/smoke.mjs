@@ -22,6 +22,38 @@ await build({
 });
 const { startFixture } = await import(pathToFileURL(join(temporary, "fixture.mjs")).href);
 let fixture, browser, page;
+
+async function assertSidebarLayout(page) {
+  const layout = await page.locator(".sidebar-controls").evaluate((controls) => {
+    const bounds = (element) => element.getBoundingClientRect().toJSON();
+    return {
+      controls: bounds(controls),
+      settings: bounds(controls.querySelector('a[href="/settings"]')),
+      connection: bounds(controls.querySelector(".server-connection")),
+      project: bounds(controls.querySelector("button.sidebar-control-action")),
+      search: bounds(controls.querySelector(".sidebar-search-action")),
+    };
+  });
+  const center = (bounds) => bounds.top + bounds.height / 2;
+  assert.ok(
+    Math.abs(center(layout.settings) - center(layout.connection)) < 1,
+    "Settings and server status stay on the same row",
+  );
+  assert.ok(
+    Math.abs(center(layout.project) - center(layout.search)) < 1,
+    "Add project and search stay on the same row",
+  );
+  assert.ok(layout.project.top >= layout.settings.bottom, "Project controls use the second row");
+  assert.ok(layout.project.width > layout.search.width * 3, "Add project keeps the wide column");
+  for (const name of ["settings", "connection", "project", "search"]) {
+    assert.ok(
+      layout[name].left >= layout.controls.left - 1 &&
+        layout[name].right <= layout.controls.right + 1,
+      `${name} stays within the sidebar`,
+    );
+  }
+}
+
 try {
   fixture = await startFixture(join(root, "apps/client/dist-claude"));
   browser = await chromium.launch({ headless: true });
@@ -67,6 +99,7 @@ try {
   );
   await page.goto(fixture.baseUrl);
   assert.equal(await page.title(), "ClaudeNest");
+  await assertSidebarLayout(page);
   await page
     .getByRole("button", { name: /Создать новую сессию в проекте/ })
     .first()
@@ -219,6 +252,7 @@ try {
   await page.goto(`${fixture.baseUrl}/threads/${threadId}`);
   await page.setViewportSize({ width: 390, height: 844 });
   await composer.waitFor();
+  await assertSidebarLayout(page);
   await page.screenshot({ path: join(screenshots, "phone-chat.png") });
   assert.deepEqual(errors, [], "No uncaught browser errors");
   assert.equal(
