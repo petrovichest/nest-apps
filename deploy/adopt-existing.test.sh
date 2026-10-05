@@ -85,8 +85,8 @@ exit 0
 EOF
   cat > "$case_fake_bin/curl" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$*" == *CodexNest-latest.json* ]]; then
-  if [[ "$*" != *'CodexNest-latest.json?cache='* ]]; then
+if [[ "$*" == *NestApps-latest.json* ]]; then
+  if [[ "$*" != *'NestApps-latest.json?cache='* ]]; then
     printf '%s\n' 'Expected rolling manifest request to bypass caches' >&2
     exit 2
   fi
@@ -101,7 +101,7 @@ if [[ "$*" == *CodexNest-latest.json* ]]; then
 fi
 if [[ "$*" == *'/releases?per_page=100'* ]]; then
   printf '%s\n' \
-    '[{"tag_name":"android-latest","draft":false,"prerelease":false},{"tag_name":"v0.1.0","draft":false,"prerelease":false},{"tag_name":"v0.1.1","draft":false,"prerelease":false}]'
+    '[{"tag_name":"rolling-latest","draft":false,"prerelease":false},{"tag_name":"v0.1.0","draft":false,"prerelease":false},{"tag_name":"v0.1.1","draft":false,"prerelease":false}]'
   exit 0
 fi
 if [[ "$*" == *api.github.com* ]]; then

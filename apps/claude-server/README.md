@@ -145,6 +145,32 @@ transport's aggregate native message limit. An upload never starts an agent.
 The shared STT service and machine resources can increase latency in both apps
 when they are busy simultaneously; neither instance is reconfigured by Claude.
 
+## Rolling releases and browser updates
+
+Successful CI on `main` publishes `rolling-latest` in `petrovichest/nest-apps`.
+Its `NestApps-latest.json` pins both applications to one tested Git commit.
+Install ClaudeNest as a regular Linux user with an installed, signed-in Claude CLI:
+
+```sh
+curl -fsSL https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/install-claudenest.sh | bash
+```
+
+The installer builds an immutable checkout, provides a private Node 24 runtime,
+and preserves existing credentials, configuration and native history. Running it
+once upgrades an earlier prototype and enables Settings → Maintenance updates.
+Later, use **Check for updates** and **Update ClaudeNest**, or `claudenest update`.
+The independent `claudenest-update.service` builds the server and web client before
+switching, then uses the existing protocol/readiness checks and automatic rollback.
+A kernel lock excludes concurrent management and releases automatically on exit.
+The browser loads the new client after saving drafts. Existing session services
+and releases remain intact; only the Claude API restarts. CodexNest updates remain
+independent. Android APKs are not published in this release pipeline.
+
+Maintenance API: `GET /api/v1/settings/app`, `POST .../app/check`,
+`POST .../app/update`, using the existing bearer token. Status is read locally;
+GitHub is contacted only for a release check or update. Development installs report
+`supported: false` until installed through the managed installer.
+
 ## Ownership and updates
 
 Each native session gets its own `claudenest-session-UUID.service`, Unix socket,

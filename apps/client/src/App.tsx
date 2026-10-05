@@ -1,3 +1,4 @@
+import { prepareAppReload, shouldReloadClient } from "./app-reload";
 import { application } from "./application";
 import {
   type CSSProperties,
@@ -200,6 +201,7 @@ export function App({
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const [installedApkVersion, setInstalledApkVersion] = useState<string | null>(null);
   const appUpdateCheckAttemptedRef = useRef(false);
+  const clientReloadQueuedRef = useRef(false);
   const {
     dragging: drawerDragging,
     frameRef,
@@ -222,6 +224,39 @@ export function App({
   }, []);
 
   useEffect(() => {
+    if (!appUpdateStatus || appUpdateStatus.operation === "idle") return;
+    const timer = window.setInterval(() => {
+      void api
+        .readAppSettings()
+        .then(acceptAppUpdateStatus)
+        .catch(() => undefined);
+    }, 1_500);
+    return () => window.clearInterval(timer);
+  }, [api, acceptAppUpdateStatus, appUpdateStatus?.operation]);
+
+  useEffect(() => {
+    const compiledVersion = import.meta.env.VITE_APP_VERSION;
+    if (
+      !shouldReloadClient(appUpdateStatus, compiledVersion) ||
+      new URL(api.settings.baseUrl).origin !== window.location.origin ||
+      Capacitor.isNativePlatform() ||
+      state.network !== "connected" ||
+      clientReloadQueuedRef.current
+    )
+      return;
+    clientReloadQueuedRef.current = true;
+    void prepareAppReload()
+      .then(() => window.location.reload())
+      .catch(() => {
+        window.alert(
+          t(
+            "Не удалось сохранить черновики перед загрузкой нового интерфейса. Сохраните ввод и обновите страницу.",
+          ),
+        );
+      });
+  }, [api.settings.baseUrl, appUpdateStatus, state.network, t]);
+
+  useEffect(() => {
     const serverLanguage = state.snapshot?.uiLanguage;
     if (serverLanguage === "en" || serverLanguage === "ru") setLanguage(serverLanguage);
   }, [setLanguage, state.snapshot?.uiLanguage]);
@@ -241,7 +276,7 @@ export function App({
     };
     const timer = window.setTimeout(() => {
       if (!active) return;
-      if (!appUpdateCheckAttemptedRef.current) {
+      if (!appUpdateCheckAttemptedRef.current && !application.isClaude) {
         appUpdateCheckAttemptedRef.current = true;
         void api
           .checkAppUpdate()

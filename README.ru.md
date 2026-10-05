@@ -12,8 +12,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/petrovichest/codex-nest/actions/workflows/ci.yml"><img src="https://github.com/petrovichest/codex-nest/actions/workflows/ci.yml/badge.svg" alt="Статус CI" /></a>
-  <a href="https://github.com/petrovichest/codex-nest/releases/latest"><img src="https://img.shields.io/github/v/release/petrovichest/codex-nest?label=release&amp;color=646660" alt="Последний релиз" /></a>
+  <a href="https://github.com/petrovichest/nest-apps/actions/workflows/ci.yml"><img src="https://github.com/petrovichest/nest-apps/actions/workflows/ci.yml/badge.svg" alt="Статус CI" /></a>
+  <a href="https://github.com/petrovichest/nest-apps/releases/latest"><img src="https://img.shields.io/github/v/release/petrovichest/nest-apps?label=release&amp;color=646660" alt="Последний релиз" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-292a29" alt="Лицензия Apache 2.0" /></a>
 </p>
 
@@ -21,7 +21,7 @@
   <a href="#быстрый-старт">Быстрый старт</a> ·
   <a href="#как-это-работает">Как это работает</a> ·
   <a href="#скриншоты">Скриншоты</a> ·
-  <a href="https://github.com/petrovichest/codex-nest/releases/latest/download/CodexNest-latest.apk">Android APK</a> ·
+  <a href="./apps/claude-server/README.md">ClaudeNest</a> ·
   <a href="./deploy/DEPLOYMENT.md">Документация</a>
 </p>
 
@@ -38,14 +38,14 @@ CodexNest — неофициальный self-hosted проект для одн�
 > Перед подключением прочитайте о [границе безопасности](#граница-безопасности).
 
 ```bash
-curl -fsSL https://github.com/petrovichest/codex-nest/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/petrovichest/nest-apps/releases/latest/download/install.sh | bash
 ```
 
 Установщик предоставляет закреплённую версию Node.js и управляемые
 пользовательские службы, но не устанавливает Codex CLI и не выполняет вход в него.
 Следуйте [инструкции первого подключения](./deploy/DEPLOYMENT.md#6-проверка-и-первый-вход),
 чтобы открыть клиент в браузере или подключить
-[Android-приложение](https://github.com/petrovichest/codex-nest/releases/latest/download/CodexNest-latest.apk).
+web/PWA-клиент (выпуск APK добавим позже).
 
 ## Возможности
 
@@ -95,7 +95,7 @@ curl -fsSL https://github.com/petrovichest/codex-nest/releases/latest/download/i
 результата. Все проекты и диалоги на изображениях — подготовленные примеры.
 Нажмите на изображение, чтобы открыть его в полном размере.
 
-Снято с интерфейса v0.1.9 на коммите [`b8805aa`](https://github.com/petrovichest/codex-nest/commit/b8805aa0ee30e5617de06497ff310d0bbc0c24cc), 21 сентября 2026 года.
+Снято с интерфейса v0.1.9 на коммите [`b8805aa`](https://github.com/petrovichest/nest-apps/commit/b8805aa0ee30e5617de06497ff310d0bbc0c24cc), 21 сентября 2026 года.
 
 ### Рабочее пространство для ваших проектов
 
@@ -296,12 +296,16 @@ CI проверяет форматирование, lint, модульные т�
 и скрипты установщика. Типы протокола, клиента и расширения проверяются при сборке;
 типы сервера — отдельной командой. Браузерные тесты, проверки совместимости Codex
 и проверки установщика на разных платформах доступны для локального запуска.
-Для Android в CI собирается только подписанный release APK.
+После успешных проверок обоих серверов и web-клиентов каждый push в `main`
+публикует `rolling-latest`. Теги `v*` публикуют отдельные версионные релизы.
+Манифест `NestApps-latest.json` закрепляет один проверенный коммит для обоих
+приложений. Установщики собирают отдельные неизменяемые релизы на хосте;
+обновление в настройках переключает выбранный сервер вместе с web-интерфейсом.
+Сейчас публикуются установщики и расширение CodexNest; APK и ключи Android не
+требуются.
 
-Pull request запускает `verify`. Push в `codex/mvp` публикует rolling-релиз после
-`verify`, тег `v*` — версионный релиз. Задания публикации используют готовую сборку
-клиента и ZIP расширения из `verify`, без повторной сборки. Push остальных веток
-не запускает CI.
+ClaudeNest использует собственные API, каталоги релизов, авторизацию и PWA.
+[Установка и обновление ClaudeNest](./apps/claude-server/README.md).
 
 ```bash
 npm install

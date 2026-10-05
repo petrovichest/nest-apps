@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [codex/mvp]
+    branches: [main]
     tags: ["v*"]
   pull_request:
 
@@ -28,13 +28,13 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run build
-      - run: npm run typecheck -w @codexnest/server
-      - run: npm test
-      - run: bash -n deploy/install.sh deploy/adopt-existing.sh deploy/adopt-existing.test.sh deploy/codexnest
+      - run: npm run typecheck
+      - run: NODE_ENV=test npm test
+      - run: bash -n deploy/install.sh deploy/adopt-existing.sh deploy/adopt-existing.test.sh deploy/codexnest deploy/claudenest/install.sh deploy/claudenest/claudenest
       - run: deploy/adopt-existing.test.sh
       - name: Verify pinned Node.js checksums are published
         run: |
-          node_version="$(sed -n 's/^codexnest_node_version="\([^"]*\)"/\1/p' deploy/install.sh)"
+          node_version="$(sed -n 's/^codexnest_node_version="\([^" ]*\)"/\1/p' deploy/install.sh)"
           curl -fsSL "https://nodejs.org/dist/v${node_version}/SHASUMS256.txt" -o node-shasums.txt
           grep -Eq "^[0-9a-f]{64}  node-v${node_version}-linux-x64.tar.xz$" node-shasums.txt
           grep -Eq "^[0-9a-f]{64}  node-v${node_version}-linux-arm64.tar.xz$" node-shasums.txt
@@ -44,182 +44,30 @@ jobs:
           npm run package -w @codexnest/extension
           unzip -t apps/extension/artifacts/codexnest-browser-*.zip
           test -s apps/client/dist/index.html
+          test -s apps/client/dist-claude/index.html
+          test -s apps/server/dist/index.js
+          test -s apps/claude-server/dist/index.js
       - name: Upload verified release inputs
         if: github.event_name == 'push'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: codexnest-build-${{ github.sha }}
-          # Both paths share apps/ as their artifact root.
+          name: nest-apps-build-${{ github.sha }}
           path: |
             apps/client/dist/
+            apps/client/dist-claude/
+            apps/server/dist/
+            apps/claude-server/dist/
             apps/extension/artifacts/codexnest-browser-*.zip
           if-no-files-found: error
           retention-days: 1
 
-  rolling-release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/codex/mvp'
+  publish:
+    if: github.event_name == 'push'
     needs: verify
     runs-on: ubuntu-latest
     concurrency:
-      group: rolling-release
+      group: release-${{ github.ref_type == 'tag' && github.ref_name || 'rolling' }}
       cancel-in-progress: false
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - name: Check rolling branch head
-        id: head
-        run: |
-          latest_sha="$(git ls-remote origin refs/heads/codex/mvp | cut -f1)"
-          if [[ "$latest_sha" == "$GITHUB_SHA" ]]; then
-            echo "current=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Skipping stale rolling build for $GITHUB_SHA; branch is at $latest_sha."
-            echo "current=false" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: steps.head.outputs.current == 'true'
-        with:
-          node-version: 24
-          cache: npm
-      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
-        if: steps.head.outputs.current == 'true'
-        with:
-          distribution: temurin
-          java-version: 21
-          cache: gradle
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: steps.head.outputs.current == 'true'
-        with:
-          name: codexnest-build-${{ github.sha }}
-          path: apps
-      - name: Prepare rolling browser extension sources
-        if: steps.head.outputs.current == 'true'
-        run: |
-          shopt -s nullglob
-          extension_archives=(apps/extension/artifacts/codexnest-browser-[0-9]*.zip)
-          test "${#extension_archives[@]}" -eq 1
-          mkdir -p release
-          cp "${extension_archives[0]}" release/
-          cp "${extension_archives[0]}" release/codexnest-browser-latest.zip
-          unzip -t release/codexnest-browser-latest.zip
-      - if: steps.head.outputs.current == 'true'
-        run: npm ci
-      - if: steps.head.outputs.current == 'true'
-        run: npm run android:sync -w @codexnest/client
-      - name: Validate Android signing secrets
-        if: steps.head.outputs.current == 'true'
-        env:
-          KEYSTORE_BASE64: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_BASE64 }}
-          KEY_ALIAS: ${{ secrets.CODEXNEST_ANDROID_KEY_ALIAS }}
-          KEYSTORE_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEY_PASSWORD }}
-        run: |
-          test -n "$KEYSTORE_BASE64"
-          test -n "$KEY_ALIAS"
-          test -n "$KEYSTORE_PASSWORD"
-          test -n "$KEY_PASSWORD"
-      - name: Prepare Android signing key
-        if: steps.head.outputs.current == 'true'
-        env:
-          KEYSTORE_BASE64: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/codexnest.jks"
-          chmod 0600 "$RUNNER_TEMP/codexnest.jks"
-      - name: Test Android and build signed rolling APK
-        if: steps.head.outputs.current == 'true'
-        id: apk
-        env:
-          CODEXNEST_KEYSTORE_PATH: ${{ runner.temp }}/codexnest.jks
-          CODEXNEST_KEY_ALIAS: ${{ secrets.CODEXNEST_ANDROID_KEY_ALIAS }}
-          CODEXNEST_KEYSTORE_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_PASSWORD }}
-          CODEXNEST_KEY_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEY_PASSWORD }}
-        run: |
-          package_version="$(node -p "require('../../../package.json').version")"
-          short_sha="${GITHUB_SHA::7}"
-          export CODEXNEST_ANDROID_VERSION_NAME="$package_version-$short_sha"
-          export CODEXNEST_ANDROID_VERSION_CODE="$((1000000 + GITHUB_RUN_NUMBER))"
-          ./gradlew testDebugUnitTest assembleRelease
-          test -s app/build/outputs/apk/release/app-release.apk
-          mkdir -p ../../../release
-          cp app/build/outputs/apk/release/app-release.apk ../../../release/CodexNest-latest.apk
-          printf '{"schemaVersion":1,"version":"%s","commit":"%s"}\n' \
-            "$CODEXNEST_ANDROID_VERSION_NAME" "$GITHUB_SHA" \
-            > ../../../release/CodexNest-latest.json
-          printf 'version=%s\n' "$CODEXNEST_ANDROID_VERSION_NAME" >> "$GITHUB_OUTPUT"
-        working-directory: apps/client/android
-      - name: Prepare rolling installer
-        if: steps.head.outputs.current == 'true'
-        env:
-          ROLLING_VERSION: ${{ steps.apk.outputs.version }}
-        run: |
-          sed \
-            -e "s/^codexnest_default_version=.*/codexnest_default_version=\"$ROLLING_VERSION\"/" \
-            -e "s/^codexnest_default_ref=.*/codexnest_default_ref=\"$GITHUB_SHA\"/" \
-            deploy/install.sh > release/install.sh
-          chmod 0755 release/install.sh
-          grep -Fx "codexnest_default_version=\"$ROLLING_VERSION\"" release/install.sh
-          grep -Fx "codexnest_default_ref=\"$GITHUB_SHA\"" release/install.sh
-          bash -n release/install.sh
-      - name: Check rolling branch head before publish
-        if: steps.head.outputs.current == 'true'
-        id: publish
-        run: |
-          latest_sha="$(git ls-remote origin refs/heads/codex/mvp | cut -f1)"
-          if [[ "$latest_sha" == "$GITHUB_SHA" ]]; then
-            echo "current=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Skipping stale rolling publish for $GITHUB_SHA; branch is at $latest_sha."
-            echo "current=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Publish rolling GitHub release
-        if: steps.publish.outputs.current == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ROLLING_VERSION: ${{ steps.apk.outputs.version }}
-        run: |
-          notes="$(printf \
-            'Automatically updated after successful CI for `%s`.\n\nCommit: `%s`\n\nLinux install:\n\n```bash\ncurl -fsSL https://github.com/%s/releases/latest/download/install.sh | bash\n```\n\nThe APK, Chrome extension, and installer are built from the same tested commit.' \
-            "$ROLLING_VERSION" "$GITHUB_SHA" "$GITHUB_REPOSITORY")"
-          if gh release view android-latest >/dev/null 2>&1; then
-            while IFS= read -r obsolete_asset; do
-              [[ -z "$obsolete_asset" ]] || gh release delete-asset android-latest "$obsolete_asset" --yes
-            done < <(gh release view android-latest --json assets --jq '.assets[].name | select(endswith(".xpi"))')
-            gh release upload android-latest \
-              release/CodexNest-latest.apk \
-              release/CodexNest-latest.json \
-              release/codexnest-browser-*.zip \
-              release/install.sh \
-              --clobber
-            gh api \
-              --method PATCH \
-              "repos/$GITHUB_REPOSITORY/git/refs/tags/android-latest" \
-              -f sha="$GITHUB_SHA" \
-              -F force=true \
-              >/dev/null
-            gh release edit android-latest \
-              --prerelease=false \
-              --latest \
-              --title "CodexNest $ROLLING_VERSION" \
-              --notes "$notes"
-          else
-            gh release create android-latest \
-              release/CodexNest-latest.apk \
-              release/CodexNest-latest.json \
-              release/codexnest-browser-*.zip \
-              release/install.sh \
-              --latest \
-              --target "$GITHUB_SHA" \
-              --title "CodexNest $ROLLING_VERSION" \
-              --notes "$notes"
-          fi
-
-  release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: verify
-    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -230,36 +78,82 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
+      - name: Check release source
+        id: source
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+            git fetch --no-tags origin main
+            git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" FETCH_HEAD
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            latest_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+            echo "current=$([[ "$latest_sha" == "$GITHUB_SHA" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.source.outputs.current == 'true'
         with:
-          name: codexnest-build-${{ github.sha }}
+          name: nest-apps-build-${{ github.sha }}
           path: apps
-      - name: Validate release source
+      - name: Prepare release assets
+        if: steps.source.outputs.current == 'true'
+        id: assets
         run: |
-          test "$GITHUB_REF_TYPE" = tag
-          git fetch --no-tags origin codex/mvp
-          git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" FETCH_HEAD
-      - name: Validate release version
-        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
-      - name: Prepare browser extension asset
-        run: |
+          version="$(node -p "require('./package.json').version")"
+          ref="$GITHUB_REF_NAME"
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            version="$version-${GITHUB_SHA::7}"
+            ref="$GITHUB_SHA"
+          fi
+          mkdir -p release
+          sed -e "s/^codexnest_default_version=.*/codexnest_default_version=\"$version\"/" \
+              -e "s/^codexnest_default_ref=.*/codexnest_default_ref=\"$ref\"/" \
+              deploy/install.sh > release/install.sh
+          sed -e "s/^claudenest_default_version=.*/claudenest_default_version=\"$version\"/" \
+              -e "s/^claudenest_default_ref=.*/claudenest_default_ref=\"$GITHUB_SHA\"/" \
+              deploy/claudenest/install.sh > release/install-claudenest.sh
+          chmod 0755 release/*.sh
+          bash -n release/install.sh release/install-claudenest.sh
+          printf '{"schemaVersion":1,"version":"%s","commit":"%s"}\n' "$version" "$GITHUB_SHA" > release/NestApps-latest.json
           shopt -s nullglob
-          chrome_archives=(apps/extension/artifacts/codexnest-browser-[0-9]*.zip)
-          test "${#chrome_archives[@]}" -eq 1
-          mkdir -p release
-          cp "${chrome_archives[0]}" release/
-          unzip -t "${chrome_archives[0]}"
-      - name: Prepare installer asset
+          archives=(apps/extension/artifacts/codexnest-browser-[0-9]*.zip)
+          test "${#archives[@]}" -eq 1
+          cp "${archives[0]}" release/
+          cp "${archives[0]}" release/codexnest-browser-latest.zip
+          unzip -t release/codexnest-browser-latest.zip
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Check main before rolling publication
+        if: steps.source.outputs.current == 'true'
+        id: publish
         run: |
-          mkdir -p release
-          sed \
-            -e "s/^codexnest_default_version=.*/codexnest_default_version=\"$GITHUB_REF_NAME\"/" \
-            -e "s/^codexnest_default_ref=.*/codexnest_default_ref=\"$GITHUB_REF_NAME\"/" \
-            deploy/install.sh > release/install.sh
-          chmod 0755 release/install.sh
-      - name: Publish GitHub Release
+          if [[ "$GITHUB_REF_TYPE" == tag ]] || [[ "$(git ls-remote origin refs/heads/main | cut -f1)" == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping stale rolling build $GITHUB_SHA"
+          fi
+      - name: Publish GitHub release
+        if: steps.publish.outputs.current == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME" release/install.sh release/codexnest-browser-*.zip
-          --generate-notes --latest=false --verify-tag
+          RELEASE_VERSION: ${{ steps.assets.outputs.version }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          latest=false
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            tag=rolling-latest
+            latest=true
+          fi
+          printf 'CodexNest and ClaudeNest from verified commit `%s`.\n\nCodexNest: `curl -fsSL https://github.com/%s/releases/download/%s/install.sh | bash`\n\nClaudeNest: `curl -fsSL https://github.com/%s/releases/download/%s/install-claudenest.sh | bash`\n\nThe installers build the server and web client from this exact commit. Android APKs are not published yet.\n' \
+            "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$tag" "$GITHUB_REPOSITORY" "$tag" > release/notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release/install.sh release/install-claudenest.sh release/codexnest-browser-*.zip --clobber
+            if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            fi
+            gh release edit "$tag" --prerelease=false --latest="$latest" --title "Nest Apps $RELEASE_VERSION" --notes-file release/notes.md
+          else
+            gh release create "$tag" release/install.sh release/install-claudenest.sh release/codexnest-browser-*.zip --latest="$latest" --target "$GITHUB_SHA" --title "Nest Apps $RELEASE_VERSION" --notes-file release/notes.md
+          fi
+          # Publish the update pointer only after every other release asset is ready.
+          gh release upload "$tag" release/NestApps-latest.json --clobber

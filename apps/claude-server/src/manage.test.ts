@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { delimiter, join } from "node:path";
@@ -39,6 +39,13 @@ async function fixture() {
     await mkdir(dist, { recursive: true });
     await writeFile(join(dist, "index.js"), "// simulated immutable backend build\n");
     await writeFile(join(dist, "runner-main.js"), "// simulated immutable runner build\n");
+    await mkdir(join(releasePath, "deploy/claudenest"), { recursive: true });
+    await writeFile(join(releasePath, "deploy/claudenest/claudenest"), "#!/bin/sh\nexit 0\n");
+    await mkdir(join(releasePath, "apps/client/dist-claude"), { recursive: true });
+    await writeFile(
+      join(releasePath, "apps/client/dist-claude/index.html"),
+      "<html>fixture</html>",
+    );
     await writeFile(
       join(releasePath, "apps/claude-server/runner-protocol.json"),
       JSON.stringify({ supportedRunnerProtocols: [1] }),
@@ -60,7 +67,29 @@ async function fixture() {
   // Only these fake executable files receive management subprocess calls.
   await writeFile(
     join(bin, "git"),
-    `#!${process.execPath}\nif (process.argv.includes('symbolic-ref')) process.exit(1);\n`,
+    `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+if (args.includes('symbolic-ref')) process.exit(1);
+if (args.includes('clone')) fs.mkdirSync(path.join(args.at(-1), '.git'), {recursive:true});
+if (args.includes('rev-parse')) {
+  const current = fs.realpathSync(path.join(process.env.XDG_DATA_HOME, 'claudenest/current'));
+  process.stdout.write(args.at(-1) === 'HEAD' && current === process.env.FAKE_OLD_RELEASE ? 'a'.repeat(40) : 'b'.repeat(40));
+}
+if (args.includes('worktree') && args.includes('add')) fs.cpSync(process.env.FAKE_NEXT_RELEASE, args.at(-2), {recursive:true});
+if (args.includes('worktree') && args.includes('remove')) fs.rmSync(args.at(-1), {recursive:true,force:true});
+`,
+    { mode: 0o700 },
+  );
+  await writeFile(
+    join(bin, "curl"),
+    `#!${process.execPath}\nif (process.env.FAKE_MANIFEST_FAIL === '1') process.exit(22); process.stdout.write(process.env.FAKE_MANIFEST_JSON);\n`,
+    { mode: 0o700 },
+  );
+  await writeFile(
+    join(bin, "npm"),
+    `#!${process.execPath}\nif (process.env.FAKE_BUILD_FAIL === '1') process.exit(1);\n`,
     { mode: 0o700 },
   );
   await writeFile(
@@ -165,6 +194,14 @@ if (action === 'show') {
     PATH: `${bin}${delimiter}${process.env.PATH || ""}`,
     XDG_CONFIG_HOME: configHome,
     XDG_DATA_HOME: dataHome,
+    XDG_STATE_HOME: join(directory, "state"),
+    FAKE_OLD_RELEASE: oldRelease,
+    FAKE_NEXT_RELEASE: nextRelease,
+    FAKE_MANIFEST_JSON: JSON.stringify({
+      schemaVersion: 1,
+      version: "0.1.9-bbbbbbb",
+      commit: "b".repeat(40),
+    }),
     FAKE_COMMANDS_PATH: commandsPath,
     FAKE_STATE_PATH: statePath,
     HTTP_PROXY: "",
@@ -201,6 +238,7 @@ if (action === 'show') {
   }
   return {
     configRoot,
+    env,
     dataRoot,
     envPath,
     oldRelease,
@@ -300,5 +338,100 @@ describe("ClaudeNest release management", () => {
       ["--user", "daemon-reload"],
       ["--user", "restart", "claudenest.service"],
     ]);
+  });
+  it("checks a published commit without restarting or building the application", async () => {
+    const test = await fixture();
+    const result = await test.run("check-update");
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      latestVersion: "0.1.9-bbbbbbb",
+      updateAvailable: true,
+      operation: "idle",
+    });
+    expect(await test.commands()).toEqual([]);
+    expect(await realpath(join(test.dataRoot, "current"))).toBe(test.oldRelease);
+  });
+
+  it.each([
+    { FAKE_MANIFEST_FAIL: "1" },
+    {
+      FAKE_MANIFEST_JSON: JSON.stringify({
+        schemaVersion: 1,
+        version: "0.1.9-bbbbbbb",
+        commit: "c".repeat(40),
+      }),
+    },
+    { FAKE_BUILD_FAIL: "1" },
+  ])("leaves the live release unchanged when discovery or build fails: %j", async (overrides) => {
+    const test = await fixture();
+    const before = await readFile(test.envPath, "utf8");
+    const result = await test.run("update-worker", [], overrides);
+    expect(result.code).toBe(1);
+    expect(await realpath(join(test.dataRoot, "current"))).toBe(test.oldRelease);
+    expect(await readFile(test.envPath, "utf8")).toBe(before);
+    expect(await test.commands()).toEqual([]);
+    const status = JSON.parse(
+      await readFile(join(test.env.XDG_STATE_HOME!, "claudenest/update.json"), "utf8"),
+    );
+    expect(status).toMatchObject({ operation: "idle", result: "failed" });
+  });
+
+  it("builds the exact rolling commit, preserves the previous release, and does nothing on a repeated update", async () => {
+    const test = await fixture();
+    const result = await test.run("update-worker");
+    expect(result.code).toBe(0);
+    expect(await realpath(join(test.dataRoot, "current"))).toBe(
+      join(test.dataRoot, "releases/v0.1.9-bbbbbbb"),
+    );
+    expect(await realpath(join(test.dataRoot, "previous"))).toBe(test.oldRelease);
+    expect(await readFile(join(test.dataRoot, "current/.claudenest-built"), "utf8")).toBe(
+      "b".repeat(40) + "\n",
+    );
+    expect(await readFile(test.envPath, "utf8")).toContain('CLAUDENEST_VERSION="0.1.9-bbbbbbb"');
+    const commands = await test.commands();
+    expect(
+      commands.every(
+        (args) =>
+          !args.some(
+            (value) => value.startsWith("claudenest-session-") || value.startsWith("codexnest"),
+          ),
+      ),
+    ).toBe(true);
+    expect((await test.run("update-worker")).code).toBe(0);
+    expect(await test.commands()).toEqual(commands);
+  });
+
+  it("reports a rollback when the rolling API fails to start", async () => {
+    const test = await fixture();
+    expect((await test.run("update-worker", [], { FAKE_RESTART_FAIL: "1" })).code).toBe(1);
+    expect(await realpath(join(test.dataRoot, "current"))).toBe(test.oldRelease);
+    expect(
+      JSON.parse(await readFile(join(test.env.XDG_STATE_HOME!, "claudenest/update.json"), "utf8")),
+    ).toMatchObject({ operation: "idle", result: "rolled_back" });
+  });
+
+  it("rejects concurrent management and releases its kernel lock after the owner exits", async () => {
+    const test = await fixture();
+    const holder = spawn(
+      "flock",
+      [
+        "--no-fork",
+        join(test.configRoot, "manage.lock"),
+        process.execPath,
+        "-e",
+        "process.stdout.write('locked');setInterval(()=>{},1000)",
+      ],
+      { env: test.env },
+    );
+    cleanup.push(async () => {
+      holder.kill("SIGTERM");
+    });
+    await new Promise<void>((resolve) => holder.stdout.once("data", () => resolve()));
+    expect((await test.run("check-update")).stderr).toContain(
+      "Another management operation is active",
+    );
+    holder.kill("SIGTERM");
+    await new Promise<void>((resolve) => holder.once("exit", () => resolve()));
+    expect((await test.run("check-update")).code).toBe(0);
   });
 });

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+claudenest_root="${XDG_DATA_HOME:-$HOME/.local/share}/claudenest"
+claudenest_node="${CLAUDENEST_NODE_BIN:-node}"
+if [[ -x "$claudenest_root/runtime/current/bin/node" ]]; then
+  claudenest_node="$claudenest_root/runtime/current/bin/node"
+fi
+case "$claudenest_node" in
+  */*) export PATH="$(dirname "$claudenest_node"):$PATH" ;;
+esac
+case "${1:-help}" in
+  update) exec systemctl --user start --no-block claudenest-update.service ;;
+  logs) exec journalctl --user -u claudenest.service -f ;;
+  *) exec "$claudenest_node" "$claudenest_root/current/apps/claude-server/scripts/manage.mjs" "$@" ;;
+esac

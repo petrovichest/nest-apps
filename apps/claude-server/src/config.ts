@@ -20,6 +20,8 @@ export interface Config {
   allowedOrigins: Set<string>;
   startPaused?: boolean;
   clientDist?: string;
+  version?: string;
+  managedInstall?: boolean;
 }
 
 export async function executablePath(name: string): Promise<string> {
@@ -93,6 +95,8 @@ export async function loadConfig(): Promise<Config> {
     serverEnvFile,
     token,
     startPaused: process.env.CLAUDENEST_START_PAUSED === "1",
+    version: process.env.CLAUDENEST_VERSION || "0.1.0",
+    managedInstall: process.env.CLAUDENEST_MANAGED_INSTALL === "1",
     clientDist: resolve(
       process.env.CLAUDENEST_CLIENT_DIST || join(releasePath, "apps/client/dist-claude"),
     ),

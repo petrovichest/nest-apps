@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-codexnest_repository="https://github.com/petrovichest/codex-nest.git"
+codexnest_repository="https://github.com/petrovichest/nest-apps.git"
 codexnest_default_version="__CODEXNEST_VERSION__"
 codexnest_default_ref="__CODEXNEST_REF__"
 codexnest_node_version="24.18.0"

@@ -878,12 +878,13 @@ export function SettingsPage({
           >
             {application.capabilities.appUpdates && (
               <ApplicationSettingsCard
+                poll={false}
                 initialStatus={initialAppUpdateStatus}
                 onStatusChange={acceptAppUpdateStatus}
               />
             )}
             {application.capabilities.codexManagement && <CodexSettingsCard />}
-            {application.capabilities.appUpdates && (
+            {application.capabilities.codexManagement && (
               <RecoverySettingsCard
                 appStatus={appUpdateStatus}
                 codexStatus={codexManagementStatus}

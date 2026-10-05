@@ -169,7 +169,7 @@ try {
   assert.equal(await composer.inputValue(), "Сохранённый черновик");
   await page.getByRole("link", { name: "Настройки", exact: true }).click();
   await page.getByRole("tab", { name: "Claude", exact: true }).waitFor();
-  assert.equal(await page.getByRole("tab", { name: "Обслуживание", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("tab", { name: "Обслуживание", exact: true }).count(), 1);
   assert.equal(await page.getByRole("tab", { name: "Скиллы", exact: true }).count(), 0);
   await page.getByRole("tab", { name: "Claude", exact: true }).click();
   await page.getByRole("radio", { name: /Полный доступ/ }).waitFor();
@@ -207,6 +207,14 @@ try {
     .getByText("Настройки применены на сервере для всех клиентов.", { exact: true })
     .waitFor();
   await page.getByText("Распознавание речи", { exact: true }).scrollIntoViewIfNeeded();
+  await page.getByRole("tab", { name: "Обслуживание" }).click();
+  await page.getByText("Обновление ClaudeNest", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Скачать свежий APK" }).count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Скачать расширение для Chrome" }).count(),
+    0,
+  );
+  assert.equal(await page.getByRole("button", { name: "Жёстко перезапустить Codex" }).count(), 0);
   await page.screenshot({ path: join(screenshots, "desktop-settings.png") });
   await page.goto(`${fixture.baseUrl}/threads/${threadId}`);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -215,9 +223,7 @@ try {
   assert.deepEqual(errors, [], "No uncaught browser errors");
   assert.equal(
     fixture.requests.some((request) =>
-      /settings\/codex|settings\/app|rate-limits|\/skills|\/goal|git-changes|artifacts/.test(
-        request.url,
-      ),
+      /settings\/codex|rate-limits|\/skills|\/goal|git-changes|artifacts/.test(request.url),
     ),
     false,
     "No unsupported Codex API requests",

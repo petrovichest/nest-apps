@@ -112,6 +112,9 @@ export async function buildApp(config: AppConfig, services: ApiServices): Promis
       root: config.clientDist,
       prefix: "/",
       wildcard: false,
+      setHeaders(response, path) {
+        if (path.endsWith("index.html")) response.header("Cache-Control", "no-cache");
+      },
     });
     app.setNotFoundHandler(async (request, reply) => {
       if (request.url.startsWith("/api/")) {

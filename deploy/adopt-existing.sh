@@ -88,7 +88,7 @@ adopt_tag_commit="$(git -C "$adopt_repository" rev-parse "$adopt_tag^{commit}" 2
 adopt_release_json="$(curl -fsSL \
   -H 'Accept: application/vnd.github+json' \
   -H 'X-GitHub-Api-Version: 2022-11-28' \
-  "https://api.github.com/repos/petrovichest/codex-nest/releases/tags/$adopt_tag")" \
+  "https://api.github.com/repos/petrovichest/nest-apps/releases/tags/$adopt_tag")" \
   || adopt_die "GitHub Release $adopt_tag is not published"
 printf '%s' "$adopt_release_json" | "$adopt_node_bin" -e '
   const fs = require("node:fs");
@@ -106,7 +106,7 @@ adopt_token_before="$($adopt_node_bin -e '
 ' "$adopt_state_path")"
 [[ "$adopt_token_before" =~ ^[0-9a-fA-F]{64}$ ]] || adopt_die "existing bearer token verifier is missing"
 
-adopt_origin="${CODEXNEST_REPOSITORY_URL:-https://github.com/petrovichest/codex-nest.git}"
+adopt_origin="${CODEXNEST_REPOSITORY_URL:-https://github.com/petrovichest/nest-apps.git}"
 adopt_release="$adopt_releases/$adopt_tag"
 
 if $adopt_dry_run; then

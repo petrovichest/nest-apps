@@ -1,3 +1,4 @@
+import { onBeforeAppReload } from "../app-reload";
 import {
   pastedText,
   trimPastedMessage,
@@ -170,6 +171,8 @@ export function PendingForkPage({
     }
     return persistDraft(draftRef.current, keepalive);
   }
+
+  useEffect(() => onBeforeAppReload(() => flushDraft()));
 
   async function submit() {
     const current = structuredClone(draftRef.current);

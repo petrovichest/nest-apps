@@ -8,6 +8,7 @@ import type { SessionManager } from "./manager";
 import type { RunnerConnection } from "./rpc";
 import { AppError, assertUuid, record } from "./types";
 import type { UiService } from "./ui-service";
+import { AppManager } from "./app-management";
 import { registerUiRoutes } from "./ui-routes";
 import { VoiceServiceError } from "./voice";
 import { AttachmentTooLargeError, AttachmentValidationError } from "./attachments";
@@ -97,7 +98,7 @@ export async function buildApp(manager: SessionManager, ui?: UiService) {
     status: "ok",
     app: "claudenest",
     provider: "claude",
-    serverVersion: "0.1.0",
+    serverVersion: manager.config.version ?? "0.1.0",
     runnerProtocolVersion: 1,
     recoveryState: manager.accepting ? "ready" : "draining",
     releasePath: manager.config.releasePath,
@@ -105,6 +106,10 @@ export async function buildApp(manager: SessionManager, ui?: UiService) {
     transport: "daemon",
     appServer: { state: "ready", installedVersion: null, message: null },
   }));
+  const appManager = new AppManager(manager.config);
+  app.get("/api/v1/settings/app", () => appManager.status());
+  app.post("/api/v1/settings/app/check", () => appManager.check());
+  app.post("/api/v1/settings/app/update", () => appManager.update());
   app.get<{ Querystring: { cwd?: string } }>("/api/v1/sessions", async (request) => ({
     sessions: await manager.list(request.query.cwd),
   }));

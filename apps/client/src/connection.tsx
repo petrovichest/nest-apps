@@ -1,3 +1,4 @@
+import { onBeforeAppReload } from "./app-reload";
 import { appendUserInputRecordings, pastedText } from "@codexnest/protocol";
 import { App as CapacitorApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
@@ -97,6 +98,7 @@ type UserInputDraftPersistence = {
   version: number;
   savedVersion: number;
   inFlight: boolean;
+  completion?: Promise<void>;
   pending: boolean;
   timer: number | undefined;
 };
@@ -1242,18 +1244,18 @@ export function ConnectionProvider({
   }, [scheduleVoiceRecoveryRetry, settings, uploadVoiceRecording]);
 
   const persistUserInputDraft = useCallback(
-    function persist(attentionId: string): void {
+    function persist(attentionId: string): Promise<void> {
       const entry = userInputDraftPersistence.current.get(attentionId);
-      if (!entry) return;
+      if (!entry) return Promise.resolve();
       if (entry.timer !== undefined) {
         window.clearTimeout(entry.timer);
         entry.timer = undefined;
       }
       if (entry.inFlight) {
         entry.pending = true;
-        return;
+        return entry.completion ?? Promise.resolve();
       }
-      if (entry.version <= entry.savedVersion) return;
+      if (entry.version <= entry.savedVersion) return Promise.resolve();
       const version = entry.version;
       const request = stateRef.current.snapshot?.attention.find(
         (candidate) => candidate.id === attentionId,
@@ -1268,7 +1270,7 @@ export function ConnectionProvider({
       entry.inFlight = true;
       entry.pending = false;
       dispatch({ type: "userInputDraft.saving", attentionId, version });
-      void api
+      entry.completion = api
         .updateUserInputDraft(attentionId, draft)
         .then((saved) => {
           if (userInputDraftPersistence.current.get(attentionId) !== entry) return;
@@ -1288,8 +1290,9 @@ export function ConnectionProvider({
           entry.inFlight = false;
           if (!entry.pending) return;
           entry.pending = false;
-          persist(attentionId);
+          return persist(attentionId);
         });
+      return entry.completion;
     },
     [api],
   );
@@ -1352,7 +1355,9 @@ export function ConnectionProvider({
   );
 
   const flushUserInputDraft = useCallback(
-    (attentionId: string): void => persistUserInputDraft(attentionId),
+    (attentionId: string): void => {
+      void persistUserInputDraft(attentionId);
+    },
     [persistUserInputDraft],
   );
 
@@ -1369,8 +1374,25 @@ export function ConnectionProvider({
         persistUserInputDraft(attentionId);
       }
     };
+    const stopReloadPreparation = onBeforeAppReload(async () => {
+      await Promise.all([...userInputDraftPersistence.current.keys()].map(persistUserInputDraft));
+      if (
+        [...userInputDraftPersistence.current.values()].some(
+          (entry) => entry.version > entry.savedVersion,
+        )
+      ) {
+        throw new Error("Question draft is not saved");
+      }
+      await Promise.all([...voiceStaging.current.values()]);
+      if (unsavedVoiceRecordings.current.size) throw new Error("Voice input is not saved");
+      const staged = await Promise.all(
+        [...reliableMessages.current.values()].map((entry) => entry.staged),
+      );
+      if (staged.some((saved) => !saved)) throw new Error("Message input is not saved");
+    });
     window.addEventListener("pagehide", flushAll);
     return () => {
+      stopReloadPreparation();
       window.removeEventListener("pagehide", flushAll);
       flushAll();
     };

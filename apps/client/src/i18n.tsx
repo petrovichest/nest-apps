@@ -489,8 +489,8 @@ const ENGLISH: Record<string, string> = {
   "Обновление CodexNest": "CodexNest update",
   Обновление: "Update",
   "Загрузки и ссылки": "Downloads and links",
-  "Сервер, APK и расширение для Chrome обновляются из одной проверенной CI-сборки с автоматическим откатом.":
-    "The server, APK, and Chrome extension update from the same verified CI build with automatic rollback.",
+  "Сервер и веб-интерфейс обновляются из одной проверенной CI-сборки с автоматическим откатом.":
+    "The server and web interface update from the same verified CI build with automatic rollback.",
   "Получаем версию CodexNest…": "Loading CodexNest version…",
   "Технические детали": "Technical details",
   "Повторить загрузку технических деталей": "Retry loading technical details",
@@ -505,6 +505,10 @@ const ENGLISH: Record<string, string> = {
   "APK на этом устройстве": "APK on this device",
   Состояние: "Status",
   Результат: "Result",
+  "Не удалось сохранить черновики перед загрузкой нового интерфейса. Сохраните ввод и обновите страницу.":
+    "Drafts could not be saved before loading the new interface. Save your input and reload the page.",
+  "Обновления доступны только для управляемой установки ClaudeNest.":
+    "Updates require a managed ClaudeNest installation.",
   "Обновления доступны только для установки через install.sh.":
     "Updates are available only for installations made with install.sh.",
   "Открыть GitHub": "Open GitHub",

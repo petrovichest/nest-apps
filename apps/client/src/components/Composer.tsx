@@ -1,3 +1,4 @@
+import { onBeforeAppReload } from "../app-reload";
 import { application } from "../application";
 import { useTypography } from "../typography";
 import { pastedText, samePastedText, type PastedText } from "@codexnest/protocol";
@@ -368,6 +369,14 @@ export function Composer({
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [speechState, setSpeechState] = useState<SpeechState>("idle");
+  useEffect(
+    () =>
+      onBeforeAppReload(async () => {
+        if (speechState !== "idle") throw new Error("Voice input is still in progress");
+        await Promise.all(attachmentBatchesRef.current.values());
+      }),
+    [speechState],
+  );
   const [hasRetryRecording, setHasRetryRecording] = useState(false);
   const [retryRecordingCount, setRetryRecordingCount] = useState(0);
   const [recordingSeconds, setRecordingSeconds] = useState(0);

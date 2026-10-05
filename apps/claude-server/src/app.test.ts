@@ -144,6 +144,20 @@ describe("Claude backend HTTP and WebSocket integration", () => {
     expect(launchCount()).toBe(0);
   });
 
+  it("authenticates maintenance routes and reports unsupported development installs", async () => {
+    const { backend, headers } = await fixture();
+    const { app } = await backend();
+    expect((await app.inject({ url: "/api/v1/settings/app" })).statusCode).toBe(401);
+    expect((await app.inject({ url: "/api/v1/settings/app", headers })).json()).toMatchObject({
+      supported: false,
+      operation: "idle",
+    });
+    expect(
+      (await app.inject({ url: "/api/v1/settings/app/update", method: "POST", headers }))
+        .statusCode,
+    ).toBe(503);
+  });
+
   it("retries HTTP creation and restores the same permission request after the whole backend app closes", async () => {
     const { backend, headers, input, owners, launchCount } = await fixture();
     const first = await backend();

@@ -18,7 +18,7 @@
     }
   },
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present && npm run build:claude -w @codexnest/client",
     "dev": "npm run build -w @codexnest/protocol && concurrently -k -n server,client -c blue,green \"npm run dev -w @codexnest/server\" \"npm run dev -w @codexnest/client\"",
     "dev:codex": "npm run dev",
     "dev:claude": "npm run build -w @codexnest/protocol && concurrently -k -n claude-api,claude-ui \"npm run dev -w @claudenest/server\" \"npm run dev:claude -w @codexnest/client\"",

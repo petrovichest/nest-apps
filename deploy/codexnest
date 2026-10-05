@@ -3,7 +3,7 @@
 set -euo pipefail
 
 codexnest_root="${CODEXNEST_ROOT:-$HOME/.local/share/codexnest}"
-codexnest_repository="${CODEXNEST_REPOSITORY_URL:-https://github.com/petrovichest/codex-nest.git}"
+codexnest_repository="${CODEXNEST_REPOSITORY_URL:-https://github.com/petrovichest/nest-apps.git}"
 codexnest_source="$codexnest_root/source"
 codexnest_releases="$codexnest_root/releases"
 codexnest_current="$codexnest_root/current"
@@ -13,7 +13,7 @@ codexnest_state_root="${XDG_STATE_HOME:-$HOME/.local/state}/codexnest"
 codexnest_update_status="$codexnest_state_root/update.json"
 codexnest_restart_token_default="$codexnest_state_root/restart-token"
 codexnest_service_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-codexnest_rolling_manifest_url="https://github.com/petrovichest/codex-nest/releases/download/android-latest/CodexNest-latest.json"
+codexnest_rolling_manifest_url="https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/NestApps-latest.json"
 codexnest_preflight_error=""
 
 codexnest_die() {
@@ -92,7 +92,7 @@ codexnest_latest_tag() {
   curl -fsSL \
     -H 'Accept: application/vnd.github+json' \
     -H 'X-GitHub-Api-Version: 2022-11-28' \
-    'https://api.github.com/repos/petrovichest/codex-nest/releases?per_page=100' \
+    'https://api.github.com/repos/petrovichest/nest-apps/releases?per_page=100' \
     | "$node_bin" -e '
         const fs = require("node:fs");
         const releases = JSON.parse(fs.readFileSync(0, "utf8"));

@@ -232,7 +232,7 @@ describe("the shared Claude interface", () => {
     );
     expect(screen.getByRole("tab", { name: "Claude" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Скиллы" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Обслуживание" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Обслуживание" })).toBeInTheDocument();
     const provider = screen.getByLabelText("Провайдер распознавания речи");
     expect(within(provider).queryByRole("option", { name: "OpenAI API" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Модель улучшения расшифровки")).toHaveValue("haiku");

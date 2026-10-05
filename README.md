@@ -12,8 +12,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/petrovichest/codex-nest/actions/workflows/ci.yml"><img src="https://github.com/petrovichest/codex-nest/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
-  <a href="https://github.com/petrovichest/codex-nest/releases/latest"><img src="https://img.shields.io/github/v/release/petrovichest/codex-nest?label=release&amp;color=646660" alt="Latest release" /></a>
+  <a href="https://github.com/petrovichest/nest-apps/actions/workflows/ci.yml"><img src="https://github.com/petrovichest/nest-apps/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
+  <a href="https://github.com/petrovichest/nest-apps/releases/latest"><img src="https://img.shields.io/github/v/release/petrovichest/nest-apps?label=release&amp;color=646660" alt="Latest release" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-292a29" alt="License: Apache 2.0" /></a>
 </p>
 
@@ -21,7 +21,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#screenshots">Screenshots</a> ·
-  <a href="https://github.com/petrovichest/codex-nest/releases/latest/download/CodexNest-latest.apk">Android APK</a> ·
+  <a href="./apps/claude-server/README.md">ClaudeNest</a> ·
   <a href="./deploy/DEPLOYMENT.md">Documentation</a>
 </p>
 
@@ -38,14 +38,14 @@ signed in. Run the installer as a regular user:
 > Read the [security boundary](#security-boundary) before connecting.
 
 ```bash
-curl -fsSL https://github.com/petrovichest/codex-nest/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/petrovichest/nest-apps/releases/latest/download/install.sh | bash
 ```
 
 The installer supplies its pinned Node.js runtime and managed user services; it
 does not install or sign in to Codex CLI. Follow the
 [first connection instructions](./deploy/DEPLOYMENT.md#6-проверка-и-первый-вход)
 to open the browser client or connect the
-[Android app](https://github.com/petrovichest/codex-nest/releases/latest/download/CodexNest-latest.apk).
+browser/PWA client. Android APK releases will be added later.
 
 ## What you can do
 
@@ -93,7 +93,7 @@ project search, reviewing progress and opening the result. All projects and
 conversations shown here are demonstration data. Select an image to view it at
 full size.
 
-Captured from the v0.1.9 interface at [`b8805aa`](https://github.com/petrovichest/codex-nest/commit/b8805aa0ee30e5617de06497ff310d0bbc0c24cc), on September 21, 2026.
+Captured from the v0.1.9 interface at [`b8805aa`](https://github.com/petrovichest/nest-apps/commit/b8805aa0ee30e5617de06497ff310d0bbc0c24cc), on September 21, 2026.
 
 ### A workspace for your projects
 
@@ -289,13 +289,18 @@ component patterns, approved exceptions, and the new-feature checklist.
 CI runs formatting, lint, unit tests, the build, dependency audit, and installer
 script checks. The build checks types for the protocol, client, and extension;
 the server has a separate type check. Browser tests, Codex compatibility checks,
-and the installer platform matrix remain available locally. Android CI builds
-only the signed release APK.
+and the installer platform matrix remain available locally.
 
-Pull requests run `verify`. Pushes to `codex/mvp` publish a rolling release after
-`verify`; `v*` tags publish versioned releases. Release jobs reuse the client build
-and extension ZIP from `verify` instead of rebuilding them. Other branch pushes
-do not start CI.
+Pull requests run `verify`. Pushes to `main` publish `rolling-latest` after
+successful verification of both servers and both browser clients. `v*` tags publish
+versioned releases. The rolling manifest `NestApps-latest.json` pins one tested
+commit for both applications. Installers build immutable releases on the host;
+Settings → Maintenance updates the selected server and its web client together.
+The rolling pipeline currently publishes installers and the Codex browser
+extension, without Android APKs or signing secrets.
+
+ClaudeNest uses its own API, release directories, credentials and PWA identity.
+See [ClaudeNest installation and updates](./apps/claude-server/README.md).
 
 ```bash
 npm install

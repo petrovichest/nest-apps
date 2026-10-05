@@ -295,7 +295,7 @@ export class UiService extends EventEmitter {
         skills: false,
         gitChanges: false,
         artifacts: false,
-        appUpdates: false,
+        appUpdates: true,
         reasoningEffort: true,
       },
       instanceId: this.instanceId,

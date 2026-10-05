@@ -22,7 +22,7 @@ export const application = {
     skills: !isClaude,
     gitChanges: !isClaude,
     artifacts: !isClaude,
-    appUpdates: !isClaude,
+    appUpdates: true,
     reasoningEffort: true,
   } satisfies AppCapabilities,
 };

@@ -19,13 +19,13 @@ Codex CLI, поэтому утечка token может открыть дост�
 ## Рекомендуемая установка через rolling GitHub Release
 
 На Ubuntu или Debian (`amd64`/`arm64`) последнюю успешную CI-сборку ветки
-`codex/mvp` можно установить одной командой от обычного пользователя:
+`main` можно установить одной командой от обычного пользователя:
 
 ```bash
-curl -fsSL https://github.com/petrovichest/codex-nest/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/petrovichest/nest-apps/releases/latest/download/install.sh | bash
 ```
 
-Installer закреплён на том же проверенном commit, что APK и manifest в GitHub
+Installer закреплён на том же проверенном commit, что серверы, web-клиенты и manifest в GitHub
 Release. Он загрузит закреплённый Node.js в пользовательский каталог, соберёт
 этот commit, создаст user-systemd services, owner token и versioned release с
 symlink-ами `current`/`previous`. Существующие config, state и token при
@@ -33,13 +33,13 @@ symlink-ами `current`/`previous`. Существующие config, state и t
 
 Rolling-версия назначается автоматически в формате
 `<версия package.json>-<короткий commit>`, например `0.1.6-73e1842`. Одно и то
-же значение используется в названии GitHub Release, APK, manifest и Linux
+же значение используется в названии GitHub Release, manifest и Linux
 installer.
 
 Установка конкретной версии:
 
 ```bash
-curl -fsSL https://github.com/petrovichest/codex-nest/releases/download/v0.1.6/install.sh | \
+curl -fsSL https://github.com/petrovichest/nest-apps/releases/download/v0.1.6/install.sh | \
   bash -s -- --version 0.1.6
 ```
 
@@ -68,7 +68,7 @@ WireGuard/Tailscale VPN; не разрешайте этот порт на пуб
 UI один раз проверяет обновления после подключения; повторные переподключения
 только перечитывают локальное состояние updater без нового запроса к GitHub.
 Ручная проверка также доступна в настройках. По умолчанию updater читает manifest
-последней успешной CI-сборки ветки `codex/mvp`, собирает указанный commit рядом с
+последней успешной CI-сборки ветки `main`, собирает указанный commit рядом с
 текущей версией, атомарно переключает `current`, перезапускает приложение и
 возвращает `previous`, если health-check не прошёл. Для обновлений только по
 стабильным semver-релизам установите `CODEXNEST_UPDATE_CHANNEL=stable` в
@@ -149,7 +149,7 @@ codex login status
 `systemd`-сервиса.
 
 ```bash
-git clone git@github.com:petrovichest/codex-nest.git "$HOME/codex-nest"
+git clone git@github.com:petrovichest/nest-apps.git "$HOME/codex-nest"
 cd "$HOME/codex-nest"
 npm ci
 npm run build

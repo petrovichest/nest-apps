@@ -54,12 +54,12 @@ describe("ApplicationSettingsCard", () => {
     expect(screen.getByRole("button", { name: "Обновить CodexNest" })).toBeEnabled();
     expect(screen.getByText("Установлено на сервере")).toBeInTheDocument();
     expect(screen.getByText("Актуальная версия в GitHub")).toBeInTheDocument();
-    expect(screen.getByText("APK на этом устройстве")).toBeInTheDocument();
-    expect(screen.getByText("Только в Android")).toBeInTheDocument();
+    expect(screen.queryByText("APK на этом устройстве")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Скачать свежий APK" })).not.toBeInTheDocument();
     expect(getAppInfo).not.toHaveBeenCalled();
     expect(
       screen.getByText(
-        "Сервер, APK и расширение для Chrome обновляются из одной проверенной CI-сборки с автоматическим откатом.",
+        "Сервер и веб-интерфейс обновляются из одной проверенной CI-сборки с автоматическим откатом.",
       ),
     ).toBeInTheDocument();
   });
@@ -96,7 +96,7 @@ describe("ApplicationSettingsCard", () => {
     render(<ApplicationSettingsCard />);
 
     const link = await screen.findByRole("link", { name: "Открыть GitHub" });
-    expect(link).toHaveAttribute("href", "https://github.com/petrovichest/codex-nest");
+    expect(link).toHaveAttribute("href", "https://github.com/petrovichest/nest-apps");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(api.readAppSettings).toHaveBeenCalledOnce();
@@ -125,7 +125,7 @@ describe("ApplicationSettingsCard", () => {
 
     await waitFor(() =>
       expect(openBrowser).toHaveBeenCalledWith({
-        url: "https://github.com/petrovichest/codex-nest",
+        url: "https://github.com/petrovichest/nest-apps",
       }),
     );
   });
@@ -232,7 +232,7 @@ describe("ApplicationSettingsCard", () => {
     await waitFor(() =>
       expect(openDownloadUrl).toHaveBeenCalledWith(
         "https://codex.home.arpa",
-        "https://github.com/petrovichest/codex-nest/releases/download/android-latest/codexnest-browser-latest.zip",
+        "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/codexnest-browser-latest.zip",
       ),
     );
     expect(api.checkAppUpdate).not.toHaveBeenCalled();
@@ -282,45 +282,7 @@ describe("ApplicationSettingsCard", () => {
 
     expect(await screen.findByText("Managed installer is required")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Проверить обновления" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Скачать свежий APK" })).toBeEnabled();
-  });
-
-  it("opens the rolling APK download without another API request", async () => {
-    const api = {
-      settings: { baseUrl: "https://codex.home.arpa" },
-      readAppSettings: vi.fn(async () => updateStatus({ supported: false })),
-      checkAppUpdate: vi.fn(),
-      updateApp: vi.fn(),
-    };
-    connection.mockReturnValue({ api, state: { network: "connected" } });
-
-    render(<ApplicationSettingsCard />);
-    fireEvent.click(await screen.findByRole("button", { name: "Скачать свежий APK" }));
-
-    await waitFor(() =>
-      expect(openDownloadUrl).toHaveBeenCalledWith(
-        "https://codex.home.arpa",
-        "https://github.com/petrovichest/codex-nest/releases/download/android-latest/CodexNest-latest.apk",
-      ),
-    );
-    expect(api.checkAppUpdate).not.toHaveBeenCalled();
-    expect(api.updateApp).not.toHaveBeenCalled();
-  });
-
-  it("shows an error when the APK download cannot be opened", async () => {
-    openDownloadUrl.mockRejectedValueOnce(new Error("browser failed"));
-    const api = {
-      settings: { baseUrl: "https://codex.home.arpa" },
-      readAppSettings: vi.fn(async () => updateStatus()),
-      checkAppUpdate: vi.fn(),
-      updateApp: vi.fn(),
-    };
-    connection.mockReturnValue({ api, state: { network: "connected" } });
-
-    render(<ApplicationSettingsCard />);
-    fireEvent.click(await screen.findByRole("button", { name: "Скачать свежий APK" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("Не удалось открыть загрузку APK");
+    expect(screen.queryByRole("button", { name: "Скачать свежий APK" })).not.toBeInTheDocument();
   });
 
   it("shows an error when the Chrome extension download cannot be opened", async () => {

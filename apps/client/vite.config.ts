@@ -23,7 +23,15 @@ export default defineConfig(({ mode }) => {
           ]
         : []),
     ],
-    define: claude ? { "import.meta.env.VITE_APP_PROVIDER": JSON.stringify("claude") } : {},
+    define: {
+      ...(claude ? { "import.meta.env.VITE_APP_PROVIDER": JSON.stringify("claude") } : {}),
+      "import.meta.env.VITE_APP_VERSION": JSON.stringify(
+        process.env.VITE_APP_VERSION ||
+          process.env.CODEXNEST_VERSION ||
+          process.env.CLAUDENEST_VERSION ||
+          "",
+      ),
+    },
     // Rich copy loads this lazily; prebundle it so the first copy cannot trigger a dev reload.
     optimizeDeps: { include: ["react-dom/server"] },
     server: {

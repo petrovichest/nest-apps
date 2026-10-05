@@ -1,3 +1,4 @@
+import { application } from "../application";
 import { ActionLabel } from "./ActionLabel";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
@@ -9,29 +10,22 @@ import type { AppUpdateStatus } from "@codexnest/protocol";
 import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n, type Translate } from "../i18n";
 import { openDownloadUrl } from "../downloads";
-import {
-  ArrowUpIcon,
-  BrowserIcon,
-  DownloadIcon,
-  GitHubIcon,
-  RefreshIcon,
-  ServerIcon,
-} from "./Icons";
+import { ArrowUpIcon, BrowserIcon, GitHubIcon, RefreshIcon, ServerIcon } from "./Icons";
 import { SettingsGroup } from "./SettingsPresentation";
 
 type Action = "checking" | "updating" | null;
 
-const LATEST_ANDROID_APK_URL =
-  "https://github.com/petrovichest/codex-nest/releases/download/android-latest/CodexNest-latest.apk";
 const LATEST_CHROME_EXTENSION_URL =
-  "https://github.com/petrovichest/codex-nest/releases/download/android-latest/codexnest-browser-latest.zip";
-const REPOSITORY_URL = "https://github.com/petrovichest/codex-nest";
+  "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/codexnest-browser-latest.zip";
+const REPOSITORY_URL = "https://github.com/petrovichest/nest-apps";
 
 export function ApplicationSettingsCard({
   initialStatus,
   onStatusChange,
+  poll = true,
 }: {
   initialStatus?: AppUpdateStatus | null;
+  poll?: boolean;
   onStatusChange?(status: AppUpdateStatus): void;
 }) {
   const { api, state } = useConnection();
@@ -101,7 +95,7 @@ export function ApplicationSettingsCard({
   }, [nativePlatform]);
 
   useEffect(() => {
-    if (!status || status.operation === "idle") return;
+    if (!poll || !status || status.operation === "idle") return;
     const timer = window.setInterval(() => {
       void api
         .readAppSettings()
@@ -113,7 +107,7 @@ export function ApplicationSettingsCard({
         .catch(() => undefined);
     }, 1_500);
     return () => window.clearInterval(timer);
-  }, [api, onStatusChange, status]);
+  }, [api, onStatusChange, poll, status]);
 
   async function check() {
     setAction("checking");
@@ -152,15 +146,6 @@ export function ApplicationSettingsCard({
     }
   }
 
-  async function downloadApk() {
-    setError(null);
-    try {
-      await openDownloadUrl(api.settings.baseUrl, LATEST_ANDROID_APK_URL);
-    } catch {
-      setError(t("Не удалось открыть загрузку APK"));
-    }
-  }
-
   async function downloadChromeExtension() {
     setError(null);
     try {
@@ -180,7 +165,7 @@ export function ApplicationSettingsCard({
   }
 
   const activeTurnCount =
-    state.snapshot?.threads.filter((thread) => thread.currentTurnId !== null).length ?? 0;
+    state.snapshot?.threads?.filter((thread) => thread.currentTurnId !== null).length ?? 0;
   const activeTurnsBlockUpdate = activeTurnCount > 0 && status?.canUpdateWithActiveTurns !== true;
   const busy = action !== null || (status !== null && status.operation !== "idle");
 
@@ -189,7 +174,7 @@ export function ApplicationSettingsCard({
       loading={loading}
       className="application-settings-card"
       description={t(
-        "Сервер, APK и расширение для Chrome обновляются из одной проверенной CI-сборки с автоматическим откатом.",
+        "Сервер и веб-интерфейс обновляются из одной проверенной CI-сборки с автоматическим откатом.",
       )}
       icon={<ServerIcon />}
       title={t("Обновление CodexNest")}
@@ -209,10 +194,12 @@ export function ApplicationSettingsCard({
             <dt>{t("Актуальная версия в GitHub")}</dt>
             <dd className="settings-technical">{status?.latestVersion ?? t("Не проверялась")}</dd>
           </div>
-          <div>
-            <dt>{t("APK на этом устройстве")}</dt>
-            <dd className="settings-technical">{apkVersionLabel}</dd>
-          </div>
+          {nativePlatform && !application.isClaude && (
+            <div>
+              <dt>{t("APK на этом устройстве")}</dt>
+              <dd className="settings-technical">{apkVersionLabel}</dd>
+            </div>
+          )}
           <div>
             <dt>{t("Состояние")}</dt>
             <dd>{operationLabel(status?.operation, t)}</dd>
@@ -319,14 +306,12 @@ export function ApplicationSettingsCard({
                 <GitHubIcon />
                 <span>{t("Открыть GitHub")}</span>
               </a>
-              <button type="button" onClick={() => void downloadApk()}>
-                <DownloadIcon />
-                <span>{t("Скачать свежий APK")}</span>
-              </button>
-              <button type="button" onClick={() => void downloadChromeExtension()}>
-                <BrowserIcon />
-                <span>{t("Скачать расширение для Chrome")}</span>
-              </button>
+              {!application.isClaude && (
+                <button type="button" onClick={() => void downloadChromeExtension()}>
+                  <BrowserIcon />
+                  <span>{t("Скачать расширение для Chrome")}</span>
+                </button>
+              )}
             </div>
           </div>
         </div>

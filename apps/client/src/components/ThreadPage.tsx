@@ -1,3 +1,4 @@
+import { onBeforeAppReload } from "../app-reload";
 import { application } from "../application";
 import { useTypography } from "../typography";
 import { PasteBlocks } from "./PasteBlocks";
@@ -2382,9 +2383,18 @@ export function ThreadPage({
     const flushWhenHidden = () => {
       if (document.visibilityState === "hidden") flushBeforePageExit();
     };
+    const stopReloadPreparation = onBeforeAppReload(async () => {
+      const revision = composerEditRevisionRef.current;
+      await flushComposerDraftEvent();
+      await draftSaveChainRef.current;
+      await Promise.all(pendingNewSessionDraftSaves.values());
+      if (pendingDraftsRef.current.size || composerEditRevisionRef.current !== revision)
+        throw new Error("Composer draft is not saved");
+    });
     window.addEventListener("pagehide", flushBeforePageExit);
     document.addEventListener("visibilitychange", flushWhenHidden);
     return () => {
+      stopReloadPreparation();
       window.removeEventListener("pagehide", flushBeforePageExit);
       document.removeEventListener("visibilitychange", flushWhenHidden);
     };
