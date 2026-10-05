@@ -60,8 +60,23 @@ to `127.0.0.1:4311`, so it needs no access to a user's private home directory.
 Add `https://claude.home.arpa` to `CLAUDENEST_ALLOWED_ORIGINS` in Claude's own
 private server.env. Point LAN DNS for that hostname at this machine.
 
-An administrator can issue the new host certificate using the **existing** CA
-already trusted for `codex.home.arpa` and install the isolated vhost:
+The current home lab keeps its existing CA on `pi5@192.168.2.216`, under
+`/home/pi5/certs`. Keep `local-root-ca.key` on that CA host. Copy only the existing
+`home.arpa.crt` wildcard certificate, `home.arpa.key` service key and public
+`local-root-ca.crt` to a private temporary directory on the service host, then:
+
+```sh
+sudo bash deploy/claudenest/install-lan.sh --certificate \
+  /absolute/home.arpa.crt /absolute/home.arpa.key /absolute/local-root-ca.crt
+```
+
+The script checks the existing Codex certificate against that CA, verifies the
+supplied certificate for `claude.home.arpa`, and checks its private key before
+installing Claude's separate certificate files and vhost. Remove the temporary
+service-key copy afterward; never commit it.
+
+For deployments where the existing signing CA is already local, an administrator
+can issue a new host certificate and install the isolated vhost:
 
 ```sh
 sudo bash deploy/claudenest/install-lan.sh
