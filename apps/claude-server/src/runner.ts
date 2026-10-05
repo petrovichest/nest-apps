@@ -5,6 +5,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { ClaudeControlRejectedError, ClaudeProcess, MAX_NATIVE_LINE_BYTES } from "./claude.js";
 import { writeJsonAtomic } from "./io.js";
+import { nativeResultInterrupted } from "./types.js";
 import type {
   ClaudeModel,
   ClaudePermissionMode,
@@ -24,6 +25,7 @@ export interface RunnerTransport extends EventEmitter {
   readonly supportedModels?: ClaudeModel[];
   readonly model?: string;
   readonly permissionMode?: ClaudePermissionMode;
+  readonly livePermissionMode?: boolean;
   setModel?(model: string): Promise<void>;
   setPermissionMode?(mode: ClaudePermissionMode): Promise<void>;
 }
@@ -101,7 +103,12 @@ export class SessionRunner {
   private currentTruncated = false;
   private state: RunnerSnapshot["state"] = "starting";
   private activeSendRequestId?: string;
+  private readonly unacknowledgedInputs = new Set<string>();
+  private readonly steeredInputs = new Set<string>();
   private awaitingResult = false;
+  private publishedAwaitingResult?: boolean;
+  private nativeTaskRunning = false;
+  private interruptRequested = false;
   private terminalError?: string;
   private commandQueue = Promise.resolve();
   private persistenceQueue = Promise.resolve();
@@ -139,7 +146,7 @@ export class SessionRunner {
     this.transport.on("requestCancelled", (requestId: string) => {
       this.pending.delete(requestId);
       this.emit("request.cancelled", { requestId });
-      if (this.pending.size === 0 && this.state === "waiting") this.setState("running");
+      if (this.state === "waiting") this.refreshState();
       this.persistState();
     });
     this.transport.on("error", (error: Error) => this.fail(error));
@@ -192,6 +199,7 @@ export class SessionRunner {
       ...(this.transport.pid ? { claudePid: this.transport.pid } : {}),
       cwd: this.descriptor.cwd,
       state: this.state,
+      awaitingResult: this.awaitingResult,
       sequence: this.sequence,
       pendingRequests: [...this.pending.values()],
       currentEvents: [
@@ -204,6 +212,8 @@ export class SessionRunner {
         uploadedImages: Boolean(this.descriptor.attachmentRoot),
         setModel: typeof this.transport.setModel === "function",
         setPermissionMode: typeof this.transport.setPermissionMode === "function",
+        steer: true,
+        livePermissionMode: Boolean(this.transport.livePermissionMode),
       },
       supportedModels: this.transport.supportedModels ?? [],
       ...((this.transport.model ?? this.descriptor.model)
@@ -340,6 +350,7 @@ export class SessionRunner {
     }
     if (
       method !== "send" &&
+      method !== "steer" &&
       method !== "interrupt" &&
       method !== "respond" &&
       method !== "setModel" &&
@@ -350,7 +361,7 @@ export class SessionRunner {
     const params = record(rawParams);
     const requestId = text(params.requestId, "requestId");
     const sendText =
-      method === "send"
+      method === "send" || method === "steer"
         ? typeof params.text === "string"
           ? params.text
           : text(params.text, "text")
@@ -372,6 +383,10 @@ export class SessionRunner {
     ) {
       throw new RunnerError("conflict", "Session is already running");
     }
+    if (method === "steer" && this.interruptRequested && this.awaitingResult)
+      throw new RunnerError("conflict", "The interrupted task has not finished yet");
+    if ((method === "send" || method === "steer") && this.unacknowledgedInputs.size >= 64)
+      throw new RunnerError("conflict", "Too many inputs are awaiting native acknowledgement");
     const targetRequestId = response ? text(params.targetRequestId, "targetRequestId") : undefined;
     if (method === "respond" && !this.pending.has(targetRequestId!)) {
       throw new RunnerError("conflict", "Request is no longer pending");
@@ -398,7 +413,10 @@ export class SessionRunner {
     )
       throw new RunnerError("invalid_request", "Unsupported permission mode");
     if (method === "setModel" || method === "setPermissionMode") {
-      if (this.awaitingResult || this.pending.size || this.state !== "idle")
+      if (
+        method === "setModel" &&
+        (this.awaitingResult || this.pending.size || this.state !== "idle")
+      )
         throw new RunnerError("conflict", "Settings can change only while the session is idle");
       if (
         (method === "setModel" && !this.transport.setModel) ||
@@ -407,7 +425,9 @@ export class SessionRunner {
         throw new RunnerError("method_not_found", "Owner does not support this setting");
     }
     const prepared =
-      method === "send" ? await this.prepareInput(params, requestId, sendText!) : undefined;
+      method === "send" || method === "steer"
+        ? await this.prepareInput(params, requestId, sendText!)
+        : undefined;
     const receipt: CommandReceipt = { requestId, kind: method, fingerprint, status: "accepted" };
     this.receipts.set(requestId, receipt);
     await this.persistReceipts();
@@ -422,21 +442,28 @@ export class SessionRunner {
       if (["failed", "closed"].includes(this.state) || receipt.status === "unknown") {
         throw new RunnerError("unavailable", "Claude became unavailable before command dispatch");
       }
-      if (method === "send") {
-        this.current.length = 0;
-        this.currentBytes = 0;
-        this.currentTruncated = false;
-        this.activeSendRequestId = requestId;
+      if (method === "send" || method === "steer") {
+        const newTask = method === "send" || !this.awaitingResult;
+        if (newTask) {
+          this.current.length = 0;
+          this.currentBytes = 0;
+          this.currentTruncated = false;
+          this.activeSendRequestId = requestId;
+          this.interruptRequested = false;
+          this.nativeTaskRunning = true;
+        } else this.steeredInputs.add(requestId);
+        this.unacknowledgedInputs.add(requestId);
         this.awaitingResult = true;
-        this.setState("running");
+        this.refreshState();
         this.transport.sendUser(requestId, prepared!.text, prepared!.content);
       } else if (method === "respond") {
         this.transport.respond(targetRequestId!, response!);
         this.pending.delete(targetRequestId!);
         this.emit("request.cancelled", { requestId: targetRequestId });
-        if (this.pending.size === 0) this.setState("running");
+        this.refreshState();
         receipt.status = "completed";
       } else if (method === "interrupt") {
+        this.interruptRequested = true;
         await this.transport.interrupt();
         receipt.status = "completed";
         for (const pendingId of this.pending.keys())
@@ -445,7 +472,13 @@ export class SessionRunner {
         this.setState("interrupted");
       } else {
         if (method === "setModel") await this.transport.setModel!(model!);
-        else await this.transport.setPermissionMode!(permissionMode!);
+        else {
+          await this.transport.setPermissionMode!(permissionMode!);
+          if (permissionMode === "bypassPermissions") {
+            for (const pending of [...this.pending.values()])
+              if (pending.kind === "toolApproval") this.allowToolApproval(pending.requestId);
+          }
+        }
         receipt.status = "completed";
       }
       await this.persistReceipts();
@@ -454,6 +487,7 @@ export class SessionRunner {
       return { ...receipt };
     } catch (error) {
       if (error instanceof ClaudeControlRejectedError) {
+        if (method === "interrupt") this.interruptRequested = false;
         receipt.status = "completed";
         receipt.error = error.message;
         await this.persistReceipts();
@@ -558,7 +592,14 @@ export class SessionRunner {
 
   private onNativeEvent(rawEvent: unknown): void {
     if (!rawEvent || typeof rawEvent !== "object" || Array.isArray(rawEvent)) return;
-    const event = rawEvent as Record<string, unknown>;
+    let event = rawEvent as Record<string, unknown>;
+    const inputId = event.type === "user" ? (event.uuid ?? event.request_id) : undefined;
+    const inputReceipt = typeof inputId === "string" ? this.receipts.get(inputId) : undefined;
+    if (inputReceipt?.kind === "steer" && this.steeredInputs.has(inputReceipt.requestId))
+      event = { ...event, claudenest_delivery: "steer" };
+    const interrupted =
+      event.type === "result" && (this.interruptRequested || nativeResultInterrupted(event));
+    if (interrupted) event = { ...event, claudenest_interrupted: true };
     const bytes = Buffer.byteLength(JSON.stringify(event));
     this.current.push({ event, bytes });
     this.currentBytes += bytes;
@@ -570,13 +611,42 @@ export class SessionRunner {
     if (event.type === "user") {
       const uuid = event.uuid ?? event.request_id;
       const receipt = typeof uuid === "string" ? this.receipts.get(uuid) : undefined;
-      if (receipt?.kind === "send" && receipt.status === "accepted") {
+      if (
+        (receipt?.kind === "send" || receipt?.kind === "steer") &&
+        receipt.status === "accepted"
+      ) {
         receipt.status = "completed";
+        this.unacknowledgedInputs.delete(receipt.requestId);
+        this.steeredInputs.delete(receipt.requestId);
+        this.nativeTaskRunning = true;
+        this.awaitingResult = true;
         void this.persistReceipts();
         this.emit("command", { ...receipt });
       }
     }
+    if (
+      ((event.type === "system" && event.subtype === "command_lifecycle") ||
+        event.type === "command_lifecycle") &&
+      event.state === "cancelled" &&
+      typeof event.command_uuid === "string"
+    ) {
+      const receipt = this.receipts.get(event.command_uuid);
+      if (
+        (receipt?.kind === "send" || receipt?.kind === "steer") &&
+        receipt.status === "accepted"
+      ) {
+        receipt.status = "unknown";
+        receipt.error = "Native command was cancelled before input acknowledgement";
+        this.unacknowledgedInputs.delete(receipt.requestId);
+        this.steeredInputs.delete(receipt.requestId);
+        this.awaitingResult = this.nativeTaskRunning || this.unacknowledgedInputs.size > 0;
+        this.emit("command", { ...receipt });
+        void this.persistReceipts();
+        if (this.state !== "interrupted") this.refreshState();
+      }
+    }
     if (event.type === "result") {
+      this.nativeTaskRunning = false;
       if (this.activeSendRequestId) {
         const receipt = this.receipts.get(this.activeSendRequestId);
         if (receipt?.status === "accepted") {
@@ -584,17 +654,35 @@ export class SessionRunner {
           void this.persistReceipts();
           this.emit("command", { ...receipt });
         }
+        this.unacknowledgedInputs.delete(this.activeSendRequestId);
       }
       this.activeSendRequestId = undefined;
-      this.awaitingResult = false;
+      if (interrupted) {
+        for (const requestId of this.unacknowledgedInputs) {
+          const receipt = this.receipts.get(requestId);
+          if (receipt?.status === "accepted") {
+            receipt.status = "unknown";
+            receipt.error = "Input was not acknowledged before interruption";
+            this.emit("command", { ...receipt });
+          }
+        }
+        this.unacknowledgedInputs.clear();
+        this.steeredInputs.clear();
+        void this.persistReceipts();
+      }
+      this.awaitingResult = this.unacknowledgedInputs.size > 0;
       for (const requestId of this.pending.keys()) this.emit("request.cancelled", { requestId });
       this.pending.clear();
-      if (this.state !== "failed" && this.state !== "closed") this.setState("idle");
+      if (this.state !== "failed" && this.state !== "closed") {
+        if (interrupted) this.setState("interrupted");
+        else this.refreshState();
+      }
       void this.persistState();
     }
   }
 
   private onRequest(rawEvent: unknown): void {
+    if (this.state === "failed" || this.state === "closed" || this.releaseRequested) return;
     try {
       const event = record(rawEvent);
       const requestId = text(event.request_id, "request_id");
@@ -610,14 +698,50 @@ export class SessionRunner {
             ? request.tool_name
             : String(request.subtype ?? "unknown"),
         input,
+        kind:
+          request.tool_name === "AskUserQuestion"
+            ? ("userQuestion" as const)
+            : request.subtype === "can_use_tool"
+              ? ("toolApproval" as const)
+              : ("other" as const),
       };
       this.pending.set(requestId, pending);
+      if (
+        pending.kind === "toolApproval" &&
+        (this.transport.permissionMode ?? this.descriptor.permissionMode) === "bypassPermissions"
+      ) {
+        this.allowToolApproval(requestId);
+        return;
+      }
       this.emit("request", pending);
-      this.setState("waiting");
+      this.refreshState();
       void this.persistState();
     } catch (error) {
       this.fail(error instanceof Error ? error : new Error(String(error)));
     }
+  }
+
+  private allowToolApproval(requestId: string): void {
+    const pending = this.pending.get(requestId);
+    if (!pending || pending.kind !== "toolApproval") return;
+    this.transport.respond(requestId, { behavior: "allow", updatedInput: pending.input });
+    this.pending.delete(requestId);
+    this.emit("request.cancelled", { requestId });
+    this.refreshState();
+    void this.persistState();
+  }
+
+  private refreshState(): void {
+    if (this.state === "failed" || this.state === "closed") return;
+    this.setState(
+      this.interruptRequested && this.awaitingResult
+        ? "interrupted"
+        : this.pending.size
+          ? "waiting"
+          : this.awaitingResult
+            ? "running"
+            : "idle",
+    );
   }
 
   private emit(kind: RunnerEvent["kind"], data: unknown): void {
@@ -638,9 +762,10 @@ export class SessionRunner {
   }
 
   private setState(state: RunnerSnapshot["state"]): void {
-    if (this.state === state) return;
+    if (this.state === state && this.publishedAwaitingResult === this.awaitingResult) return;
     this.state = state;
-    this.emit("state", { state });
+    this.publishedAwaitingResult = this.awaitingResult;
+    this.emit("state", { state, awaitingResult: this.awaitingResult });
     void this.persistState();
   }
 
@@ -651,8 +776,15 @@ export class SessionRunner {
       if (receipt.status === "accepted") {
         receipt.status = "unknown";
         receipt.error = error.message;
+        this.emit("command", { ...receipt });
       }
     }
+    for (const requestId of this.pending.keys()) this.emit("request.cancelled", { requestId });
+    this.pending.clear();
+    this.unacknowledgedInputs.clear();
+    this.steeredInputs.clear();
+    this.nativeTaskRunning = false;
+    this.awaitingResult = false;
     this.setState("failed");
     void this.persistReceipts();
     void this.persistState();
@@ -724,11 +856,23 @@ export class SessionRunner {
         if (receipt.status === "accepted") {
           receipt.status = "unknown";
           receipt.error = this.terminalError;
+          this.emit("command", { ...receipt });
         }
       }
+      for (const requestId of this.pending.keys()) this.emit("request.cancelled", { requestId });
+      this.pending.clear();
+      this.unacknowledgedInputs.clear();
+      this.steeredInputs.clear();
+      this.nativeTaskRunning = false;
+      this.awaitingResult = false;
       if (this.state !== "failed" && this.state !== "closed") {
         this.state = "failed";
-        this.emit("state", { state: "failed", error: this.terminalError });
+        this.publishedAwaitingResult = this.awaitingResult;
+        this.emit("state", {
+          state: "failed",
+          awaitingResult: this.awaitingResult,
+          error: this.terminalError,
+        });
       }
     });
     return next;

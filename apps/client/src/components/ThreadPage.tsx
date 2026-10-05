@@ -491,8 +491,11 @@ function forkChildStateLabel(state: ThreadState, t: Translate): string {
   }
 }
 
-function resolveVoiceTranscriptionMode(currentTurnId: string | null): VoiceTranscriptionMode {
-  return currentTurnId ? (application.isClaude ? "queue" : "steer") : "send";
+function resolveVoiceTranscriptionMode(
+  currentTurnId: string | null,
+  ownerRunning = false,
+): VoiceTranscriptionMode {
+  return currentTurnId || (application.isClaude && ownerRunning) ? "steer" : "send";
 }
 
 export function ThreadPage({
@@ -857,16 +860,39 @@ export function ThreadPage({
     ? preparationRef.current.voiceSubmission
     : undefined;
   const optimisticMessages = state.optimisticMessages?.[threadId] ?? [];
-  const optimisticTurnMessages = optimisticMessages.filter(
+  const optimisticTurnMessages: OptimisticMessage[] = optimisticMessages.filter(
     (message) => message.destination === "turn",
   );
+  if (application.isClaude) {
+    for (const message of detail?.queuedMessages ?? []) {
+      if (message.deliveryMode !== "steer") continue;
+      const optimisticIndex = optimisticTurnMessages.findIndex((item) => item.id === message.id);
+      if (optimisticIndex !== -1) {
+        optimisticTurnMessages[optimisticIndex] = {
+          ...optimisticTurnMessages[optimisticIndex]!,
+          deliveryError: message.deliveryError,
+          serverAccepted: true,
+        };
+        continue;
+      }
+      optimisticTurnMessages.push({
+        ...message,
+        images: message.images ?? [],
+        destination: "turn",
+        turnId: summary?.currentTurnId ?? null,
+        serverAccepted: true,
+      });
+    }
+  }
   const optimisticQueuedMessages = optimisticMessages.filter(
     (message) => message.destination === "queue",
   );
   const queuedMessages = preparationRef.current.active
     ? []
     : mergeOptimisticQueue(detail?.queuedMessages ?? [], optimisticQueuedMessages).filter(
-        (message) => !isQuestionReplyDelivery(message) || Boolean(message.deliveryError),
+        (message) =>
+          message.deliveryMode !== "steer" &&
+          (!isQuestionReplyDelivery(message) || Boolean(message.deliveryError)),
       );
   const queuedShortcutMessage =
     queueAction === null && queuedMessages[0]?.confirmed && queuedMessages[0].status === "queued"
@@ -1925,7 +1951,9 @@ export function ThreadPage({
     context?: VoiceRecordingContext,
   ): Promise<void> {
     if (!transcriptionProvider || activeVoiceJob || voiceUploads[targetThreadId]) return;
-    const uploadMode = context?.mode ?? resolveVoiceTranscriptionMode(currentTurnIdRef.current);
+    const uploadMode =
+      context?.mode ??
+      resolveVoiceTranscriptionMode(currentTurnIdRef.current, summary?.state === "running");
     if (
       uploadMode !== "draft" &&
       (
@@ -2830,6 +2858,8 @@ export function ThreadPage({
     const submittedEditRevision = composerEditRevisionRef.current;
     const clientMessageId = createClientMessageId();
     const dismissUserInput = userInputToDismiss(targetThreadId);
+    const steering = application.isClaude && intent === "immediate";
+    const steerTurnId = steering ? currentTurnIdRef.current : null;
     const submittedIdentity: SubmittedMessageIdentity = {
       text: submittedInput,
       ...pastedText(trimPastedMessage(submittedDraft.input, submittedDraft)),
@@ -2848,8 +2878,8 @@ export function ThreadPage({
       files: submittedDraft.files ?? [],
       goal: submittedIdentity.goal,
       createdAt: Date.now(),
-      destination: "queue",
-      turnId: null,
+      destination: steering ? "turn" : "queue",
+      turnId: steerTurnId,
       ...(dismissUserInput ? { dismissUserInput } : {}),
     };
     let deliveryCommitted = false;
@@ -2872,7 +2902,10 @@ export function ThreadPage({
         {
           input: submittedInput,
           ...(application.isClaude
-            ? { draftUpdatedAt: savedDraftUpdatedAtRef.current.get(targetThreadId) ?? null }
+            ? {
+                deliveryMode: steering ? "steer" : "queue",
+                draftUpdatedAt: savedDraftUpdatedAtRef.current.get(targetThreadId) ?? null,
+              }
             : {}),
           ...pastedText(trimPastedMessage(submittedDraft.input, submittedDraft)),
           ...(submittedDraft.images.length
@@ -2888,7 +2921,7 @@ export function ThreadPage({
       );
       commitDelivery();
       releaseSubmittedMessageClaim(messageClaimKey);
-      if (intent === "immediate" && delivery === "delivered") {
+      if (intent === "immediate" && !steering && delivery === "delivered") {
         try {
           await api.sendQueuedNow(targetThreadId, clientMessageId);
         } catch {
@@ -3737,7 +3770,7 @@ export function ThreadPage({
     attention.length > 0 ||
     optimisticMessages.length > 0 ||
     workspaceSummary.queuedMessageCount > 0 ||
-    (detail?.queuedMessages.length ?? 0) > 0;
+    (detail?.queuedMessages.some((message) => message.deliveryMode !== "steer") ?? false);
   const planAcceptanceDisabled = planActionsDisabled || latestPlanHasAnnotations;
   const planDismissalDisabled = planActionsDisabled || !workspaceSummary.awaitingPlanResponse;
   const planNotice = attention.length
@@ -3773,7 +3806,10 @@ export function ThreadPage({
         draftUpdatedAt: savedDraftUpdatedAtRef.current.has(threadId)
           ? savedDraftUpdatedAtRef.current.get(threadId)!
           : (state.details[threadId]?.draft?.updatedAt ?? null),
-        mode: resolveVoiceTranscriptionMode(currentTurnIdRef.current),
+        mode: resolveVoiceTranscriptionMode(
+          currentTurnIdRef.current,
+          workspaceSummary.state === "running",
+        ),
       };
   const hasPendingVoiceRecording = pendingVoiceRecordingThreadIds.includes(threadId);
   const pendingVoiceRecordingError = pendingVoiceRecordingErrors[threadId] ?? null;
@@ -4204,6 +4240,16 @@ export function ThreadPage({
                           {turnOptimisticMessages.map((message) => (
                             <Activity
                               item={optimisticActivity(message)}
+                              footerStatus={
+                                message.deliveryError && (
+                                  <span className="outgoing-delivery-status" role="status">
+                                    {localizeKnownServerText(
+                                      language,
+                                      message.deliveryError.message,
+                                    ) ?? message.deliveryError.message}
+                                  </span>
+                                )
+                              }
                               cwd={workspaceSummary.cwd}
                               onDownload={downloadFile}
                               onOpenArtifact={openLinkedArtifact}
@@ -4415,6 +4461,14 @@ export function ThreadPage({
                       <div className="turn optimistic-turn" key={`optimistic:${message.id}`}>
                         <Activity
                           item={optimisticActivity(message)}
+                          footerStatus={
+                            message.deliveryError && (
+                              <span className="outgoing-delivery-status" role="status">
+                                {localizeKnownServerText(language, message.deliveryError.message) ??
+                                  message.deliveryError.message}
+                              </span>
+                            )
+                          }
                           cwd={workspaceSummary.cwd}
                           onDownload={downloadFile}
                           onOpenArtifact={openLinkedArtifact}
@@ -4519,6 +4573,13 @@ export function ThreadPage({
             onLayoutChange={handleComposerLayoutChange}
             inputUnavailable={inputUnavailable}
             codexSettings={workspaceSummary.codexSettings}
+            permissionPreset={
+              application.isClaude
+                ? preparationRef.current.active
+                  ? state.snapshot?.permissionSettings?.preset
+                  : workspaceSummary.permissionPreset
+                : undefined
+            }
             autoFocus={
               preparationRef.current.active ||
               (location.state as { focusComposer?: unknown } | null)?.focusComposer === true
@@ -4555,6 +4616,7 @@ export function ThreadPage({
             busy={busy || (preparationRef.current.active && pendingOptimisticMessage !== null)}
             running={
               Boolean(workspaceSummary.currentTurnId) ||
+              (application.isClaude && workspaceSummary.state === "running") ||
               Boolean(workspaceSummary.capacityRetry) ||
               (workspaceSummary.settings.collaborationMode === "team" &&
                 workspaceSummary.state === "running")
@@ -5607,7 +5669,7 @@ export function Activity({
           markdown={item.type === "agentMessage"}
           timestamp={item.timestamp}
           forkAction={item.type === "agentMessage" ? forkAction : undefined}
-          status={item.type === "agentMessage" ? footerStatus : undefined}
+          status={item.type === "agentMessage" || application.isClaude ? footerStatus : undefined}
         />
       </article>
     );

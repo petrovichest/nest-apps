@@ -299,6 +299,8 @@ export type ThreadRelation =
     };
 
 export type ThreadSummary = {
+  /** Effective permissions reported by a Claude session owner. */
+  permissionPreset?: PermissionPreset;
   id: string;
   projectId: string | null;
   title: string;
@@ -385,6 +387,8 @@ export type UserInputReply = {
 export type PlanImplementationMode = "default" | "goal" | "team";
 
 export type QueuedMessage = PastedText & {
+  /** A durable Claude steer admission belongs to the current turn, outside the FIFO. */
+  deliveryMode?: "steer" | "queue";
   id: string;
   threadId: string;
   text: string;
@@ -989,6 +993,7 @@ export type ConnectionView = {
 export type AppSnapshot = {
   provider?: AppProvider;
   capabilities?: AppCapabilities;
+  permissionSettings?: GlobalPermissionSettings;
   instanceId?: string;
   sequence: number;
   uiLanguage: UiLanguage;
@@ -1033,6 +1038,7 @@ export type ServerEvent =
   | { type: "skills.changed" }
   | { type: "defaultReasoningEffort.changed"; reasoningEffort: string | null }
   | { type: "taskDefaults.changed"; taskDefaults: TaskDefaults }
+  | { type: "permissions.changed"; permissionSettings: GlobalPermissionSettings }
   | { type: "uiLanguage.changed"; language: UiLanguage }
   | { type: "goal.changed"; threadId: string; goal: ThreadGoal | null }
   | { type: "voiceTranscription.upserted"; job: VoiceTranscriptionJob }
@@ -1439,6 +1445,8 @@ export type StartTurnRequest = PastedText & {
 };
 
 export type QueueMessageRequest = PastedText & {
+  /** Claude can deliver an addition to the current turn without placing it in the queue. */
+  deliveryMode?: "steer" | "queue";
   /** Consume the submitted draft only if its server revision still matches. */
   draftUpdatedAt?: number | null;
   projectDraft?: { projectId: string; updatedAt: number };

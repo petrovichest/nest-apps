@@ -44,6 +44,71 @@ const snapshot: AppSnapshot = {
 };
 
 describe("clientReducer", () => {
+  it("updates native permissions from the global stream without polling", () => {
+    const permissionSettings = {
+      preset: "full-access" as const,
+      version: "2",
+      overridden: false,
+      message: null,
+    };
+    let state = clientReducer(initialState, { type: "snapshot", snapshot });
+    state = clientReducer(state, {
+      type: "event",
+      version: { instanceId: "legacy", sequence: 5 },
+      event: { type: "permissions.changed", permissionSettings },
+    });
+    expect(state.snapshot?.permissionSettings).toEqual(permissionSettings);
+  });
+
+  it("keeps a durable steer visible in the active turn until its native user echo arrives", () => {
+    const message = {
+      id: "steered",
+      threadId: "one",
+      text: "Уточнение",
+      images: [],
+      createdAt: 10,
+    };
+    const admission = {
+      ...message,
+      deliveryMode: "steer" as const,
+      status: "dispatching" as const,
+    };
+    let state = clientReducer(initialState, { type: "snapshot", snapshot });
+    state = clientReducer(state, {
+      type: "optimistic.add",
+      message: { ...message, destination: "turn", turnId: "turn" },
+    });
+    state = clientReducer(state, {
+      type: "detail",
+      detail: {
+        summary: baseThread,
+        turns: [turn("turn")],
+        queuedMessages: [admission],
+        olderTurnsCursor: null,
+      },
+    });
+    expect(state.optimisticMessages.one?.[0]?.id).toBe("steered");
+    state = clientReducer(state, {
+      type: "event",
+      version: { instanceId: "legacy", sequence: 5 },
+      event: { type: "queue.changed", threadId: "one", messages: [admission] },
+    });
+    expect(state.optimisticMessages.one?.[0]?.id).toBe("steered");
+    state = clientReducer(state, {
+      type: "event",
+      version: { instanceId: "legacy", sequence: 6 },
+      event: {
+        type: "activity.upserted",
+        threadId: "one",
+        turnId: "turn",
+        item: { ...message, type: "userMessage", status: "completed", timestamp: 10, phase: null },
+      },
+    });
+    expect(state.optimisticMessages.one).toBeUndefined();
+    expect(state.details.one?.queuedMessages).toEqual([]);
+    expect(state.details.one?.turns[0]?.items.map((item) => item.id)).toContain("steered");
+  });
+
   it("merges transcripts into dirty question answers once, including after a late save acknowledgement", () => {
     const job: VoiceTranscriptionJob = {
       id: "voice",

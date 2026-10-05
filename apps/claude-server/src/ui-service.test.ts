@@ -10,16 +10,28 @@ import type { SessionManager } from "./manager";
 import type { RunnerConnection } from "./rpc";
 import {
   AppError,
+  type ClaudePermissionMode,
   type CommandReceipt,
   type PendingRequest,
   type RunnerDescriptor,
   type RunnerEvent,
+  type RunnerAttachment,
   type RunnerSnapshot,
 } from "./types";
 import { UiService, commandId } from "./ui-service";
 import type { UiData } from "./ui-store";
 
-type Delivery = { sessionId: string; requestId: string; cwd: string; prompt: string };
+type Delivery = {
+  sessionId: string;
+  requestId: string;
+  cwd: string;
+  prompt: string;
+  files?: RunnerAttachment[];
+  images?: RunnerAttachment[];
+  permissionMode?: ClaudePermissionMode;
+  model?: string;
+  effort?: string;
+};
 class FakeConnection extends EventEmitter {
   closed = false;
   constructor(private readonly snapshot: () => RunnerSnapshot) {
@@ -46,8 +58,11 @@ class FakeManager {
   readonly external: Array<Record<string, unknown>> = [];
   readonly creates: Delivery[] = [];
   readonly sends: Delivery[] = [];
+  readonly steers: Delivery[] = [];
   readonly commands: Array<{ id: string; method: string; params: Record<string, unknown> }> = [];
-  outcome: "completed" | "unknown" | "lostAck" | "lostUnknownAck" = "completed";
+  readonly launcher = { active: async (id: string) => this.owners.has(id) };
+  outcome: "completed" | "accepted" | "unknown" | "lostAck" | "lostAcceptedAck" | "lostUnknownAck" =
+    "completed";
   constructor(readonly config: Config) {}
   async list(): Promise<unknown[]> {
     return [
@@ -80,34 +95,71 @@ class FakeManager {
     this.creates.push(input);
     return this.deliver(input);
   }
-  async send(id: string, requestId: string, prompt: string): Promise<CommandReceipt> {
+  async send(
+    id: string,
+    requestId: string,
+    prompt: string,
+    content?: Pick<Delivery, "files" | "images">,
+    launch?: Pick<Delivery, "permissionMode" | "model" | "effort">,
+  ): Promise<CommandReceipt> {
     const delivery = {
       sessionId: id,
       requestId,
       prompt,
       cwd: this.owners.get(id)?.cwd ?? this.config.stateDir,
+      ...content,
+      ...launch,
     };
     this.sends.push(delivery);
     if (["running", "waiting"].includes(this.owners.get(id)?.state ?? ""))
       throw new AppError("conflict", "Native session is busy", 409);
     return this.deliver(delivery);
   }
-  private deliver(input: Delivery): CommandReceipt {
+  async steer(
+    id: string,
+    requestId: string,
+    prompt: string,
+    content?: Pick<Delivery, "files" | "images">,
+  ): Promise<CommandReceipt> {
+    const delivery = {
+      sessionId: id,
+      requestId,
+      prompt,
+      cwd: this.owners.get(id)!.cwd,
+      ...content,
+    };
+    this.steers.push(delivery);
+    return this.deliver(delivery, "steer");
+  }
+  private deliver(input: Delivery, kind: "send" | "steer" = "send"): CommandReceipt {
     const owner = this.owners.get(input.sessionId) ?? snapshot(input.sessionId, input.cwd);
     const receipt: CommandReceipt = {
       requestId: input.requestId,
-      kind: "send",
+      kind,
       fingerprint: `native-${input.requestId}`,
       status:
-        this.outcome === "unknown" || this.outcome === "lostUnknownAck" ? "unknown" : "completed",
+        this.outcome === "unknown" || this.outcome === "lostUnknownAck"
+          ? "unknown"
+          : this.outcome === "accepted" || this.outcome === "lostAcceptedAck"
+            ? "accepted"
+            : "completed",
     };
     owner.commands.push(receipt);
     owner.state = receipt.status === "unknown" ? "failed" : "running";
-    owner.currentEvents = [
-      { type: "user", uuid: input.requestId, message: { role: "user", content: input.prompt } },
-    ];
+    const user = {
+      type: "user",
+      uuid: input.requestId,
+      message: { role: "user", content: input.prompt },
+    };
+    if (receipt.status === "completed")
+      owner.currentEvents = kind === "steer" ? [...owner.currentEvents, user] : [user];
+    if (input.permissionMode) owner.permissionMode = input.permissionMode;
     this.owners.set(input.sessionId, owner);
-    if (this.outcome === "lostAck" || this.outcome === "lostUnknownAck")
+    if (
+      this.outcome === "lostAck" ||
+      this.outcome === "lostAcceptedAck" ||
+      this.outcome === "lostUnknownAck"
+    )
       throw new AppError("unavailable", "Owner response disconnected", 503);
     return receipt;
   }
@@ -128,6 +180,16 @@ class FakeManager {
     params: Record<string, unknown>,
   ): Promise<CommandReceipt> {
     this.commands.push({ id, method, params });
+    const owner = this.owners.get(id);
+    if (owner && method === "setPermissionMode")
+      owner.permissionMode = params.permissionMode as ClaudePermissionMode;
+    if (owner && method === "respond") {
+      owner.pendingRequests = owner.pendingRequests.filter(
+        (request) => request.requestId !== params.targetRequestId,
+      );
+      this.emit(id, "request.cancelled", { requestId: params.targetRequestId });
+    }
+    if (method === "release") this.owners.delete(id);
     return {
       requestId: String(params.requestId),
       kind: method as CommandReceipt["kind"],
@@ -137,7 +199,20 @@ class FakeManager {
   }
   emit(id: string, kind: RunnerEvent["kind"], data: unknown): void {
     const owner = this.owners.get(id)!;
-    if (kind === "state") owner.state = (data as { state: RunnerSnapshot["state"] }).state;
+    if (kind === "state") {
+      const state = data as { state: RunnerSnapshot["state"]; awaitingResult?: boolean };
+      owner.state = state.state;
+      if (typeof state.awaitingResult === "boolean") owner.awaitingResult = state.awaitingResult;
+    }
+    if (kind === "native" && (data as { type?: string }).type === "result")
+      owner.awaitingResult = false;
+    if (kind === "command") {
+      const receipt = data as CommandReceipt;
+      owner.commands = [
+        ...owner.commands.filter((entry) => entry.requestId !== receipt.requestId),
+        receipt,
+      ];
+    }
     const event: RunnerEvent = {
       sessionId: id,
       runnerInstanceId: owner.runnerInstanceId,
@@ -163,6 +238,15 @@ function snapshot(id: string, cwd: string, pendingRequests: PendingRequest[] = [
     pendingRequests,
     currentEvents: [],
     commands: [],
+    permissionMode: "bypassPermissions",
+    capabilities: {
+      contentBlocks: true,
+      uploadedImages: true,
+      setModel: true,
+      setPermissionMode: true,
+      steer: true,
+      livePermissionMode: true,
+    },
   };
 }
 
@@ -193,9 +277,16 @@ async function fixture() {
     for (const service of services) await service.close();
     await rm(directory, { recursive: true, force: true });
   });
-  const start = async () => {
+  const start = async (permissionMode?: ClaudePermissionMode) => {
     const service = new UiService(manager as unknown as SessionManager);
     services.push(service);
+    if (permissionMode) {
+      await service.store.initialize();
+      await service.store.update((data) => {
+        data.permissionMode = permissionMode;
+      });
+      for (const owner of manager.owners.values()) owner.permissionMode = permissionMode;
+    }
     await service.initialize({ probeModels: false });
     return service;
   };
@@ -527,6 +618,295 @@ describe("Claude UI durable session facade", () => {
     expect(service.thread(id).deliveries[secondId]?.accepted).toBe(true);
   });
 
+  it("steers an active owner without interrupting it or releasing an explicit FIFO message", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    owner.state = "running";
+    owner.currentEvents = [{ type: "user", uuid: randomUUID(), message: { content: "Original" } }];
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    manager.accepting = true;
+    const queued = await service.enqueue(id, {
+      input: "Later",
+      deliveryMode: "queue",
+      clientMessageId: randomUUID(),
+    });
+    const clientMessageId = randomUUID();
+    await service.steer(id, { input: "Adjust the active task", clientMessageId });
+    await expect.poll(() => service.thread(id).deliveries[clientMessageId]?.accepted).toBe(true);
+    expect(manager.steers.map((delivery) => delivery.prompt)).toEqual(["Adjust the active task"]);
+    expect(manager.sends).toEqual([]);
+    expect(manager.creates).toEqual([]);
+    expect(manager.commands).toEqual([]);
+    expect(manager.owners.get(id)?.currentEvents).toHaveLength(2);
+    expect(service.thread(id).queue.map((message) => message.id)).toEqual([queued.id]);
+    expect(service.summary(id).queuedMessageCount).toBe(1);
+    manager.emit(id, "state", { state: "idle" });
+    await waitForQueue(service, id, 0);
+    expect(manager.sends.map((delivery) => delivery.prompt)).toEqual(["Later"]);
+  });
+
+  it("preserves attachments, pasted context, and a newer draft during steering admission", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    owner.state = "running";
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    const file = await service.attachments.save(
+      id,
+      "notes.txt",
+      "text/plain",
+      Readable.from("attachment"),
+    );
+    const images = ["data:image/png;base64,aW1hZ2U="];
+    const draft = await service.setDraft(id, {
+      input: "Different new draft",
+      images: [],
+      goalMode: false,
+      annotations: [],
+    });
+    const clientMessageId = randomUUID();
+    await service.steer(id, {
+      input: "Steer with context",
+      images,
+      files: [file],
+      pasteBlocks: [{ id: "context", text: "Exact supplied context" }],
+      clientMessageId,
+    });
+    manager.accepting = true;
+    service.schedule(id);
+    await waitForQueue(service, id, 0);
+    expect(manager.steers[0]).toMatchObject({
+      requestId: clientMessageId,
+      files: [file],
+      images: [expect.objectContaining({ mediaType: "image/png", size: 5 })],
+    });
+    expect(manager.steers[0]?.prompt).toContain("Exact supplied context");
+    expect(service.thread(id).draft).toEqual(draft);
+    expect(await service.attachments.validate(id, [file])).toEqual([file]);
+  });
+
+  it("deduplicates steering after a lost acknowledgement and after backend recovery", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    owner.state = "running";
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    manager.accepting = true;
+    manager.outcome = "lostAck";
+    const body = { input: "Accepted steering", clientMessageId: randomUUID() };
+    await Promise.all([service.steer(id, body), service.steer(id, body)]);
+    await waitForQueue(service, id, 0);
+    await service.close();
+    const restarted = await start();
+    await restarted.steer(id, body);
+    await restarted.store.flush();
+    expect(manager.steers).toHaveLength(1);
+    expect(manager.steers[0]?.requestId).toBe(body.clientMessageId);
+    expect(manager.sends).toEqual([]);
+    expect(manager.commands).toEqual([]);
+    expect(restarted.thread(id).deliveries[body.clientMessageId]?.accepted).toBe(true);
+    await expect(restarted.steer(id, { ...body, input: "Changed intent" })).rejects.toMatchObject({
+      code: "conflict",
+    });
+  });
+
+  it.each(["unknown", "lostUnknownAck"] as const)(
+    "does not resend steering with an %s outcome after recovery",
+    async (outcome) => {
+      const { manager, start, reserve, directory } = await fixture();
+      const service = await start(),
+        id = await reserve(service);
+      const owner = snapshot(id, directory);
+      owner.state = "running";
+      manager.owners.set(id, owner);
+      await service.attach(id);
+      manager.accepting = true;
+      manager.outcome = outcome;
+      const body = { input: "Uncertain steering", clientMessageId: randomUUID() };
+      await service.steer(id, body);
+      await expect.poll(() => service.thread(id).queue[0]?.deliveryError?.retryable).toBe(false);
+      await service.close();
+      const restarted = await start();
+      await restarted.steer(id, body);
+      restarted.schedule(id);
+      await restarted.close();
+      expect(manager.steers).toHaveLength(1);
+      expect(manager.sends).toEqual([]);
+      expect(restarted.thread(id).queue[0]?.deliveryError?.retryable).toBe(false);
+    },
+  );
+
+  it("keeps a legacy active owner intact and upgrades it only after the active turn finishes", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    delete owner.capabilities;
+    owner.state = "running";
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    manager.accepting = true;
+    const message = await service.steer(id, {
+      input: "Steer after safe upgrade",
+      clientMessageId: randomUUID(),
+    });
+    await service.store.flush();
+    expect(service.thread(id).queue[0]).toMatchObject({ id: message.id, deliveryMode: "steer" });
+    expect(service.thread(id).queue[0]?.deliveryError).toBeUndefined();
+    expect(manager.commands).toEqual([]);
+    expect(manager.steers).toEqual([]);
+    expect(manager.sends).toEqual([]);
+    manager.emit(id, "state", { state: "idle" });
+    await waitForQueue(service, id, 0);
+    expect(manager.commands.map((command) => command.method)).toEqual(["release"]);
+    expect(manager.sends).toMatchObject([
+      { requestId: message.id, permissionMode: "bypassPermissions" },
+    ]);
+    expect(manager.owners.get(id)?.capabilities?.steer).toBe(true);
+  });
+
+  it("waits for the native terminal result after interruption before admitting input", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    owner.state = "interrupted";
+    owner.awaitingResult = true;
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    manager.accepting = true;
+    const message = await service.steer(id, {
+      input: "Continue after interruption",
+      clientMessageId: randomUUID(),
+    });
+    await service.store.flush();
+    expect(manager.steers).toEqual([]);
+    expect(manager.sends).toEqual([]);
+    expect(manager.commands).toEqual([]);
+    expect(service.thread(id).queue[0]).toMatchObject({ id: message.id, status: "queued" });
+    manager.emit(id, "native", {
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      terminal_reason: "aborted_streaming",
+      errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"],
+    });
+    await waitForQueue(service, id, 0);
+    expect(manager.steers.map((delivery) => delivery.requestId)).toEqual([message.id]);
+    expect(service.thread(id).deliveries[message.id]?.accepted).toBe(true);
+  });
+
+  it("retries a busy interruption admission only after its terminal event even when the old snapshot omits awaitingResult", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    owner.state = "interrupted";
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    const transport = vi
+      .spyOn(manager, "steer")
+      .mockRejectedValueOnce(
+        new AppError("conflict", "Native interrupt is still awaiting its result", 409),
+      );
+    manager.accepting = true;
+    const message = await service.steer(id, {
+      input: "After terminal",
+      clientMessageId: randomUUID(),
+    });
+    await expect.poll(() => transport.mock.calls.length).toBe(1);
+    await expect.poll(() => service.thread(id).queue[0]?.status).toBe("queued");
+    expect(service.thread(id).queue[0]?.deliveryError).toBeUndefined();
+    expect(manager.commands).toEqual([]);
+    manager.emit(id, "native", {
+      type: "result",
+      subtype: "error_during_execution",
+      terminal_reason: "aborted_tools",
+      is_error: true,
+    });
+    await waitForQueue(service, id, 0);
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(manager.steers.map((delivery) => delivery.requestId)).toEqual([message.id]);
+    expect(manager.sends).toEqual([]);
+  });
+
+  it("launches new sessions with full access by default and persists an explicit manual choice", async () => {
+    const { manager, start, reserve } = await fixture();
+    const service = await start(),
+      first = await reserve(service);
+    expect(service.permissionSettings()).toMatchObject({ preset: "full-access", version: "1" });
+    manager.accepting = true;
+    await service.steer(first, { input: "First", clientMessageId: randomUUID() });
+    await waitForQueue(service, first, 0);
+    expect(manager.creates[0]?.permissionMode).toBe("bypassPermissions");
+    await service.setPermissions("manual", "1");
+    expect(manager.commands).toMatchObject([
+      { id: first, method: "setPermissionMode", params: { permissionMode: "manual" } },
+    ]);
+    await service.close();
+    const restarted = await start(),
+      second = await reserve(restarted);
+    expect(restarted.permissionSettings()).toMatchObject({ preset: "ask", version: "2" });
+    await restarted.steer(second, { input: "Second", clientMessageId: randomUUID() });
+    await waitForQueue(restarted, second, 0);
+    expect(manager.creates[1]?.permissionMode).toBe("manual");
+    await expect(restarted.setPermissions("bypassPermissions", "1")).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect(restarted.permissionSettings().preset).toBe("ask");
+  });
+
+  it("autoallows ordinary legacy approvals under full access while keeping questions and other controls pending", async () => {
+    const { manager, start, directory } = await fixture();
+    const id = randomUUID(),
+      question = {
+        requestId: "question",
+        toolName: "AskUserQuestion",
+        input: { questions: [{ question: "Choose" }] },
+        kind: "userQuestion" as const,
+      };
+    const owner = snapshot(id, directory, [
+      { requestId: "legacy-bash", toolName: "Bash", input: { command: "pwd" } },
+      question,
+      { requestId: "other", toolName: "elicitation", input: {}, kind: "other" },
+    ]);
+    delete owner.capabilities;
+    owner.permissionMode = "manual";
+    manager.owners.set(id, owner);
+    const service = await start();
+    expect(
+      manager.commands.map((command) => [command.method, command.params.targetRequestId]),
+    ).toEqual([["respond", "legacy-bash"]]);
+    expect(manager.commands[0]?.params.response).toEqual({
+      behavior: "allow",
+      updatedInput: { command: "pwd" },
+    });
+    expect(service.attention().map((request) => request.id)).toEqual(
+      expect.arrayContaining([`${id}:question`, `${id}:other`]),
+    );
+    expect(manager.owners.get(id)?.pendingRequests).toEqual([
+      question,
+      expect.objectContaining({ requestId: "other" }),
+    ]);
+    manager.emit(id, "request", {
+      requestId: "new-edit",
+      toolName: "Edit",
+      kind: "toolApproval",
+      input: { file_path: "a.ts" },
+    });
+    await expect.poll(() => manager.commands.length).toBe(2);
+    expect(manager.commands[1]?.params.targetRequestId).toBe("new-edit");
+    expect(service.attention().some((request) => request.id === `${id}:question`)).toBe(true);
+    expect(manager.commands.some((command) => command.method === "interrupt")).toBe(false);
+  });
+
   it("rejects reused IDs with different input before and after delivery without resending", async () => {
     const { manager, start, reserve } = await fixture();
     const service = await start(),
@@ -608,7 +988,7 @@ describe("Claude UI durable session facade", () => {
         { requestId: "still-pending", toolName: "Bash", input: { command: "pwd" } },
       ]),
     );
-    const service = await start();
+    const service = await start("manual");
     await service.enqueue(id, {
       input: "Wait until approval completes",
       clientMessageId: randomUUID(),
@@ -800,7 +1180,7 @@ describe("Claude UI durable session facade", () => {
         },
       ]),
     );
-    const service = await start(),
+    const service = await start("manual"),
       questionKey = `${id}:question-request`;
     expect(service.summary(id).state).toBe("needsAttention");
     expect(service.attention()).toEqual(
@@ -880,6 +1260,193 @@ describe("Claude UI durable session facade", () => {
     ).rejects.toMatchObject({ code: "conflict" });
   });
 
+  it("keeps an accepted steering intent visible across the original result and admits a second steering intent", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    owner.state = "running";
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    manager.accepting = true;
+    manager.outcome = "accepted";
+    const fifo = await service.enqueue(id, {
+      input: "FIFO after both native inputs",
+      clientMessageId: randomUUID(),
+    });
+    const first = await service.steer(id, {
+      input: "First saved intent",
+      clientMessageId: randomUUID(),
+    });
+    await expect.poll(() => manager.steers.length).toBe(1);
+    await expect
+      .poll(() => service.thread(id).queue.find((message) => message.id === first.id)?.status)
+      .toBe("dispatching");
+    expect(service.thread(id).deliveries[first.id]?.accepted).toBe(false);
+    manager.emit(id, "native", { type: "result", subtype: "success", is_error: false });
+    await service.store.flush();
+    expect(service.thread(id).queue.map((message) => message.id)).toEqual([fifo.id, first.id]);
+    expect(manager.sends).toEqual([]);
+    const second = await service.steer(id, {
+      input: "Second saved intent",
+      clientMessageId: randomUUID(),
+    });
+    await expect.poll(() => manager.steers.length).toBe(2);
+    await expect
+      .poll(() => service.thread(id).queue.find((message) => message.id === second.id)?.status)
+      .toBe("dispatching");
+    expect(service.summary(id).queuedMessageCount).toBe(1);
+    manager.emit(id, "command", {
+      ...owner.commands.find((receipt) => receipt.requestId === first.id)!,
+      status: "completed",
+    });
+    await expect.poll(() => service.thread(id).deliveries[first.id]?.accepted).toBe(true);
+    expect(service.thread(id).queue.map((message) => message.id)).toEqual([fifo.id, second.id]);
+    expect(manager.sends).toEqual([]);
+    manager.emit(id, "command", {
+      ...owner.commands.find((receipt) => receipt.requestId === second.id)!,
+      status: "completed",
+    });
+    await expect.poll(() => service.thread(id).deliveries[second.id]?.accepted).toBe(true);
+    expect(service.thread(id).queue.map((message) => message.id)).toEqual([fifo.id]);
+    expect(manager.sends).toEqual([]);
+    manager.outcome = "completed";
+    manager.emit(id, "state", { state: "idle" });
+    await waitForQueue(service, id, 0);
+    expect(manager.sends.map((delivery) => delivery.requestId)).toEqual([fifo.id]);
+    expect(manager.commands).toEqual([]);
+  });
+
+  it.each(["accepted", "lostAcceptedAck"] as const)(
+    "preserves an %s steering intent across backend recovery without resending until native confirmation",
+    async (outcome) => {
+      const { manager, start, reserve, directory } = await fixture();
+      const service = await start(),
+        id = await reserve(service);
+      const owner = snapshot(id, directory);
+      owner.state = "running";
+      manager.owners.set(id, owner);
+      await service.attach(id);
+      manager.accepting = true;
+      manager.outcome = outcome;
+      const body = { input: "Saved but not echoed", clientMessageId: randomUUID() };
+      await service.steer(id, body);
+      await expect.poll(() => manager.steers.length).toBe(1);
+      await expect.poll(() => service.thread(id).queue[0]?.status).toBe("dispatching");
+      await service.close();
+      const restarted = await start();
+      await restarted.steer(id, body);
+      restarted.schedule(id);
+      await restarted.store.flush();
+      expect(manager.steers).toHaveLength(1);
+      expect(restarted.thread(id).queue[0]).toMatchObject({
+        id: body.clientMessageId,
+        text: body.input,
+        status: "dispatching",
+      });
+      expect(restarted.thread(id).deliveries[body.clientMessageId]?.accepted).toBe(false);
+      manager.emit(id, "command", {
+        ...owner.commands.find((receipt) => receipt.requestId === body.clientMessageId)!,
+        status: "completed",
+      });
+      await waitForQueue(restarted, id, 0);
+      expect(restarted.thread(id).deliveries[body.clientMessageId]?.accepted).toBe(true);
+      expect(manager.steers).toHaveLength(1);
+      expect(manager.sends).toEqual([]);
+    },
+  );
+
+  it("retains the original text when a saved steering intent becomes unknown and never automatically resends it after recovery", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    owner.state = "running";
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    manager.accepting = true;
+    manager.outcome = "accepted";
+    const body = {
+      input: "Preserve this uncertain clarification",
+      clientMessageId: randomUUID(),
+      pasteBlocks: [{ id: "paste", text: "Original quoted context" }],
+    };
+    await service.steer(id, body);
+    await expect.poll(() => service.thread(id).queue[0]?.status).toBe("dispatching");
+    manager.emit(id, "command", {
+      ...owner.commands.find((receipt) => receipt.requestId === body.clientMessageId)!,
+      status: "unknown",
+    });
+    await expect.poll(() => service.thread(id).queue[0]?.deliveryError?.retryable).toBe(false);
+    expect(service.thread(id).queue[0]).toMatchObject({
+      text: body.input,
+      pasteBlocks: body.pasteBlocks,
+    });
+    await service.close();
+    const restarted = await start();
+    await restarted.steer(id, body);
+    restarted.schedule(id);
+    await restarted.close();
+    expect(restarted.thread(id).queue[0]).toMatchObject({
+      id: body.clientMessageId,
+      text: body.input,
+      pasteBlocks: body.pasteBlocks,
+      deliveryError: { retryable: false },
+    });
+    expect(restarted.thread(id).deliveries[body.clientMessageId]?.accepted).toBe(false);
+    expect(manager.steers).toHaveLength(1);
+    expect(manager.sends).toEqual([]);
+  });
+
+  it.each(["completed", "unknown"] as const)(
+    "does not overwrite a newer %s command event with a delayed accepted steering response",
+    async (status) => {
+      const { manager, start, reserve, directory } = await fixture();
+      const service = await start(),
+        id = await reserve(service);
+      const owner = snapshot(id, directory);
+      owner.state = "running";
+      manager.owners.set(id, owner);
+      await service.attach(id);
+      manager.accepting = true;
+      manager.outcome = "accepted";
+      const nativeSteer = manager.steer.bind(manager);
+      let acknowledge!: () => void;
+      const ack = new Promise<void>((resolve) => {
+        acknowledge = resolve;
+      });
+      vi.spyOn(manager, "steer").mockImplementation(async (...args) => {
+        const receipt = await nativeSteer(...args);
+        manager.emit(id, "command", { ...receipt, status });
+        await ack;
+        return receipt;
+      });
+      const body = { input: "Race with native event", clientMessageId: randomUUID() };
+      await service.steer(id, body);
+      if (status === "completed")
+        await expect
+          .poll(() => service.thread(id).deliveries[body.clientMessageId]?.accepted)
+          .toBe(true);
+      else
+        await expect.poll(() => service.thread(id).queue[0]?.deliveryError?.retryable).toBe(false);
+      acknowledge();
+      await service.close();
+      const restarted = await start();
+      await restarted.steer(id, body);
+      await restarted.close();
+      expect(manager.steers).toHaveLength(1);
+      if (status === "completed") expect(restarted.thread(id).queue).toEqual([]);
+      else
+        expect(restarted.thread(id).queue[0]).toMatchObject({
+          text: body.input,
+          deliveryError: { retryable: false },
+        });
+      expect(
+        owner.commands.find((receipt) => receipt.requestId === body.clientMessageId)?.status,
+      ).toBe(status);
+    },
+  );
+
   it("requires answers and avoids inventing session-wide approval grants", async () => {
     const { manager, start, directory } = await fixture();
     const id = randomUUID();
@@ -894,7 +1461,7 @@ describe("Claude UI durable session facade", () => {
         { requestId: "tool", toolName: "Bash", input: { command: "pwd" } },
       ]),
     );
-    const service = await start();
+    const service = await start("manual");
     await expect(
       service.respond(`${id}:question`, { kind: "userInput", answers: {} }),
     ).rejects.toMatchObject({ code: "invalid_request" });

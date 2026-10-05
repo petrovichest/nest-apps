@@ -415,6 +415,22 @@ export class SessionManager {
     });
   }
 
+  /** Busy input never starts or replaces a missing native owner. */
+  async steer(
+    id: string,
+    requestId: string,
+    prompt: string,
+    content?: { files?: RunnerAttachment[]; images?: RunnerAttachment[] },
+  ): Promise<unknown> {
+    this.assertAccepting();
+    assertUuid(id, "sessionId");
+    assertUuid(requestId, "requestId");
+    id = id.toLowerCase();
+    return this.withLock(id, async () =>
+      (await this.connect(id)).request("steer", { requestId, text: prompt, ...content }),
+    );
+  }
+
   async command(
     id: string,
     method: "interrupt" | "respond" | "release" | "setModel" | "setPermissionMode",

@@ -28,9 +28,9 @@ await new Promise((resolve) => listen.listen(0, "127.0.0.1", resolve));
 const port = listen.address().port;
 await new Promise((resolve) => listen.close(resolve));
 
-async function api(path, body) {
+async function api(path, body, method = body === undefined ? "GET" : "POST") {
   const response = await fetch(`http://127.0.0.1:${port}/api/v1/${path}`, {
-    method: body === undefined ? "GET" : "POST",
+    method,
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(5000),
@@ -152,9 +152,16 @@ try {
       );
   }
   await start(releaseA);
+  // Approval survival needs an explicit ask policy now that new installs default
+  // to full access. This setting is persisted only in the private smoke state.
+  const permissions = await api("settings/permissions", { preset: "ask" }, "PUT");
+  assert.equal(permissions.preset, "ask");
   const id = await create("permission");
   const before = await snapshot(id, "waiting");
   assert.equal(before.pendingRequests.length, 1);
+  assert.equal(before.permissionMode, "manual");
+  assert.equal(before.capabilities.steer, true);
+  assert.equal(before.capabilities.livePermissionMode, true);
   await api("internal/restart/prepare", { supportedRunnerProtocols: [1] });
   await stop();
   await start(releaseB);

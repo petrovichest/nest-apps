@@ -14,7 +14,7 @@ describe("application variants", () => {
     const { application } = await import("./application");
     const { ApiClient } = await import("./api");
     const { saveConnectionSettings } = await import("./storage");
-    const fetchMock = vi.fn().mockResolvedValue(new Response('{"status":"ok"}'));
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response('{"status":"ok"}'));
     vi.stubGlobal("fetch", fetchMock);
     const settings = { baseUrl: "https://codex.home.arpa", token: "codex-secret" };
     const api = new ApiClient(settings);
@@ -22,7 +22,11 @@ describe("application variants", () => {
     expect(Object.values(application.capabilities).every(Boolean)).toBe(true);
     expect(api.webSocketUrl()).toBe("wss://codex.home.arpa/api/v1/events");
     await api.health();
-    expect((fetchMock.mock.calls[0]![1].headers as Headers).get("Authorization")).toBeNull();
+    expect((fetchMock.mock.calls[0]![1]!.headers as Headers).get("Authorization")).toBeNull();
+    await api.enqueue("thread", { input: "Codex", deliveryMode: "steer" });
+    expect(String(fetchMock.mock.calls[1]![0])).toBe(
+      "https://codex.home.arpa/api/v1/threads/thread/queue",
+    );
     await saveConnectionSettings(settings);
     expect(localStorage.getItem("codexnest.token")).toBe("codex-secret");
     expect(localStorage.getItem("claudenest.token")).toBeNull();
@@ -35,9 +39,9 @@ describe("application variants", () => {
     const { ApiClient } = await import("./api");
     const { saveConnectionSettings, clearConnectionSettings } = await import("./storage");
     const { translate } = await import("./i18n");
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(new Response('{"status":"ok","provider":"claude"}'));
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response('{"status":"ok","provider":"claude"}'),
+    );
     vi.stubGlobal("fetch", fetchMock);
     localStorage.setItem("codexnest.token", "keep-codex");
     const settings = { baseUrl: "https://claude.home.arpa", token: "claude-secret" };
@@ -48,8 +52,16 @@ describe("application variants", () => {
     expect(api.webSocketUrl()).toBe("wss://claude.home.arpa/api/v1/ui/events");
     expect(api.webSocketUrl()).not.toContain("secret");
     await api.health();
-    expect((fetchMock.mock.calls[0]![1].headers as Headers).get("Authorization")).toBe(
+    expect((fetchMock.mock.calls[0]![1]!.headers as Headers).get("Authorization")).toBe(
       "Bearer claude-secret",
+    );
+    await api.enqueue("thread", { input: "Addition", deliveryMode: "steer" });
+    await api.enqueue("thread", { input: "Queued", deliveryMode: "queue" });
+    expect(String(fetchMock.mock.calls[1]![0])).toBe(
+      "https://claude.home.arpa/api/v1/threads/thread/steer",
+    );
+    expect(String(fetchMock.mock.calls[2]![0])).toBe(
+      "https://claude.home.arpa/api/v1/threads/thread/queue",
     );
     await saveConnectionSettings(settings);
     expect(localStorage.getItem("claudenest.token")).toBe("claude-secret");

@@ -48,6 +48,7 @@ export class ClaudeProcess extends EventEmitter {
   private controls = new Map<string, PendingControl>();
   private requests = new Set<string>();
   supportedModels: ClaudeModel[] = [];
+  readonly livePermissionMode = true;
   model?: string;
   permissionMode: ClaudePermissionMode;
 
@@ -84,6 +85,8 @@ export class ClaudeProcess extends EventEmitter {
       "--replay-user-messages",
       "--permission-mode",
       this.permissionMode,
+      // Enables an explicit later switch without changing the selected startup mode.
+      "--allow-dangerously-skip-permissions",
       "--permission-prompt-tool",
       "stdio",
       this.options.resume ? "--resume" : "--session-id",
@@ -186,7 +189,12 @@ export class ClaudeProcess extends EventEmitter {
 
   async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
     this.assertReady();
-    await this.control({ subtype: "set_permission_mode", mode });
+    const response = await this.control({ subtype: "set_permission_mode", mode });
+    const canonical = (value: string) => (value === "manual" ? "default" : value);
+    if (typeof response.mode === "string" && canonical(response.mode) !== canonical(mode))
+      throw new ClaudeControlRejectedError(
+        "Claude CLI did not select the requested permission mode",
+      );
     this.permissionMode = mode;
   }
 

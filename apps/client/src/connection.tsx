@@ -285,8 +285,8 @@ export function ConnectionProvider({
               images: message.images,
               files: message.files ?? [],
               createdAt: message.createdAt,
-              destination: "queue",
-              turnId: null,
+              destination: message.deliveryMode === "steer" ? "turn" : "queue",
+              turnId: message.steerTurnId ?? null,
               serverAccepted: message.accepted === true,
               ...(message.dismissUserInput ? { dismissUserInput: message.dismissUserInput } : {}),
               ...(message.lastError
@@ -729,6 +729,7 @@ export function ConnectionProvider({
                   } else
                     await api.enqueue(threadId, {
                       input: message.input,
+                      ...(message.deliveryMode ? { deliveryMode: message.deliveryMode } : {}),
                       ...pastedText(message),
                       ...(message.images.length ? { images: message.images } : {}),
                       ...(message.files?.length ? { files: message.files } : {}),
@@ -770,8 +771,8 @@ export function ConnectionProvider({
                         images: message.images,
                         files: message.files ?? [],
                         createdAt: message.createdAt,
-                        destination: "queue",
-                        turnId: null,
+                        destination: message.deliveryMode === "steer" ? "turn" : "queue",
+                        turnId: message.steerTurnId ?? null,
                         serverAccepted: true,
                         ...(message.dismissUserInput
                           ? { dismissUserInput: message.dismissUserInput }
@@ -854,6 +855,18 @@ export function ConnectionProvider({
         connectionKey: connectionCacheKey(settings),
         threadId,
         input: body.input,
+        ...(body.deliveryMode
+          ? {
+              deliveryMode: body.deliveryMode,
+              ...(body.deliveryMode === "steer"
+                ? {
+                    steerTurnId:
+                      stateRef.current.snapshot?.threads.find((thread) => thread.id === threadId)
+                        ?.currentTurnId ?? undefined,
+                  }
+                : {}),
+            }
+          : {}),
         ...pastedText(body),
         images: body.images ?? [],
         files: body.files ?? [],

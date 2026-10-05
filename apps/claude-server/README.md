@@ -43,10 +43,14 @@ The compatibility API `/api/v1/threads`, `/projects`, `/attention`, `/settings`
 and global WebSocket `/api/v1/ui/events` reuse the same App, ThreadPage, Composer
 and SettingsPage as Codex. It supports project folders, native Claude sessions,
 streaming text and thinking, tools, permissions, AskUserQuestion, model selection,
-drafts, durable FIFO messages, file/image attachments, pin/archive/read state and
+drafts, direct steering, durable FIFO messages, file/image attachments, pin/archive/read state and
 title search. Model choices come from CLI initialization. Effort is a launch
-setting; model changes require an idle compatible owner. Permission presets apply
-to newly launched owners. Native history stays under Claude's config directory;
+setting; model changes require an idle compatible owner. The browser defaults to
+full access (`bypassPermissions`), with no tool confirmation. Settings can select
+manual approval or automatic edit approval instead. Changes apply to compatible
+live owners and future launches; older owners receive tool grants through the
+facade until they can upgrade while idle. `AskUserQuestion` remains interactive.
+Native history stays under Claude's config directory;
 `ui.json` holds only Nest metadata, pending input and receipt identifiers.
 
 Team, Plan, Goal, forks, Codex management, browser integration, artifacts and full
@@ -54,6 +58,15 @@ text history search are gated off in this milestone. Imported native sessions
 resume with their original UUID; a session controlled by another live Claude
 process cannot be taken over. Earlier prototype owners keep protocol v1 and text
 chat; their missing attachment/control capabilities are reported explicitly.
+
+During active work, ordinary Send/Enter delivers input immediately to Claude's
+stream-json stdin. Tool-phase instructions can join the current native turn;
+input arriving while text is streaming may become Claude's next native turn.
+Neither path interrupts the task. Ctrl/Cmd+Enter or the queue action explicitly
+adds a FIFO message that waits for idle. Sending a queued message now promotes
+that same durable delivery into steering. Voice follows the selected delivery
+mode. IDs, attachments and draft revisions survive reconnect and API restart;
+ambiguous native receipts are never resent automatically.
 
 The backend serves `apps/client/dist-claude` itself. Caddy proxies the whole host
 to `127.0.0.1:4311`, so it needs no access to a user's private home directory.
@@ -149,12 +162,14 @@ npm run smoke -w @claudenest/server
 
 Build the new detached Git release before update. Update checks all live runner
 protocols, changes only the API release, and keeps old session processes/resources.
-Do not edit, rebuild, remove, or prune releases used by live runners. Old sessions
-keep the old code; new sessions use the new release. Protocol v1 compatibility is
+Do not edit, rebuild, remove, or prune releases used by live runners. Active owners
+keep the old code; future owners use the new release. Protocol v1 compatibility is
 required for updates and rollback. Incompatible updates are rejected.
 
-Runner processes are not evicted automatically in this prototype. Explicit release
-is allowed only when no work or permission is pending. Owner/host crashes do not
+Older owners without steering support are released and resumed with the current
+release on their next idle message admission. Active owners keep running; pending
+steering waits for that first upgrade. Release is allowed only when no work or
+permission is pending. Owner/host crashes do not
 replay commands automatically: continue native history explicitly with a new
 message ID. An acceptance receipt records command admission, not exactly-once
 external tool execution or guaranteed native persistence before a crash.
@@ -181,6 +196,10 @@ local or on the owner's trusted private network, as with CodexNest.
   response is `{behavior:"allow",updatedInput:{...}}` or
   `{behavior:"deny",message:"..."}`. AskUserQuestion answers go into updatedInput.
 - `POST /api/v1/sessions/:id/release`: release an idle runner.
+- `POST /api/v1/threads/:id/steer`: UI input with a stable `clientMessageId`,
+  optional files/images and draft revision; returns a durable delivery admission.
+- `POST /api/v1/threads/:id/queue`: explicit FIFO delivery using the same input
+  shape. `/queue/:messageId/send` promotes it into steering without interruption.
 - `POST /api/v1/internal/restart/prepare`: `{supportedRunnerProtocols:[1]}`.
   Pauses new admission, drains short operations, validates owners; never waits for
   model turns or unanswered permissions. `.../resume` cancels preparation.

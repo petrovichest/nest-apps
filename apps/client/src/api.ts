@@ -590,7 +590,8 @@ export class ApiClient {
   }
 
   enqueue(id: string, body: QueueMessageRequest): Promise<QueuedMessage> {
-    return this.request(`/api/v1/threads/${encodeURIComponent(id)}/queue`, {
+    const action = application.isClaude && body.deliveryMode === "steer" ? "steer" : "queue";
+    return this.request(`/api/v1/threads/${encodeURIComponent(id)}/${action}`, {
       method: "POST",
       body,
       timeoutMs: body.images?.length ? null : 15_000,

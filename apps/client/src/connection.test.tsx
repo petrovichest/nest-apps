@@ -437,6 +437,57 @@ describe("ConnectionProvider", () => {
     },
   );
 
+  it("preserves active-turn steering through durable staging and places its acknowledgement in the turn", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}", { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    let controls: ReturnType<typeof useConnection> | undefined;
+    const view = render(
+      <ConnectionProvider settings={{ baseUrl: "https://claudenest.example", token: "token" }}>
+        <ConnectionProbe onConnection={(value) => (controls = value)} />
+      </ConnectionProvider>,
+    );
+    const socket = FakeWebSocket.instances[0]!;
+    act(() => {
+      socket.open();
+      socket.receive({
+        type: "snapshot",
+        snapshot: snapshot(5, [{ ...summary, state: "running", currentTurnId: "active" }]),
+      });
+    });
+    await act(async () => {
+      await controls!.sendReliable("thread", {
+        input: "Уточнение текущего хода",
+        clientMessageId: "steered",
+        deliveryMode: "steer",
+        draftUpdatedAt: 42,
+      });
+    });
+    expect(putOutboxMessage.mock.calls[0]?.[0]).toMatchObject({
+      id: "steered",
+      deliveryMode: "steer",
+      steerTurnId: "active",
+      draftUpdatedAt: 42,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toMatchObject({
+      clientMessageId: "steered",
+      deliveryMode: "steer",
+      draftUpdatedAt: 42,
+    });
+    expect(controls!.state.optimisticMessages.thread).toEqual([
+      expect.objectContaining({ id: "steered", destination: "turn", turnId: "active" }),
+    ]);
+    await expect(
+      controls!.sendReliable("thread", {
+        input: "Уточнение текущего хода",
+        clientMessageId: "steered",
+        deliveryMode: "queue",
+        draftUpdatedAt: 42,
+      }),
+    ).rejects.toThrow("Идентификатор сообщения уже использован");
+    view.unmount();
+  });
+
   it("does not send or clear the composer when the outbox write fails", async () => {
     putOutboxMessage.mockResolvedValue(false);
     const fetchMock = vi.fn();

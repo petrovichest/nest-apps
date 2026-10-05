@@ -79,6 +79,9 @@ async function fixture(transcribe = vi.fn(async () => "voice")) {
         text: input.input,
         status: "queued",
         createdAt: Date.now(),
+        ...(input.deliveryMode ? { deliveryMode: input.deliveryMode } : {}),
+        ...(input.images?.length ? { images: input.images } : {}),
+        ...(input.files?.length ? { files: input.files } : {}),
       };
       current.queue.push(message);
       current.deliveries[input.clientMessageId!] = {
@@ -260,39 +263,43 @@ describe("durable Claude UI voice jobs", () => {
     expect(restartedStore.data.threads[state.threadId]!.draft!.input).toBe("recovered world");
   });
 
-  it("retries a persisted applying send with the same payload after a lost enqueue acknowledgement", async () => {
-    const state = await fixture();
-    state.failNextEnqueue();
-    const job = await state.jobs.create(
-      state.threadId,
-      Buffer.from("audio"),
-      "audio/webm",
-      uploadQuery("send"),
-      1000,
-    );
-    await vi.waitFor(() => expect(state.store.data.voice[job!.id]!.job.status).toBe("failed"));
-    expect(state.store.data.threads[state.threadId]!.queue).toHaveLength(1);
-    await expect(state.jobs.cancel(state.threadId)).rejects.toMatchObject({ status: 409 });
-    await state.store.update((data) => {
-      data.threads[state.threadId]!.draft = draft("new user typing", 99);
-      data.voice[job!.id]!.job.status = "applying";
-    });
-    await state.jobs.close();
-    const second = new UiVoiceJobs(state.ui, state.voice);
-    fixtures.push({ directory: state.directory, jobs: second });
-    await second.initialize();
-    await vi.waitFor(() => expect(state.store.data.voice[job!.id]!.applied).toBe(true));
-    expect(state.voice.transcribe).toHaveBeenCalledTimes(1);
-    expect(state.enqueue).toHaveBeenCalledTimes(2);
-    const first = state.enqueue.mock.calls[0]![1],
-      replay = state.enqueue.mock.calls[1]![1];
-    expect(replay).toEqual(first);
-    expect(replay.clientMessageId).toBe(`voice:${job!.id}`);
-    expect(state.store.data.threads[state.threadId]!.queue).toHaveLength(1);
-    expect(state.store.data.threads[state.threadId]!.draft!.input).toBe("new user typing");
-  });
+  it.each(["send", "steer"])(
+    "retries a persisted applying %s with the same steering payload after a lost enqueue acknowledgement",
+    async (mode) => {
+      const state = await fixture();
+      state.failNextEnqueue();
+      const job = await state.jobs.create(
+        state.threadId,
+        Buffer.from("audio"),
+        "audio/webm",
+        uploadQuery(mode),
+        1000,
+      );
+      await vi.waitFor(() => expect(state.store.data.voice[job!.id]!.job.status).toBe("failed"));
+      expect(state.store.data.threads[state.threadId]!.queue).toHaveLength(1);
+      await expect(state.jobs.cancel(state.threadId)).rejects.toMatchObject({ status: 409 });
+      await state.store.update((data) => {
+        data.threads[state.threadId]!.draft = draft("new user typing", 99);
+        data.voice[job!.id]!.job.status = "applying";
+      });
+      await state.jobs.close();
+      const second = new UiVoiceJobs(state.ui, state.voice);
+      fixtures.push({ directory: state.directory, jobs: second });
+      await second.initialize();
+      await vi.waitFor(() => expect(state.store.data.voice[job!.id]!.applied).toBe(true));
+      expect(state.voice.transcribe).toHaveBeenCalledTimes(1);
+      expect(state.enqueue).toHaveBeenCalledTimes(2);
+      const first = state.enqueue.mock.calls[0]![1],
+        replay = state.enqueue.mock.calls[1]![1];
+      expect(replay).toEqual(first);
+      expect(replay.clientMessageId).toBe(`voice:${job!.id}`);
+      expect(replay.deliveryMode).toBe("steer");
+      expect(state.store.data.threads[state.threadId]!.queue).toHaveLength(1);
+      expect(state.store.data.threads[state.threadId]!.draft!.input).toBe("new user typing");
+    },
+  );
 
-  it.each(["send", "queue"])(
+  it.each(["send", "steer", "queue"])(
     "enqueues %s input once and clears only the consumed draft",
     async (mode) => {
       const state = await fixture();
@@ -308,8 +315,50 @@ describe("durable Claude UI voice jobs", () => {
         { text: "voice world" },
       ]);
       expect(state.store.data.threads[state.threadId]!.draft).toBeNull();
+      expect(state.enqueue.mock.calls[0]![1].deliveryMode).toBe(
+        mode === "queue" ? undefined : "steer",
+      );
     },
   );
+
+  it("steers the revised draft with its attachments when typing continues during transcription", async () => {
+    const result = deferred<string>();
+    const state = await fixture(vi.fn(() => result.promise));
+    const job = await state.jobs.create(
+      state.threadId,
+      Buffer.from("audio"),
+      "audio/webm",
+      uploadQuery("steer"),
+      1000,
+    );
+    await vi.waitFor(() => expect(state.voice.transcribe).toHaveBeenCalledTimes(1));
+    const image = { id: "image", name: "screen.png", url: "data:image/png;base64,aW1hZ2U=" };
+    const file = {
+      id: "file",
+      name: "notes.txt",
+      path: "/private/notes.txt",
+      size: 4,
+      mediaType: "text/plain",
+    };
+    await state.store.update((data) => {
+      data.threads[state.threadId]!.draft = {
+        ...draft("New instruction", 11),
+        images: [image],
+        files: [file],
+      };
+    });
+    result.resolve("voice");
+    await vi.waitFor(() => expect(state.store.data.voice[job!.id]!.applied).toBe(true));
+    expect(state.enqueue).toHaveBeenCalledTimes(1);
+    expect(state.enqueue.mock.calls[0]![1]).toMatchObject({
+      input: "New instruction voice",
+      images: [image.url],
+      files: [file],
+      deliveryMode: "steer",
+      clientMessageId: `voice:${job!.id}`,
+    });
+    expect(state.store.data.threads[state.threadId]!.draft).toBeNull();
+  });
 
   it("keeps failed audio for an explicit retry without making automatic inference calls", async () => {
     const transcribe = vi
@@ -362,7 +411,7 @@ describe("durable Claude UI voice jobs", () => {
     expect(state.voice.transcribe).not.toHaveBeenCalled();
   });
 
-  it("rejects steering, stale revisions, invalid selections and excessive recording durations", async () => {
+  it("rejects unknown modes, stale revisions, invalid selections and excessive recording durations", async () => {
     const state = await fixture();
     const query = uploadQuery();
     await expect(
@@ -370,7 +419,7 @@ describe("durable Claude UI voice jobs", () => {
         state.threadId,
         Buffer.from("audio"),
         "audio/webm",
-        { ...query, mode: "steer" },
+        { ...query, mode: "unknown" },
         1000,
       ),
     ).rejects.toMatchObject({ status: 400 });

@@ -35,6 +35,7 @@ export interface UiThread {
       fingerprint: string;
       messageId: string;
       accepted: boolean;
+      mode?: "steer";
       imageFiles?: ThreadFileAttachment[];
     }
   >;
@@ -78,7 +79,7 @@ const initial = (): UiData => ({
   models: [],
   taskDefaults: {},
   uiLanguage: "ru",
-  permissionMode: "manual",
+  permissionMode: "bypassPermissions",
   permissionVersion: 1,
 });
 

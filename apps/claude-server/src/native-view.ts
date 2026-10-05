@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ActivityItem, ServerEvent, TurnView } from "@codexnest/protocol";
+import { nativeResultInterrupted } from "./types.js";
 
 type Json = Record<string, unknown>;
 type StreamMessage = {
@@ -78,6 +79,8 @@ function userContent(content: unknown): {
 export class NativeView {
   private readonly values: TurnView[] = [];
   private readonly byId = new Map<string, TurnView>();
+  private readonly userTurns = new Map<string, TurnView>();
+  private readonly continuingTurns = new Set<string>();
   private readonly tools = new Map<string, { turn: TurnView; item: ActivityItem }>();
   private readonly streams = new Map<string, StreamMessage>();
   private active?: TurnView;
@@ -102,6 +105,8 @@ export class NativeView {
   reset(events: readonly Json[], options: { live?: boolean } = {}): void {
     this.values.length = 0;
     this.byId.clear();
+    this.userTurns.clear();
+    this.continuingTurns.clear();
     this.tools.clear();
     this.streams.clear();
     this.active = undefined;
@@ -135,19 +140,40 @@ export class NativeView {
           (typeof result.content === "string"
             ? result.content
             : JSON.stringify(result.content ?? ""));
-        match.item.status = result.is_error === true ? "failed" : "completed";
-        if (match.item.type === "command") match.item.output = output;
-        else if (match.item.type === "tool") match.item.detail = output;
+        const interrupted =
+          /request interrupted by user/i.test(output) ||
+          nativeResultInterrupted({ errors: [output] });
+        match.item.status = result.is_error === true && !interrupted ? "failed" : "completed";
+        if (match.item.type === "command") match.item.output = interrupted ? "" : output;
+        else if (match.item.type === "tool") match.item.detail = interrupted ? "" : output;
         changes.push(this.upsert(match.turn, match.item));
       }
       const user = userContent(content);
       if (!user.text && !user.images.length && !user.files.length && results.length) return changes;
+      if (/^\[Request interrupted by user(?: for tool use)?\]$/i.test(user.text.trim())) {
+        if (this.active?.status === "inProgress") {
+          this.complete(this.active, "interrupted", timestamp(event.timestamp));
+          changes.push({
+            type: "turn.replaced",
+            threadId: this.sessionId,
+            turn: structuredClone(this.active),
+          });
+        }
+        return changes;
+      }
       const id = string(event.uuid) || `user:${stable(event)}`;
-      let turn = this.byId.get(id);
+      let turn = this.userTurns.get(id);
       if (!turn) {
-        if (this.active?.status === "inProgress")
-          this.complete(this.active, "completed", timestamp(event.timestamp));
-        turn = this.makeTurn(id, timestamp(event.timestamp));
+        const steering =
+          this.active?.status === "inProgress" &&
+          (event.claudenest_delivery === "steer" || this.continuingTurns.has(this.active.id));
+        if (steering) turn = this.active!;
+        else {
+          if (this.active?.status === "inProgress")
+            this.complete(this.active, "completed", timestamp(event.timestamp));
+          turn = this.makeTurn(id, timestamp(event.timestamp));
+        }
+        this.userTurns.set(id, turn);
       }
       this.active = turn;
       const item: ActivityItem = {
@@ -179,6 +205,9 @@ export class NativeView {
         : typeof message.content === "string"
           ? [{ type: "text", text: message.content }]
           : [];
+      if (message.stop_reason === "tool_use" || parts.some((part) => part.type === "tool_use"))
+        this.continuingTurns.add(turn.id);
+      else this.continuingTurns.delete(turn.id);
       const changes: ServerEvent[] = [];
       parts.forEach((part, index) => {
         const item = this.block(
@@ -199,20 +228,26 @@ export class NativeView {
       const failed =
         event.is_error === true ||
         (typeof event.subtype === "string" && event.subtype.startsWith("error"));
-      const outcome = failed ? "failed" : "completed";
+      const interrupted = nativeResultInterrupted(event);
+      const outcome = interrupted ? "interrupted" : failed ? "failed" : "completed";
       this.complete(turn, outcome, timestamp(event.timestamp));
       if (typeof event.duration_ms === "number") turn.durationMs = event.duration_ms;
-      if (failed) {
+      if (failed && !interrupted) {
+        const rawErrors =
+          textContent(event.errors) ||
+          (Array.isArray(event.errors)
+            ? event.errors.map(String).join("\n")
+            : string(event.result));
+        const message = rawErrors
+          .split("\n")
+          .filter((line) => !line.includes("[ede_diagnostic]"))
+          .join("\n")
+          .trim();
         const error: ActivityItem = {
           type: "error",
           id: `${turn.id}:error`,
           status: "failed",
-          message:
-            textContent(event.errors) ||
-            (Array.isArray(event.errors)
-              ? event.errors.map(String).join("\n")
-              : string(event.result)) ||
-            "Claude could not complete this turn",
+          message: message || "Claude could not complete this turn",
         };
         this.put(turn, error);
       }
@@ -247,13 +282,18 @@ export class NativeView {
   private ensureTurn(id: string, at: number | null): TurnView {
     return this.active ?? this.makeTurn(`native:${id}`, at);
   }
-  private complete(turn: TurnView, status: "completed" | "failed", at: number | null): void {
+  private complete(
+    turn: TurnView,
+    status: "completed" | "failed" | "interrupted",
+    at: number | null,
+  ): void {
     turn.status = status;
     turn.completedAt = at;
     if (at !== null && turn.startedAt !== null) turn.durationMs = Math.max(0, at - turn.startedAt);
-    for (const item of turn.items) if (item.status === "inProgress") item.status = status;
+    for (const item of turn.items)
+      if (item.status === "inProgress") item.status = status === "failed" ? "failed" : "completed";
     const messages = turn.items.filter((item) => item.type === "agentMessage");
-    if (messages.length)
+    if (messages.length && status === "completed")
       (
         messages[messages.length - 1] as Extract<
           ActivityItem,

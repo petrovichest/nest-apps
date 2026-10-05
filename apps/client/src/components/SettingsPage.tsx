@@ -77,6 +77,19 @@ const PRESETS: Array<{
   },
 ];
 
+const CLAUDE_PRESETS = [
+  {
+    id: "ask" as const,
+    title: "Запрашивать разрешение",
+    description: "Claude запрашивает подтверждение команд и изменений файлов.",
+  },
+  {
+    id: "full-access" as const,
+    title: "Полный доступ",
+    description: "Claude выполняет команды и изменяет файлы без запросов разрешения.",
+  },
+];
+
 const SETTINGS_SECTIONS = [
   { id: "application", label: "Приложение", Icon: SlidersIcon },
   { id: "codex", label: "Codex", Icon: TerminalIcon },
@@ -151,7 +164,12 @@ export function SettingsPage({
   const localizationRef = useRef({ language, t });
   localizationRef.current = { language, t };
   const [settings, setSettings] = useState<GlobalPermissionSettings | null>(null);
-  const [selected, setSelected] = useState<PermissionPreset>("auto");
+  const savedPermissionsRef = useRef<GlobalPermissionSettings | null>(null);
+  const [selected, setSelected] = useState<PermissionPreset>(
+    application.isClaude ? "full-access" : "auto",
+  );
+  const snapshotPermissionsRef = useRef(state?.snapshot?.permissionSettings);
+  snapshotPermissionsRef.current = state?.snapshot?.permissionSettings;
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -241,32 +259,49 @@ export function SettingsPage({
     };
   }, [language, mobileSections]);
 
-  const load = useCallback(async () => {
-    if (!application.capabilities.sessionApprovalGrants) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const current = await api.readPermissionSettings();
-      setSettings(current);
-      setSelected(current.preset ?? "auto");
-    } catch (caught) {
-      const localization = localizationRef.current;
-      setError(
-        caught instanceof Error
-          ? (localizeKnownServerText(localization.language, caught.message) ?? caught.message)
-          : localization.t("Не удалось загрузить настройки"),
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [api]);
+  const load = useCallback(
+    async (forceRead = false) => {
+      if (!application.capabilities.sessionApprovalGrants && !application.isClaude) {
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const current =
+          (application.isClaude && !forceRead && snapshotPermissionsRef.current) ||
+          (await api.readPermissionSettings());
+        savedPermissionsRef.current = current;
+        setSettings(current);
+        setSelected(current.preset ?? (application.isClaude ? "full-access" : "auto"));
+      } catch (caught) {
+        const localization = localizationRef.current;
+        setError(
+          caught instanceof Error
+            ? (localizeKnownServerText(localization.language, caught.message) ?? caught.message)
+            : localization.t("Не удалось загрузить настройки"),
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    [api],
+  );
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!application.isClaude || !state?.snapshot?.permissionSettings) return;
+    const next = state.snapshot.permissionSettings;
+    const previous = savedPermissionsRef.current;
+    savedPermissionsRef.current = next;
+    setSelected((current) =>
+      previous === null || current === previous.preset ? (next.preset ?? "full-access") : current,
+    );
+    setSettings(next);
+  }, [state?.snapshot?.permissionSettings]);
 
   useEffect(() => {
     const current = editableTaskDefaults(state?.snapshot?.taskDefaults ?? {});
@@ -283,11 +318,12 @@ export function SettingsPage({
         preset: selected,
         expectedVersion: settings?.version ?? null,
       });
+      savedPermissionsRef.current = updated;
       setSettings(updated);
       setSelected(updated.preset ?? selected);
     } catch (caught) {
       if (caught instanceof ApiClientError && caught.code === "conflict") {
-        await load();
+        await load(true);
         setError(t("Конфигурация Codex изменилась. Проверьте значение и сохраните ещё раз."));
       } else {
         setError(
@@ -712,10 +748,14 @@ export function SettingsPage({
               </div>
             </SettingsGroup>
 
-            {application.capabilities.sessionApprovalGrants && (
+            {(application.capabilities.sessionApprovalGrants || application.isClaude) && (
               <SettingsGroup
                 as="form"
-                description={t("Выбранный режим применяется ко всем задачам со следующего хода.")}
+                description={t(
+                  application.isClaude
+                    ? "Режим сохраняется для новых сессий и применяется к запущенным агентам Claude."
+                    : "Выбранный режим применяется ко всем задачам со следующего хода.",
+                )}
                 icon={<ShieldIcon />}
                 title={t("Разрешения Codex")}
                 onSubmit={save}
@@ -731,7 +771,7 @@ export function SettingsPage({
                   aria-busy={loading || undefined}
                 >
                   <legend className="sr-only">{t("Режим разрешений")}</legend>
-                  {PRESETS.map((preset) => (
+                  {(application.isClaude ? CLAUDE_PRESETS : PRESETS).map((preset) => (
                     <label
                       className={`permission-preset${selected === preset.id ? " selected" : ""}${preset.id === "full-access" ? " dangerous" : ""}`}
                       key={preset.id}

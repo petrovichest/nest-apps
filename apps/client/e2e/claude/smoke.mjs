@@ -76,6 +76,18 @@ try {
   await composer.press("Enter");
   await page.getByText("Что включить в проверку?", { exact: true }).waitFor();
   const threadId = /\/threads\/([^/]+)/.exec(new URL(page.url()).pathname)[1];
+  await page.locator(".composer-permissions-hint").filter({ hasText: "Полный доступ" }).waitFor();
+  await composer.fill("Уточнение текущего хода");
+  await composer.press("Enter");
+  await page.getByText("Дополнение принято: Уточнение текущего хода", { exact: true }).waitFor();
+  assert.equal(
+    fixture.launcher.owners
+      .get(threadId)
+      .runner.snapshot()
+      .currentEvents.filter((event) => event.type === "user").length,
+    2,
+  );
+  assert.equal((await fixture.ui.detail(threadId)).queuedMessages.length, 0);
   await composer.fill("Второй запрос с вложением");
   await page.locator('input[type="file"]').setInputFiles({
     name: "notes.txt",
@@ -83,13 +95,31 @@ try {
     buffer: Buffer.from("attachment smoke"),
   });
   await page.getByText("notes.txt", { exact: true }).first().waitFor();
-  await composer.press("Enter");
+  await composer.press("Control+Enter");
   const composerVoice = page.locator(".composer");
   await composerVoice.getByRole("button", { name: "Начать запись", exact: true }).click();
   await composerVoice.getByRole("button", { name: "Остановить запись", exact: true }).waitFor();
   await page.waitForTimeout(150);
   await composerVoice.getByRole("button", { name: "Остановить запись", exact: true }).click();
   await page.waitForFunction(() => document.body.innerText.includes("Голосовая проверка работает"));
+  assert.equal(fixture.launcher.owners.get(threadId).transport.sends, 3);
+  assert.equal(fixture.launcher.owners.get(threadId).transport.interruptions, 0);
+  assert.equal(
+    fixture.launcher.owners
+      .get(threadId)
+      .runner.snapshot()
+      .currentEvents.filter((event) => event.type === "user").length,
+    3,
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.locator(".composer-permissions-hint").isVisible(), true);
+  const sendBounds = await page.locator(".composer-action.send").boundingBox();
+  assert.ok(
+    sendBounds && sendBounds.x + sendBounds.width <= 390,
+    "Mobile send stays inside viewport",
+  );
+  await page.screenshot({ path: join(screenshots, "phone-active-steering.png") });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("checkbox", { name: /Голос/ }).check();
   await page.getByRole("checkbox", { name: /Файлы/ }).check();
   const attention = page.locator(".attention-stack");
@@ -103,8 +133,13 @@ try {
       document.querySelector(".attention-stack textarea")?.value === "Голосовая проверка работает",
   );
   await attention.getByRole("button", { name: "Отправить ответы", exact: true }).click();
-  await page.getByText(/Получено сообщение 3:/).waitFor();
-  assert.equal(fixture.launcher.owners.get(threadId).transport.sends, 3);
+  await page.getByText(/Получено сообщение 4:/).waitFor();
+  assert.equal(fixture.launcher.owners.get(threadId).transport.sends, 4);
+  assert.equal(fixture.launcher.owners.get(threadId).transport.interruptions, 0);
+  assert.equal(
+    fixture.requests.some((request) => request.method === "POST" && request.url.endsWith("/steer")),
+    true,
+  );
   assert.deepEqual(
     fixture.launcher.owners.get(threadId).transport.responses[0].updatedInput.answers,
     { "Что включить в проверку?": "Голос, Файлы, Голосовая проверка работает" },
@@ -136,6 +171,35 @@ try {
   await page.getByRole("tab", { name: "Claude", exact: true }).waitFor();
   assert.equal(await page.getByRole("tab", { name: "Обслуживание", exact: true }).count(), 0);
   assert.equal(await page.getByRole("tab", { name: "Скиллы", exact: true }).count(), 0);
+  await page.getByRole("tab", { name: "Claude", exact: true }).click();
+  await page.getByRole("radio", { name: /Полный доступ/ }).waitFor();
+  assert.equal(await page.getByRole("radio", { name: /Полный доступ/ }).isChecked(), true);
+  assert.equal(await page.getByRole("radio", { name: /Подтверждать автоматически/ }).count(), 0);
+  const permissionForm = page.locator("form").filter({
+    has: page.getByText("Разрешения Claude", { exact: true }),
+  });
+  for (const [label, nativeMode] of [
+    [/Запрашивать разрешение/, "manual"],
+    [/Полный доступ/, "bypassPermissions"],
+  ]) {
+    await permissionForm.getByRole("radio", { name: label }).check();
+    const saved = page.waitForResponse(
+      (response) =>
+        response.request().method() === "PUT" &&
+        new URL(response.url()).pathname === "/api/v1/settings/permissions",
+    );
+    await permissionForm.getByRole("button", { name: "Сохранить", exact: true }).click();
+    assert.equal((await saved).status(), 200);
+    assert.equal(fixture.launcher.owners.get(threadId).transport.permissionMode, nativeMode);
+  }
+  assert.equal(
+    fixture.requests.some(
+      (request) => request.method === "GET" && request.url === "/api/v1/settings/permissions",
+    ),
+    false,
+    "Permission defaults come from the snapshot without polling",
+  );
+  await page.getByRole("tab", { name: "Приложение", exact: true }).click();
   await page.getByRole("checkbox", { name: /исправлять очевидные ошибки через Claude/ }).check();
   await page.getByLabel("Модель улучшения расшифровки").selectOption("haiku");
   await page.getByRole("button", { name: "Сохранить распознавание", exact: true }).click();
@@ -164,7 +228,7 @@ try {
     "All real compatibility API requests succeeded",
   );
   console.log(
-    `Claude browser smoke passed: projects, session creation, native chat, FIFO, attachments, queued task voice, multi-select question voice, title search, live model, draft reload and settings. Screenshots: ${screenshots}`,
+    `Claude browser smoke passed: projects, session creation, active-turn text and voice steering without interruption, explicit FIFO, attachments, full-access indicators, multi-select question voice, title search, live model, draft reload and settings. Screenshots: ${screenshots}`,
   );
 } catch (error) {
   console.error(

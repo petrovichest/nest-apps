@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AttentionRequest,
   ModelOption,
+  QueuedMessage,
+  ThreadDetail,
   ThreadSummary,
   TranscriptionConfigResponse,
 } from "@codexnest/protocol";
@@ -13,10 +15,28 @@ import { AttentionPanel } from "./AttentionPanel";
 import { ThreadSearchDialog } from "./ThreadSearchDialog";
 import { SettingsPage } from "./SettingsPage";
 import { Composer } from "./Composer";
+import { ThreadPage } from "./ThreadPage";
+import { ApiClientError } from "../api";
 
 vi.hoisted(() => vi.stubEnv("VITE_APP_PROVIDER", "claude"));
 const connection = vi.hoisted(() => vi.fn());
 vi.mock("../connection", () => ({ useConnection: connection }));
+vi.mock("../offline-store", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadLocalDraft: async () => null,
+  deleteLocalDraft: async () => undefined,
+  saveLocalDraft: async (
+    _settings: unknown,
+    threadId: string,
+    value: unknown,
+    updatedAt = Date.now(),
+  ) => ({
+    key: threadId,
+    threadId,
+    value,
+    updatedAt,
+  }),
+}));
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -181,7 +201,19 @@ describe("the shared Claude interface", () => {
     };
     connection.mockReturnValue({
       api,
-      state: { network: "connected", snapshot: { models, taskDefaults: {} } },
+      state: {
+        network: "connected",
+        snapshot: {
+          models,
+          taskDefaults: {},
+          permissionSettings: {
+            preset: "full-access",
+            version: "1",
+            overridden: false,
+            message: null,
+          },
+        },
+      },
     });
     render(
       <MemoryRouter>
@@ -221,6 +253,190 @@ describe("the shared Claude interface", () => {
     expect(api.readCodexSettings).not.toHaveBeenCalled();
     expect(api.readSkills).not.toHaveBeenCalled();
   });
+
+  it("shows the saved native permissions and saves ask mode without Codex reviewer options", async () => {
+    const ask = { preset: "ask", version: "2", overridden: false, message: null };
+    const api = {
+      settings: { baseUrl: "https://claude.home.arpa" },
+      readPermissionSettings: vi.fn(),
+      updatePermissionSettings: vi.fn().mockResolvedValue(ask),
+    };
+    connection.mockReturnValue({
+      api,
+      state: {
+        snapshot: {
+          models,
+          permissionSettings: { ...ask, preset: "full-access", version: "1" },
+        },
+      },
+    });
+    render(
+      <MemoryRouter initialEntries={["/settings?section=codex"]}>
+        <SettingsPage
+          onOpenNavigation={vi.fn()}
+          onSwitchServer={vi.fn()}
+          theme="system"
+          onThemeChange={vi.fn()}
+          sidebarSide="left"
+          onSidebarSideChange={vi.fn()}
+          projectListDirection="top-down"
+          onProjectListDirectionChange={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("Разрешения Claude")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Полный доступ/ })).toBeChecked();
+    expect(screen.queryByRole("radio", { name: /Подтверждать автоматически/ })).toBeNull();
+    expect(api.readPermissionSettings).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("radio", { name: /Запрашивать разрешение/ }));
+    const form = screen.getByText("Разрешения Claude").closest("form")!;
+    fireEvent.click(within(form).getByRole("button", { name: "Сохранить" }));
+    await waitFor(() =>
+      expect(api.updatePermissionSettings).toHaveBeenCalledWith({
+        preset: "ask",
+        expectedVersion: "1",
+      }),
+    );
+    expect(screen.getByRole("radio", { name: /Запрашивать разрешение/ })).toBeChecked();
+    await waitFor(() =>
+      expect(within(form).getByRole("button", { name: "Сохранить" })).toBeDisabled(),
+    );
+    api.readPermissionSettings.mockResolvedValue({
+      ...ask,
+      preset: "full-access",
+      version: "3",
+    });
+    api.updatePermissionSettings.mockRejectedValueOnce(
+      new ApiClientError("conflict", "Changed", 409),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /Полный доступ/ }));
+    fireEvent.click(within(form).getByRole("button", { name: "Сохранить" }));
+    await screen.findByText(
+      "Конфигурация Claude изменилась. Проверьте значение и сохраните ещё раз.",
+    );
+    expect(api.readPermissionSettings).toHaveBeenCalledOnce();
+    expect(screen.getByRole("radio", { name: /Полный доступ/ })).toBeChecked();
+  });
+
+  it("steers active Claude input by default and leaves explicit queue controls available", () => {
+    connection.mockReturnValue({ api: {} });
+    const onSubmit = vi.fn();
+    const onStop = vi.fn();
+    const view = render(
+      <Composer
+        input="Уточнение"
+        images={[]}
+        onInput={vi.fn()}
+        onImagesChange={vi.fn()}
+        onSubmit={onSubmit}
+        onStop={onStop}
+        busy={false}
+        running
+        permissionPreset="full-access"
+        settings={{ collaborationMode: "default", model: "sonnet" }}
+        onSettingsChange={vi.fn()}
+        models={models}
+        error={null}
+      />,
+    );
+    const textarea = screen.getByRole("textbox");
+    expect(screen.getByText("Полный доступ")).toBeInTheDocument();
+    expect(screen.getByText(/Сообщение отправится Claude сразу/)).toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    fireEvent.submit(view.container.querySelector("form")!);
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+    fireEvent.click(screen.getByRole("button", { name: "Добавить в очередь" }));
+    expect(onSubmit.mock.calls).toEqual([
+      ["immediate"],
+      ["immediate"],
+      ["queue"],
+      ["queue"],
+      ["queue"],
+    ]);
+    expect(onStop).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Дополнить текущий ход" })).toBeEnabled();
+  });
+
+  it.each([
+    ["active", false, "steer"],
+    ["active", true, "queue"],
+    [null, false, "steer"],
+    [null, true, "queue"],
+  ] as const)(
+    "delivers active input with current turn=%s and explicit queue=%s without interrupting",
+    async (currentTurnId, queue, mode) => {
+      const context = renderActiveClaudeThread([], false, currentTurnId);
+      const textarea = await screen.findByRole("textbox", { name: "Направить текущую задачу" });
+      fireEvent.change(textarea, { target: { value: "Уточнение" } });
+      fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: queue });
+      await waitFor(() => expect(context.sendReliable).toHaveBeenCalledOnce());
+      expect(context.sendReliable.mock.calls[0]?.[1]).toMatchObject({
+        input: "Уточнение",
+        deliveryMode: mode,
+        draftUpdatedAt: 100,
+      });
+      expect(context.api.interrupt).not.toHaveBeenCalled();
+      expect(context.api.sendQueuedNow).not.toHaveBeenCalled();
+      expect(context.dispatch).toHaveBeenCalledWith({
+        type: "optimistic.add",
+        message: expect.objectContaining({
+          destination: mode === "steer" ? "turn" : "queue",
+          turnId: mode === "steer" ? currentTurnId : null,
+        }),
+      });
+      expect(screen.getByText("Полный доступ")).toBeInTheDocument();
+    },
+  );
+
+  it.each([false, true])(
+    "renders pending steer errors outside FIFO with local optimistic input=%s",
+    (localSteer) => {
+      const message = {
+        threadId: "thread",
+        images: [],
+        createdAt: 1,
+        status: "dispatching" as const,
+      };
+      const { view } = renderActiveClaudeThread(
+        [
+          {
+            ...message,
+            id: "steered",
+            text: "Дополнение в активном ходе",
+            deliveryMode: "steer",
+            deliveryError: { message: "Claude delivery is not confirmed", retryable: false },
+          },
+          { ...message, id: "queued", text: "Следующая отдельная задача", status: "queued" },
+        ],
+        localSteer,
+      );
+      expect(screen.getByText("Дополнение в активном ходе")).toBeInTheDocument();
+      expect(screen.getByText("Claude delivery is not confirmed")).toBeInTheDocument();
+      expect(view.container.querySelectorAll(".queued-message")).toHaveLength(1);
+      expect(view.container.querySelector(".queued-message")).toHaveTextContent(
+        "Следующая отдельная задача",
+      );
+    },
+  );
+
+  it.each(["active", null])(
+    "sends an active task recording with native steering when current turn=%s",
+    async (currentTurnId) => {
+      installMediaRecorder();
+      const context = renderActiveClaudeThread([], false, currentTurnId);
+      fireEvent.click(screen.getByRole("button", { name: "Начать запись" }));
+      await screen.findByRole("button", { name: "Остановить запись" });
+      fireEvent.click(screen.getByRole("button", { name: "Остановить запись" }));
+      await waitFor(() => expect(context.queueVoiceRecording).toHaveBeenCalledOnce());
+      expect(context.queueVoiceRecording.mock.calls[0]?.[0]).toMatchObject({
+        threadId: "thread",
+        mode: "steer",
+        draftUpdatedAt: null,
+      });
+      expect(context.api.interrupt).not.toHaveBeenCalled();
+    },
+  );
 
   it("transcribes a question recording into its answer before sending the native reply", async () => {
     installMediaRecorder();
@@ -357,6 +573,125 @@ describe("the shared Claude interface", () => {
     expect(api.searchOccurrences).not.toHaveBeenCalled();
   });
 });
+
+function renderActiveClaudeThread(
+  queuedMessages: QueuedMessage[] = [],
+  localSteer = false,
+  currentTurnId: string | null = "active",
+) {
+  const thread: ThreadSummary = {
+    id: "thread",
+    projectId: null,
+    title: "Задача Claude",
+    preview: "",
+    cwd: "/work",
+    relation: { kind: "session", sessionId: "session" },
+    state: "running",
+    currentTurnId,
+    unread: false,
+    unseen: false,
+    pinned: false,
+    archived: false,
+    createdAt: 1,
+    updatedAt: 1,
+    queuedMessageCount: queuedMessages.filter((message) => message.deliveryMode !== "steer").length,
+    browserStatus: "disabled",
+    settings: { collaborationMode: "default", model: "sonnet" },
+    permissionPreset: "full-access",
+    canAcceptDirectInput: true,
+  };
+  const detail: ThreadDetail = {
+    summary: thread,
+    queuedMessages,
+    olderTurnsCursor: null,
+    draft: null,
+    turns: [
+      {
+        id: "active",
+        status: currentTurnId ? "inProgress" : "completed",
+        startedAt: 1,
+        completedAt: currentTurnId ? null : 2,
+        durationMs: null,
+        progress: {
+          startedAt: 1,
+          explanation: null,
+          steps: [],
+          filesChanged: 0,
+          additions: 0,
+          deletions: 0,
+        },
+        items: [],
+      },
+    ],
+  };
+  const api = {
+    settings: { baseUrl: "https://claude.home.arpa", token: "test" },
+    markViewed: vi.fn().mockResolvedValue(undefined),
+    markRead: vi.fn().mockResolvedValue(undefined),
+    updateThreadDraft: vi.fn(async (_id, value) => (value ? { ...value, updatedAt: 100 } : null)),
+    interrupt: vi.fn().mockResolvedValue(undefined),
+    sendQueuedNow: vi.fn().mockResolvedValue({ turnId: "active" }),
+  };
+  const context = {
+    api,
+    appActive: true,
+    foregroundEpoch: 0,
+    streamRecoveryEpoch: 0,
+    state: {
+      snapshot: {
+        instanceId: "test",
+        sequence: 1,
+        projects: [],
+        threads: [thread],
+        attention: [],
+        voiceTranscriptions: [],
+        models,
+        connection: { state: "ready" },
+      },
+      details: { thread: detail },
+      expandedHistory: {},
+      optimisticMessages: localSteer
+        ? {
+            thread: [
+              {
+                id: "steered",
+                threadId: "thread",
+                text: "Дополнение в активном ходе",
+                images: [],
+                createdAt: 1,
+                destination: "turn" as const,
+                turnId: "active",
+              },
+            ],
+          }
+        : {},
+      voiceRemovals: {},
+      network: "connected",
+      snapshotEpoch: 1,
+    },
+    dispatch: vi.fn(),
+    refreshDetail: vi.fn().mockResolvedValue(detail),
+    forceRefreshDetail: vi.fn().mockResolvedValue(detail),
+    loadOlderDetail: vi.fn(),
+    loadTurnItems: vi.fn(),
+    sendReliable: vi.fn(async (_id, _body, committed) => {
+      committed?.();
+      return "delivered";
+    }),
+    queueVoiceRecording: vi.fn().mockResolvedValue(undefined),
+  };
+  connection.mockReturnValue(context);
+  const view = render(
+    <MemoryRouter initialEntries={["/threads/thread"]}>
+      <ThreadPage
+        onOpenNavigation={vi.fn()}
+        transcriptionConfig={transcriptionConfig}
+        transcriptionProvider="local"
+      />
+    </MemoryRouter>,
+  );
+  return { ...context, view };
+}
 
 function LocationProbe() {
   return <output aria-label="route">{useLocation().pathname}</output>;

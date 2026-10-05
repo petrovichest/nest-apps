@@ -13,6 +13,7 @@ import type {
   AppSnapshot,
   AttentionRequest,
   AttentionResponse,
+  GlobalPermissionSettings,
   ModelOption,
   Project,
   QueuedMessage,
@@ -44,6 +45,7 @@ import {
   type RpcMessage,
   type RunnerEvent,
   type RunnerSnapshot,
+  type ClaudePermissionMode,
 } from "./types";
 
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -109,6 +111,8 @@ export class UiService extends EventEmitter {
   private subscriptions = new Map<string, RunnerConnection>();
   private attaching = new Map<string, Promise<void>>();
   private dispatches = new Map<string, Promise<void>>();
+  private permissionUpdates = new Map<string, Promise<void>>();
+  private approving = new Set<string>();
   private creations = new Map<
     string,
     { fingerprint: string; promise: Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> }
@@ -257,9 +261,16 @@ export class UiService extends EventEmitter {
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
       currentTurnId: view?.currentTurnId ?? null,
-      queuedMessageCount: thread.queue.length,
+      queuedMessageCount: thread.queue.filter((message) => message.deliveryMode !== "steer").length,
       browserStatus: "disabled",
       settings: thread.settings,
+      permissionPreset:
+        this.store.data.permissionMode === "bypassPermissions" ||
+        owner?.permissionMode === "bypassPermissions"
+          ? "full-access"
+          : (owner?.permissionMode ?? this.store.data.permissionMode) === "acceptEdits"
+            ? "auto"
+            : "ask",
       relation: { kind: "session", sessionId: id },
       canAcceptDirectInput: true,
       codexSettings: {
@@ -296,11 +307,103 @@ export class UiService extends EventEmitter {
       attention: this.attention(),
       models: this.modelOptions(),
       taskDefaults: this.store.data.taskDefaults,
+      permissionSettings: this.permissionSettings(),
       forkOperations: [],
       voiceTranscriptions: Object.values(this.store.data.voice)
         .filter((value) => !value.cancelled && !value.applied)
         .map((value) => value.job),
     };
+  }
+  permissionSettings(): GlobalPermissionSettings {
+    return {
+      preset:
+        this.store.data.permissionMode === "bypassPermissions"
+          ? "full-access"
+          : this.store.data.permissionMode === "acceptEdits"
+            ? "auto"
+            : "ask",
+      version: String(this.store.data.permissionVersion),
+      overridden: false,
+      message: null,
+    };
+  }
+  async setPermissions(mode: ClaudePermissionMode, expectedVersion?: unknown): Promise<void> {
+    await this.store.update((data) => {
+      if (expectedVersion !== undefined && expectedVersion !== String(data.permissionVersion))
+        throw new AppError("conflict", "Permission settings changed", 409);
+      data.permissionMode = mode;
+      data.permissionVersion++;
+    });
+    this.publish({ type: "permissions.changed", permissionSettings: this.permissionSettings() });
+    await Promise.all([...this.owners.keys()].map((id) => this.applyPermissions(id)));
+  }
+  private applyPermissions(id: string): Promise<void> {
+    const existing = this.permissionUpdates.get(id);
+    if (existing) return existing;
+    const task = (async () => {
+      let version: number;
+      do {
+        version = this.store.data.permissionVersion;
+        await this.applyPermissionsOnce(id);
+      } while (!this.closed && version !== this.store.data.permissionVersion);
+    })().finally(() => this.permissionUpdates.delete(id));
+    this.permissionUpdates.set(id, task);
+    return task;
+  }
+  private async applyPermissionsOnce(id: string): Promise<void> {
+    const owner = this.owners.get(id);
+    if (!owner) return;
+    const mode = this.store.data.permissionMode;
+    if (
+      owner.capabilities?.livePermissionMode &&
+      owner.permissionMode !== mode &&
+      !["starting", "failed", "closed"].includes(owner.state)
+    ) {
+      try {
+        await this.manager.command(id, "setPermissionMode", {
+          requestId: randomUUID(),
+          permissionMode: mode,
+        });
+        owner.permissionMode = mode;
+      } catch {
+        // Legacy CLI owners finish their work without being replaced or interrupted.
+      }
+    }
+    for (const request of [...owner.pendingRequests]) await this.autoApprove(id, request);
+    this.publish({ type: "thread.upserted", thread: this.summary(id) });
+  }
+  private async autoApprove(id: string, request: PendingRequest): Promise<boolean> {
+    if (
+      this.store.data.permissionMode !== "bypassPermissions" ||
+      request.toolName === "AskUserQuestion" ||
+      (request.kind !== "toolApproval" &&
+        !(request.kind === undefined && /^(?:[A-Z]|mcp__)/.test(request.toolName)))
+    )
+      return false;
+    const key = `${id}:${request.requestId}`;
+    if (this.approving.has(key)) return true;
+    this.approving.add(key);
+    try {
+      await this.manager.command(id, "respond", {
+        requestId: commandId(`full-access:${key}`),
+        targetRequestId: request.requestId,
+        response: { behavior: "allow", updatedInput: request.input },
+      });
+      const owner = this.owners.get(id);
+      if (owner)
+        owner.pendingRequests = owner.pendingRequests.filter(
+          (item) => item.requestId !== request.requestId,
+        );
+      this.publish({ type: "attention.removed", attentionId: key });
+      return true;
+    } catch {
+      // Cancellation can race a grant; keep unresolved requests visible for recovery.
+      return !this.owners
+        .get(id)
+        ?.pendingRequests.some((item) => item.requestId === request.requestId);
+    } finally {
+      this.approving.delete(key);
+    }
   }
   private async view(id: string): Promise<NativeView> {
     const saved = this.views.get(id);
@@ -357,6 +460,7 @@ export class UiService extends EventEmitter {
           if ("snapshot" in message) {
             const owner = message.snapshot;
             this.owners.set(id, owner);
+            await this.applyPermissions(id);
             const history = await readHistory(this.manager.config.configDir, id).catch(() => null);
             view.reset([...(history?.messages ?? []), ...owner.currentEvents], {
               live: ["running", "waiting"].includes(owner.state),
@@ -392,11 +496,15 @@ export class UiService extends EventEmitter {
       const native = record(event.data);
       for (const update of view.apply(native)) this.publish(update);
       if (native.type === "result") {
+        if (owner.state === "interrupted") owner.awaitingResult = false;
         await this.touch(id);
         this.publish({ type: "thread.upserted", thread: this.summary(id) });
+        this.schedule(id);
       }
     } else if (event.kind === "state") {
-      owner.state = record(event.data).state as RunnerSnapshot["state"];
+      const data = record(event.data);
+      owner.state = data.state as RunnerSnapshot["state"];
+      if (typeof data.awaitingResult === "boolean") owner.awaitingResult = data.awaitingResult;
       this.publish({ type: "thread.upserted", thread: this.summary(id) });
       this.schedule(id);
     } else if (event.kind === "request") {
@@ -405,8 +513,10 @@ export class UiService extends EventEmitter {
         ...owner.pendingRequests.filter((item) => item.requestId !== request.requestId),
         request,
       ];
-      const attention = this.toAttention(id, request);
-      this.publish({ type: "attention.upserted", attention });
+      if (!(await this.autoApprove(id, request))) {
+        const attention = this.toAttention(id, request);
+        this.publish({ type: "attention.upserted", attention });
+      }
       this.publish({ type: "thread.upserted", thread: this.summary(id) });
     } else if (event.kind === "request.cancelled") {
       const requestId = String(record(event.data).requestId);
@@ -418,6 +528,17 @@ export class UiService extends EventEmitter {
         ...owner.commands.filter((item) => item.requestId !== receipt.requestId),
         receipt,
       ];
+      const pending = this.thread(id).queue.find((message) => message.id === receipt.requestId);
+      if (pending?.deliveryMode === "steer") {
+        if (receipt.status === "completed") await this.accepted(id, pending.id);
+        else if (receipt.status === "unknown")
+          await this.deliveryError(
+            id,
+            pending.id,
+            "Claude receipt has an unknown outcome; automatic resend is disabled",
+            false,
+          );
+      }
       this.schedule(id);
     }
   }
@@ -557,6 +678,9 @@ export class UiService extends EventEmitter {
       throw new AppError("invalid_request", "Message is empty");
     if (body.replyToUserInput || body.goal)
       throw new AppError("invalid_request", "Use the Claude attention response for questions");
+    if (body.deliveryMode !== undefined && !["queue", "steer"].includes(body.deliveryMode))
+      throw new AppError("invalid_request", "Invalid message delivery mode");
+    const steering = body.deliveryMode === "steer";
     const clientId = body.clientMessageId ?? randomUUID();
     if (typeof clientId !== "string" || !clientId.trim() || clientId.length > 300)
       throw new AppError("invalid_request", "Invalid client message ID");
@@ -565,6 +689,7 @@ export class UiService extends EventEmitter {
       ...pastedText(body),
       images: body.images ?? [],
       files: body.files ?? [],
+      ...(steering ? { deliveryMode: "steer" } : {}),
     });
     const saved = thread.deliveries[clientId];
     if (saved) {
@@ -578,6 +703,7 @@ export class UiService extends EventEmitter {
           createdAt: thread.createdAt,
           status: "dispatching",
           deliveryVersion: 1,
+          ...(saved.mode ? { deliveryMode: saved.mode } : {}),
         }
       );
     }
@@ -620,6 +746,7 @@ export class UiService extends EventEmitter {
               createdAt: current.createdAt,
               status: "dispatching" as const,
               deliveryVersion: 1 as const,
+              ...(prior.mode ? { deliveryMode: prior.mode } : {}),
             }
           );
         }
@@ -633,6 +760,7 @@ export class UiService extends EventEmitter {
           createdAt: Date.now(),
           status: "queued",
           deliveryVersion: 1,
+          ...(steering ? { deliveryMode: "steer" as const } : {}),
         };
         fresh = true;
         current.queue.push(message);
@@ -640,6 +768,7 @@ export class UiService extends EventEmitter {
           fingerprint,
           messageId: message.id,
           accepted: false,
+          ...(steering ? { mode: "steer" as const } : {}),
           ...(imageFiles.length ? { imageFiles } : {}),
         };
         if (current.title === "Новая сессия")
@@ -684,19 +813,46 @@ export class UiService extends EventEmitter {
         await Promise.allSettled(imageFiles.map((file) => this.attachments.remove(id, file.id)));
     }
   }
+  steer(id: string, body: QueueMessageRequest): Promise<QueuedMessage> {
+    return this.enqueue(id, { ...body, deliveryMode: "steer" });
+  }
+  private nextMessage(thread: UiThread): QueuedMessage | undefined {
+    const owner = this.owners.get(thread.id);
+    return (
+      thread.queue.find(
+        (message) =>
+          message.deliveryMode === "steer" &&
+          !message.deliveryError &&
+          !owner?.commands.some(
+            (receipt) => receipt.requestId === message.id && receipt.status === "accepted",
+          ),
+      ) ??
+      thread.queue.find((message) => message.deliveryMode !== "steer") ??
+      thread.queue[0]
+    );
+  }
   publishQueue(id: string): void {
     this.publish({ type: "queue.changed", threadId: id, messages: this.thread(id).queue });
     this.publish({ type: "thread.upserted", thread: this.summary(id) });
   }
   schedule(id: string): void {
     if (this.closed || !this.manager.accepting || this.dispatches.has(id)) return;
+    const initial = this.nextMessage(this.thread(id))?.id,
+      initialState = this.owners.get(id)?.state;
     const task = this.dispatch(id)
       .catch(() => undefined)
       .finally(() => {
         this.dispatches.delete(id);
-        const first = this.thread(id).queue[0],
+        const first = this.nextMessage(this.thread(id)),
           owner = this.owners.get(id);
-        if (first && !first.deliveryError && owner && ["idle", "interrupted"].includes(owner.state))
+        if (
+          first &&
+          !first.deliveryError &&
+          (first.id !== initial ||
+            (owner?.state !== initialState &&
+              owner &&
+              ["idle", "interrupted"].includes(owner.state)))
+        )
           queueMicrotask(() => this.schedule(id));
       });
     this.dispatches.set(id, task);
@@ -711,24 +867,61 @@ export class UiService extends EventEmitter {
         if (await this.manager.launcher.active(id)) return;
       }
     }
-    const owner = this.owners.get(id);
-    if (owner && !["idle", "interrupted", "closed"].includes(owner.state)) {
-      const first = this.thread(id).queue[0],
-        receipt = owner.commands.find((item) => item.requestId === first?.id);
-      if (first && receipt?.status === "unknown")
-        await this.deliveryError(
-          id,
-          first.id,
-          "Claude receipt has an unknown outcome; automatic resend is disabled",
-          false,
-        );
-      else if (first && receipt) await this.accepted(id, first.id);
+    let owner = this.owners.get(id);
+    const candidate = this.nextMessage(this.thread(id));
+    if (!candidate || candidate.deliveryError) return;
+    const receipt = owner?.commands.find((item) => item.requestId === candidate.id);
+    if (receipt?.status === "unknown") {
+      await this.deliveryError(
+        id,
+        candidate.id,
+        "Claude receipt has an unknown outcome; automatic resend is disabled",
+        false,
+      );
       return;
+    }
+    if (receipt) {
+      if (receipt.status === "completed" || candidate.deliveryMode !== "steer")
+        await this.accepted(id, candidate.id);
+      return;
+    }
+    if (owner?.state === "interrupted" && owner.awaitingResult) return;
+    const idle = owner && ["idle", "interrupted", "closed"].includes(owner.state);
+    if (
+      owner &&
+      !idle &&
+      !(
+        candidate.deliveryMode === "steer" &&
+        owner.capabilities?.steer &&
+        ["running", "waiting"].includes(owner.state)
+      )
+    )
+      return;
+    // A backend update never replaces active session owners. Upgrade older owners
+    // at their next idle admission, preserving their native session history.
+    if (owner && idle && owner.state !== "closed" && !owner.capabilities?.steer) {
+      try {
+        await this.manager.command(id, "release", { requestId: randomUUID() });
+        const deadline = Date.now() + 10_000;
+        while (await this.manager.launcher.active(id)) {
+          if (Date.now() >= deadline)
+            throw new AppError("unavailable", "Previous Claude owner is still stopping", 503);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        this.subscriptions.get(id)?.close();
+        this.subscriptions.delete(id);
+        this.owners.delete(id);
+        owner = undefined;
+      } catch {
+        // An interruption can still be awaiting its native result; the final
+        // owner event will schedule admission again without cancelling work.
+        return;
+      }
     }
     const admission = await this.store.update((data) => {
       if (this.closed || !this.manager.accepting) return null;
       const thread = data.threads[id]!,
-        message = thread.queue[0];
+        message = this.nextMessage(thread);
       if (!message || message.deliveryError) return null;
       const delivery = Object.values(thread.deliveries).find(
         (item) => item.messageId === message.id,
@@ -751,7 +944,8 @@ export class UiService extends EventEmitter {
       return;
     }
     if (known) {
-      await this.accepted(id, message.id);
+      if (known.status === "completed" || message.deliveryMode !== "steer")
+        await this.accepted(id, message.id);
       if (known.status === "completed") queueMicrotask(() => this.schedule(id));
       return;
     }
@@ -773,41 +967,50 @@ export class UiService extends EventEmitter {
       };
       const prompt = serializePastedMessage(message.text, pastedText(message));
       const result =
-        descriptor || thread.nativeHistory || this.views.get(id)?.turns().length
-          ? await this.manager.send(id, message.id, prompt, content, {
-              model: thread.settings.model,
-              effort: thread.settings.reasoningEffort,
-              permissionMode: this.store.data.permissionMode,
-            })
-          : await this.manager.create({
-              sessionId: id,
-              requestId: message.id,
-              cwd: thread.cwd,
-              prompt,
-              model: thread.settings.model,
-              effort: thread.settings.reasoningEffort,
-              permissionMode: this.store.data.permissionMode,
-              ...content,
-            });
-      const receipt = result as CommandReceipt;
+        message.deliveryMode === "steer" && owner?.capabilities?.steer && owner.state !== "closed"
+          ? await this.manager.steer(id, message.id, prompt, content)
+          : descriptor || thread.nativeHistory || this.views.get(id)?.turns().length
+            ? await this.manager.send(id, message.id, prompt, content, {
+                model: thread.settings.model,
+                effort: thread.settings.reasoningEffort,
+                permissionMode: this.store.data.permissionMode,
+              })
+            : await this.manager.create({
+                sessionId: id,
+                requestId: message.id,
+                cwd: thread.cwd,
+                prompt,
+                model: thread.settings.model,
+                effort: thread.settings.reasoningEffort,
+                permissionMode: this.store.data.permissionMode,
+                ...content,
+              });
+      const returned = result as CommandReceipt;
+      const currentOwner = this.owners.get(id);
+      const cached = currentOwner?.commands.find((entry) => entry.requestId === message.id);
+      if (currentOwner && !cached) currentOwner.commands.push(returned);
+      const receipt = cached && cached.status !== "accepted" ? cached : returned;
       if (receipt.status === "unknown")
         throw new AppError(
           "conflict",
           "Unknown delivery outcome; automatic resend is disabled",
           409,
         );
-      await this.accepted(id, message.id);
+      if (receipt.status === "completed" || message.deliveryMode !== "steer")
+        await this.accepted(id, message.id);
       await this.attach(id);
     } catch (error) {
       const snapshot = await this.manager.snapshot(id).catch(() => undefined);
+      if (snapshot) this.owners.set(id, snapshot);
       const receipt = snapshot?.commands.find((item) => item.requestId === message.id);
       if (receipt && receipt.status !== "unknown") {
-        await this.accepted(id, message.id);
+        if (receipt.status === "completed" || message.deliveryMode !== "steer")
+          await this.accepted(id, message.id);
         await this.attach(id).catch(() => undefined);
       } else if (
         snapshot &&
         !receipt &&
-        ["running", "waiting"].includes(snapshot.state) &&
+        ["running", "waiting", "interrupted"].includes(snapshot.state) &&
         error instanceof AppError &&
         error.code === "conflict"
       ) {
@@ -1016,7 +1219,7 @@ export class UiService extends EventEmitter {
     this.closed = true;
     clearInterval(this.reconnect);
     for (const connection of this.subscriptions.values()) connection.close();
-    await Promise.allSettled([...this.dispatches.values()]);
+    await Promise.allSettled([...this.dispatches.values(), ...this.permissionUpdates.values()]);
     await this.store.flush();
   }
 }

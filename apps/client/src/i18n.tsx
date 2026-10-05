@@ -306,6 +306,13 @@ const ENGLISH: Record<string, string> = {
   "Потенциально опасные действия проверяет отдельный reviewer Codex.":
     "A separate Codex reviewer checks potentially dangerous actions.",
   "Полный доступ": "Full access",
+  "С подтверждением": "Ask before acting",
+  "Claude запрашивает подтверждение команд и изменений файлов.":
+    "Claude asks before running commands and changing files.",
+  "Claude выполняет команды и изменяет файлы без запросов разрешения.":
+    "Claude runs commands and changes files without permission prompts.",
+  "Режим сохраняется для новых сессий и применяется к запущенным агентам Claude.":
+    "The mode is saved for new sessions and applied to running Claude agents.",
   "Неограниченный доступ к интернету и любым файлам пользователя на сервере.":
     "Unrestricted access to the internet and any user files on the server.",
   "Не удалось загрузить настройки": "Failed to load settings",
@@ -968,6 +975,10 @@ const ENGLISH: Record<string, string> = {
   "Сначала отправьте или удалите аннотации": "Send or delete the annotations first",
   "Сначала отправьте или удалите аннотации к плану": "Send or delete the plan annotations first",
   "Сообщение будет добавлено в очередь": "The message will be added to the queue",
+  "Сообщение отправится Claude сразу · Ctrl/Cmd+Enter — в очередь":
+    "The message goes to Claude immediately · Ctrl/Cmd+Enter queues it",
+  "Добавить в очередь · Ctrl/Cmd+Enter": "Add to queue · Ctrl/Cmd+Enter",
+  "Дополнить текущий ход": "Add to current turn",
   "Сообщение для Codex": "Message for Codex",
   "Следующее изображение": "Next image",
   "Сохранить аннотацию": "Save annotation",

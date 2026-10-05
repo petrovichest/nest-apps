@@ -27,10 +27,14 @@ class FakeClaude extends EventEmitter implements RunnerTransport {
   sendError?: Error;
   model = "sonnet";
   permissionMode: ClaudePermissionMode = "manual";
+  livePermissionMode = true;
   supportedModels = [{ value: "sonnet", displayName: "Sonnet", description: "Test model" }];
   modelChanges = 0;
   permissionChanges = 0;
   rejectModel = false;
+  rejectPermission = false;
+  permissionHook?: () => void;
+  interruptHook?: () => void;
 
   async start(): Promise<void> {}
   sendUser(requestId: string, text: string, content?: Record<string, unknown>[]): void {
@@ -49,6 +53,7 @@ class FakeClaude extends EventEmitter implements RunnerTransport {
   }
   async interrupt(): Promise<void> {
     this.interruptions++;
+    this.interruptHook?.();
   }
   async stop(): Promise<void> {
     this.stops++;
@@ -59,6 +64,8 @@ class FakeClaude extends EventEmitter implements RunnerTransport {
     this.model = model;
   }
   async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
+    if (this.rejectPermission) throw new ClaudeControlRejectedError("Permission mode rejected");
+    this.permissionHook?.();
     this.permissionChanges++;
     this.permissionMode = mode;
   }
@@ -127,7 +134,12 @@ describe("isolated Claude session runner", () => {
     expect(after.claudePid).toBe(4242);
     expect(after.state).toBe("waiting");
     expect(after.pendingRequests).toEqual([
-      { requestId: "approval-1", toolName: "Bash", input: { command: "touch example" } },
+      {
+        requestId: "approval-1",
+        toolName: "Bash",
+        input: { command: "touch example" },
+        kind: "toolApproval",
+      },
     ]);
     await second.request("respond", {
       requestId: randomUUID(),
@@ -416,6 +428,311 @@ describe("isolated Claude session runner", () => {
 });
 
 describe("additive protocol-1 features", () => {
+  it("lets steer atomically start an idle task and waits for an interrupted task's terminal result", async () => {
+    const { fake, runner, client } = await fixture();
+    const connection = await client(),
+      initialId = randomUUID();
+    const states: Array<{ state?: string; awaitingResult?: boolean }> = [];
+    connection.on("message", (message: RpcMessage) => {
+      if ("event" in message && message.event.kind === "state")
+        states.push(message.event.data as { state?: string; awaitingResult?: boolean });
+    });
+    await connection.request("subscribe");
+    await connection.request("steer", { requestId: initialId, text: "Start from idle" });
+    expect(runner.snapshot().state).toBe("running");
+    expect(runner.snapshot().currentEvents[0]).toMatchObject({ type: "user", uuid: initialId });
+    expect(runner.snapshot().currentEvents[0]).not.toHaveProperty("claudenest_delivery");
+    await connection.request("interrupt", { requestId: randomUUID() });
+    expect(runner.snapshot()).toMatchObject({ state: "interrupted", awaitingResult: true });
+    await expect(
+      connection.request("steer", { requestId: randomUUID(), text: "Too early" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    fake.emit("event", {
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      terminal_reason: "aborted_tools",
+      errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"],
+    });
+    expect(runner.snapshot()).toMatchObject({ state: "interrupted", awaitingResult: false });
+    await expect
+      .poll(() =>
+        states
+          .filter((event) => event.state === "interrupted")
+          .map((event) => event.awaitingResult),
+      )
+      .toEqual([true, false]);
+    const nextId = randomUUID();
+    await connection.request("steer", { requestId: nextId, text: "Start after interruption" });
+    expect(runner.snapshot().state).toBe("running");
+    expect(runner.snapshot().currentEvents).toHaveLength(1);
+    expect(runner.snapshot().currentEvents[0]).toMatchObject({ type: "user", uuid: nextId });
+    expect(fake.interruptions).toBe(1);
+  });
+
+  it("keeps a cancelled unacknowledged steer uncertain and does not attach another task's result to it", async () => {
+    const { fake, runner, client } = await fixture();
+    const connection = await client();
+    await connection.request("send", { requestId: randomUUID(), text: "Original" });
+    fake.autoEcho = false;
+    const steer = { requestId: randomUUID(), text: "Queued native refinement" };
+    await connection.request("steer", steer);
+    fake.emit("event", { type: "result", subtype: "success" });
+    expect(runner.snapshot().state).toBe("running");
+    fake.emit("event", {
+      type: "system",
+      subtype: "command_lifecycle",
+      command_uuid: steer.requestId,
+      state: "cancelled",
+    });
+    expect(runner.snapshot().state).toBe("idle");
+    expect(await connection.request("steer", steer)).toMatchObject({
+      kind: "steer",
+      status: "unknown",
+    });
+    expect(fake.sends).toHaveLength(2);
+  });
+
+  it("uses validated local images and files for steering without resetting the ongoing task", async () => {
+    const { directory, descriptor, fake, runner, client } = await fixture();
+    descriptor.attachmentRoot = join(directory, "uploads");
+    await mkdir(descriptor.attachmentRoot);
+    const path = join(descriptor.attachmentRoot, "image.png");
+    await writeFile(path, "small image");
+    const connection = await client(),
+      initialId = randomUUID();
+    await connection.request("send", { requestId: initialId, text: "Original task" });
+    const steer = {
+      requestId: randomUUID(),
+      text: "Use this image too",
+      images: [{ id: randomUUID(), path, name: "image.png", size: 11, mediaType: "image/png" }],
+    };
+    await connection.request("steer", steer);
+    await connection.request("steer", steer);
+    expect(fake.sends).toHaveLength(2);
+    expect(fake.sends[1]!.content).toContainEqual({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: "image/png",
+        data: Buffer.from("small image").toString("base64"),
+      },
+    });
+    expect(runner.snapshot().currentEvents[0]).toMatchObject({ uuid: initialId });
+    expect(fake.interruptions).toBe(0);
+  });
+
+  it("steers a running task once after a lost acknowledgement without interrupting or resetting its output", async () => {
+    const { fake, runner, client } = await fixture();
+    const first = await client();
+    expect(runner.snapshot().capabilities).toMatchObject({ steer: true, livePermissionMode: true });
+    await first.request("send", { requestId: randomUUID(), text: "Original task" });
+    fake.emit("event", {
+      type: "assistant",
+      message: { id: "partial", content: [{ type: "text", text: "Existing progress" }] },
+    });
+    const steer = { requestId: randomUUID(), text: "Keep working, refine the final answer" };
+    fake.sendHook = () => first.close();
+    await expect(first.request("steer", steer)).rejects.toThrow("disconnected");
+    const next = await client();
+    expect(await next.request("steer", steer)).toMatchObject({
+      requestId: steer.requestId,
+      kind: "steer",
+      status: "completed",
+    });
+    expect(fake.sends.map((input) => input.text)).toEqual(["Original task", steer.text]);
+    expect(fake.interruptions).toBe(0);
+    expect(runner.snapshot().state).toBe("running");
+    expect(runner.snapshot().currentEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "assistant",
+          message: expect.objectContaining({ id: "partial" }),
+        }),
+        expect.objectContaining({
+          type: "user",
+          uuid: steer.requestId,
+          claudenest_delivery: "steer",
+        }),
+      ]),
+    );
+    await expect(next.request("steer", { ...steer, text: "Changed" })).rejects.toMatchObject({
+      code: "conflict",
+    });
+  });
+
+  it("associates each steering receipt with its echoed UUID rather than another task's result", async () => {
+    const { fake, runner, client } = await fixture();
+    fake.autoEcho = false;
+    const connection = await client(),
+      original = randomUUID(),
+      first = randomUUID(),
+      second = randomUUID();
+    await connection.request("send", { requestId: original, text: "Original" });
+    await connection.request("steer", { requestId: first, text: "First refinement" });
+    await connection.request("steer", { requestId: second, text: "Second refinement" });
+    fake.emit("event", { type: "user", uuid: second, message: { content: "Second refinement" } });
+    fake.emit("event", { type: "result", subtype: "success" });
+    expect(runner.snapshot().commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ requestId: original, status: "completed" }),
+        expect.objectContaining({ requestId: first, status: "accepted" }),
+        expect.objectContaining({ requestId: second, status: "completed" }),
+      ]),
+    );
+    expect(runner.snapshot().state).toBe("running");
+    await expect(
+      connection.request("send", { requestId: randomUUID(), text: "Too early" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    fake.emit("event", { type: "user", uuid: first, message: { content: "First refinement" } });
+    fake.emit("event", { type: "result", subtype: "success" });
+    expect(runner.snapshot().state).toBe("idle");
+    expect(runner.snapshot().commands.find((receipt) => receipt.requestId === first)?.status).toBe(
+      "completed",
+    );
+  });
+
+  it("accepts steering while waiting for a question and preserves that question", async () => {
+    const { fake, runner, client } = await fixture();
+    const connection = await client();
+    await connection.request("send", { requestId: randomUUID(), text: "Question task" });
+    fake.emit("request", {
+      request_id: "question",
+      request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: { questions: [] } },
+    });
+    await connection.request("steer", { requestId: randomUUID(), text: "Additional context" });
+    expect(runner.snapshot().state).toBe("waiting");
+    expect(runner.snapshot().pendingRequests).toMatchObject([
+      { requestId: "question", kind: "userQuestion" },
+    ]);
+    expect(fake.responses).toEqual([]);
+    expect(fake.interruptions).toBe(0);
+  });
+
+  it("changes permissions during active work and allows tools while keeping user questions pending", async () => {
+    const { fake, runner, client } = await fixture();
+    const connection = await client();
+    await connection.request("send", { requestId: randomUUID(), text: "Active work" });
+    fake.emit("request", {
+      request_id: "approval",
+      request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "pwd" } },
+    });
+    fake.emit("request", {
+      request_id: "question",
+      request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: { questions: [] } },
+    });
+    const update = { requestId: randomUUID(), permissionMode: "bypassPermissions" };
+    await connection.request("setPermissionMode", update);
+    await connection.request("setPermissionMode", update);
+    expect(fake.permissionChanges).toBe(1);
+    expect(fake.responses).toEqual([
+      { requestId: "approval", response: { behavior: "allow", updatedInput: { command: "pwd" } } },
+    ]);
+    expect(runner.snapshot()).toMatchObject({
+      permissionMode: "bypassPermissions",
+      state: "waiting",
+      pendingRequests: [{ requestId: "question", kind: "userQuestion" }],
+    });
+    fake.emit("request", {
+      request_id: "read",
+      request: { subtype: "can_use_tool", tool_name: "Read", input: { file_path: "a.ts" } },
+    });
+    expect(fake.responses.at(-1)).toEqual({
+      requestId: "read",
+      response: { behavior: "allow", updatedInput: { file_path: "a.ts" } },
+    });
+    expect(runner.snapshot().pendingRequests).toHaveLength(1);
+  });
+
+  it("does not allow a tool after rejection or cancellation of its permission change", async () => {
+    const { fake, runner, client } = await fixture();
+    const connection = await client();
+    await connection.request("send", { requestId: randomUUID(), text: "Work" });
+    fake.emit("request", {
+      request_id: "approval",
+      request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "pwd" } },
+    });
+    fake.rejectPermission = true;
+    await expect(
+      connection.request("setPermissionMode", {
+        requestId: randomUUID(),
+        permissionMode: "bypassPermissions",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    expect(runner.snapshot().state).toBe("waiting");
+    expect(fake.responses).toEqual([]);
+    fake.rejectPermission = false;
+    fake.permissionHook = () => fake.emit("requestCancelled", "approval");
+    await connection.request("setPermissionMode", {
+      requestId: randomUUID(),
+      permissionMode: "bypassPermissions",
+    });
+    expect(fake.responses).toEqual([]);
+    expect(runner.snapshot().pendingRequests).toEqual([]);
+    expect(runner.snapshot().state).toBe("running");
+  });
+
+  it("cleans a synchronous interruption result without failing the owner or retaining pending questions", async () => {
+    const { fake, runner, client } = await fixture();
+    const connection = await client();
+    await connection.request("send", { requestId: randomUUID(), text: "Work" });
+    fake.emit("request", {
+      request_id: "question",
+      request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: {} },
+    });
+    fake.interruptHook = () =>
+      fake.emit("event", {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["[ede_diagnostic] Request interrupted by user"],
+      });
+    await connection.request("interrupt", { requestId: randomUUID() });
+    expect(runner.snapshot()).toMatchObject({ state: "interrupted", pendingRequests: [] });
+    expect(runner.snapshot().currentEvents.at(-1)).toMatchObject({
+      type: "result",
+      claudenest_interrupted: true,
+    });
+    await connection.request("send", { requestId: randomUUID(), text: "Next task" });
+    expect(runner.snapshot().state).toBe("running");
+    expect(fake.stops).toBe(0);
+  });
+
+  it("publishes uncertain delivery and removes stale questions when the native owner fails", async () => {
+    const { fake, runner, client } = await fixture();
+    fake.autoEcho = false;
+    const connection = await client(),
+      requestId = randomUUID();
+    const frames: RpcMessage[] = [];
+    connection.on("message", (message) => frames.push(message));
+    await connection.request("subscribe");
+    await connection.request("send", { requestId, text: "Work" });
+    fake.emit("request", {
+      request_id: "question",
+      request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: {} },
+    });
+    fake.emit("error", new Error("Native pipe failed"));
+    await expect
+      .poll(() =>
+        frames.some(
+          (message) =>
+            "event" in message &&
+            message.event.kind === "command" &&
+            (message.event.data as CommandReceipt).requestId === requestId &&
+            (message.event.data as CommandReceipt).status === "unknown",
+        ),
+      )
+      .toBe(true);
+    expect(runner.snapshot()).toMatchObject({ state: "failed", pendingRequests: [] });
+    fake.emit("request", {
+      request_id: "late-question",
+      request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: {} },
+    });
+    expect(runner.snapshot().pendingRequests).toEqual([]);
+    expect(fake.responses).toEqual([]);
+    expect(await connection.request("release")).toEqual({ released: true });
+  });
+
   it("advertises model controls and deduplicates idle-only settings changes", async () => {
     const { fake, runner, client } = await fixture();
     const connection = await client();

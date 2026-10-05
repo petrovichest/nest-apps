@@ -43,7 +43,7 @@ export interface RunnerDescriptor {
 
 export interface CommandReceipt {
   requestId: string;
-  kind: "send" | "interrupt" | "respond" | "setModel" | "setPermissionMode";
+  kind: "send" | "steer" | "interrupt" | "respond" | "setModel" | "setPermissionMode";
   fingerprint: string;
   status: "accepted" | "completed" | "unknown";
   error?: string;
@@ -53,6 +53,7 @@ export interface PendingRequest {
   requestId: string;
   toolName: string;
   input: Record<string, unknown>;
+  kind?: "toolApproval" | "userQuestion" | "other";
 }
 
 export interface RunnerSnapshot {
@@ -65,6 +66,7 @@ export interface RunnerSnapshot {
   claudePid?: number;
   cwd: string;
   state: RunnerState;
+  awaitingResult?: boolean;
   sequence: number;
   pendingRequests: PendingRequest[];
   currentEvents: Record<string, unknown>[];
@@ -74,6 +76,8 @@ export interface RunnerSnapshot {
     uploadedImages: boolean;
     setModel: boolean;
     setPermissionMode: boolean;
+    steer?: boolean;
+    livePermissionMode?: boolean;
   };
   supportedModels?: ClaudeModel[];
   model?: string;
@@ -94,6 +98,24 @@ export type RpcMessage =
   | { id: string; error: { code: string; message: string } }
   | { type: "event"; event: RunnerEvent }
   | { type: "snapshot"; snapshot: RunnerSnapshot };
+
+/** Native interruption failures carry internal diagnostics, not a model failure. */
+export function nativeResultInterrupted(event: Record<string, unknown>): boolean {
+  if (
+    event.claudenest_interrupted === true ||
+    event.subtype === "interrupted" ||
+    event.terminal_reason === "aborted_streaming" ||
+    event.terminal_reason === "aborted_tools"
+  )
+    return true;
+  const details = [event.result, ...(Array.isArray(event.errors) ? event.errors : [])]
+    .map((value) => (typeof value === "string" ? value : JSON.stringify(value ?? "")))
+    .join("\n");
+  return (
+    /\[ede_diagnostic\]|request interrupted by user/i.test(details) &&
+    /interrupt|cancel(?:led|ed) by user|aborterror/i.test(details)
+  );
+}
 
 export class AppError extends Error {
   constructor(

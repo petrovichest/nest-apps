@@ -100,6 +100,8 @@ export type NewSessionSubmission = {
 };
 
 export type OutboxMessage = PastedText & {
+  deliveryMode?: "steer" | "queue";
+  steerTurnId?: string;
   draftUpdatedAt?: number | null;
   projectDraft?: { projectId: string; updatedAt: number };
   id: string;
@@ -376,6 +378,7 @@ export function outboxMessageIntent(value: OutboxMessage): string {
     value.userInputSubmission,
     value.projectDraft,
     ...(value.draftUpdatedAt !== undefined ? [value.draftUpdatedAt] : []),
+    ...(value.deliveryMode !== undefined ? [value.deliveryMode] : []),
   ]);
 }
 

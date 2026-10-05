@@ -34,20 +34,6 @@ function string(value: unknown, name: string, limit = 200_000): string {
     throw new AppError("invalid_request", `${name} must be nonempty text`);
   return value;
 }
-function permission(mode: ClaudePermissionMode, version: number) {
-  return {
-    preset:
-      mode === "bypassPermissions"
-        ? ("full-access" as const)
-        : mode === "acceptEdits"
-          ? ("auto" as const)
-          : ("ask" as const),
-    version: String(version),
-    overridden: false,
-    message: null,
-  };
-}
-
 export async function registerUiRoutes(
   app: FastifyInstance,
   ui: UiService,
@@ -98,9 +84,7 @@ export async function registerUiRoutes(
       nextCursor: null,
     };
   });
-  app.get("/api/v1/settings/permissions", async () =>
-    permission(ui.store.data.permissionMode, ui.store.data.permissionVersion),
-  );
+  app.get("/api/v1/settings/permissions", async () => ui.permissionSettings());
   app.put("/api/v1/settings/permissions", async (request) => {
     const body = record(request.body),
       modes: Record<string, ClaudePermissionMode> = {
@@ -110,17 +94,8 @@ export async function registerUiRoutes(
       };
     const mode = modes[String(body.preset)];
     if (!mode) throw new AppError("invalid_request", "Invalid permission preset");
-    await ui.store.update((data) => {
-      if (
-        body.expectedVersion !== undefined &&
-        body.expectedVersion !== String(data.permissionVersion)
-      )
-        throw new AppError("conflict", "Permission settings changed", 409);
-      data.permissionMode = mode;
-      data.permissionVersion++;
-    });
-    // Global preference applies to new CLI owners; live owner permission changes require explicit session controls.
-    return permission(ui.store.data.permissionMode, ui.store.data.permissionVersion);
+    await ui.setPermissions(mode, body.expectedVersion);
+    return ui.permissionSettings();
   });
   app.put("/api/v1/settings/task-defaults", async (request) => {
     const body = record(request.body);
@@ -342,11 +317,13 @@ export async function registerUiRoutes(
       .code(202)
       .send(await ui.enqueue(params(request).id, record(request.body) as QueueMessageRequest)),
   );
+  app.post("/api/v1/threads/:id/steer", async (request, reply) =>
+    reply
+      .code(202)
+      .send(await ui.steer(params(request).id, record(request.body) as QueueMessageRequest)),
+  );
   app.post("/api/v1/threads/:id/turns", async (request, reply) => {
-    const message = await ui.enqueue(
-      params(request).id,
-      record(request.body) as QueueMessageRequest,
-    );
+    const message = await ui.steer(params(request).id, record(request.body) as QueueMessageRequest);
     return reply.code(202).send({
       turnId: message.id,
       deliveryReceipt: {
@@ -383,6 +360,7 @@ export async function registerUiRoutes(
                 ...pastedText(entry),
                 images: entry.images ?? [],
                 files: entry.files ?? [],
+                ...(value.mode ? { deliveryMode: value.mode } : {}),
               }),
             )
             .digest("hex");
@@ -410,16 +388,17 @@ export async function registerUiRoutes(
   app.post("/api/v1/threads/:id/queue/:messageId/send", async (request) => {
     const p = params(request);
     ui.thread(p.id);
-    if (ui.summary(p.id).state === "running" || ui.summary(p.id).state === "needsAttention")
-      throw new AppError("conflict", "Claude session is still running", 409);
     await ui.store.update((data) => {
       const queue = data.threads[p.id]!.queue,
         entry = queue.find((item) => item.id === p.messageId);
       if (!entry) throw new AppError("not_found", "Queued message not found", 404);
+      if (entry.status === "dispatching")
+        throw new AppError("conflict", "Message delivery is already in progress", 409);
       if (entry.deliveryError && !entry.deliveryError.retryable)
         throw new AppError("conflict", "Unknown delivery must be reconciled before resending", 409);
       delete entry.deliveryError;
       entry.status = "queued";
+      entry.deliveryMode = "steer";
       queue.splice(queue.indexOf(entry), 1);
       queue.unshift(entry);
     });

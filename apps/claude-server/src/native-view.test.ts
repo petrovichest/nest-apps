@@ -74,6 +74,204 @@ describe("native Claude view", () => {
     });
     expect(view.currentTurnId).toBeNull();
   });
+
+  it("renders steering inside the active task without finishing its prior output", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply(stream({ type: "message_start", message: { id: "message-1" } }));
+    view.apply(
+      stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "Working" },
+      }),
+    );
+    const steering = {
+      ...user,
+      uuid: "steer-1",
+      claudenest_delivery: "steer",
+      message: { content: "Refine the answer" },
+    };
+    view.apply(steering);
+    view.apply(steering);
+    expect(view.turns()).toHaveLength(1);
+    expect(view.currentTurnId).toBe("user-1");
+    expect(view.turns()[0]!.items.map((item) => item.id)).toEqual([
+      "user-1",
+      "message-1:0",
+      "steer-1",
+    ]);
+    expect(
+      view.apply(
+        stream({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: " with refinement" },
+        }),
+      )[0],
+    ).toMatchObject({ type: "activity.delta", turnId: "user-1" });
+    expect(view.turns()[0]!.items[1]).toMatchObject({
+      status: "inProgress",
+      text: "Working with refinement",
+    });
+    view.apply({ type: "result", subtype: "success" });
+    expect(view.turns()[0]!.status).toBe("completed");
+  });
+
+  it("recovers native steering during a tool call and preserves the following ordinary turn boundary", () => {
+    const secondUser = {
+      ...user,
+      uuid: "steer-1",
+      message: { content: "Refine while the command runs" },
+    };
+    const events = [
+      user,
+      {
+        type: "assistant",
+        message: {
+          id: "tool-message",
+          stop_reason: "tool_use",
+          content: [{ type: "tool_use", id: "bash", name: "Bash", input: { command: "pwd" } }],
+        },
+      },
+      {
+        type: "user",
+        uuid: "tool-result",
+        message: { content: [{ type: "tool_result", tool_use_id: "bash", content: "/project" }] },
+      },
+      secondUser,
+      { ...assistant, message: { ...assistant.message, stop_reason: "end_turn" } },
+      { ...user, uuid: "next-user", message: { content: "Next ordinary task" } },
+      {
+        ...assistant,
+        message: {
+          id: "next-answer",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "Next answer" }],
+        },
+      },
+    ];
+    const view = normalizeNativeEvents(events, { sessionId: "session", cwd: "/project" });
+    expect(view.turns.map((turn) => turn.id)).toEqual(["user-1", "next-user"]);
+    expect(
+      view.turns[0]!.items.filter((item) => item.type === "userMessage").map((item) => item.id),
+    ).toEqual(["user-1", "steer-1"]);
+    expect(view.turns[0]!.items.find((item) => item.id === "bash")).toMatchObject({
+      output: "/project",
+      status: "completed",
+    });
+    expect(view.turns[1]!.items.map((item) => item.id)).toEqual(["next-user", "next-answer:0"]);
+  });
+
+  it("starts a separate task when steering is echoed after the previous task's native result", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply(assistant);
+    view.apply({ type: "result", subtype: "success" });
+    view.apply({
+      ...user,
+      uuid: "late-steer",
+      claudenest_delivery: "steer",
+      message: { content: "Late refinement" },
+    });
+    expect(view.turns().map((turn) => [turn.id, turn.status])).toEqual([
+      ["user-1", "completed"],
+      ["late-steer", "inProgress"],
+    ]);
+  });
+
+  it("renders user interruption as an interrupted task and suppresses internal CLI diagnostics", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply({
+      type: "assistant",
+      message: {
+        id: "tools",
+        content: [{ type: "tool_use", id: "bash", name: "Bash", input: { command: "pwd" } }],
+      },
+    });
+    view.apply({
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "bash",
+            is_error: true,
+            content: "[Request interrupted by user]",
+          },
+        ],
+      },
+    });
+    view.apply({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      errors: ["[ede_diagnostic] Request interrupted by user"],
+    });
+    expect(view.turns()[0]).toMatchObject({ status: "interrupted" });
+    expect(view.turns()[0]!.items.some((item) => item.type === "error")).toBe(false);
+    expect(JSON.stringify(view.turns())).not.toContain("ede_diagnostic");
+    expect(JSON.stringify(view.turns())).not.toContain("Request interrupted by user");
+    expect(view.turns()[0]!.items.find((item) => item.id === "bash")).toMatchObject({
+      output: "",
+      status: "completed",
+    });
+  });
+
+  it("uses the explicit interrupt marker even when the native diagnostic has no interruption text", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply(assistant);
+    view.apply({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      claudenest_interrupted: true,
+      errors: ["[ede_diagnostic] Internal abort state"],
+    });
+    expect(view.turns()[0]!.status).toBe("interrupted");
+    expect(view.turns()[0]!.items.some((item) => item.type === "error")).toBe(false);
+  });
+
+  it.each(["aborted_streaming", "aborted_tools"])(
+    "recognizes native %s terminal reasons whose diagnostic does not mention interruption",
+    (terminal_reason) => {
+      const view = new NativeView("session", "/project");
+      view.apply(user);
+      view.apply(assistant);
+      view.apply({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason,
+        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"],
+      });
+      expect(view.turns()[0]!.status).toBe("interrupted");
+      expect(view.turns()[0]!.items.some((item) => item.type === "error")).toBe(false);
+      expect(JSON.stringify(view.turns())).not.toContain("ede_diagnostic");
+    },
+  );
+
+  it("keeps genuine execution errors failed while hiding their internal diagnostic line", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      errors: [
+        "[ede_diagnostic] result_type=assistant stop_reason=error",
+        "The selected model is unavailable",
+      ],
+    });
+    expect(view.turns()[0]!.status).toBe("failed");
+    expect(view.turns()[0]!.items.at(-1)).toMatchObject({
+      type: "error",
+      message: "The selected model is unavailable",
+    });
+    expect(JSON.stringify(view.turns())).not.toContain("ede_diagnostic");
+  });
   it("joins tool results by tool_use_id and does not mistake them for another user turn", () => {
     const view = new NativeView("session", "/project");
     view.apply(user);

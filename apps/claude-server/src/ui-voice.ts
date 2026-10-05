@@ -101,8 +101,8 @@ export class UiVoiceJobs {
         )
           throw new AppError("invalid_request", "Audio duration must be at most 300 seconds");
         const mode = query.mode ?? "draft";
-        if (mode !== "draft" && mode !== "send" && mode !== "queue")
-          throw new AppError("invalid_request", "Voice mode must be draft, send, or queue");
+        if (mode !== "draft" && mode !== "send" && mode !== "queue" && mode !== "steer")
+          throw new AppError("invalid_request", "Voice mode must be draft, send, queue, or steer");
         if (query.userInput !== undefined || query.dismissUserInput !== undefined)
           throw new AppError(
             "invalid_request",
@@ -438,6 +438,9 @@ export class UiVoiceJobs {
           images: inserted.images.map((image) => image.url),
           ...(inserted.files?.length ? { files: inserted.files } : {}),
           clientMessageId: `voice:${record.job.id}`,
+          ...(record.job.mode === "steer" || record.job.mode === "send"
+            ? { deliveryMode: "steer" as const }
+            : {}),
         };
         input = structuredClone(record.sendInput);
       }

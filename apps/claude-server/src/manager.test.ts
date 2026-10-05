@@ -106,6 +106,42 @@ async function fixture() {
 }
 
 describe("Claude backend manager integration", () => {
+  it("steers a live owner durably without launching, interrupting, or resetting its native task", async () => {
+    const { backend, launcher, input } = await fixture();
+    const manager = await backend();
+    await manager.create(input);
+    const owner = launcher.owners.get(input.sessionId)!,
+      before = await manager.snapshot(input.sessionId),
+      requestId = randomUUID();
+    expect(
+      await manager.steer(input.sessionId, requestId, "Refine the final answer"),
+    ).toMatchObject({ requestId, kind: "steer", status: "completed" });
+    await manager.steer(input.sessionId, requestId, "Refine the final answer");
+    expect(launcher.starts).toBe(1);
+    expect(owner.transport.sends).toEqual([
+      { requestId: input.requestId, text: input.prompt },
+      { requestId, text: "Refine the final answer" },
+    ]);
+    expect(await manager.snapshot(input.sessionId)).toMatchObject({
+      runnerInstanceId: before.runnerInstanceId,
+      state: "running",
+      capabilities: { steer: true },
+    });
+    expect(owner.transport.stops).toBe(0);
+    await expect(
+      manager.steer(input.sessionId, requestId, "Changed refinement"),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("does not start an owner to replay steering when no live owner exists", async () => {
+    const { backend, launcher, input } = await fixture();
+    const manager = await backend();
+    await expect(
+      manager.steer(input.sessionId, randomUUID(), "Busy refinement"),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(launcher.starts).toBe(0);
+  });
+
   it("serializes creation retries and refuses conflicting creation input without another launch", async () => {
     const { backend, launcher, input } = await fixture();
     const manager = await backend();

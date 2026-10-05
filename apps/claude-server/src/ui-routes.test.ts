@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -11,12 +11,13 @@ import type {
   ThreadDraft,
   ThreadFileAttachment,
 } from "@codexnest/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { buildApp } from "./app";
 import type { Config } from "./config";
 import type { SessionManager } from "./manager";
-import { AppError } from "./types";
+import type { RunnerConnection } from "./rpc";
+import { AppError, type CommandReceipt, type RunnerDescriptor, type RunnerSnapshot } from "./types";
 import { UiService } from "./ui-service";
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -97,7 +98,200 @@ async function fixture() {
   return { app, ui, manager, config, directory, headers, reserve, operations };
 }
 
+async function attachActive(state: Awaited<ReturnType<typeof fixture>>, id: string) {
+  const owner: RunnerSnapshot = {
+    sessionId: id,
+    runnerInstanceId: randomUUID(),
+    protocolVersion: 1,
+    releasePath: state.config.releasePath,
+    claudeVersion: "test",
+    runnerPid: 999999,
+    cwd: state.directory,
+    state: "running",
+    sequence: 0,
+    pendingRequests: [],
+    currentEvents: [],
+    commands: [],
+    permissionMode: "bypassPermissions",
+    capabilities: {
+      contentBlocks: true,
+      uploadedImages: true,
+      setModel: true,
+      setPermissionMode: true,
+      steer: true,
+      livePermissionMode: true,
+    },
+  };
+  const descriptor: RunnerDescriptor = {
+    sessionId: id,
+    cwd: owner.cwd,
+    claudeBin: state.config.claudeBin,
+    nodeBin: state.config.nodeBin,
+    configDir: state.config.configDir,
+    runnerPath: state.config.runnerPath,
+    releasePath: state.config.releasePath,
+    stateDirectory: join(state.config.stateDir, id),
+    socketPath: join(state.config.runtimeDir, `${id}.sock`),
+    resume: true,
+    protocolVersion: 1,
+  };
+  class Connection extends EventEmitter {
+    async request() {
+      this.emit("message", { type: "snapshot", snapshot: structuredClone(owner) });
+      return { sequence: owner.sequence };
+    }
+    close() {
+      this.emit("close");
+    }
+  }
+  state.manager.descriptor = async () => descriptor;
+  state.manager.snapshot = async () => structuredClone(owner);
+  state.manager.subscribe = async () => new Connection() as unknown as RunnerConnection;
+  const steer = vi.fn(async (_id: string, requestId: string, prompt: string) => {
+    const receipt: CommandReceipt = {
+      requestId,
+      kind: "steer",
+      fingerprint: prompt,
+      status: "completed",
+    };
+    owner.commands.push(receipt);
+    return receipt;
+  });
+  state.manager.steer = steer;
+  const command = vi.fn(async (_id: string, method: string, params: Record<string, unknown>) => {
+    if (method === "setPermissionMode")
+      owner.permissionMode = params.permissionMode as RunnerSnapshot["permissionMode"];
+    return {
+      requestId: String(params.requestId),
+      kind: method,
+      fingerprint: "control",
+      status: "completed",
+    };
+  });
+  state.manager.command = command;
+  await state.ui.attach(id);
+  state.manager.accepting = true;
+  return { owner, steer, command };
+}
+
 describe("Claude browser UI HTTP and global stream", () => {
+  it("sends turns and explicit steering straight to a busy owner while explicit FIFO waits", async () => {
+    const state = await fixture(),
+      { id } = await state.reserve();
+    const { steer, command } = await attachActive(state, id);
+    const queued = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/queue`,
+      headers: state.headers,
+      payload: { input: "FIFO later", clientMessageId: randomUUID() },
+    });
+    expect(queued.statusCode).toBe(202);
+    const firstId = randomUUID(),
+      secondId = randomUUID();
+    const turn = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/turns`,
+      headers: state.headers,
+      payload: { input: "Active adjustment", clientMessageId: firstId },
+    });
+    expect(turn.statusCode).toBe(202);
+    expect(turn.json()).toMatchObject({ turnId: firstId, deliveryReceipt: { clientId: firstId } });
+    const explicit = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/steer`,
+      headers: state.headers,
+      payload: { input: "Another adjustment", clientMessageId: secondId },
+    });
+    expect(explicit.statusCode).toBe(202);
+    await expect.poll(() => steer.mock.calls.length).toBe(2);
+    await expect.poll(() => state.ui.thread(id).queue.length).toBe(1);
+    expect(steer.mock.calls.map((call) => call.slice(0, 3))).toEqual([
+      [id, firstId, "Active adjustment"],
+      [id, secondId, "Another adjustment"],
+    ]);
+    expect(state.ui.thread(id).queue[0]?.text).toBe("FIFO later");
+    expect(command).not.toHaveBeenCalled();
+    expect(state.operations).toEqual([]);
+  });
+
+  it("promotes a selected queued message to steering and preserves its original retry identity", async () => {
+    const state = await fixture(),
+      { id } = await state.reserve();
+    const { steer, command } = await attachActive(state, id);
+    const first = { input: "Leave first in FIFO", clientMessageId: randomUUID() },
+      selected = {
+        input: "Send selected now",
+        clientMessageId: randomUUID(),
+        pasteBlocks: [{ id: "paste", text: "Selected context" }],
+      };
+    for (const payload of [first, selected])
+      expect(
+        (
+          await state.app.inject({
+            method: "POST",
+            url: `/api/v1/threads/${id}/queue`,
+            headers: state.headers,
+            payload,
+          })
+        ).statusCode,
+      ).toBe(202);
+    const response = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/queue/${selected.clientMessageId}/send`,
+      headers: state.headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ turnId: selected.clientMessageId });
+    await expect.poll(() => steer.mock.calls.length).toBe(1);
+    await expect.poll(() => state.ui.thread(id).queue.length).toBe(1);
+    expect(steer.mock.calls[0]?.[1]).toBe(selected.clientMessageId);
+    expect(steer.mock.calls[0]?.[2]).toContain("Selected context");
+    expect(state.ui.thread(id).queue[0]?.id).toBe(first.clientMessageId);
+    const retry = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/queue`,
+      headers: state.headers,
+      payload: selected,
+    });
+    expect(retry.statusCode).toBe(202);
+    expect(retry.json<QueuedMessage>().id).toBe(selected.clientMessageId);
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(command).not.toHaveBeenCalled();
+    expect(state.operations).toEqual([]);
+  });
+
+  it("defaults to full access and applies permission settings live with optimistic version checks", async () => {
+    const state = await fixture(),
+      { id } = await state.reserve();
+    const { command, owner } = await attachActive(state, id);
+    const original = await state.app.inject({
+      url: "/api/v1/settings/permissions",
+      headers: state.headers,
+    });
+    expect(original.statusCode).toBe(200);
+    expect(original.json()).toMatchObject({ preset: "full-access", version: "1" });
+    const changed = await state.app.inject({
+      method: "PUT",
+      url: "/api/v1/settings/permissions",
+      headers: state.headers,
+      payload: { preset: "ask", expectedVersion: "1" },
+    });
+    expect(changed.statusCode).toBe(200);
+    expect(owner.state).toBe("running");
+    expect(owner.permissionMode).toBe("manual");
+    expect(command.mock.calls.map((call) => [call[1], call[2].permissionMode])).toEqual([
+      ["setPermissionMode", "manual"],
+    ]);
+    const stale = await state.app.inject({
+      method: "PUT",
+      url: "/api/v1/settings/permissions",
+      headers: state.headers,
+      payload: { preset: "full-access", expectedVersion: "1" },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(state.ui.snapshot().permissionSettings).toMatchObject({ preset: "ask", version: "2" });
+  });
   it("serves the PWA shell without credentials while guarding APIs and foreign origins", async () => {
     const { app, headers } = await fixture();
     const shell = await app.inject({ url: "/" });

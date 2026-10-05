@@ -19,6 +19,7 @@ class FakeChild extends EventEmitter {
   autoInterrupt = true;
   autoFinish = true;
   initializeResponse: ObjectMessage = {};
+  permissionResponse: ObjectMessage = {};
   rejectSettings = false;
   readonly kill = vi.fn(() => true);
 
@@ -41,7 +42,12 @@ class FakeChild extends EventEmitter {
                 ? "error"
                 : "success",
             request_id: message.request_id,
-            response: message.request.subtype === "initialize" ? this.initializeResponse : {},
+            response:
+              message.request.subtype === "initialize"
+                ? this.initializeResponse
+                : message.request.subtype === "set_permission_mode"
+                  ? this.permissionResponse
+                  : {},
           },
         });
         if (message.request.subtype === "initialize" && this.exitAfterInitialize) this.close();
@@ -136,6 +142,36 @@ describe("Claude model metadata and controls", () => {
     expect(process.model).toBe("opus");
     await process.stop();
   });
+  it("opts into later bypass without selecting it until the CLI confirms the mode", async () => {
+    const { child, process, spawnProcess } = setup();
+    await process.start();
+    expect(spawnProcess.mock.calls[0]![1]).toContain("--allow-dangerously-skip-permissions");
+    expect(process.livePermissionMode).toBe(true);
+    expect(process.permissionMode).toBe("manual");
+    child.permissionResponse = { mode: "bypassPermissions" };
+    await process.setPermissionMode("bypassPermissions");
+    expect(process.permissionMode).toBe("bypassPermissions");
+    child.permissionResponse = { mode: "bypassPermissions" };
+    await expect(process.setPermissionMode("manual")).rejects.toThrow("requested permission mode");
+    expect(process.permissionMode).toBe("bypassPermissions");
+    child.permissionResponse = { mode: "default" };
+    await process.setPermissionMode("manual");
+    expect(process.permissionMode).toBe("manual");
+    child.rejectSettings = true;
+    await expect(process.setPermissionMode("acceptEdits")).rejects.toThrow("rejected");
+    expect(process.permissionMode).toBe("manual");
+    await process.stop();
+  });
+  it("starts directly in bypass only when explicitly selected", async () => {
+    const { process, spawnProcess } = setup({ permissionMode: "bypassPermissions" });
+    await process.start();
+    const args = spawnProcess.mock.calls[0]![1] as string[];
+    expect(
+      args.slice(args.indexOf("--permission-mode"), args.indexOf("--permission-mode") + 2),
+    ).toEqual(["--permission-mode", "bypassPermissions"]);
+    expect(args).toContain("--allow-dangerously-skip-permissions");
+    await process.stop();
+  });
   it("preserves native image content blocks and observes actual model initialization", async () => {
     const { child, process } = setup();
     await process.start();
@@ -156,6 +192,42 @@ afterEach(() => {
 });
 
 describe("ClaudeProcess stream-json transport", () => {
+  it("writes active-turn steering without interrupting, replaying or auto-answering questions", async () => {
+    const { child, process } = setup({ permissionMode: "bypassPermissions" });
+    const requests: ObjectMessage[] = [];
+    process.on("request", (request: ObjectMessage) => requests.push(request));
+    await process.start();
+    process.sendUser(MESSAGE, "Original task");
+    child.output({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool", name: "Bash", input: { command: "sleep 1" } }],
+      },
+    });
+    const steering = "33333333-3333-4333-8333-333333333333";
+    process.sendUser(steering, "Adjust the active task");
+    child.output({
+      type: "control_request",
+      request_id: "question",
+      request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: { questions: [] } },
+    });
+    expect(
+      child.sent.filter((message) => message.type === "user").map((message) => message.uuid),
+    ).toEqual([MESSAGE, steering]);
+    expect(
+      child.sent
+        .filter((message) => message.type === "control_request")
+        .map((message) => message.request.subtype),
+    ).toEqual(["initialize"]);
+    expect(child.sent.some((message) => message.type === "control_response")).toBe(false);
+    expect(requests).toHaveLength(1);
+    process.respond("question", {
+      behavior: "allow",
+      updatedInput: { answers: { colour: "Blue" } },
+    });
+    await process.stop();
+  });
   it("uses installed CLI and normal settings/auth, strips only the nested CLI marker, and initializes control", async () => {
     const { child, process, spawnProcess } = setup({
       model: "sonnet",

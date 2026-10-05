@@ -4691,6 +4691,18 @@ button.message-file:hover:not(:disabled) {
   font-size: var(--text-caption);
 }
 
+.composer-permissions-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3) 0;
+}
+
+.composer-permissions-hint svg {
+  width: 14px;
+  height: 14px;
+}
+
 .composer-error {
   width: calc(100% - 16px);
   margin: 0 auto var(--space-2);
@@ -6912,6 +6924,10 @@ button.message-file:hover:not(:disabled) {
 
   .composer-hint {
     display: none;
+  }
+
+  .composer-permissions-hint {
+    display: flex;
   }
 
   .goal-popover {

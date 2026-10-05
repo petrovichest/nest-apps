@@ -17,6 +17,7 @@ import {
 
 import type {
   ModelOption,
+  PermissionPreset,
   Project,
   SessionSettings,
   SkillCatalogItem,
@@ -31,7 +32,16 @@ import type {
 
 import { localizeKnownServerText, type Translate, useI18n } from "../i18n";
 import { useSkillsCatalog } from "../useSkillsCatalog";
-import { FileIcon, MicrophoneIcon, PlusIcon, SendIcon, StopIcon, XIcon } from "./Icons";
+import {
+  ClockIcon,
+  FileIcon,
+  MicrophoneIcon,
+  PlusIcon,
+  SendIcon,
+  ShieldIcon,
+  StopIcon,
+  XIcon,
+} from "./Icons";
 import { ImageViewer } from "./ImageViewer";
 import { SettingsPicker } from "./SettingsPicker";
 import {
@@ -115,6 +125,7 @@ export function Composer({
   inputUnavailable = false,
   codexSettings,
   running = false,
+  permissionPreset,
   settings,
   onSettingsChange,
   settingsBusy = false,
@@ -172,6 +183,7 @@ export function Composer({
   inputUnavailable?: boolean;
   codexSettings?: { model: string | null; reasoningEffort: string | null };
   running?: boolean;
+  permissionPreset?: PermissionPreset | null;
   settings: SessionSettings;
   onSettingsChange(value: UpdateThreadSettingsRequest): void;
   settingsBusy?: boolean;
@@ -398,6 +410,7 @@ export function Composer({
     !settingsBusy &&
     !speechBusy &&
     Boolean(onSendQueuedNow);
+  const steerByDefault = application.isClaude && running;
   const planToggleEligible =
     application.capabilities.plan &&
     !running &&
@@ -724,7 +737,9 @@ export function Composer({
       return;
     }
     if (!canSubmit) return;
-    onSubmit(immediate ? "immediate" : "queue");
+    onSubmit(
+      steerByDefault ? (immediate ? "queue" : "immediate") : immediate ? "immediate" : "queue",
+    );
   }
 
   async function addImages(files: readonly File[]) {
@@ -1305,7 +1320,7 @@ export function Composer({
       className={`composer${keyboardOpen ? " keyboard-open" : ""}`}
       onSubmit={(event) => {
         event.preventDefault();
-        if (canSubmit) onSubmit("queue");
+        if (canSubmit) onSubmit(steerByDefault ? "immediate" : "queue");
       }}
     >
       {composerError && (
@@ -1472,6 +1487,19 @@ export function Composer({
                 : t("Спросите что угодно")
           }
         />
+        {application.isClaude && permissionPreset && (
+          <span
+            className="composer-hint composer-permissions-hint"
+            title={
+              permissionPreset === "full-access"
+                ? t("Claude выполняет команды и изменяет файлы без запросов разрешения.")
+                : t("Claude запрашивает подтверждение команд и изменений файлов.")
+            }
+          >
+            <ShieldIcon />
+            {permissionPreset === "full-access" ? t("Полный доступ") : t("С подтверждением")}
+          </span>
+        )}
         <div className="composer-toolbar" onPointerDownCapture={preserveTextareaFocus}>
           <div className="composer-options">
             <input
@@ -1552,7 +1580,11 @@ export function Composer({
                 </span>
               )}
             {running && (
-              <span className="composer-hint">{t("Сообщение будет добавлено в очередь")}</span>
+              <span className="composer-hint">
+                {steerByDefault
+                  ? t("Сообщение отправится Claude сразу · Ctrl/Cmd+Enter — в очередь")
+                  : t("Сообщение будет добавлено в очередь")}
+              </span>
             )}
           </div>
           <div className="composer-actions">
@@ -1655,20 +1687,36 @@ export function Composer({
                 {voiceCancellationPending ? <span className="spinner small" /> : <XIcon />}
               </button>
             ) : (
-              <button
-                aria-label={
-                  running
-                    ? t("Добавить в очередь")
-                    : goalMode
-                      ? t("Запустить цель")
-                      : t("Отправить")
-                }
-                className="composer-action send"
-                disabled={!canSubmit}
-                type="submit"
-              >
-                <SendIcon />
-              </button>
+              <>
+                {steerByDefault && (
+                  <button
+                    aria-label={t("Добавить в очередь")}
+                    className="composer-action"
+                    disabled={!canSubmit}
+                    title={t("Добавить в очередь · Ctrl/Cmd+Enter")}
+                    type="button"
+                    onClick={() => onSubmit("queue")}
+                  >
+                    <ClockIcon />
+                  </button>
+                )}
+                <button
+                  aria-label={
+                    steerByDefault
+                      ? t("Дополнить текущий ход")
+                      : running
+                        ? t("Добавить в очередь")
+                        : goalMode
+                          ? t("Запустить цель")
+                          : t("Отправить")
+                  }
+                  className="composer-action send"
+                  disabled={!canSubmit}
+                  type="submit"
+                >
+                  <SendIcon />
+                </button>
+              </>
             )}
           </div>
         </div>

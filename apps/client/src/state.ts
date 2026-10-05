@@ -555,6 +555,9 @@ function applyVersionedEvent(
     case "taskDefaults.changed":
       snapshot.taskDefaults = event.taskDefaults;
       break;
+    case "permissions.changed":
+      snapshot.permissionSettings = event.permissionSettings;
+      break;
     case "uiLanguage.changed":
       snapshot.uiLanguage = event.language;
       break;
@@ -700,7 +703,9 @@ function applyDetail(state: ClientState, detail: ThreadDetail, resetHistory = fa
   };
   const confirmedIds = new Set([
     ...confirmedUserIds,
-    ...reconciled.queuedMessages.map((message) => message.id),
+    ...reconciled.queuedMessages
+      .filter((message) => message.deliveryMode !== "steer")
+      .map((message) => message.id),
   ]);
   return {
     ...state,
@@ -1350,7 +1355,9 @@ function removeConfirmedQueuedMessages(
   threadId: string,
   messages: QueuedMessage[],
 ): ClientState {
-  const confirmedIds = new Set(messages.map((message) => message.id));
+  const confirmedIds = new Set(
+    messages.filter((message) => message.deliveryMode !== "steer").map((message) => message.id),
+  );
   if (!confirmedIds.size) return state;
   const optimistic = state.optimisticMessages[threadId] ?? [];
   return {

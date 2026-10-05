@@ -10,7 +10,7 @@ import type { Config } from "../../../claude-server/src/config";
 import { SessionManager, type SessionLauncher } from "../../../claude-server/src/manager";
 import { SessionRunner, type RunnerTransport } from "../../../claude-server/src/runner";
 import { UiService } from "../../../claude-server/src/ui-service";
-import type { RunnerDescriptor } from "../../../claude-server/src/types";
+import type { ClaudePermissionMode, RunnerDescriptor } from "../../../claude-server/src/types";
 
 const models = [
   {
@@ -31,18 +31,24 @@ const models = [
 class SmokeClaude extends EventEmitter implements RunnerTransport {
   readonly pid = 600001;
   readonly supportedModels = models;
-  readonly permissionMode = "manual" as const;
+  permissionMode: ClaudePermissionMode;
+  readonly livePermissionMode = true;
   model: string;
   sends = 0;
+  interruptions = 0;
   responses: Record<string, unknown>[] = [];
   private requestId = "";
   constructor(private readonly descriptor: RunnerDescriptor) {
     super();
     this.model = descriptor.model ?? "default";
+    this.permissionMode = descriptor.permissionMode ?? "bypassPermissions";
   }
   async start() {}
   async setModel(model: string) {
     this.model = model;
+  }
+  async setPermissionMode(mode: ClaudePermissionMode) {
+    this.permissionMode = mode;
   }
   sendUser(requestId: string, text: string, content?: Record<string, unknown>[]) {
     this.sends++;
@@ -81,6 +87,15 @@ class SmokeClaude extends EventEmitter implements RunnerTransport {
           },
         },
       });
+    } else if (this.requestId) {
+      this.native({
+        type: "assistant",
+        uuid: randomUUID(),
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: `Дополнение принято: ${text}` }],
+        },
+      });
     } else {
       this.native({
         type: "assistant",
@@ -110,6 +125,7 @@ class SmokeClaude extends EventEmitter implements RunnerTransport {
   }
   respond(requestId: string, response: Record<string, unknown>) {
     this.responses.push(response);
+    this.requestId = "";
     this.emit("requestCancelled", requestId);
     this.native({
       type: "assistant",
@@ -131,6 +147,7 @@ class SmokeClaude extends EventEmitter implements RunnerTransport {
     );
   }
   async interrupt() {
+    this.interruptions++;
     if (this.requestId) this.emit("requestCancelled", this.requestId);
     this.native({
       type: "result",
