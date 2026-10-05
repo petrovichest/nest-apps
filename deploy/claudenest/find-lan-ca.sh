@@ -44,6 +44,7 @@ done
 
 pair_cert=''
 pair_key=''
+pair_digest=''
 for file in "${files[@]}"; do
   # An empty password fails encrypted keys without an interactive prompt.
   digest=$(openssl pkey -in "$file" -passin pass: -pubout -outform DER 2>/dev/null |
@@ -51,11 +52,14 @@ for file in "${files[@]}"; do
   for index in "${!certs[@]}"; do
     [[ "$digest" == "${digests[$index]}" ]] || continue
     if [[ -n "$pair_cert" ]]; then
+      # Installed trust copies and backup copies of the same key are one CA.
+      [[ "$digest" == "$pair_digest" ]] && continue
       echo 'Multiple matching CA certificate/key pairs found; provide explicit paths.' >&2
       exit 1
     fi
     pair_cert=${certs[$index]}
     pair_key=$file
+    pair_digest=$digest
   done
 done
 

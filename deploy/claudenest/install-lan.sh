@@ -19,7 +19,7 @@ codex_cert=/etc/caddy/certs/codex.home.arpa.crt
 cert_directory=/etc/caddy/certs
 [[ -f "$ca_cert" && -f "$ca_key" && -f "$codex_cert" && -f "$caddy_config" ]]
 # Prove this is the CA already trusted for Codex. Never invent or replace a CA.
-openssl verify -CAfile "$ca_cert" "$codex_cert" >/dev/null
+openssl verify -no-CApath -no-CAstore -CAfile "$ca_cert" "$codex_cert" >/dev/null
 if rg -q 'claude\.home\.arpa' "$caddy_config"; then
   echo 'Claude host already exists in Caddy; inspect it before applying this script.' >&2
   exit 1
@@ -39,7 +39,7 @@ serial=$(openssl rand -hex 16)
 openssl x509 -req -in "$temporary/claude.csr" -CA "$ca_cert" -CAkey "$ca_key" \
   -set_serial "0x$serial" -days 365 -sha256 -extfile "$temporary/extensions" \
   -out "$temporary/claude.crt" >/dev/null
-openssl verify -CAfile "$ca_cert" "$temporary/claude.crt" >/dev/null
+openssl verify -no-CApath -no-CAstore -CAfile "$ca_cert" "$temporary/claude.crt" >/dev/null
 install -o root -g caddy -m 0644 "$temporary/claude.crt" "$cert_directory/claude.home.arpa.crt"
 install -o root -g caddy -m 0640 "$temporary/claude.key" "$cert_directory/claude.home.arpa.key"
 cp "$caddy_config" "$temporary/Caddyfile"
