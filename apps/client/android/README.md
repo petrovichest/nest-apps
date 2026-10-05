@@ -61,9 +61,35 @@ export CODEXNEST_KEY_PASSWORD=...
 ./gradlew assembleRelease
 ```
 
-Every successful push to `codex/mvp` updates the GitHub `Latest` release with
-`CodexNest-latest.apk`, `CodexNest-latest.json`, and `install.sh`. The manifest
-and installer pin Android and Linux installations to the same tested commit.
+Every successful push to `main` that is still the branch head updates the GitHub
+`Latest` release, `rolling-latest`, with signed `CodexNest-latest.apk`, installers,
+and the Chrome extension from the same verified commit. The pipeline runs
+`testDebugUnitTest assembleRelease`, verifies the APK signature against the
+configured keystore certificate, and checks `com.codexnest.app`, version name,
+and version code. Only the public certificate SHA-256 digest is printed.
+
+`CODEXNEST_ANDROID_VERSION_NAME` matches the rolling release version, while
+`CODEXNEST_ANDROID_VERSION_CODE` is `2000000 + GITHUB_RUN_NUMBER`. The higher base
+keeps new repository builds above the previous repository's APK version codes.
+Preserve the existing signing key to update installed APKs without reinstalling.
+Versioned `v*` releases continue to publish installers and extension assets
+without an APK.
+
+The repository needs four Android signing secrets:
+
+- `CODEXNEST_ANDROID_KEYSTORE_BASE64`: the existing keystore encoded as base64.
+- `CODEXNEST_ANDROID_KEY_ALIAS`: its signing key alias.
+- `CODEXNEST_ANDROID_KEYSTORE_PASSWORD`: its keystore password.
+- `CODEXNEST_ANDROID_KEY_PASSWORD`: its key password.
+
+The two other migrated repository secrets, `WEB_EXT_API_KEY` and
+`WEB_EXT_API_SECRET`, are retained but unused. Firefox packaging and signing
+remain disabled.
+
+`CodexNest-latest.json` mirrors `NestApps-latest.json`. Both manifests pin Android
+and Linux installations to the same commit; all APK, installer, and extension
+assets are uploaded before the manifests, with the authoritative
+`NestApps-latest.json` uploaded last.
 
 Notifications do not use Firebase, Google Play Services, or a third-party push provider.
 The Android app starts a `remoteMessaging` foreground service that keeps an authenticated

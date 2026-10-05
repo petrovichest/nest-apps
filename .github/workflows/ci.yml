@@ -115,6 +115,7 @@ jobs:
           chmod 0755 release/*.sh
           bash -n release/install.sh release/install-claudenest.sh
           printf '{"schemaVersion":1,"version":"%s","commit":"%s"}\n' "$version" "$GITHUB_SHA" > release/NestApps-latest.json
+          cp release/NestApps-latest.json release/CodexNest-latest.json
           shopt -s nullglob
           archives=(apps/extension/artifacts/codexnest-browser-[0-9]*.zip)
           test "${#archives[@]}" -eq 1
@@ -122,6 +123,61 @@ jobs:
           cp "${archives[0]}" release/codexnest-browser-latest.zip
           unzip -t release/codexnest-browser-latest.zip
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+        run: npm ci
+      - if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+        run: npm run android:sync -w @codexnest/client
+      - name: Validate Android signing secrets
+        if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.CODEXNEST_ANDROID_KEY_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          test -n "$KEY_ALIAS"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_PASSWORD"
+      - name: Prepare Android signing key
+        if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/codexnest.jks"
+          chmod 0600 "$RUNNER_TEMP/codexnest.jks"
+      - name: Test Android and build signed rolling APK
+        if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+        env:
+          CODEXNEST_KEYSTORE_PATH: ${{ runner.temp }}/codexnest.jks
+          CODEXNEST_KEY_ALIAS: ${{ secrets.CODEXNEST_ANDROID_KEY_ALIAS }}
+          CODEXNEST_KEYSTORE_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_PASSWORD }}
+          CODEXNEST_KEY_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEY_PASSWORD }}
+          CODEXNEST_ANDROID_VERSION_NAME: ${{ steps.assets.outputs.version }}
+        run: |
+          set -euo pipefail
+          export CODEXNEST_ANDROID_VERSION_CODE="$((2000000 + GITHUB_RUN_NUMBER))"
+          ./gradlew testDebugUnitTest assembleRelease
+          apk=app/build/outputs/apk/release/app-release.apk
+          test -s "$apk"
+          android_build_tools="$(printf '%s\n' "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          apk_certificate="$("$android_build_tools/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+          keystore_certificate="$(keytool -exportcert -keystore "$CODEXNEST_KEYSTORE_PATH" -alias "$CODEXNEST_KEY_ALIAS" -storepass:env CODEXNEST_KEYSTORE_PASSWORD | sha256sum | cut -d ' ' -f 1)"
+          test -n "$apk_certificate"
+          test "$apk_certificate" = "$keystore_certificate"
+          printf 'APK signing certificate SHA-256: %s\n' "$apk_certificate"
+          apk_metadata="$("$android_build_tools/aapt" dump badging "$apk" | sed -n '1p')"
+          [[ "$apk_metadata" == *"name='com.codexnest.app'"* ]]
+          [[ "$apk_metadata" == *"versionCode='$CODEXNEST_ANDROID_VERSION_CODE'"* ]]
+          [[ "$apk_metadata" == *"versionName='$CODEXNEST_ANDROID_VERSION_NAME'"* ]]
+          cp "$apk" ../../../release/CodexNest-latest.apk
+        working-directory: apps/client/android
       - name: Check main before rolling publication
         if: steps.source.outputs.current == 'true'
         id: publish
@@ -144,16 +200,22 @@ jobs:
             tag=rolling-latest
             latest=true
           fi
-          printf 'CodexNest and ClaudeNest from verified commit `%s`.\n\nCodexNest: `curl -fsSL https://github.com/%s/releases/download/%s/install.sh | bash`\n\nClaudeNest: `curl -fsSL https://github.com/%s/releases/download/%s/install-claudenest.sh | bash`\n\nThe installers build the server and web client from this exact commit. Android APKs are not published yet.\n' \
+          release_assets=(release/install.sh release/install-claudenest.sh release/codexnest-browser-*.zip)
+          printf 'CodexNest and ClaudeNest from verified commit `%s`.\n\nCodexNest: `curl -fsSL https://github.com/%s/releases/download/%s/install.sh | bash`\n\nClaudeNest: `curl -fsSL https://github.com/%s/releases/download/%s/install-claudenest.sh | bash`\n\nThe installers build the server and web client from this exact commit.\n' \
             "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$tag" "$GITHUB_REPOSITORY" "$tag" > release/notes.md
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            release_assets+=(release/CodexNest-latest.apk)
+            printf '\nThe signed CodexNest Android APK and Chrome extension are built from the same verified commit.\n' >> release/notes.md
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" release/install.sh release/install-claudenest.sh release/codexnest-browser-*.zip --clobber
+            gh release upload "$tag" "${release_assets[@]}" --clobber
             if [[ "$GITHUB_REF_TYPE" != tag ]]; then
               gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" -f sha="$GITHUB_SHA" -F force=true >/dev/null
             fi
             gh release edit "$tag" --prerelease=false --latest="$latest" --title "Nest Apps $RELEASE_VERSION" --notes-file release/notes.md
           else
-            gh release create "$tag" release/install.sh release/install-claudenest.sh release/codexnest-browser-*.zip --latest="$latest" --target "$GITHUB_SHA" --title "Nest Apps $RELEASE_VERSION" --notes-file release/notes.md
+            gh release create "$tag" "${release_assets[@]}" --latest="$latest" --target "$GITHUB_SHA" --title "Nest Apps $RELEASE_VERSION" --notes-file release/notes.md
           fi
-          # Publish the update pointer only after every other release asset is ready.
+          # Publish both update pointers after the assets, with the authoritative one last.
+          gh release upload "$tag" release/CodexNest-latest.json --clobber
           gh release upload "$tag" release/NestApps-latest.json --clobber

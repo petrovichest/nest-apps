@@ -296,8 +296,18 @@ successful verification of both servers and both browser clients. `v*` tags publ
 versioned releases. The rolling manifest `NestApps-latest.json` pins one tested
 commit for both applications. Installers build immutable releases on the host;
 Settings → Maintenance updates the selected server and its web client together.
-The rolling pipeline currently publishes installers and the Codex browser
-extension, without Android APKs or signing secrets.
+The rolling pipeline publishes installers, the Codex browser extension, and a
+signed `CodexNest-latest.apk` from the same commit. Android unit tests and APK
+signature, application ID, and version checks must pass before publication.
+`CodexNest-latest.json` mirrors the authoritative `NestApps-latest.json`, which is
+uploaded after all other assets. Versioned releases do not publish APKs.
+
+Keep all six repository secrets when migrating GitHub configuration:
+`CODEXNEST_ANDROID_KEYSTORE_BASE64`, `CODEXNEST_ANDROID_KEY_ALIAS`,
+`CODEXNEST_ANDROID_KEYSTORE_PASSWORD`, and `CODEXNEST_ANDROID_KEY_PASSWORD` sign
+the Android APK with the existing key. `WEB_EXT_API_KEY` and `WEB_EXT_API_SECRET`
+are retained but unused; Firefox builds and signing remain disabled. See the
+[Android build guide](./apps/client/android/README.md) for update compatibility.
 
 ClaudeNest uses its own API, release directories, credentials and PWA identity.
 See [ClaudeNest installation and updates](./apps/claude-server/README.md).

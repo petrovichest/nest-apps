@@ -301,8 +301,18 @@ CI проверяет форматирование, lint, модульные т�
 Манифест `NestApps-latest.json` закрепляет один проверенный коммит для обоих
 приложений. Установщики собирают отдельные неизменяемые релизы на хосте;
 обновление в настройках переключает выбранный сервер вместе с web-интерфейсом.
-Сейчас публикуются установщики и расширение CodexNest; APK и ключи Android не
-требуются.
+Rolling pipeline публикует установщики, расширение CodexNest и подписанный
+`CodexNest-latest.apk` из одного коммита. Перед публикацией должны пройти модульные
+тесты Android и проверки подписи, идентификатора приложения и версии APK.
+`CodexNest-latest.json` повторяет основной манифест `NestApps-latest.json`, который
+загружается после всех остальных assets. Версионные релизы APK не публикуют.
+
+При переносе настроек GitHub сохраните все шесть repository secrets:
+`CODEXNEST_ANDROID_KEYSTORE_BASE64`, `CODEXNEST_ANDROID_KEY_ALIAS`,
+`CODEXNEST_ANDROID_KEYSTORE_PASSWORD` и `CODEXNEST_ANDROID_KEY_PASSWORD` нужны для
+подписи APK прежним ключом. `WEB_EXT_API_KEY` и `WEB_EXT_API_SECRET` сохраняются,
+но не используются: сборка и подпись Firefox остаются отключёнными. Совместимость
+обновлений описана в [инструкции Android](./apps/client/android/README.md).
 
 ClaudeNest использует собственные API, каталоги релизов, авторизацию и PWA.
 [Установка и обновление ClaudeNest](./apps/claude-server/README.md).
