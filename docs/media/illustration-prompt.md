@@ -3,7 +3,7 @@
 Created with the built-in `imagegen` tool. The input reference was the reviewed
 four-client composition; the exact final edit prompt is below. The selected output
 is stored as `architecture-illustration.png`. Image generation is not part of the
-repeatable capture command: captions, the existing CN mark and the real Onest font
+repeatable capture command: captions, the existing CON mark and the real Onest font
 are composed separately by the HTML templates.
 
 ```text

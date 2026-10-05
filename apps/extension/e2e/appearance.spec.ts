@@ -195,7 +195,7 @@ test("includes the Onest license alongside the extension assets", async () => {
   expect(license).toContain("SIL OPEN FONT LICENSE");
 });
 
-test("ships the shared CN mark for Chrome's toolbar and extension manager", async ({
+test("ships the shared CON mark for Chrome's toolbar and extension manager", async ({
   context,
   extensionId,
 }) => {

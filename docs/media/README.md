@@ -54,7 +54,7 @@ marks, not application screenshots. Codex, the CodexNest backend, ChatGPT sign-i
 and the working development environment belong on the host.
 
 `how-it-works.html` and `architecture-cover.html` compose this artwork with the
-existing CN logo and the real Onest font. `cover.html` keeps the desktop and mobile
+existing CON logo and the real Onest font. `cover.html` keeps the desktop and mobile
 composition at the top of both READMEs, using freshly captured screenshots.
 Labels, colors and layout are rendered deterministically; generation is not invoked by the capture
 command. The architecture artwork follows the
