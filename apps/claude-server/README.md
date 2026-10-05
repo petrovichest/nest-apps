@@ -61,19 +61,38 @@ Add `https://claude.home.arpa` to `CLAUDENEST_ALLOWED_ORIGINS` in Claude's own
 private server.env. Point LAN DNS for that hostname at this machine.
 
 The current home lab keeps its existing CA on `pi5@192.168.2.216`, under
-`/home/pi5/certs`. Keep `local-root-ca.key` on that CA host. Copy only the existing
-`home.arpa.crt` wildcard certificate, `home.arpa.key` service key and public
-`local-root-ca.crt` to a private temporary directory on the service host, then:
+`/home/pi5/certs`. Keep `local-root-ca.key` on that CA host. Generate a dedicated
+Claude service key and CSR, then sign the CSR on pi5 with that existing CA. The
+issued leaf must contain explicit `DNS:claude.home.arpa` in `subjectAltName`,
+`CA:FALSE`, server-auth extended key usage, and digital-signature/key-encipherment
+key usage. Transfer only the dedicated leaf/service key and public
+`local-root-ca.crt` to a private temporary directory on the service host.
+Chromium rejects `*.home.arpa` because `home.arpa` is a public suffix; a
+wildcard-only certificate is insufficient even when OpenSSL accepts it.
+
+For a new host configuration:
 
 ```sh
 sudo bash deploy/claudenest/install-lan.sh --certificate \
-  /absolute/home.arpa.crt /absolute/home.arpa.key /absolute/local-root-ca.crt
+  /absolute/claude.home.arpa.crt /absolute/claude.home.arpa.key /absolute/local-root-ca.crt
 ```
 
 The script checks the existing Codex certificate against that CA, verifies the
 supplied certificate for `claude.home.arpa`, and checks its private key before
 installing Claude's separate certificate files and vhost. Remove the temporary
 service-key copy afterward; never commit it.
+
+To replace only the certificate in an existing Claude installation:
+
+```sh
+sudo bash deploy/claudenest/install-lan.sh --replace-certificate \
+  /absolute/claude.home.arpa.crt /absolute/claude.home.arpa.key /absolute/local-root-ca.crt
+```
+
+Replacement checks the expected Claude certificate paths and backend, backs up
+only Claude's certificate/key, replaces those files using atomic renames, validates
+and reloads Caddy, and restores the previous files if validation or reload fails.
+It leaves the Caddyfile and Codex certificate files intact.
 
 For deployments where the existing signing CA is already local, an administrator
 can issue a new host certificate and install the isolated vhost:
