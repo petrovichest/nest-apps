@@ -165,13 +165,22 @@ jobs:
           export CODEXNEST_ANDROID_VERSION_CODE="$((2000000 + GITHUB_RUN_NUMBER))"
           ./gradlew testDebugUnitTest assembleRelease
           apk=app/build/outputs/apk/release/app-release.apk
-          test -s "$apk"
+          test -s "$apk" || { printf 'Signed APK was not created at %s\n' "$apk" >&2; exit 1; }
           android_build_tools="$(printf '%s\n' "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
-          apk_certificate="$("$android_build_tools/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
-          keystore_certificate="$(keytool -exportcert -keystore "$CODEXNEST_KEYSTORE_PATH" -alias "$CODEXNEST_KEY_ALIAS" -storepass:env CODEXNEST_KEYSTORE_PASSWORD | sha256sum | cut -d ' ' -f 1)"
-          test -n "$apk_certificate"
-          test "$apk_certificate" = "$keystore_certificate"
+          if ! apk_signature="$("$android_build_tools/apksigner" verify --print-certs "$apk" 2>&1)"; then
+            printf '%s\n' "$apk_signature" >&2
+            exit 1
+          fi
+          printf '%s\n' "$apk_signature" | sed -n '/certificate SHA-256 digest:/p'
+          apk_certificate="$(printf '%s\n' "$apk_signature" | sed -nE 's/^[[:space:]]*Signer.* certificate SHA-256 digest: ([[:xdigit:]]{64})[[:space:]]*$/\1/p' | tr '[:upper:]' '[:lower:]' | sort -u)"
+          signing_certificate="$RUNNER_TEMP/codexnest-signing-certificate.der"
+          keytool -exportcert -keystore "$CODEXNEST_KEYSTORE_PATH" -alias "$CODEXNEST_KEY_ALIAS" -storepass:env CODEXNEST_KEYSTORE_PASSWORD -file "$signing_certificate"
+          keystore_certificate="$(sha256sum "$signing_certificate" | cut -d ' ' -f 1)"
+          rm -f -- "$signing_certificate"
           printf 'APK signing certificate SHA-256: %s\n' "$apk_certificate"
+          printf 'Keystore certificate SHA-256: %s\n' "$keystore_certificate"
+          test -n "$apk_certificate" || { printf 'APK signer certificate was not reported\n' >&2; exit 1; }
+          test "$apk_certificate" = "$keystore_certificate" || { printf 'APK signer does not match the configured signing key\n' >&2; exit 1; }
           apk_metadata="$("$android_build_tools/aapt" dump badging "$apk" | sed -n '1p')"
           [[ "$apk_metadata" == *"name='com.codexnest.app'"* ]]
           [[ "$apk_metadata" == *"versionCode='$CODEXNEST_ANDROID_VERSION_CODE'"* ]]
