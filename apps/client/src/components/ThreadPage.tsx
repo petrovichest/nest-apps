@@ -4583,13 +4583,6 @@ export function ThreadPage({
             onLayoutChange={handleComposerLayoutChange}
             inputUnavailable={inputUnavailable}
             codexSettings={workspaceSummary.codexSettings}
-            permissionPreset={
-              application.isClaude
-                ? preparationRef.current.active
-                  ? state.snapshot?.permissionSettings?.preset
-                  : workspaceSummary.permissionPreset
-                : undefined
-            }
             autoFocus={
               preparationRef.current.active ||
               (location.state as { focusComposer?: unknown } | null)?.focusComposer === true

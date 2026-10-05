@@ -318,7 +318,7 @@ describe("the shared Claude interface", () => {
     expect(screen.getByRole("radio", { name: /Полный доступ/ })).toBeChecked();
   });
 
-  it("steers active Claude input by default and leaves explicit queue controls available", () => {
+  it("steers active Claude input with the original controls and explicit queue shortcut", () => {
     connection.mockReturnValue({ api: {} });
     const onSubmit = vi.fn();
     const onStop = vi.fn();
@@ -332,7 +332,7 @@ describe("the shared Claude interface", () => {
         onStop={onStop}
         busy={false}
         running
-        permissionPreset="full-access"
+        codexSettings={{ model: "claude-opus-5", reasoningEffort: null }}
         settings={{ collaborationMode: "default", model: "sonnet" }}
         onSettingsChange={vi.fn()}
         models={models}
@@ -340,22 +340,16 @@ describe("the shared Claude interface", () => {
       />,
     );
     const textarea = screen.getByRole("textbox");
-    expect(screen.getByText("Полный доступ")).toBeInTheDocument();
-    expect(screen.getByText(/Сообщение отправится Claude сразу/)).toBeInTheDocument();
+    expect(screen.queryByText("Полный доступ")).not.toBeInTheDocument();
+    expect(view.container.querySelector(".codex-settings-hint")).toBeNull();
     fireEvent.keyDown(textarea, { key: "Enter" });
     fireEvent.submit(view.container.querySelector("form")!);
     fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
     fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
-    fireEvent.click(screen.getByRole("button", { name: "Добавить в очередь" }));
-    expect(onSubmit.mock.calls).toEqual([
-      ["immediate"],
-      ["immediate"],
-      ["queue"],
-      ["queue"],
-      ["queue"],
-    ]);
+    expect(onSubmit.mock.calls).toEqual([["immediate"], ["immediate"], ["queue"], ["queue"]]);
     expect(onStop).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Дополнить текущий ход" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Добавить в очередь" })).not.toBeInTheDocument();
   });
 
   it.each([
@@ -385,7 +379,7 @@ describe("the shared Claude interface", () => {
           turnId: mode === "steer" ? currentTurnId : null,
         }),
       });
-      expect(screen.getByText("Полный доступ")).toBeInTheDocument();
+      expect(screen.queryByText("Полный доступ")).not.toBeInTheDocument();
     },
   );
 

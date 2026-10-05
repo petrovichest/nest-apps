@@ -109,7 +109,8 @@ try {
   await composer.press("Enter");
   await page.getByText("Что включить в проверку?", { exact: true }).waitFor();
   const threadId = /\/threads\/([^/]+)/.exec(new URL(page.url()).pathname)[1];
-  await page.locator(".composer-permissions-hint").filter({ hasText: "Полный доступ" }).waitFor();
+  assert.equal(fixture.launcher.owners.get(threadId).transport.permissionMode, "bypassPermissions");
+  assert.equal(await page.locator(".composer-permissions-hint, .codex-settings-hint").count(), 0);
   await composer.fill("Уточнение текущего хода");
   await composer.press("Enter");
   await page.getByText("Дополнение принято: Уточнение текущего хода", { exact: true }).waitFor();
@@ -145,7 +146,7 @@ try {
     3,
   );
   await page.setViewportSize({ width: 390, height: 844 });
-  assert.equal(await page.locator(".composer-permissions-hint").isVisible(), true);
+  assert.equal(await page.locator(".composer-permissions-hint, .codex-settings-hint").count(), 0);
   const sendBounds = await page.locator(".composer-action.send").boundingBox();
   assert.ok(
     sendBounds && sendBounds.x + sendBounds.width <= 390,
@@ -268,7 +269,7 @@ try {
     "All real compatibility API requests succeeded",
   );
   console.log(
-    `Claude browser smoke passed: projects, session creation, active-turn text and voice steering without interruption, explicit FIFO, attachments, full-access indicators, multi-select question voice, title search, live model, draft reload and settings. Screenshots: ${screenshots}`,
+    `Claude browser smoke passed: projects, session creation, active-turn text and voice steering without interruption, explicit FIFO, attachments, original composer controls, multi-select question voice, title search, live model, draft reload and settings. Screenshots: ${screenshots}`,
   );
 } catch (error) {
   console.error(

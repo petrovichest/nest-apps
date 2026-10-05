@@ -62,7 +62,7 @@ chat; their missing attachment/control capabilities are reported explicitly.
 During active work, ordinary Send/Enter delivers input immediately to Claude's
 stream-json stdin. Tool-phase instructions can join the current native turn;
 input arriving while text is streaming may become Claude's next native turn.
-Neither path interrupts the task. Ctrl/Cmd+Enter or the queue action explicitly
+Neither path interrupts the task. Ctrl/Cmd+Enter explicitly
 adds a FIFO message that waits for idle. Sending a queued message now promotes
 that same durable delivery into steering. Voice follows the selected delivery
 mode. IDs, attachments and draft revisions survive reconnect and API restart;
