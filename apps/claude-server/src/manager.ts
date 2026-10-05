@@ -13,6 +13,8 @@ import {
   RUNNER_PROTOCOL_VERSION,
   type RunnerDescriptor,
   type RunnerSnapshot,
+  type RunnerAttachment,
+  type ClaudePermissionMode,
 } from "./types";
 
 const exec = promisify(execFile);
@@ -94,6 +96,10 @@ type CreateSession = {
   cwd: string;
   prompt: string;
   model?: string;
+  effort?: string;
+  permissionMode?: ClaudePermissionMode;
+  files?: RunnerAttachment[];
+  images?: RunnerAttachment[];
 };
 
 export class SessionManager {
@@ -217,6 +223,8 @@ export class SessionManager {
     cwd: string,
     resume: boolean,
     model?: string,
+    effort?: string,
+    permissionMode?: ClaudePermissionMode,
   ): Promise<RunnerDescriptor> {
     const canonicalCwd = await realpath(cwd).catch(() => {
       throw new AppError("invalid_request", "Project directory does not exist");
@@ -235,6 +243,9 @@ export class SessionManager {
       stateDirectory: this.directory(id),
       resume,
       model,
+      effort,
+      permissionMode,
+      attachmentRoot: join(this.config.stateDir, "attachments"),
       protocolVersion: RUNNER_PROTOCOL_VERSION,
     };
   }
@@ -276,10 +287,25 @@ export class SessionManager {
     assertUuid(input.requestId, "requestId");
     const id = input.sessionId.toLowerCase();
     return this.withLock(id, async () => {
-      const descriptor = await this.makeDescriptor(id, input.cwd, false, input.model);
+      const descriptor = await this.makeDescriptor(
+        id,
+        input.cwd,
+        false,
+        input.model,
+        input.effort,
+        input.permissionMode,
+      );
       const fingerprint = createHash("sha256")
         .update(
-          JSON.stringify({ cwd: descriptor.cwd, prompt: input.prompt, model: input.model ?? null }),
+          JSON.stringify({
+            cwd: descriptor.cwd,
+            prompt: input.prompt,
+            model: input.model ?? null,
+            ...(input.effort ? { effort: input.effort } : {}),
+            ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+            ...(input.files?.length ? { files: input.files } : {}),
+            ...(input.images?.length ? { images: input.images } : {}),
+          }),
         )
         .digest("hex");
       const intentPath = join(this.directory(id), "launch.json");
@@ -324,7 +350,12 @@ export class SessionManager {
         } satisfies LaunchIntent);
         connection = await this.launch(descriptor);
       }
-      return connection.request("send", { requestId: input.requestId, text: input.prompt });
+      return connection.request("send", {
+        requestId: input.requestId,
+        text: input.prompt,
+        ...(input.files?.length ? { files: input.files } : {}),
+        ...(input.images?.length ? { images: input.images } : {}),
+      });
     });
   }
 
@@ -338,7 +369,13 @@ export class SessionManager {
     }
   }
 
-  async send(id: string, requestId: string, prompt: string): Promise<unknown> {
+  async send(
+    id: string,
+    requestId: string,
+    prompt: string,
+    content?: { files?: RunnerAttachment[]; images?: RunnerAttachment[] },
+    launch?: { model?: string; effort?: string; permissionMode?: ClaudePermissionMode },
+  ): Promise<unknown> {
     this.assertAccepting();
     assertUuid(id, "sessionId");
     assertUuid(requestId, "requestId");
@@ -364,16 +401,23 @@ export class SessionManager {
         const history = await readHistory(this.config.configDir, id);
         await this.assertNotExternallyActive(id);
         connection = await this.launch(
-          await this.makeDescriptor(id, previous?.cwd ?? history.cwd, true, previous?.model),
+          await this.makeDescriptor(
+            id,
+            previous?.cwd ?? history.cwd,
+            true,
+            launch?.model ?? previous?.model,
+            launch?.effort ?? previous?.effort,
+            launch?.permissionMode ?? previous?.permissionMode,
+          ),
         );
       }
-      return connection.request("send", { requestId, text: prompt });
+      return connection.request("send", { requestId, text: prompt, ...content });
     });
   }
 
   async command(
     id: string,
-    method: "interrupt" | "respond" | "release",
+    method: "interrupt" | "respond" | "release" | "setModel" | "setPermissionMode",
     params: unknown,
   ): Promise<unknown> {
     this.assertAccepting();

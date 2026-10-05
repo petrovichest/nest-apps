@@ -1,7 +1,9 @@
+import { application } from "../application";
 import { ActionLabel } from "./ActionLabel";
 import { Capacitor } from "@capacitor/core";
 import {
   type FormEvent,
+  type ReactNode,
   type KeyboardEvent,
   useCallback,
   useEffect,
@@ -83,6 +85,14 @@ const SETTINGS_SECTIONS = [
   { id: "maintenance", label: "Обслуживание", Icon: RefreshIcon },
 ] as const;
 
+const VISIBLE_SETTINGS_SECTIONS = SETTINGS_SECTIONS.filter(
+  ({ id }) =>
+    (id !== "skills" || application.capabilities.skills) &&
+    (id !== "maintenance" ||
+      application.capabilities.appUpdates ||
+      application.capabilities.codexManagement),
+);
+
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
 type EditableTaskDefaults = Omit<TaskDefaults, "serviceTier">;
 const EMPTY_MODELS: ModelOption[] = [];
@@ -90,7 +100,7 @@ const VERTICAL_SECTIONS_QUERY = "(min-width: 1280px)";
 const MOBILE_SECTIONS_QUERY = "(max-width: 820px)";
 
 function isSettingsSection(value: string | null): value is SettingsSection {
-  return SETTINGS_SECTIONS.some((section) => section.id === value);
+  return VISIBLE_SETTINGS_SECTIONS.some((section) => section.id === value);
 }
 
 export function SettingsPage({
@@ -232,6 +242,10 @@ export function SettingsPage({
   }, [language, mobileSections]);
 
   const load = useCallback(async () => {
+    if (!application.capabilities.sessionApprovalGrants) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -362,17 +376,17 @@ export function SettingsPage({
   function handleSectionKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     let nextIndex: number | null = null;
     if (event.key === (verticalSections ? "ArrowUp" : "ArrowLeft")) {
-      nextIndex = (index - 1 + SETTINGS_SECTIONS.length) % SETTINGS_SECTIONS.length;
+      nextIndex = (index - 1 + VISIBLE_SETTINGS_SECTIONS.length) % VISIBLE_SETTINGS_SECTIONS.length;
     } else if (event.key === (verticalSections ? "ArrowDown" : "ArrowRight")) {
-      nextIndex = (index + 1) % SETTINGS_SECTIONS.length;
+      nextIndex = (index + 1) % VISIBLE_SETTINGS_SECTIONS.length;
     } else if (event.key === "Home") {
       nextIndex = 0;
     } else if (event.key === "End") {
-      nextIndex = SETTINGS_SECTIONS.length - 1;
+      nextIndex = VISIBLE_SETTINGS_SECTIONS.length - 1;
     }
     if (nextIndex === null) return;
     event.preventDefault();
-    const nextSection = SETTINGS_SECTIONS[nextIndex].id;
+    const nextSection = VISIBLE_SETTINGS_SECTIONS[nextIndex].id;
     selectSection(nextSection);
     sectionTabRefs.current[nextSection]?.focus();
   }
@@ -386,7 +400,7 @@ export function SettingsPage({
         ref={sectionTabsRef}
         role="tablist"
       >
-        {SETTINGS_SECTIONS.map(({ id, label, Icon }, index) => (
+        {VISIBLE_SETTINGS_SECTIONS.map(({ id, label, Icon }, index) => (
           <button
             aria-controls={`settings-section-panel-${id}`}
             aria-selected={activeSection === id}
@@ -421,7 +435,7 @@ export function SettingsPage({
       />
       <section aria-label={t("Настройки")} className="settings-scroll" ref={settingsScrollRef}>
         {!mobileSections && sectionTabs}
-        <CodexSettingsProvider onStatusChange={setCodexManagementStatus}>
+        <SettingsManagement onStatusChange={setCodexManagementStatus}>
           <div
             aria-labelledby="settings-section-tab-application"
             className="settings-stack"
@@ -613,64 +627,68 @@ export function SettingsPage({
                   ))}
                 </select>
               </SettingsRow>
-              <SettingsRow
-                description={t("Модель для автоматических названий сессий.")}
-                label="Title model"
-                labelFor="settings-title-model"
-              >
-                <select
-                  disabled={!defaultModel || taskDefaultsSaving}
-                  id="settings-title-model"
-                  value={taskDefaults.titleModel ?? ""}
-                  onChange={(event) =>
-                    setTaskDefaults((current) => ({
-                      ...current,
-                      titleModel: event.target.value || undefined,
-                    }))
-                  }
+              {!application.isClaude && (
+                <SettingsRow
+                  description={t("Модель для автоматических названий сессий.")}
+                  label="Title model"
+                  labelFor="settings-title-model"
                 >
-                  <option value="">{t("По умолчанию")}</option>
-                  {taskDefaults.titleModel &&
-                    !models.some((model) => model.id === taskDefaults.titleModel) && (
-                      <option value={taskDefaults.titleModel}>
-                        {taskDefaults.titleModel} — {t("Недоступна")}
+                  <select
+                    disabled={!defaultModel || taskDefaultsSaving}
+                    id="settings-title-model"
+                    value={taskDefaults.titleModel ?? ""}
+                    onChange={(event) =>
+                      setTaskDefaults((current) => ({
+                        ...current,
+                        titleModel: event.target.value || undefined,
+                      }))
+                    }
+                  >
+                    <option value="">{t("По умолчанию")}</option>
+                    {taskDefaults.titleModel &&
+                      !models.some((model) => model.id === taskDefaults.titleModel) && (
+                        <option value={taskDefaults.titleModel}>
+                          {taskDefaults.titleModel} — {t("Недоступна")}
+                        </option>
+                      )}
+                    {models.map((model) => (
+                      <option value={model.id} key={model.id}>
+                        {model.displayName}
                       </option>
-                    )}
-                  {models.map((model) => (
-                    <option value={model.id} key={model.id}>
-                      {model.displayName}
-                    </option>
-                  ))}
-                </select>
-              </SettingsRow>
-              <SettingsRow
-                description={t("Стиль ответов для новых задач.")}
-                label="Personality"
-                labelFor="settings-personality"
-              >
-                <select
-                  disabled={!selectedTaskModel?.supportsPersonality || taskDefaultsSaving}
-                  id="settings-personality"
-                  value={taskDefaults.personality ?? ""}
-                  onChange={(event) =>
-                    setTaskDefaults((current) => ({
-                      ...current,
-                      personality: event.target.value || undefined,
-                    }))
-                  }
+                    ))}
+                  </select>
+                </SettingsRow>
+              )}
+              {!application.isClaude && (
+                <SettingsRow
+                  description={t("Стиль ответов для новых задач.")}
+                  label="Personality"
+                  labelFor="settings-personality"
                 >
-                  <option value="">{t("По умолчанию")}</option>
-                  {taskDefaults.personality &&
-                    !["friendly", "pragmatic", "none"].includes(taskDefaults.personality) && (
-                      <option value={taskDefaults.personality}>
-                        {taskDefaults.personality} — {t("Недоступна")}
-                      </option>
-                    )}
-                  <option value="friendly">{t("Дружелюбная")}</option>
-                  <option value="pragmatic">{t("Прагматичная")}</option>
-                  <option value="none">{t("Без personality")}</option>
-                </select>
-              </SettingsRow>
+                  <select
+                    disabled={!selectedTaskModel?.supportsPersonality || taskDefaultsSaving}
+                    id="settings-personality"
+                    value={taskDefaults.personality ?? ""}
+                    onChange={(event) =>
+                      setTaskDefaults((current) => ({
+                        ...current,
+                        personality: event.target.value || undefined,
+                      }))
+                    }
+                  >
+                    <option value="">{t("По умолчанию")}</option>
+                    {taskDefaults.personality &&
+                      !["friendly", "pragmatic", "none"].includes(taskDefaults.personality) && (
+                        <option value={taskDefaults.personality}>
+                          {taskDefaults.personality} — {t("Недоступна")}
+                        </option>
+                      )}
+                    <option value="friendly">{t("Дружелюбная")}</option>
+                    <option value="pragmatic">{t("Прагматичная")}</option>
+                    <option value="none">{t("Без personality")}</option>
+                  </select>
+                </SettingsRow>
+              )}
               {taskDefaultsError && (
                 <div className="settings-notice danger" role="alert">
                   {taskDefaultsError}
@@ -694,78 +712,84 @@ export function SettingsPage({
               </div>
             </SettingsGroup>
 
-            <SettingsGroup
-              as="form"
-              description={t("Выбранный режим применяется ко всем задачам со следующего хода.")}
-              icon={<ShieldIcon />}
-              title={t("Разрешения Codex")}
-              onSubmit={save}
-            >
-              {loading && (
-                <span className="sr-only" role="status">
-                  {t("Загружаем конфигурацию…")}
-                </span>
-              )}
-              <fieldset
-                className="permission-presets"
-                disabled={loading || saving}
-                aria-busy={loading || undefined}
+            {application.capabilities.sessionApprovalGrants && (
+              <SettingsGroup
+                as="form"
+                description={t("Выбранный режим применяется ко всем задачам со следующего хода.")}
+                icon={<ShieldIcon />}
+                title={t("Разрешения Codex")}
+                onSubmit={save}
               >
-                <legend className="sr-only">{t("Режим разрешений")}</legend>
-                {PRESETS.map((preset) => (
-                  <label
-                    className={`permission-preset${selected === preset.id ? " selected" : ""}${preset.id === "full-access" ? " dangerous" : ""}`}
-                    key={preset.id}
-                  >
-                    <input
-                      type="radio"
-                      name="permission-preset"
-                      value={preset.id}
-                      checked={selected === preset.id}
-                      onChange={() => setSelected(preset.id)}
-                    />
-                    <span>
-                      <strong>{t(preset.title)}</strong>
-                      <small>{t(preset.description)}</small>
-                    </span>
-                  </label>
-                ))}
-              </fieldset>
+                {loading && (
+                  <span className="sr-only" role="status">
+                    {t("Загружаем конфигурацию…")}
+                  </span>
+                )}
+                <fieldset
+                  className="permission-presets"
+                  disabled={loading || saving}
+                  aria-busy={loading || undefined}
+                >
+                  <legend className="sr-only">{t("Режим разрешений")}</legend>
+                  {PRESETS.map((preset) => (
+                    <label
+                      className={`permission-preset${selected === preset.id ? " selected" : ""}${preset.id === "full-access" ? " dangerous" : ""}`}
+                      key={preset.id}
+                    >
+                      <input
+                        type="radio"
+                        name="permission-preset"
+                        value={preset.id}
+                        checked={selected === preset.id}
+                        onChange={() => setSelected(preset.id)}
+                      />
+                      <span>
+                        <strong>{t(preset.title)}</strong>
+                        <small>{t(preset.description)}</small>
+                      </span>
+                    </label>
+                  ))}
+                </fieldset>
 
-              <div className="settings-feedback-slot">
-                {!loading && settings?.preset === null && (
-                  <div className="settings-notice warning" role="status">
-                    {t(
-                      "Обнаружена нестандартная конфигурация. Выберите один из режимов и сохраните его.",
-                    )}
-                  </div>
-                )}
-                {settings?.overridden && (
-                  <div className="settings-notice warning" role="status">
-                    {settings.message
-                      ? (localizeKnownServerText(language, settings.message) ?? settings.message)
-                      : t("Настройка переопределена управляемой политикой Codex.")}
-                  </div>
-                )}
-                {selected === "full-access" && !loading && (
-                  <div className="settings-notice danger" role="alert">
-                    {t(
-                      "Полный доступ снимает ограничения на файлы и сеть. Используйте его только на доверенном сервере.",
-                    )}
-                  </div>
-                )}
-                {error && (
-                  <div className="settings-notice danger" role="alert">
-                    {error}
-                  </div>
-                )}
-              </div>
-              <div className="settings-actions">
-                <button className="primary" disabled={loading || saving || !changed} type="submit">
-                  <ActionLabel idle={t("Сохранить")} busy={t("Сохраняем…")} pending={saving} />
-                </button>
-              </div>
-            </SettingsGroup>
+                <div className="settings-feedback-slot">
+                  {!loading && settings?.preset === null && (
+                    <div className="settings-notice warning" role="status">
+                      {t(
+                        "Обнаружена нестандартная конфигурация. Выберите один из режимов и сохраните его.",
+                      )}
+                    </div>
+                  )}
+                  {settings?.overridden && (
+                    <div className="settings-notice warning" role="status">
+                      {settings.message
+                        ? (localizeKnownServerText(language, settings.message) ?? settings.message)
+                        : t("Настройка переопределена управляемой политикой Codex.")}
+                    </div>
+                  )}
+                  {selected === "full-access" && !loading && (
+                    <div className="settings-notice danger" role="alert">
+                      {t(
+                        "Полный доступ снимает ограничения на файлы и сеть. Используйте его только на доверенном сервере.",
+                      )}
+                    </div>
+                  )}
+                  {error && (
+                    <div className="settings-notice danger" role="alert">
+                      {error}
+                    </div>
+                  )}
+                </div>
+                <div className="settings-actions">
+                  <button
+                    className="primary"
+                    disabled={loading || saving || !changed}
+                    type="submit"
+                  >
+                    <ActionLabel idle={t("Сохранить")} busy={t("Сохраняем…")} pending={saving} />
+                  </button>
+                </div>
+              </SettingsGroup>
+            )}
           </div>
 
           <div
@@ -775,10 +799,12 @@ export function SettingsPage({
             id="settings-section-panel-skills"
             role="tabpanel"
           >
-            <SkillsSettingsCard
-              projects={state?.snapshot?.projects ?? []}
-              skillsEpoch={state?.skillsEpoch ?? 0}
-            />
+            {application.capabilities.skills && (
+              <SkillsSettingsCard
+                projects={state?.snapshot?.projects ?? []}
+                skillsEpoch={state?.skillsEpoch ?? 0}
+              />
+            )}
           </div>
 
           <div
@@ -788,7 +814,7 @@ export function SettingsPage({
             id="settings-section-panel-connection"
             role="tabpanel"
           >
-            <ProxySettingsCard />
+            {application.capabilities.codexManagement && <ProxySettingsCard />}
 
             <SettingsGroup
               description={t("Подключение к CodexNest на этом устройстве.")}
@@ -810,14 +836,21 @@ export function SettingsPage({
             id="settings-section-panel-maintenance"
             role="tabpanel"
           >
-            <ApplicationSettingsCard
-              initialStatus={initialAppUpdateStatus}
-              onStatusChange={acceptAppUpdateStatus}
-            />
-            <CodexSettingsCard />
-            <RecoverySettingsCard appStatus={appUpdateStatus} codexStatus={codexManagementStatus} />
+            {application.capabilities.appUpdates && (
+              <ApplicationSettingsCard
+                initialStatus={initialAppUpdateStatus}
+                onStatusChange={acceptAppUpdateStatus}
+              />
+            )}
+            {application.capabilities.codexManagement && <CodexSettingsCard />}
+            {application.capabilities.appUpdates && (
+              <RecoverySettingsCard
+                appStatus={appUpdateStatus}
+                codexStatus={codexManagementStatus}
+              />
+            )}
           </div>
-        </CodexSettingsProvider>
+        </SettingsManagement>
       </section>
     </div>
   );
@@ -960,7 +993,7 @@ function TranscriptionSettingsCard({
               {t("Выберите провайдера")}
             </option>
             <option value="local">{t("Локальная модель")}</option>
-            <option value="openai">OpenAI API</option>
+            {!application.isClaude && <option value="openai">OpenAI API</option>}
           </select>
         </SettingsRow>
 
@@ -1037,7 +1070,7 @@ function TranscriptionSettingsCard({
             </div>
           )}
 
-          {form.provider === "openai" && (
+          {!application.isClaude && form.provider === "openai" && (
             <div className="transcription-provider-settings">
               <SettingsRow label={t("Модель OpenAI")} labelFor="settings-openai-stt-model">
                 <select
@@ -1142,7 +1175,11 @@ function TranscriptionSettingsCard({
         <div className="settings-feedback-slot">
           {config?.providers.length === 0 && (
             <div className="settings-notice warning" role="status">
-              {t("Настройте URL локального STT или OpenAI API key, чтобы включить микрофон.")}
+              {t(
+                application.isClaude
+                  ? "Настройте URL локального STT, чтобы включить микрофон."
+                  : "Настройте URL локального STT или OpenAI API key, чтобы включить микрофон.",
+              )}
             </div>
           )}
           {config?.provider && !config.providers.includes(config.provider) && (
@@ -1184,7 +1221,7 @@ function transcriptionForm(config: TranscriptionConfigResponse | null): Transcri
     openAiModel: config?.openAiModel ?? "gpt-4o-transcribe",
     language: config?.language ?? "ru",
     refineLocal: config?.refineLocal ?? true,
-    refinementModel: config?.refinementModel ?? "gpt-5.6-luna",
+    refinementModel: config?.refinementModel ?? (application.isClaude ? "haiku" : "gpt-5.6-luna"),
   };
 }
 
@@ -1201,4 +1238,18 @@ function secureServerUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function SettingsManagement({
+  children,
+  onStatusChange,
+}: {
+  children: ReactNode;
+  onStatusChange(status: CodexManagementStatus): void;
+}) {
+  return application.capabilities.codexManagement ? (
+    <CodexSettingsProvider onStatusChange={onStatusChange}>{children}</CodexSettingsProvider>
+  ) : (
+    <>{children}</>
+  );
 }

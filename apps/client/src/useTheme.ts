@@ -1,7 +1,8 @@
+import { application } from "./application";
 import { useCallback, useEffect, useState } from "react";
 import { Capacitor, SystemBars, SystemBarsStyle, SystemBarType } from "@capacitor/core";
 
-const THEME_KEY = "codexnest.theme";
+const THEME_KEY = `${application.storagePrefix}.theme`;
 const DARK_THEME_QUERY = "(prefers-color-scheme: dark)";
 const THEME_COLOR = { dark: "#171817", light: "#FFFFFF" } as const;
 

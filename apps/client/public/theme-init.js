@@ -2,7 +2,9 @@
 (() => {
   let theme = "system";
   try {
-    const candidate = localStorage.getItem("codexnest.theme");
+    const candidate = localStorage.getItem(
+      `${document.documentElement.dataset.application || "codexnest"}.theme`,
+    );
     if (candidate === "light" || candidate === "dark") theme = candidate;
   } catch {
     // Storage can be unavailable in hardened webviews; keep the system default.

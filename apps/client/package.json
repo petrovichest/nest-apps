@@ -15,7 +15,10 @@
     "android:sync": "cap sync android",
     "android:open": "cap open android",
     "android:debug": "npm run build && cap sync android && cd android && ./gradlew assembleDebug",
-    "android:release": "npm run build && cap sync android && cd android && ./gradlew assembleRelease"
+    "android:release": "npm run build && cap sync android && cd android && ./gradlew assembleRelease",
+    "dev:claude": "vite --mode claude",
+    "build:claude": "tsc -b && vite build --mode claude",
+    "smoke:claude": "npm run build:claude && node e2e/claude/smoke.mjs"
   },
   "dependencies": {
     "@aparajita/capacitor-secure-storage": "8.0.0",

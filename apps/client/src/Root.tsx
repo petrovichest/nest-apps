@@ -1,3 +1,4 @@
+import { application } from "./application";
 import { useEffect, useState } from "react";
 import { BrowserRouter } from "react-router";
 
@@ -16,7 +17,7 @@ export function Root() {
       .catch(() => setSettings(null));
   }, []);
 
-  if (settings === undefined) return <div className="splash">CodexNest</div>;
+  if (settings === undefined) return <div className="splash">{application.name}</div>;
   if (!settings) return <SetupScreen onConnected={setSettings} />;
   return (
     <ConnectionProvider settings={settings}>

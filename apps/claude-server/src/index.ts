@@ -1,13 +1,16 @@
 import { buildApp } from "./app";
 import { loadConfig } from "./config";
 import { SessionManager } from "./manager";
+import { UiService } from "./ui-service";
 
 const config = await loadConfig();
 const manager = new SessionManager(config);
 await manager.initialize();
-const app = await buildApp(manager);
+const ui = new UiService(manager);
+await ui.initialize();
+const app = await buildApp(manager, ui);
 await app.listen({ host: config.host, port: config.port });
-process.stdout.write(`ClaudeNest prototype listening on ${config.host}:${config.port}\n`);
+process.stdout.write(`ClaudeNest listening on ${config.host}:${config.port}\n`);
 let stopping = false;
 const shutdown = async () => {
   if (stopping) return;

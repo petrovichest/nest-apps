@@ -2,8 +2,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { isAbsolute } from "node:path";
+import type { ClaudeModel, ClaudePermissionMode } from "./types.js";
 
-const MAX_LINE_BYTES = 16 * 1024 * 1024;
+export const MAX_NATIVE_LINE_BYTES = 16 * 1024 * 1024;
+const MAX_LINE_BYTES = MAX_NATIVE_LINE_BYTES;
 const CONTROL_TIMEOUT_MS = 30_000;
 const INITIALIZE_TIMEOUT_MS = 120_000;
 const STOP_GRACE_MS = 5_000;
@@ -22,6 +24,9 @@ export interface ClaudeProcessOptions {
   sessionId: string;
   resume: boolean;
   model?: string;
+  effort?: string;
+  permissionMode?: ClaudePermissionMode;
+  noSessionPersistence?: boolean;
   env?: NodeJS.ProcessEnv;
   spawnProcess?: typeof spawn;
 }
@@ -42,12 +47,17 @@ export class ClaudeProcess extends EventEmitter {
   private lineBytes = 0;
   private controls = new Map<string, PendingControl>();
   private requests = new Set<string>();
+  supportedModels: ClaudeModel[] = [];
+  model?: string;
+  permissionMode: ClaudePermissionMode;
 
   constructor(private readonly options: ClaudeProcessOptions) {
     super();
     if (!isAbsolute(options.claudeBin))
       throw new Error("Claude executable must be an absolute path");
     if (!UUID.test(options.sessionId)) throw new Error("Invalid Claude session UUID");
+    this.model = options.model;
+    this.permissionMode = options.permissionMode ?? "manual";
   }
 
   get pid(): number | undefined {
@@ -73,13 +83,15 @@ export class ClaudeProcess extends EventEmitter {
       "--include-partial-messages",
       "--replay-user-messages",
       "--permission-mode",
-      "manual",
+      this.permissionMode,
       "--permission-prompt-tool",
       "stdio",
       this.options.resume ? "--resume" : "--session-id",
       this.options.sessionId,
     ];
     if (this.options.model) args.push("--model", this.options.model);
+    if (this.options.effort) args.push("--effort", this.options.effort);
+    if (this.options.noSessionPersistence) args.push("--no-session-persistence");
     try {
       this.child = (this.options.spawnProcess ?? spawn)(this.options.claudeBin, args, {
         cwd: this.options.cwd,
@@ -117,7 +129,34 @@ export class ClaudeProcess extends EventEmitter {
       this.rejectControls(new Error("Claude CLI closed before its control response"));
     });
     try {
-      await this.control({ subtype: "initialize", hooks: null }, INITIALIZE_TIMEOUT_MS);
+      const metadata = await this.control(
+        { subtype: "initialize", hooks: null },
+        INITIALIZE_TIMEOUT_MS,
+      );
+      if (Array.isArray(metadata.models)) {
+        this.supportedModels = metadata.models
+          .filter(object)
+          .filter((item) => typeof item.value === "string")
+          .map((item) => ({
+            value: item.value as string,
+            displayName:
+              typeof item.displayName === "string" ? item.displayName : (item.value as string),
+            description: typeof item.description === "string" ? item.description : "",
+            ...(typeof item.resolvedModel === "string"
+              ? { resolvedModel: item.resolvedModel }
+              : {}),
+            ...(typeof item.supportsEffort === "boolean"
+              ? { supportsEffort: item.supportsEffort }
+              : {}),
+            ...(Array.isArray(item.supportedEffortLevels)
+              ? {
+                  supportedEffortLevels: item.supportedEffortLevels.filter(
+                    (level): level is string => typeof level === "string",
+                  ),
+                }
+              : {}),
+          }));
+      }
       if (this.exited || this.failed) throw new Error("Claude CLI exited during initialization");
       this.initialized = true;
     } catch (error) {
@@ -127,7 +166,7 @@ export class ClaudeProcess extends EventEmitter {
     }
   }
 
-  sendUser(requestId: string, text: string): void {
+  sendUser(requestId: string, text: string, content?: JsonObject[]): void {
     this.assertReady();
     if (!UUID.test(requestId)) throw new Error("Invalid user message UUID");
     this.write({
@@ -135,8 +174,20 @@ export class ClaudeProcess extends EventEmitter {
       uuid: requestId,
       session_id: this.options.sessionId,
       parent_tool_use_id: null,
-      message: { role: "user", content: text },
+      message: { role: "user", content: content ?? text },
     });
+  }
+
+  async setModel(model: string): Promise<void> {
+    this.assertReady();
+    await this.control({ subtype: "set_model", model });
+    this.model = model;
+  }
+
+  async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
+    this.assertReady();
+    await this.control({ subtype: "set_permission_mode", mode });
+    this.permissionMode = mode;
   }
 
   respond(requestId: string, response: JsonObject): void {
@@ -286,7 +337,8 @@ export class ClaudeProcess extends EventEmitter {
         clearTimeout(pending.timer);
         if (response.subtype === "success")
           pending.resolve(object(response.response) ? response.response : {});
-        else pending.reject(new Error("Claude CLI rejected the control request"));
+        else
+          pending.reject(new ClaudeControlRejectedError("Claude CLI rejected the control request"));
         return;
       }
     }
@@ -304,6 +356,12 @@ export class ClaudeProcess extends EventEmitter {
       this.emit("requestCancelled", message.request_id);
       return;
     }
+    if (
+      message.type === "system" &&
+      message.subtype === "init" &&
+      typeof message.model === "string"
+    )
+      this.model = message.model;
     this.emit("event", message);
   }
 
@@ -323,3 +381,5 @@ export class ClaudeProcess extends EventEmitter {
     this.emit("error", error);
   }
 }
+
+export class ClaudeControlRejectedError extends Error {}

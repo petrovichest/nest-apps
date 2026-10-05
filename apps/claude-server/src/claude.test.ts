@@ -18,6 +18,8 @@ class FakeChild extends EventEmitter {
   exitAfterInitialize = false;
   autoInterrupt = true;
   autoFinish = true;
+  initializeResponse: ObjectMessage = {};
+  rejectSettings = false;
   readonly kill = vi.fn(() => true);
 
   constructor() {
@@ -28,14 +30,18 @@ class FakeChild extends EventEmitter {
       if (message.type !== "control_request") return;
       if (
         (message.request.subtype === "initialize" && this.autoInitialize) ||
-        (message.request.subtype === "interrupt" && this.autoInterrupt)
+        (message.request.subtype === "interrupt" && this.autoInterrupt) ||
+        ["set_model", "set_permission_mode"].includes(message.request.subtype)
       ) {
         this.output({
           type: "control_response",
           response: {
-            subtype: "success",
+            subtype:
+              this.rejectSettings && message.request.subtype.startsWith("set_")
+                ? "error"
+                : "success",
             request_id: message.request_id,
-            response: {},
+            response: message.request.subtype === "initialize" ? this.initializeResponse : {},
           },
         });
         if (message.request.subtype === "initialize" && this.exitAfterInitialize) this.close();
@@ -70,6 +76,80 @@ function setup(overrides: Partial<ConstructorParameters<typeof ClaudeProcess>[0]
   process.on("error", (error: Error) => errors.push(error));
   return { child, process, spawnProcess, errors };
 }
+
+describe("Claude model metadata and controls", () => {
+  it("captures initialize models and uses explicit startup effort and temporary-probe flags", async () => {
+    const { child, process, spawnProcess } = setup({
+      effort: "high",
+      permissionMode: "acceptEdits",
+      noSessionPersistence: true,
+    });
+    child.initializeResponse = {
+      models: [
+        {
+          value: "sonnet",
+          resolvedModel: "claude-test",
+          displayName: "Sonnet",
+          description: "Balanced",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "high"],
+        },
+        { invalid: true },
+      ],
+    };
+    await process.start();
+    expect(process.supportedModels).toEqual([
+      {
+        value: "sonnet",
+        resolvedModel: "claude-test",
+        displayName: "Sonnet",
+        description: "Balanced",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "high"],
+      },
+    ]);
+    const args = spawnProcess.mock.calls[0]![1] as string[];
+    expect(args).toContain("--no-session-persistence");
+    expect(args.slice(args.indexOf("--effort"), args.indexOf("--effort") + 2)).toEqual([
+      "--effort",
+      "high",
+    ]);
+    await process.stop();
+  });
+  it("changes model and permission mode only after matching success acknowledgements", async () => {
+    const { child, process } = setup();
+    await process.start();
+    await process.setModel("opus");
+    await process.setPermissionMode("acceptEdits");
+    expect(process.model).toBe("opus");
+    expect(process.permissionMode).toBe("acceptEdits");
+    expect(
+      child.sent
+        .filter((item) => item.request?.subtype.startsWith("set_"))
+        .map((item) => item.request),
+    ).toEqual([
+      { subtype: "set_model", model: "opus" },
+      { subtype: "set_permission_mode", mode: "acceptEdits" },
+    ]);
+    child.rejectSettings = true;
+    await expect(process.setModel("missing-model")).rejects.toThrow("rejected");
+    expect(process.model).toBe("opus");
+    await process.stop();
+  });
+  it("preserves native image content blocks and observes actual model initialization", async () => {
+    const { child, process } = setup();
+    await process.start();
+    const content = [
+      { type: "text", text: "look" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "aGk=" } },
+    ];
+    process.sendUser(MESSAGE, "look", content);
+    expect(child.sent.at(-1).message.content).toEqual(content);
+    child.output({ type: "system", subtype: "init", model: "resolved-model" });
+    expect(process.model).toBe("resolved-model");
+    await process.stop();
+  });
+});
 
 afterEach(() => {
   vi.useRealTimers();

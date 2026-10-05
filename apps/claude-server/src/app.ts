@@ -1,10 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
 import websocket from "@fastify/websocket";
+import fastifyStatic from "@fastify/static";
+import { stat } from "node:fs/promises";
 import Fastify from "fastify";
 import { readHistory } from "./history";
 import type { SessionManager } from "./manager";
 import type { RunnerConnection } from "./rpc";
 import { AppError, assertUuid, record } from "./types";
+import type { UiService } from "./ui-service";
+import { registerUiRoutes } from "./ui-routes";
+import { VoiceServiceError } from "./voice";
+import { AttachmentTooLargeError, AttachmentValidationError } from "./attachments";
 
 function text(value: unknown, name: string, limit = 200_000): string {
   if (typeof value !== "string" || !value.trim() || value.length > limit)
@@ -21,8 +27,8 @@ function equalToken(value: unknown, token: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export async function buildApp(manager: SessionManager) {
-  const app = Fastify({ logger: false, bodyLimit: 1_048_576, forceCloseConnections: true });
+export async function buildApp(manager: SessionManager, ui?: UiService) {
+  const app = Fastify({ logger: false, bodyLimit: 16 * 1024 * 1024, forceCloseConnections: true });
   await app.register(websocket, {
     options: { maxPayload: 1_048_576 },
     preClose(done) {
@@ -31,28 +37,38 @@ export async function buildApp(manager: SessionManager) {
     },
   });
   app.setErrorHandler((error, _request, reply) => {
+    const exposed =
+      error instanceof VoiceServiceError ||
+      error instanceof AttachmentTooLargeError ||
+      error instanceof AttachmentValidationError;
     const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
     const httpStatus = (error as { statusCode?: number }).statusCode;
     const status =
       error instanceof AppError
         ? error.status
-        : missing
-          ? 404
-          : httpStatus && httpStatus >= 400 && httpStatus < 500
-            ? httpStatus
-            : 500;
+        : exposed
+          ? error.statusCode
+          : missing
+            ? 404
+            : httpStatus && httpStatus >= 400 && httpStatus < 500
+              ? httpStatus
+              : 500;
     reply.code(status).send({
       error: {
         code:
-          error instanceof AppError
-            ? error.code
+          error instanceof AppError || exposed
+            ? error instanceof AppError
+              ? error.code
+              : error instanceof VoiceServiceError
+                ? error.kind
+                : "invalid_request"
             : missing
               ? "not_found"
               : status >= 400 && status < 500
                 ? "invalid_request"
                 : "internal",
         message:
-          error instanceof AppError
+          error instanceof AppError || exposed
             ? error.message
             : missing
               ? "Native session history was not found"
@@ -68,7 +84,9 @@ export async function buildApp(manager: SessionManager) {
       return reply
         .code(403)
         .send({ error: { code: "unauthorized", message: "Origin not allowed" } });
-    if (request.url.split("?")[0] === "/api/v1/events") return;
+    const path = request.url.split("?")[0]!;
+    if (!path.startsWith("/api/") || path === "/api/v1/events" || path === "/api/v1/ui/events")
+      return;
     const token = /^Bearer\s+(\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
     if (!equalToken(token, manager.config.token))
       return reply
@@ -78,10 +96,14 @@ export async function buildApp(manager: SessionManager) {
   app.get("/api/v1/health", async () => ({
     status: "ok",
     app: "claudenest",
+    provider: "claude",
     serverVersion: "0.1.0",
     runnerProtocolVersion: 1,
     recoveryState: manager.accepting ? "ready" : "draining",
     releasePath: manager.config.releasePath,
+    restartProtocolVersion: 1,
+    transport: "daemon",
+    appServer: { state: "ready", installedVersion: null, message: null },
   }));
   app.get<{ Querystring: { cwd?: string } }>("/api/v1/sessions", async (request) => ({
     sessions: await manager.list(request.query.cwd),
@@ -227,6 +249,77 @@ export async function buildApp(manager: SessionManager) {
       subscriptions.clear();
     });
   });
-  app.addHook("onClose", () => manager.close());
+  let stopVoice: (() => Promise<void>) | undefined;
+  if (ui) {
+    stopVoice = await registerUiRoutes(app, ui);
+    app.get("/api/v1/ui/events", { websocket: true }, (socket) => {
+      let authenticated = false;
+      const send = (frame: unknown) => {
+        if (socket.readyState !== 1) return;
+        const payload = JSON.stringify(frame);
+        if (socket.bufferedAmount + Buffer.byteLength(payload) > 16 * 1024 * 1024) {
+          socket.close(1013, "Reconnect and resynchronize");
+          return;
+        }
+        socket.send(payload);
+      };
+      const timer = setTimeout(() => socket.close(1008, "Authentication timeout"), 5_000);
+      socket.on("message", (raw) => {
+        try {
+          const frame = record(JSON.parse(raw.toString()));
+          if (!authenticated) {
+            if (frame.type !== "authenticate" || !equalToken(frame.token, manager.config.token)) {
+              socket.close(1008, "Authentication required");
+              return;
+            }
+            authenticated = true;
+            clearTimeout(timer);
+            ui.on("frame", send);
+            send({ type: "snapshot", snapshot: ui.snapshot() });
+          } else if (frame.type === "ping") send({ type: "pong" });
+          else socket.close(1008, "Invalid websocket frame");
+        } catch {
+          socket.close(1008, "Invalid websocket frame");
+        }
+      });
+      socket.on("close", () => {
+        clearTimeout(timer);
+        ui.off("frame", send);
+      });
+    });
+  }
+  const clientDist = manager.config.clientDist;
+  if (
+    clientDist &&
+    (await stat(clientDist)
+      .then((info) => info.isDirectory())
+      .catch(() => false))
+  ) {
+    await app.register(fastifyStatic, {
+      root: clientDist,
+      wildcard: false,
+      index: ["index.html"],
+      setHeaders(response, path) {
+        response.header("X-Content-Type-Options", "nosniff");
+        if (path.endsWith("index.html") || path.endsWith("sw.js"))
+          response.header("Cache-Control", "no-cache");
+      },
+    });
+    app.setNotFoundHandler((request, reply) => {
+      if (
+        (request.method === "GET" || request.method === "HEAD") &&
+        !request.url.startsWith("/api/") &&
+        !request.url.startsWith("/downloads/") &&
+        request.headers.accept?.includes("text/html")
+      )
+        return reply.sendFile("index.html");
+      return reply.code(404).send({ error: { code: "not_found", message: "Route not found" } });
+    });
+  }
+  app.addHook("onClose", async () => {
+    await stopVoice?.();
+    await ui?.close();
+    await manager.close();
+  });
   return app;
 }

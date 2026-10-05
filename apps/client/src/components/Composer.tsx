@@ -1,3 +1,4 @@
+import { application } from "../application";
 import { useTypography } from "../typography";
 import { pastedText, samePastedText, type PastedText } from "@codexnest/protocol";
 import { PasteBlocks } from "./PasteBlocks";
@@ -118,6 +119,7 @@ export function Composer({
   onSettingsChange,
   settingsBusy = false,
   settingsDisabled = false,
+  effortDisabled = false,
   goalMode = false,
   goal,
   goalBusy = false,
@@ -174,6 +176,7 @@ export function Composer({
   onSettingsChange(value: UpdateThreadSettingsRequest): void;
   settingsBusy?: boolean;
   settingsDisabled?: boolean;
+  effortDisabled?: boolean;
   goalMode?: boolean;
   goal?: ThreadGoal | null;
   goalBusy?: boolean;
@@ -396,6 +399,7 @@ export function Composer({
     !speechBusy &&
     Boolean(onSendQueuedNow);
   const planToggleEligible =
+    application.capabilities.plan &&
     !running &&
     !busy &&
     !settingsBusy &&
@@ -1512,6 +1516,7 @@ export function Composer({
               </label>
             )}
             <SettingsPicker
+              effortDisabled={effortDisabled}
               disabled={running || busy || settingsBusy || settingsDisabled || speechBusy}
               teamToggleDisabled={
                 busy ||

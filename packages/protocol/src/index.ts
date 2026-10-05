@@ -1,11 +1,33 @@
 import { pastedText, type PastedText } from "./pasted-text.js";
 export * from "./pasted-text.js";
 
+export type AppProvider = "codex" | "claude";
+
+/** Optional provider capabilities; existing Codex clients retain their defaults. */
+export type AppCapabilities = {
+  codexManagement: boolean;
+  rateLimits: boolean;
+  plan: boolean;
+  team: boolean;
+  goal: boolean;
+  forks: boolean;
+  browserIntegration: boolean;
+  fullTextSearch: boolean;
+  sessionApprovalGrants: boolean;
+  skills: boolean;
+  gitChanges: boolean;
+  artifacts: boolean;
+  appUpdates: boolean;
+  reasoningEffort: boolean;
+};
+
 export type AppServerState = "starting" | "ready" | "unavailable" | "stopped";
 export type RecoveryState =
   "starting" | "syncing" | "recovering" | "ready" | "draining" | "unavailable" | "failed";
 
 export type HealthResponse = {
+  provider?: AppProvider;
+  app?: "codexnest" | "claudenest";
   status: "ok" | "degraded";
   serverVersion: string;
   recoveryState: RecoveryState;
@@ -832,6 +854,8 @@ export type PermissionGrant = {
 };
 
 export type UserInputQuestion = {
+  /** Absent preserves the existing single-choice behavior. */
+  multiSelect?: boolean;
   id: string;
   header: string;
   question: string;
@@ -963,6 +987,8 @@ export type ConnectionView = {
 };
 
 export type AppSnapshot = {
+  provider?: AppProvider;
+  capabilities?: AppCapabilities;
   instanceId?: string;
   sequence: number;
   uiLanguage: UiLanguage;
@@ -1413,6 +1439,8 @@ export type StartTurnRequest = PastedText & {
 };
 
 export type QueueMessageRequest = PastedText & {
+  /** Consume the submitted draft only if its server revision still matches. */
+  draftUpdatedAt?: number | null;
   projectDraft?: { projectId: string; updatedAt: number };
   input: string;
   images?: string[];

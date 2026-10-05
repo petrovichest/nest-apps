@@ -1,19 +1,31 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
-import { chmod, mkdir, readFile, unlink } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, stat, unlink } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
-import { dirname, join } from "node:path";
-import { ClaudeProcess } from "./claude.js";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import { ClaudeControlRejectedError, ClaudeProcess, MAX_NATIVE_LINE_BYTES } from "./claude.js";
 import { writeJsonAtomic } from "./io.js";
-import type { CommandReceipt, RunnerDescriptor, RunnerEvent, RunnerSnapshot } from "./types.js";
+import type {
+  ClaudeModel,
+  ClaudePermissionMode,
+  CommandReceipt,
+  RunnerDescriptor,
+  RunnerEvent,
+  RunnerSnapshot,
+} from "./types.js";
 
 export interface RunnerTransport extends EventEmitter {
   readonly pid: number | undefined;
   start(): Promise<void>;
-  sendUser(requestId: string, text: string): void;
+  sendUser(requestId: string, text: string, content?: Record<string, unknown>[]): void;
   respond(requestId: string, response: Record<string, unknown>): void;
   interrupt(): Promise<void>;
   stop(): Promise<void>;
+  readonly supportedModels?: ClaudeModel[];
+  readonly model?: string;
+  readonly permissionMode?: ClaudePermissionMode;
+  setModel?(model: string): Promise<void>;
+  setPermissionMode?(mode: ClaudePermissionMode): Promise<void>;
 }
 
 export interface RunnerOptions {
@@ -119,6 +131,8 @@ export class SessionRunner {
           resume: descriptor.resume,
           env: { CLAUDE_CONFIG_DIR: descriptor.configDir },
           ...(descriptor.model ? { model: descriptor.model } : {}),
+          ...(descriptor.effort ? { effort: descriptor.effort } : {}),
+          ...(descriptor.permissionMode ? { permissionMode: descriptor.permissionMode } : {}),
         });
     this.transport.on("event", (event: unknown) => this.onNativeEvent(event));
     this.transport.on("request", (event: unknown) => this.onRequest(event));
@@ -185,6 +199,17 @@ export class SessionRunner {
         ...this.current.map(({ event }) => event),
       ],
       commands: [...this.receipts.values()].map((receipt) => ({ ...receipt })),
+      capabilities: {
+        contentBlocks: Boolean(this.descriptor.attachmentRoot),
+        uploadedImages: Boolean(this.descriptor.attachmentRoot),
+        setModel: typeof this.transport.setModel === "function",
+        setPermissionMode: typeof this.transport.setPermissionMode === "function",
+      },
+      supportedModels: this.transport.supportedModels ?? [],
+      ...((this.transport.model ?? this.descriptor.model)
+        ? { model: this.transport.model ?? this.descriptor.model }
+        : {}),
+      permissionMode: this.transport.permissionMode ?? this.descriptor.permissionMode ?? "manual",
     };
   }
 
@@ -313,12 +338,23 @@ export class SessionRunner {
       setImmediate(() => void this.close().catch(() => undefined));
       return { released: true };
     }
-    if (method !== "send" && method !== "interrupt" && method !== "respond") {
+    if (
+      method !== "send" &&
+      method !== "interrupt" &&
+      method !== "respond" &&
+      method !== "setModel" &&
+      method !== "setPermissionMode"
+    ) {
       throw new RunnerError("method_not_found", `Unknown method: ${method}`);
     }
     const params = record(rawParams);
     const requestId = text(params.requestId, "requestId");
-    const sendText = method === "send" ? text(params.text, "text") : undefined;
+    const sendText =
+      method === "send"
+        ? typeof params.text === "string"
+          ? params.text
+          : text(params.text, "text")
+        : undefined;
     const response = method === "respond" ? record(params.response) : undefined;
     const fingerprint = createHash("sha256").update(canonical({ method, params })).digest("hex");
     const existing = this.receipts.get(requestId);
@@ -343,6 +379,35 @@ export class SessionRunner {
     if (method === "interrupt" && this.state !== "running" && this.state !== "waiting") {
       throw new RunnerError("conflict", "Session is not running");
     }
+    const model = method === "setModel" ? text(params.model, "model") : undefined;
+    const permissionMode =
+      method === "setPermissionMode"
+        ? (text(params.permissionMode, "permissionMode") as ClaudePermissionMode)
+        : undefined;
+    if (
+      permissionMode &&
+      ![
+        "manual",
+        "default",
+        "acceptEdits",
+        "bypassPermissions",
+        "plan",
+        "auto",
+        "dontAsk",
+      ].includes(permissionMode)
+    )
+      throw new RunnerError("invalid_request", "Unsupported permission mode");
+    if (method === "setModel" || method === "setPermissionMode") {
+      if (this.awaitingResult || this.pending.size || this.state !== "idle")
+        throw new RunnerError("conflict", "Settings can change only while the session is idle");
+      if (
+        (method === "setModel" && !this.transport.setModel) ||
+        (method === "setPermissionMode" && !this.transport.setPermissionMode)
+      )
+        throw new RunnerError("method_not_found", "Owner does not support this setting");
+    }
+    const prepared =
+      method === "send" ? await this.prepareInput(params, requestId, sendText!) : undefined;
     const receipt: CommandReceipt = { requestId, kind: method, fingerprint, status: "accepted" };
     this.receipts.set(requestId, receipt);
     await this.persistReceipts();
@@ -364,26 +429,37 @@ export class SessionRunner {
         this.activeSendRequestId = requestId;
         this.awaitingResult = true;
         this.setState("running");
-        this.transport.sendUser(requestId, sendText!);
+        this.transport.sendUser(requestId, prepared!.text, prepared!.content);
       } else if (method === "respond") {
         this.transport.respond(targetRequestId!, response!);
         this.pending.delete(targetRequestId!);
         this.emit("request.cancelled", { requestId: targetRequestId });
         if (this.pending.size === 0) this.setState("running");
         receipt.status = "completed";
-      } else {
+      } else if (method === "interrupt") {
         await this.transport.interrupt();
         receipt.status = "completed";
         for (const pendingId of this.pending.keys())
           this.emit("request.cancelled", { requestId: pendingId });
         this.pending.clear();
         this.setState("interrupted");
+      } else {
+        if (method === "setModel") await this.transport.setModel!(model!);
+        else await this.transport.setPermissionMode!(permissionMode!);
+        receipt.status = "completed";
       }
       await this.persistReceipts();
       await this.persistState();
       this.emit("command", { ...receipt });
       return { ...receipt };
     } catch (error) {
+      if (error instanceof ClaudeControlRejectedError) {
+        receipt.status = "completed";
+        receipt.error = error.message;
+        await this.persistReceipts();
+        this.emit("command", { ...receipt });
+        throw new RunnerError("invalid_request", error.message);
+      }
       receipt.status = "unknown";
       receipt.error = error instanceof Error ? error.message : String(error);
       await this.persistReceipts();
@@ -393,6 +469,91 @@ export class SessionRunner {
         "Command delivery could not be confirmed; it will not be resent",
       );
     }
+  }
+
+  private async prepareInput(
+    params: Record<string, unknown>,
+    requestId: string,
+    input: string,
+  ): Promise<{ text: string; content?: Record<string, unknown>[] }> {
+    const content: Record<string, unknown>[] = [];
+    const files: Array<{ name: string; path: string }> = [];
+    let encodedImageBytes = 0;
+    for (const kind of ["files", "images"] as const) {
+      const refs = params[kind];
+      if (refs === undefined) continue;
+      if (!Array.isArray(refs) || refs.length > 20)
+        throw new RunnerError(
+          "invalid_request",
+          `${kind} must contain at most 20 uploaded references`,
+        );
+      if (!refs.length) continue;
+      if (!this.descriptor.attachmentRoot && refs.length)
+        throw new RunnerError("method_not_found", "Owner has no upload directory");
+      const root = this.descriptor.attachmentRoot
+        ? await realpath(this.descriptor.attachmentRoot)
+        : "";
+      for (const raw of refs) {
+        const ref = record(raw);
+        const path = await realpath(text(ref.path, "attachment.path")).catch(() => {
+          throw new RunnerError("invalid_request", "Attachment is unavailable");
+        });
+        const remainder = relative(root, path);
+        if (!remainder || remainder.startsWith("..") || isAbsolute(remainder))
+          throw new RunnerError(
+            "invalid_request",
+            "Attachment is outside the private upload directory",
+          );
+        const info = await stat(path);
+        if (!info.isFile() || info.size !== ref.size)
+          throw new RunnerError("invalid_request", "Attachment size changed");
+        const name = text(ref.name, "attachment.name");
+        if (kind === "files") files.push({ name, path });
+        else {
+          if (
+            info.size > 8 * 1024 * 1024 ||
+            !["image/jpeg", "image/png", "image/webp", "image/gif"].includes(String(ref.mediaType))
+          )
+            throw new RunnerError("invalid_request", "Image type or size is unsupported");
+          encodedImageBytes += 4 * Math.ceil(info.size / 3);
+          if (encodedImageBytes + Buffer.byteLength(input) > MAX_NATIVE_LINE_BYTES - 64 * 1024)
+            throw new RunnerError(
+              "invalid_request",
+              "Images exceed Claude's aggregate input limit",
+            );
+          const bytes = await readFile(path);
+          if (bytes.length !== ref.size)
+            throw new RunnerError("invalid_request", "Image size changed");
+          content.push({
+            type: "image",
+            source: { type: "base64", media_type: ref.mediaType, data: bytes.toString("base64") },
+          });
+        }
+      }
+    }
+    let formatted = input;
+    if (files.length)
+      formatted += `${formatted ? "\n\n" : ""}<claudenest_attachments>\nThe user attached local files. Read them from these absolute paths before responding:\n${JSON.stringify(files)}\n</claudenest_attachments>`;
+    if (formatted) content.unshift({ type: "text", text: formatted });
+    if (!content.length)
+      throw new RunnerError("invalid_request", "Message has no text or attachments");
+    const native = {
+      type: "user",
+      uuid: requestId,
+      session_id: this.descriptor.sessionId,
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content:
+          params.images && content.some((part) => part.type === "image") ? content : formatted,
+      },
+    };
+    if (Buffer.byteLength(JSON.stringify(native)) + 1 > MAX_NATIVE_LINE_BYTES)
+      throw new RunnerError("invalid_request", "Message exceeds Claude's 16 MiB input limit");
+    return {
+      text: formatted,
+      ...(content.some((part) => part.type === "image") ? { content } : {}),
+    };
   }
 
   private onNativeEvent(rawEvent: unknown): void {

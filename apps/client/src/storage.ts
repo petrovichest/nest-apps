@@ -1,3 +1,4 @@
+import { application } from "./application";
 import { SecureStorage } from "@aparajita/capacitor-secure-storage";
 import { Capacitor } from "@capacitor/core";
 import { Preferences } from "@capacitor/preferences";
@@ -11,8 +12,8 @@ export interface ConnectionSettings {
   token: string;
 }
 
-const URL_KEY = "codexnest.serverUrl";
-const TOKEN_KEY = "codexnest.token";
+const URL_KEY = `${application.storagePrefix}.serverUrl`;
+const TOKEN_KEY = `${application.storagePrefix}.token`;
 
 export async function loadConnectionSettings(): Promise<ConnectionSettings | null> {
   if (Capacitor.isNativePlatform()) {

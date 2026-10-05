@@ -138,7 +138,7 @@ async function executable(name) {
 async function writeService() {
   await mkdir(serviceDirectory, { recursive: true });
   const nodeBin = await realpath(process.execPath);
-  const service = `[Unit]\nDescription=ClaudeNest prototype API (session services remain independent)\nAfter=network-online.target\n\n[Service]\nType=exec\nWorkingDirectory=${directoryValue(join(root, "current"))}\nEnvironmentFile=${directoryValue(envPath)}\nExecStart=${executableQuote(nodeBin)} ${executableQuote(join(root, "current/apps/claude-server/dist/index.js"))}\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=45\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+  const service = `[Unit]\nDescription=ClaudeNest API and web client (session services remain independent)\nAfter=network-online.target\n\n[Service]\nType=exec\nWorkingDirectory=${directoryValue(join(root, "current"))}\nEnvironmentFile=${directoryValue(envPath)}\nExecStart=${executableQuote(nodeBin)} ${executableQuote(join(root, "current/apps/claude-server/dist/index.js"))}\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=45\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
   await writeFile(join(serviceDirectory, "claudenest.service"), service, { mode: 0o600 });
   await exec("systemctl", ["--user", "daemon-reload"]);
 }

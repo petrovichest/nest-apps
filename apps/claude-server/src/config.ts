@@ -19,6 +19,7 @@ export interface Config {
   token: string;
   allowedOrigins: Set<string>;
   startPaused?: boolean;
+  clientDist?: string;
 }
 
 export async function executablePath(name: string): Promise<string> {
@@ -92,10 +93,13 @@ export async function loadConfig(): Promise<Config> {
     serverEnvFile,
     token,
     startPaused: process.env.CLAUDENEST_START_PAUSED === "1",
+    clientDist: resolve(
+      process.env.CLAUDENEST_CLIENT_DIST || join(releasePath, "apps/client/dist-claude"),
+    ),
     allowedOrigins: new Set(
       (
         process.env.CLAUDENEST_ALLOWED_ORIGINS ||
-        `http://127.0.0.1:${port},http://localhost:${port}`
+        `http://127.0.0.1:${port},http://localhost:${port},http://127.0.0.1:5174,http://localhost:5174`
       )
         .split(",")
         .map((value) => value.trim()),

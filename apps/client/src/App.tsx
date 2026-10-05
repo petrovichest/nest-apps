@@ -1,3 +1,4 @@
+import { application } from "./application";
 import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -75,18 +76,18 @@ import { hasAlwaysVisibleThreadStatus, threadStatusClasses } from "./thread-stat
 import { useDrawerNavigation } from "./useDrawerNavigation";
 import type { ThemeMode } from "./useTheme";
 
-const SIDEBAR_SIDE_KEY = "codexnest.sidebarSide";
-const SIDEBAR_WIDTH_KEY = "codexnest.sidebarWidth";
+const SIDEBAR_SIDE_KEY = `${application.storagePrefix}.sidebarSide`;
+const SIDEBAR_WIDTH_KEY = `${application.storagePrefix}.sidebarWidth`;
 const DEFAULT_SIDEBAR_WIDTH = 292;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 440;
 const MIN_WORKSPACE_WIDTH = 420;
 const DESKTOP_SIDEBAR_GUTTERS = 40;
 const SIDEBAR_KEYBOARD_STEP = 10;
-const PROJECT_LIST_DIRECTION_KEY = "codexnest.projectListDirection";
-const LAYOUT_DEFAULTS_VERSION_KEY = "codexnest.layoutDefaultsVersion";
+const PROJECT_LIST_DIRECTION_KEY = `${application.storagePrefix}.projectListDirection`;
+const LAYOUT_DEFAULTS_VERSION_KEY = `${application.storagePrefix}.layoutDefaultsVersion`;
 const LAYOUT_DEFAULTS_VERSION = "1";
-const NOTIFICATION_PROMPT_DISMISSED_KEY = "codexnest.notificationPromptDismissed";
+const NOTIFICATION_PROMPT_DISMISSED_KEY = `${application.storagePrefix}.notificationPromptDismissed`;
 const PROJECT_DRAG_START_DISTANCE = 6;
 const PROJECT_LONG_PRESS_DELAY = 1_000;
 const PROJECT_LONG_PRESS_MOVE_TOLERANCE = 10;
@@ -94,8 +95,8 @@ const PROJECT_DRAG_SCROLL_EDGE = 48;
 const PROJECT_DRAG_SCROLL_SPEED = 12;
 const THREAD_PREVIEW_LIMIT = 5;
 const THREAD_TITLE_SCROLL_PX_PER_SECOND = 45;
-const SIDEBAR_TREE_STATE_KEY_PREFIX = "codexnest.sidebarTree.v1:";
-const SESSION_LIST_MODE_KEY = "codexnest.sessionListMode";
+const SIDEBAR_TREE_STATE_KEY_PREFIX = `${application.storagePrefix}.sidebarTree.v1:`;
+const SESSION_LIST_MODE_KEY = `${application.storagePrefix}.sessionListMode`;
 
 type ListExpansion = number | "all";
 type SessionListMode = "projects" | "active";
@@ -226,7 +227,11 @@ export function App({
   }, [setLanguage, state.snapshot?.uiLanguage]);
 
   useEffect(() => {
-    if (state.network !== "connected" || !state.snapshot?.connection.syncedAt) {
+    if (
+      !application.capabilities.appUpdates ||
+      state.network !== "connected" ||
+      !state.snapshot?.connection.syncedAt
+    ) {
       return;
     }
 
@@ -289,7 +294,7 @@ export function App({
       .then((config) => {
         if (cancelled) return;
         setTranscriptionConfig(config);
-        localStorage.removeItem("codexnest.transcriptionProvider");
+        localStorage.removeItem(`${application.storagePrefix}.transcriptionProvider`);
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
@@ -1496,7 +1501,12 @@ function Sidebar({
   }
 
   async function refreshRateLimits() {
-    if (rateLimitsLoading || rateLimitsRequestPending.current) return;
+    if (
+      !application.capabilities.rateLimits ||
+      rateLimitsLoading ||
+      rateLimitsRequestPending.current
+    )
+      return;
     const generation = ++rateLimitsGeneration.current;
     rateLimitsRequestPending.current = true;
     setManualRateLimitsLoading(true);
@@ -1561,30 +1571,34 @@ function Sidebar({
           <SlidersIcon />
           {t("Настройки")}
         </NavLink>
-        <NavLink
-          aria-label={
-            updateAvailable ? t("Доступно обновление CodexNest") : t("Обновление CodexNest")
-          }
-          className={`sidebar-compact-control app-update-indicator${
-            updateAvailable ? " update-available" : ""
-          }`}
-          onClick={onClose}
-          title={updateAvailable ? t("Доступно обновление CodexNest") : t("Обновление CodexNest")}
-          to="/settings?section=maintenance"
-        >
-          <ArrowDownIcon />
-        </NavLink>
-        <button
-          aria-busy={rateLimitsLoading}
-          aria-label={rateLimitsDescription}
-          title={rateLimitsDescription}
-          className="sidebar-control-action codex-limits"
-          disabled={rateLimitsLoading}
-          onClick={() => void refreshRateLimits()}
-        >
-          {rateLimitsLoading ? <span className="spinner small" /> : <GaugeIcon />}
-          <span>{rateLimitsText}</span>
-        </button>
+        {application.capabilities.appUpdates && (
+          <NavLink
+            aria-label={
+              updateAvailable ? t("Доступно обновление CodexNest") : t("Обновление CodexNest")
+            }
+            className={`sidebar-compact-control app-update-indicator${
+              updateAvailable ? " update-available" : ""
+            }`}
+            onClick={onClose}
+            title={updateAvailable ? t("Доступно обновление CodexNest") : t("Обновление CodexNest")}
+            to="/settings?section=maintenance"
+          >
+            <ArrowDownIcon />
+          </NavLink>
+        )}
+        {application.capabilities.rateLimits && (
+          <button
+            aria-busy={rateLimitsLoading}
+            aria-label={rateLimitsDescription}
+            title={rateLimitsDescription}
+            className="sidebar-control-action codex-limits"
+            disabled={rateLimitsLoading}
+            onClick={() => void refreshRateLimits()}
+          >
+            {rateLimitsLoading ? <span className="spinner small" /> : <GaugeIcon />}
+            <span>{rateLimitsText}</span>
+          </button>
+        )}
         <div
           aria-label={t("Состояние сервера: {{state}}", {
             state: networkLabel(state.network, t),

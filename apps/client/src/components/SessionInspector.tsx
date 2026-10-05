@@ -1,3 +1,4 @@
+import { application } from "../application";
 import { useEffect, useRef, useState } from "react";
 
 import type { GitChangesSummary, Project, ThreadSummary } from "@codexnest/protocol";
@@ -75,21 +76,23 @@ export function SessionInspector({
         >
           {t("Обзор")}
         </button>
-        <button
-          type="button"
-          id="session-artifacts-tab"
-          role="tab"
-          aria-controls="session-artifacts-panel"
-          aria-label={artifactsTabLabel}
-          aria-selected={activeTab === "artifacts"}
-          className={activeTab === "artifacts" ? "active" : undefined}
-          onClick={() => onTabChange("artifacts")}
-        >
-          <span>{t("Артефакты")}</span>
-          <span className="inspector-tab-count" aria-hidden="true">
-            {artifactCapability ? artifacts.length : "…"}
-          </span>
-        </button>
+        {application.capabilities.artifacts && (
+          <button
+            type="button"
+            id="session-artifacts-tab"
+            role="tab"
+            aria-controls="session-artifacts-panel"
+            aria-label={artifactsTabLabel}
+            aria-selected={activeTab === "artifacts"}
+            className={activeTab === "artifacts" ? "active" : undefined}
+            onClick={() => onTabChange("artifacts")}
+          >
+            <span>{t("Артефакты")}</span>
+            <span className="inspector-tab-count" aria-hidden="true">
+              {artifactCapability ? artifacts.length : "…"}
+            </span>
+          </button>
+        )}
       </div>
 
       {activeTab === "overview" ? (
@@ -107,9 +110,11 @@ export function SessionInspector({
             <div className="inspector-project-name">{project?.displayName ?? t("Без проекта")}</div>
             <InspectorPath key={summary.cwd} path={summary.cwd} />
             <dl className="inspector-list">
-              <InspectorRow technical label={t("Изменения Git")}>
-                <GitChangesValue value={gitChanges} />
-              </InspectorRow>
+              {application.capabilities.gitChanges && (
+                <InspectorRow technical label={t("Изменения Git")}>
+                  <GitChangesValue value={gitChanges} />
+                </InspectorRow>
+              )}
             </dl>
           </section>
           <section className="inspector-section">

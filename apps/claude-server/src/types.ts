@@ -5,6 +5,24 @@ export const UUID_PATTERN =
 export type RunnerState =
   "starting" | "idle" | "running" | "waiting" | "interrupted" | "failed" | "closed";
 
+export type ClaudePermissionMode =
+  "manual" | "default" | "acceptEdits" | "bypassPermissions" | "plan" | "auto" | "dontAsk";
+export interface ClaudeModel {
+  value: string;
+  resolvedModel?: string;
+  displayName: string;
+  description: string;
+  supportsEffort?: boolean;
+  supportedEffortLevels?: string[];
+}
+export interface RunnerAttachment {
+  id: string;
+  name: string;
+  path: string;
+  size: number;
+  mediaType: string;
+}
+
 export interface RunnerDescriptor {
   sessionId: string;
   cwd: string;
@@ -17,12 +35,15 @@ export interface RunnerDescriptor {
   stateDirectory: string;
   resume: boolean;
   model?: string;
+  effort?: string;
+  permissionMode?: ClaudePermissionMode;
+  attachmentRoot?: string;
   protocolVersion: 1;
 }
 
 export interface CommandReceipt {
   requestId: string;
-  kind: "send" | "interrupt" | "respond";
+  kind: "send" | "interrupt" | "respond" | "setModel" | "setPermissionMode";
   fingerprint: string;
   status: "accepted" | "completed" | "unknown";
   error?: string;
@@ -48,6 +69,15 @@ export interface RunnerSnapshot {
   pendingRequests: PendingRequest[];
   currentEvents: Record<string, unknown>[];
   commands: CommandReceipt[];
+  capabilities?: {
+    contentBlocks: boolean;
+    uploadedImages: boolean;
+    setModel: boolean;
+    setPermissionMode: boolean;
+  };
+  supportedModels?: ClaudeModel[];
+  model?: string;
+  permissionMode?: ClaudePermissionMode;
 }
 
 export interface RunnerEvent {

@@ -7,6 +7,7 @@ export default tseslint.config(
     ignores: [
       "**/node_modules/**",
       "**/dist/**",
+      "**/dist-claude/**",
       "**/coverage/**",
       "output/**",
       "apps/server/src/codex/generated/**",

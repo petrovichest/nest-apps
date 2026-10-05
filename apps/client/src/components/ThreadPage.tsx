@@ -1,3 +1,4 @@
+import { application } from "../application";
 import { useTypography } from "../typography";
 import { PasteBlocks } from "./PasteBlocks";
 import { isNativeSubagentLaunch, NativeSubagentLaunchCard } from "./NativeSubagentLaunchCard";
@@ -491,7 +492,7 @@ function forkChildStateLabel(state: ThreadState, t: Translate): string {
 }
 
 function resolveVoiceTranscriptionMode(currentTurnId: string | null): VoiceTranscriptionMode {
-  return currentTurnId ? "steer" : "send";
+  return currentTurnId ? (application.isClaude ? "queue" : "steer") : "send";
 }
 
 export function ThreadPage({
@@ -630,7 +631,10 @@ export function ThreadPage({
     useState<OptimisticMessage | null>(null);
   const detail = state.details?.[threadId];
   const searchTarget = useMemo(
-    () => searchTargetFromState(location.state, threadId),
+    () =>
+      application.capabilities.fullTextSearch
+        ? searchTargetFromState(location.state, threadId)
+        : null,
     [location.state, threadId],
   );
   const summary = reconcileVisibleThreadSummary(
@@ -830,6 +834,7 @@ export function ThreadPage({
     if (!attentionIds.has(id)) standaloneAttentionIds.current.delete(id);
   }
   function userInputToDismiss(targetThreadId: string): QueuedMessage["dismissUserInput"] {
+    if (application.isClaude) return undefined;
     const request = state.snapshot?.attention?.find(
       (item) =>
         item.threadId === targetThreadId && item.kind === "userInput" && item.turnId && item.itemId,
@@ -1025,7 +1030,7 @@ export function ThreadPage({
       string,
       { responseId: string; action: { disabled: boolean; onFork(opener?: HTMLElement): void } }
     >();
-    if (isSubagent) return actions;
+    if (isSubagent || !application.capabilities.forks) return actions;
     for (const turn of detail?.turns ?? []) {
       const responseId = findForkResponseId(turn);
       if (!responseId) continue;
@@ -1408,7 +1413,13 @@ export function ThreadPage({
           : undefined;
         if (!thread) {
           if (existingThreadId) {
-            thread = (await api.readThread(existingThreadId, { fresh: true })).summary;
+            const existing = await api.readThread(existingThreadId, { fresh: true });
+            thread = existing.summary;
+            if (application.isClaude)
+              savedDraftUpdatedAtRef.current.set(
+                existingThreadId,
+                existing.draft?.updatedAt ?? null,
+              );
           } else {
             if (!(await enqueuePreparationSave(snapshotPreparation()))) {
               throw new Error(t("Не удалось сохранить черновик на устройстве"));
@@ -1425,6 +1436,8 @@ export function ThreadPage({
             );
             assertPreparationGeneration(generation);
             thread = created.thread;
+            if (application.isClaude)
+              savedDraftUpdatedAtRef.current.set(thread.id, created.draft?.updatedAt ?? null);
             const voice = preparationRef.current.voiceSubmission;
             if (voice) {
               voice.draftUpdatedAt = created.draft?.updatedAt ?? null;
@@ -2350,7 +2363,12 @@ export function ThreadPage({
   }, [flushComposerDraftEvent]);
 
   useEffect(() => {
-    if (!threadId || isSubagent || createdInWorkspaceRef.current === threadId) {
+    if (
+      !application.capabilities.goal ||
+      !threadId ||
+      isSubagent ||
+      createdInWorkspaceRef.current === threadId
+    ) {
       return;
     }
     const request = api.readGoal?.(threadId);
@@ -2381,7 +2399,7 @@ export function ThreadPage({
   }, [api, threadId]);
 
   useEffect(() => {
-    if (!inspectorOpen || !threadId) return;
+    if (!application.capabilities.gitChanges || !inspectorOpen || !threadId) return;
     void loadGitChanges();
     return () => {
       gitChangesRequest.current += 1;
@@ -2580,6 +2598,7 @@ export function ThreadPage({
   }, [detail?.olderTurnsCursor, isSubagent, loadOlderDetail, loadingOlder, searchTarget, threadId]);
 
   const loadSessionArtifacts = useCallback(async () => {
+    if (!application.capabilities.artifacts) return;
     const run = ++artifactRequestRun.current;
     setArtifactLoadState("loading");
     try {
@@ -2852,6 +2871,9 @@ export function ThreadPage({
         targetThreadId,
         {
           input: submittedInput,
+          ...(application.isClaude
+            ? { draftUpdatedAt: savedDraftUpdatedAtRef.current.get(targetThreadId) ?? null }
+            : {}),
           ...pastedText(trimPastedMessage(submittedDraft.input, submittedDraft)),
           ...(submittedDraft.images.length
             ? { images: submittedDraft.images.map((image) => image.url) }
@@ -3088,6 +3110,9 @@ export function ThreadPage({
         thread.id,
         {
           input: completeInput,
+          ...(application.isClaude
+            ? { draftUpdatedAt: savedDraftUpdatedAtRef.current.get(thread.id) ?? null }
+            : {}),
           ...pastedText(trimPastedMessage(completeDraft.input, completeDraft)),
           ...(completeDraft.images.length
             ? { images: completeDraft.images.map((image) => image.url) }
@@ -3435,7 +3460,7 @@ export function ThreadPage({
     setError(null);
     try {
       await forceRefreshDetail(threadId);
-      if (inspectorOpen) await loadGitChanges();
+      if (application.capabilities.gitChanges && inspectorOpen) await loadGitChanges();
     } catch (caught) {
       if (caught instanceof ApiClientError && caught.status === 404) {
         setThreadMissing(true);
@@ -3907,20 +3932,22 @@ export function ThreadPage({
                     </div>
                   </details>
                 )}
-                {!isSubagent && !workspaceSummary.archived && (
-                  <button
-                    aria-busy={browserUpdating || undefined}
-                    aria-label={browserSwitchLabel}
-                    aria-pressed={browserEnabled}
-                    className={`icon-button browser-session-status browser-session-status-${workspaceSummary.browserStatus}`}
-                    disabled={browserUpdating || browserSwitchLocked}
-                    onClick={() => void toggleBrowserAccess()}
-                    title={browserSwitchTitle}
-                    type="button"
-                  >
-                    <BrowserIcon />
-                  </button>
-                )}
+                {application.capabilities.browserIntegration &&
+                  !isSubagent &&
+                  !workspaceSummary.archived && (
+                    <button
+                      aria-busy={browserUpdating || undefined}
+                      aria-label={browserSwitchLabel}
+                      aria-pressed={browserEnabled}
+                      className={`icon-button browser-session-status browser-session-status-${workspaceSummary.browserStatus}`}
+                      disabled={browserUpdating || browserSwitchLocked}
+                      onClick={() => void toggleBrowserAccess()}
+                      title={browserSwitchTitle}
+                      type="button"
+                    >
+                      <BrowserIcon />
+                    </button>
+                  )}
                 {!isSubagent && (
                   <details className="thread-action-menu" data-dismiss-on-outside-click>
                     <summary className="icon-button" aria-label={t("Действия с задачей")}>
@@ -4484,6 +4511,11 @@ export function ThreadPage({
           </div>
         ) : (
           <Composer
+            effortDisabled={
+              application.isClaude &&
+              !preparationRef.current.active &&
+              (!detail || detail.turns.length > 0)
+            }
             onLayoutChange={handleComposerLayoutChange}
             inputUnavailable={inputUnavailable}
             codexSettings={workspaceSummary.codexSettings}

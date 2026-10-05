@@ -1,3 +1,4 @@
+import { application } from "../application";
 import { Browser } from "@capacitor/browser";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -94,6 +95,7 @@ function AttentionCard({
     setError(null);
     try {
       if (
+        !application.isClaude &&
         response.kind === "userInput" &&
         request.kind === "userInput" &&
         request.threadId &&
@@ -127,6 +129,7 @@ function AttentionCard({
         );
       } else {
         await api.respond(request.id, response);
+        if (response.kind === "userInput") connection.clearUserInputDraft?.(request.id);
       }
     } catch (caught) {
       setError(
@@ -169,24 +172,31 @@ function AttentionCard({
           {request.networkHost && (
             <div className="path">{t("Сетевой host: {{host}}", { host: request.networkHost })}</div>
           )}
-          {!!request.proposedPolicyChanges.length && (
-            <div className="policy-change">
-              <strong>{t("Отдельные изменения policy")}</strong>
-              {request.proposedPolicyChanges.map((change) => (
-                <button
-                  key={change.id}
-                  disabled={busy}
-                  onClick={() =>
-                    void respond({ kind: "approvalAmendment", amendmentId: change.id })
-                  }
-                >
-                  {localizeKnownServerText(language, change.label) ?? change.label}
-                </button>
-              ))}
-              <small>{t("Обычное подтверждение эти правила не применяет.")}</small>
-            </div>
-          )}
-          <ApprovalButtons busy={busy} canSession={request.canAcceptForSession} respond={respond} />
+          {application.capabilities.sessionApprovalGrants &&
+            !!request.proposedPolicyChanges.length && (
+              <div className="policy-change">
+                <strong>{t("Отдельные изменения policy")}</strong>
+                {request.proposedPolicyChanges.map((change) => (
+                  <button
+                    key={change.id}
+                    disabled={busy}
+                    onClick={() =>
+                      void respond({ kind: "approvalAmendment", amendmentId: change.id })
+                    }
+                  >
+                    {localizeKnownServerText(language, change.label) ?? change.label}
+                  </button>
+                ))}
+                <small>{t("Обычное подтверждение эти правила не применяет.")}</small>
+              </div>
+            )}
+          <ApprovalButtons
+            busy={busy}
+            canSession={
+              application.capabilities.sessionApprovalGrants && request.canAcceptForSession
+            }
+            respond={respond}
+          />
         </>
       )}
       {request.kind === "fileChangeApproval" && (
@@ -198,7 +208,13 @@ function AttentionCard({
               {t("Запрошенный корень: {{root}}", { root: request.grantRoot })}
             </div>
           )}
-          <ApprovalButtons busy={busy} canSession={request.canAcceptForSession} respond={respond} />
+          <ApprovalButtons
+            busy={busy}
+            canSession={
+              application.capabilities.sessionApprovalGrants && request.canAcceptForSession
+            }
+            respond={respond}
+          />
         </>
       )}
       {request.kind === "permissionApproval" && (
@@ -246,7 +262,7 @@ function ApprovalButtons({
       <button className="primary" disabled={busy} onClick={() => decision("accept")}>
         {t("Разрешить один раз")}
       </button>
-      {canSession && (
+      {application.capabilities.sessionApprovalGrants && canSession && (
         <button disabled={busy} onClick={() => decision("acceptForSession")}>
           {t("На сессию")}
         </button>
@@ -325,12 +341,16 @@ function PermissionForm({
         >
           {t("Выдать на turn")}
         </button>
-        <button
-          disabled={busy}
-          onClick={() => void respond({ kind: "permission", permissions: grant, scope: "session" })}
-        >
-          {t("На сессию")}
-        </button>
+        {application.capabilities.sessionApprovalGrants && (
+          <button
+            disabled={busy}
+            onClick={() =>
+              void respond({ kind: "permission", permissions: grant, scope: "session" })
+            }
+          >
+            {t("На сессию")}
+          </button>
+        )}
         <button
           className="danger"
           disabled={busy}
@@ -439,7 +459,7 @@ function UserInputForm({
   const showVoiceQueue = Boolean(submitting || submission || localSubmission);
   const locked = busy || submitting || Boolean(submission || localSubmission);
   const backgroundVoice = Boolean(
-    request.threadId && request.draftKey && connection.queueVoiceRecording,
+    !application.isClaude && request.threadId && request.draftKey && connection.queueVoiceRecording,
   );
   const AnswerInput = questionInputTag(
     request.questions.find((candidate) => candidate.id === viewDraft.currentQuestionId)?.isSecret,
@@ -457,7 +477,15 @@ function UserInputForm({
   const selectedOption = question?.options?.some(
     (option) => option.label === answers[question.id]?.[0],
   );
-  const freeformAnswer = selectedOption ? "" : question ? (answers[question.id]?.[0] ?? "") : "";
+  const freeformAnswer = question?.multiSelect
+    ? (answers[question.id]?.find(
+        (answer) => !question.options?.some((option) => option.label === answer),
+      ) ?? "")
+    : selectedOption
+      ? ""
+      : question
+        ? (answers[question.id]?.[0] ?? "")
+        : "";
   const resizeAnswer = useCallback(() => {
     const field = answerInputRef.current;
     if (nativeFieldSizing || field?.tagName !== "TEXTAREA" || !field.clientWidth) return;
@@ -518,10 +546,40 @@ function UserInputForm({
   function updateAnswer(questionId: string, answer: string, timing: "immediate" | "debounced") {
     updateDraft(
       {
-        answers: { ...answers, [questionId]: [answer] },
+        answers: {
+          ...answers,
+          [questionId]: question?.multiSelect
+            ? [
+                ...(answers[questionId] ?? []).filter((value) =>
+                  question.options?.some((option) => option.label === value),
+                ),
+                ...(answer.trim() ? [answer] : []),
+              ]
+            : [answer],
+        },
         currentQuestionId: question?.id ?? null,
       },
       timing,
+    );
+  }
+
+  function toggleOption(questionId: string, answer: string) {
+    if (!question?.multiSelect) {
+      updateAnswer(questionId, answer, "immediate");
+      return;
+    }
+    const current = answers[questionId] ?? [];
+    updateDraft(
+      {
+        answers: {
+          ...answers,
+          [questionId]: current.includes(answer)
+            ? current.filter((value) => value !== answer)
+            : [...current, answer],
+        },
+        currentQuestionId: questionId,
+      },
+      "immediate",
     );
   }
 
@@ -797,13 +855,19 @@ function UserInputForm({
   async function submitAnswers() {
     if (submissionPendingRef.current || locked || speechBusy) return;
     if (!backgroundVoice || !recordings.length) {
-      await respond({ kind: "userInput", answers: answeredUserInputValues(viewDraft.answers) });
+      await respond({
+        kind: "userInput",
+        answers: answeredUserInputValues(viewDraft.answers, request.questions),
+      });
       return;
     }
     submissionPendingRef.current = true;
     setSubmitting(true);
     setSpeechError(null);
-    const draft = { ...viewDraft, answers: answeredUserInputValues(viewDraft.answers) };
+    const draft = {
+      ...viewDraft,
+      answers: answeredUserInputValues(viewDraft.answers, request.questions),
+    };
     try {
       const digest = await crypto.subtle.digest(
         "SHA-256",
@@ -922,11 +986,15 @@ function UserInputForm({
             {question.options?.map((option) => (
               <label className="check" key={option.label}>
                 <input
-                  type="radio"
+                  type={question.multiSelect ? "checkbox" : "radio"}
                   name={question.id}
                   value={option.label}
-                  checked={answers[question.id]?.[0] === option.label}
-                  onChange={() => updateAnswer(question.id, option.label, "immediate")}
+                  checked={
+                    question.multiSelect
+                      ? (answers[question.id]?.includes(option.label) ?? false)
+                      : answers[question.id]?.[0] === option.label
+                  }
+                  onChange={() => toggleOption(question.id, option.label)}
                   disabled={locked || speechBusy}
                 />
                 <span>
@@ -1087,11 +1155,22 @@ function questionInputTag(secret: boolean | undefined): "input" | "textarea" {
   return secret ? "input" : "textarea";
 }
 
-function answeredUserInputValues(answers: Record<string, string[]>): Record<string, string[]> {
+function answeredUserInputValues(
+  answers: Record<string, string[]>,
+  questions: Extract<AttentionRequest, { kind: "userInput" }>["questions"],
+): Record<string, string[]> {
   return Object.fromEntries(
     Object.entries(answers)
-      .filter(([, values]) => Boolean(values[0]?.trim()))
-      .map(([id, values]) => [id, [values[0]!]]),
+      .map(
+        ([id, values]) =>
+          [
+            id,
+            questions.find((question) => question.id === id)?.multiSelect
+              ? values.filter((value) => Boolean(value.trim()))
+              : values.slice(0, 1).filter((value) => Boolean(value.trim())),
+          ] as const,
+      )
+      .filter(([, values]) => values.length),
   );
 }
 

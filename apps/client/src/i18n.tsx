@@ -1,3 +1,4 @@
+import { application, applicationText } from "./application";
 import {
   createContext,
   type PropsWithChildren,
@@ -10,18 +11,23 @@ import {
 
 import type { UiLanguage } from "@codexnest/protocol";
 
-const LANGUAGE_KEY = "codexnest.uiLanguage";
+const LANGUAGE_KEY = `${application.storagePrefix}.uiLanguage`;
 const LEGACY_INSTALLATION_KEYS = [
-  "codexnest.serverUrl",
-  "codexnest.theme",
-  "codexnest.sidebarSide",
-  "codexnest.projectListDirection",
-  "codexnest.sessionListMode",
-  "codexnest.layoutDefaultsVersion",
-  "codexnest.notificationPromptDismissed",
+  `${application.storagePrefix}.serverUrl`,
+  `${application.storagePrefix}.theme`,
+  `${application.storagePrefix}.sidebarSide`,
+  `${application.storagePrefix}.projectListDirection`,
+  `${application.storagePrefix}.sessionListMode`,
+  `${application.storagePrefix}.layoutDefaultsVersion`,
+  `${application.storagePrefix}.notificationPromptDismissed`,
 ];
 
 const ENGLISH: Record<string, string> = {
+  "Названия во всех проектах, включая архив":
+    "Titles across all projects, including archived sessions",
+  "Настройте URL локального STT, чтобы включить микрофон.":
+    "Configure the local STT URL to enable the microphone.",
+  "Это приложение подключается к ClaudeNest": "This application connects to ClaudeNest",
   "Возникла ошибка перегрузки модели. Продолжаем попытки — следующая через {{duration}}":
     "The model is at capacity. Retrying — next attempt in {{duration}}",
   "Возникла ошибка перегрузки модели. Продолжаем попытки…": "The model is at capacity. Retrying…",
@@ -1007,7 +1013,7 @@ type I18nContextValue = {
 const fallbackContext: I18nContextValue = {
   language: "ru",
   setLanguage: () => undefined,
-  t: (key, variables) => interpolate(key, variables),
+  t: (key, variables) => translate("ru", key, variables),
 };
 
 const I18nContext = createContext<I18nContextValue>(fallbackContext);
@@ -1048,7 +1054,7 @@ export function translate(
   variables?: TranslationVariables,
 ): string {
   const template = language === "en" ? (ENGLISH[key] ?? key) : key;
-  return interpolate(template, variables);
+  return interpolate(applicationText(template), variables);
 }
 
 export function localizeKnownServerText(

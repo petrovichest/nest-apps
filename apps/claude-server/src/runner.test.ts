@@ -1,33 +1,47 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunnerConnection } from "./rpc.js";
+import { ClaudeControlRejectedError } from "./claude.js";
 import { SessionRunner, type RunnerOptions, type RunnerTransport } from "./runner.js";
-import type { CommandReceipt, RpcMessage, RunnerDescriptor, RunnerSnapshot } from "./types.js";
+import type {
+  ClaudePermissionMode,
+  CommandReceipt,
+  RpcMessage,
+  RunnerDescriptor,
+  RunnerSnapshot,
+} from "./types.js";
 
 class FakeClaude extends EventEmitter implements RunnerTransport {
   readonly pid = 4242;
-  readonly sends: Array<{ requestId: string; text: string }> = [];
+  readonly sends: Array<{ requestId: string; text: string; content?: Record<string, unknown>[] }> =
+    [];
   readonly responses: Array<{ requestId: string; response: Record<string, unknown> }> = [];
   interruptions = 0;
   stops = 0;
   autoEcho = true;
   sendHook?: () => void;
   sendError?: Error;
+  model = "sonnet";
+  permissionMode: ClaudePermissionMode = "manual";
+  supportedModels = [{ value: "sonnet", displayName: "Sonnet", description: "Test model" }];
+  modelChanges = 0;
+  permissionChanges = 0;
+  rejectModel = false;
 
   async start(): Promise<void> {}
-  sendUser(requestId: string, text: string): void {
-    this.sends.push({ requestId, text });
+  sendUser(requestId: string, text: string, content?: Record<string, unknown>[]): void {
+    this.sends.push({ requestId, text, ...(content ? { content } : {}) });
     this.sendHook?.();
     if (this.sendError) throw this.sendError;
     if (this.autoEcho)
       this.emit("event", {
         type: "user",
         uuid: requestId,
-        message: { role: "user", content: text },
+        message: { role: "user", content: content ?? text },
       });
   }
   respond(requestId: string, response: Record<string, unknown>): void {
@@ -38,6 +52,15 @@ class FakeClaude extends EventEmitter implements RunnerTransport {
   }
   async stop(): Promise<void> {
     this.stops++;
+  }
+  async setModel(model: string): Promise<void> {
+    if (this.rejectModel) throw new ClaudeControlRejectedError("Model unavailable");
+    this.modelChanges++;
+    this.model = model;
+  }
+  async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
+    this.permissionChanges++;
+    this.permissionMode = mode;
   }
 }
 
@@ -388,6 +411,117 @@ describe("isolated Claude session runner", () => {
     socket.write("x".repeat(256));
     await new Promise<void>((resolve) => socket.once("close", () => resolve()));
     expect(fake.stops).toBe(0);
+    expect(runner.snapshot().state).toBe("idle");
+  });
+});
+
+describe("additive protocol-1 features", () => {
+  it("advertises model controls and deduplicates idle-only settings changes", async () => {
+    const { fake, runner, client } = await fixture();
+    const connection = await client();
+    expect(await connection.request("hello")).toMatchObject({
+      protocolVersion: 1,
+      capabilities: { setModel: true, setPermissionMode: true },
+      supportedModels: fake.supportedModels,
+    });
+    const update = { requestId: randomUUID(), model: "opus" };
+    await connection.request("setModel", update);
+    await connection.request("setModel", update);
+    expect(fake.modelChanges).toBe(1);
+    await connection.request("setPermissionMode", {
+      requestId: randomUUID(),
+      permissionMode: "acceptEdits",
+    });
+    expect(runner.snapshot()).toMatchObject({ model: "opus", permissionMode: "acceptEdits" });
+    await connection.request("send", { requestId: randomUUID(), text: "work" });
+    await expect(
+      connection.request("setModel", { requestId: randomUUID(), model: "sonnet" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+  it("keeps a healthy owner usable after a native setting rejection", async () => {
+    const { fake, runner, client } = await fixture();
+    fake.rejectModel = true;
+    const connection = await client();
+    const update = { requestId: randomUUID(), model: "missing" };
+    await expect(connection.request("setModel", update)).rejects.toMatchObject({
+      code: "invalid_request",
+    });
+    expect(runner.snapshot().state).toBe("idle");
+    expect(await connection.request("setModel", update)).toMatchObject({
+      status: "completed",
+      error: "Model unavailable",
+    });
+    await connection.request("send", { requestId: randomUUID(), text: "still works" });
+    expect(fake.sends).toHaveLength(1);
+  });
+  it("builds native images from bounded uploaded refs while retaining file cards", async () => {
+    const { directory, descriptor, fake, client } = await fixture();
+    descriptor.attachmentRoot = join(directory, "uploads");
+    await mkdir(descriptor.attachmentRoot);
+    const image = join(descriptor.attachmentRoot, "picture.png");
+    const file = join(descriptor.attachmentRoot, "notes.txt");
+    await writeFile(image, "image bytes");
+    await writeFile(file, "notes");
+    const connection = await client();
+    const command = {
+      requestId: randomUUID(),
+      text: "inspect",
+      files: [
+        { id: randomUUID(), name: "notes.txt", path: file, size: 5, mediaType: "text/plain" },
+      ],
+      images: [
+        { id: randomUUID(), name: "picture.png", path: image, size: 11, mediaType: "image/png" },
+      ],
+    };
+    await connection.request("send", command);
+    await connection.request("send", command);
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0]!.content).toContainEqual({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: "image/png",
+        data: Buffer.from("image bytes").toString("base64"),
+      },
+    });
+    expect(fake.sends[0]!.text).toContain(file);
+    expect(JSON.stringify(command)).not.toContain(Buffer.from("image bytes").toString("base64"));
+  });
+  it("rejects paths outside uploads and oversized images before persisting dispatch intent", async () => {
+    const { directory, descriptor, fake, runner, client } = await fixture();
+    descriptor.attachmentRoot = join(directory, "uploads");
+    await mkdir(descriptor.attachmentRoot);
+    const connection = await client();
+    const outside = join(directory, "outside.png");
+    await writeFile(outside, "x");
+    await expect(
+      connection.request("send", {
+        requestId: randomUUID(),
+        text: "",
+        images: [
+          { id: randomUUID(), name: "outside.png", path: outside, size: 1, mediaType: "image/png" },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    const huge = join(descriptor.attachmentRoot, "huge.png");
+    await writeFile(huge, Buffer.alloc(9 * 1024 * 1024));
+    await expect(
+      connection.request("send", {
+        requestId: randomUUID(),
+        text: "",
+        images: [
+          {
+            id: randomUUID(),
+            name: "huge.png",
+            path: huge,
+            size: 9 * 1024 * 1024,
+            mediaType: "image/png",
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    expect(fake.sends).toHaveLength(0);
+    expect(runner.snapshot().commands).toEqual([]);
     expect(runner.snapshot().state).toBe("idle");
   });
 });

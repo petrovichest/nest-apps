@@ -1,10 +1,11 @@
+import { application } from "./application";
 import type { ThreadDraftAnnotation, UiLanguage } from "@codexnest/protocol";
 
 export type PendingAnnotation = ThreadDraftAnnotation;
 
 export type AnnotationDraft = Omit<PendingAnnotation, "id" | "createdAt">;
 
-const STORAGE_PREFIX = "codexnest.pendingAnnotations.v1";
+const STORAGE_PREFIX = `${application.storagePrefix}.pendingAnnotations.v1`;
 
 export function loadPendingAnnotations(threadId: string): PendingAnnotation[] {
   if (typeof localStorage === "undefined") return [];

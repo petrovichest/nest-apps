@@ -409,6 +409,34 @@ describe("ConnectionProvider", () => {
     view.unmount();
   });
 
+  it.each([null, 42])(
+    "retains submitted draft revision %s through durable staging and HTTP delivery",
+    async (draftUpdatedAt) => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 202 }));
+      vi.stubGlobal("fetch", fetchMock);
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      let controls: ReturnType<typeof useConnection> | undefined;
+      const view = render(
+        <ConnectionProvider settings={{ baseUrl: "https://claudenest.example", token: "token" }}>
+          <ConnectionProbe onConnection={(value) => (controls = value)} />
+        </ConnectionProvider>,
+      );
+      await act(async () => {
+        await controls!.sendReliable("thread", {
+          input: "Submitted draft",
+          clientMessageId: "message",
+          draftUpdatedAt,
+        });
+      });
+      expect(putOutboxMessage.mock.calls[0]?.[0]).toMatchObject({ id: "message", draftUpdatedAt });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toMatchObject({
+        clientMessageId: "message",
+        draftUpdatedAt,
+      });
+      view.unmount();
+    },
+  );
+
   it("does not send or clear the composer when the outbox write fails", async () => {
     putOutboxMessage.mockResolvedValue(false);
     const fetchMock = vi.fn();

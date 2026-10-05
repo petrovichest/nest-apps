@@ -1,3 +1,4 @@
+import { application } from "../application";
 import { useCallback, useRef, useState } from "react";
 
 import type {
@@ -17,6 +18,7 @@ export function SettingsPicker({
   value,
   disabled,
   teamToggleDisabled = disabled,
+  effortDisabled = false,
   onChange,
   goalMode,
   goal,
@@ -29,6 +31,7 @@ export function SettingsPicker({
   value: SessionSettings;
   disabled: boolean;
   teamToggleDisabled?: boolean;
+  effortDisabled?: boolean;
   onChange(value: UpdateThreadSettingsRequest): void;
   goalMode: boolean;
   goal?: ThreadGoal | null;
@@ -81,6 +84,7 @@ export function SettingsPicker({
           reasoningEffort={value.reasoningEffort ?? null}
           defaultEffort={defaultEffort}
           disabled={disabled}
+          effortDisabled={effortDisabled}
           opener={modelPopupOpenerRef.current}
           onModelChange={changeModel}
           onEffortChange={(reasoningEffort) => onChange({ reasoningEffort })}
@@ -88,103 +92,108 @@ export function SettingsPicker({
         />
       )}
 
-      <button
-        aria-label={
-          value.collaborationMode === "plan"
-            ? t("Выключить режим планирования")
-            : t("Включить режим планирования")
-        }
-        aria-pressed={value.collaborationMode === "plan"}
-        className={`setting-control plan-toggle${value.collaborationMode === "plan" ? " active" : ""}`}
-        disabled={disabled || !model || Boolean(goal)}
-        type="button"
-        onClick={() => {
-          onGoalModeChange?.(false);
-          onChange({
-            collaborationMode: value.collaborationMode === "plan" ? "default" : "plan",
-          });
-        }}
-      >
-        <PlanIcon />
-      </button>
-
-      <button
-        aria-label={
-          value.collaborationMode === "team"
-            ? t("Выключить командный режим")
-            : t("Включить командный режим")
-        }
-        aria-pressed={value.collaborationMode === "team"}
-        className={`setting-control team-toggle${value.collaborationMode === "team" ? " active" : ""}`}
-        disabled={teamToggleDisabled || !model || Boolean(goal)}
-        type="button"
-        onClick={() => {
-          onGoalModeChange?.(false);
-          onChange({
-            collaborationMode: value.collaborationMode === "team" ? "default" : "team",
-          });
-        }}
-      >
-        <TeamIcon />
-      </button>
-
-      {goal ? (
-        <details className="goal-picker" data-dismiss-on-outside-click>
-          <summary
-            className="setting-control goal-toggle active"
-            aria-label={t("Управление целью")}
-          >
-            <TargetIcon />
-          </summary>
-          <div className="goal-popover">
-            <div className="goal-popover-heading">
-              <strong>{goalStatusLabel(goal.status, t)}</strong>
-              <span>{formatGoalUsage(goal, language, t)}</span>
-            </div>
-            <p>{goal.objective}</p>
-            <div className="goal-popover-actions">
-              {goal.status === "active" && (
-                <button
-                  type="button"
-                  disabled={goalBusy}
-                  onClick={() => onGoalUpdate?.({ status: "paused" })}
-                >
-                  {t("Пауза")}
-                </button>
-              )}
-              {["paused", "blocked"].includes(goal.status) && (
-                <button
-                  type="button"
-                  disabled={goalBusy}
-                  onClick={() => onGoalUpdate?.({ status: "active" })}
-                >
-                  {t("Продолжить")}
-                </button>
-              )}
-              <button type="button" disabled={goalBusy} onClick={onGoalClear}>
-                {t("Очистить")}
-              </button>
-            </div>
-          </div>
-        </details>
-      ) : (
+      {application.capabilities.plan && (
         <button
-          aria-label={goalMode ? t("Выключить режим цели") : t("Включить режим цели")}
-          aria-pressed={goalMode}
-          className={`setting-control goal-toggle${goalMode ? " active" : ""}`}
-          disabled={disabled || !model}
+          aria-label={
+            value.collaborationMode === "plan"
+              ? t("Выключить режим планирования")
+              : t("Включить режим планирования")
+          }
+          aria-pressed={value.collaborationMode === "plan"}
+          className={`setting-control plan-toggle${value.collaborationMode === "plan" ? " active" : ""}`}
+          disabled={disabled || !model || Boolean(goal)}
           type="button"
           onClick={() => {
-            const next = !goalMode;
-            if (next && value.collaborationMode !== "default") {
-              onChange({ collaborationMode: "default" });
-            }
-            onGoalModeChange?.(next);
+            onGoalModeChange?.(false);
+            onChange({
+              collaborationMode: value.collaborationMode === "plan" ? "default" : "plan",
+            });
           }}
         >
-          <TargetIcon />
+          <PlanIcon />
         </button>
       )}
+
+      {application.capabilities.team && (
+        <button
+          aria-label={
+            value.collaborationMode === "team"
+              ? t("Выключить командный режим")
+              : t("Включить командный режим")
+          }
+          aria-pressed={value.collaborationMode === "team"}
+          className={`setting-control team-toggle${value.collaborationMode === "team" ? " active" : ""}`}
+          disabled={teamToggleDisabled || !model || Boolean(goal)}
+          type="button"
+          onClick={() => {
+            onGoalModeChange?.(false);
+            onChange({
+              collaborationMode: value.collaborationMode === "team" ? "default" : "team",
+            });
+          }}
+        >
+          <TeamIcon />
+        </button>
+      )}
+
+      {application.capabilities.goal &&
+        (goal ? (
+          <details className="goal-picker" data-dismiss-on-outside-click>
+            <summary
+              className="setting-control goal-toggle active"
+              aria-label={t("Управление целью")}
+            >
+              <TargetIcon />
+            </summary>
+            <div className="goal-popover">
+              <div className="goal-popover-heading">
+                <strong>{goalStatusLabel(goal.status, t)}</strong>
+                <span>{formatGoalUsage(goal, language, t)}</span>
+              </div>
+              <p>{goal.objective}</p>
+              <div className="goal-popover-actions">
+                {goal.status === "active" && (
+                  <button
+                    type="button"
+                    disabled={goalBusy}
+                    onClick={() => onGoalUpdate?.({ status: "paused" })}
+                  >
+                    {t("Пауза")}
+                  </button>
+                )}
+                {["paused", "blocked"].includes(goal.status) && (
+                  <button
+                    type="button"
+                    disabled={goalBusy}
+                    onClick={() => onGoalUpdate?.({ status: "active" })}
+                  >
+                    {t("Продолжить")}
+                  </button>
+                )}
+                <button type="button" disabled={goalBusy} onClick={onGoalClear}>
+                  {t("Очистить")}
+                </button>
+              </div>
+            </div>
+          </details>
+        ) : (
+          <button
+            aria-label={goalMode ? t("Выключить режим цели") : t("Включить режим цели")}
+            aria-pressed={goalMode}
+            className={`setting-control goal-toggle${goalMode ? " active" : ""}`}
+            disabled={disabled || !model}
+            type="button"
+            onClick={() => {
+              const next = !goalMode;
+              if (next && value.collaborationMode !== "default") {
+                onChange({ collaborationMode: "default" });
+              }
+              onGoalModeChange?.(next);
+            }}
+          >
+            <TargetIcon />
+          </button>
+        ))}
     </div>
   );
 
@@ -192,6 +201,7 @@ export function SettingsPicker({
     const nextModel = effectiveModel(models, modelId ?? undefined);
     const patch: UpdateThreadSettingsRequest = { model: modelId };
     if (
+      !effortDisabled &&
       value.reasoningEffort &&
       !nextModel?.reasoningEfforts.some((option) => option.value === value.reasoningEffort)
     ) {
@@ -211,6 +221,7 @@ function ModelSettingsPopup({
   reasoningEffort,
   defaultEffort,
   disabled,
+  effortDisabled,
   opener,
   onModelChange,
   onEffortChange,
@@ -223,6 +234,7 @@ function ModelSettingsPopup({
   reasoningEffort: string | null;
   defaultEffort: string | undefined;
   disabled: boolean;
+  effortDisabled: boolean;
   opener: HTMLElement | null;
   onModelChange(modelId: string | null): void;
   onEffortChange(reasoningEffort: string | null): void;
@@ -278,32 +290,35 @@ function ModelSettingsPopup({
         </div>
       </section>
 
-      <section className="model-settings-section">
-        <h3>{t("Уровень рассуждений")}</h3>
-        <div
-          className="model-settings-options effort-options"
-          role="radiogroup"
-          aria-label={t("Уровень рассуждений")}
-        >
-          <SelectionOption
-            title={t("По умолчанию")}
-            description={defaultEffort}
-            selected={reasoningEffort === null}
-            disabled={disabled || !model}
-            onClick={() => onEffortChange(null)}
-          />
-          {model?.reasoningEfforts.map((option) => (
-            <SelectionOption
-              title={option.value}
-              description={option.description ?? undefined}
-              selected={reasoningEffort === option.value}
-              disabled={disabled}
-              onClick={() => onEffortChange(option.value)}
-              key={option.value}
-            />
-          ))}
-        </div>
-      </section>
+      {application.capabilities.reasoningEffort &&
+        (!application.isClaude || !!model?.reasoningEfforts.length) && (
+          <section className="model-settings-section">
+            <h3>{t("Уровень рассуждений")}</h3>
+            <div
+              className="model-settings-options effort-options"
+              role="radiogroup"
+              aria-label={t("Уровень рассуждений")}
+            >
+              <SelectionOption
+                title={t("По умолчанию")}
+                description={defaultEffort}
+                selected={reasoningEffort === null}
+                disabled={disabled || effortDisabled || !model}
+                onClick={() => onEffortChange(null)}
+              />
+              {model?.reasoningEfforts.map((option) => (
+                <SelectionOption
+                  title={option.value}
+                  description={option.description ?? undefined}
+                  selected={reasoningEffort === option.value}
+                  disabled={disabled || effortDisabled}
+                  onClick={() => onEffortChange(option.value)}
+                  key={option.value}
+                />
+              ))}
+            </div>
+          </section>
+        )}
     </Dialog>
   );
 }

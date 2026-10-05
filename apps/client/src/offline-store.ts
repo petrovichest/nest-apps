@@ -1,3 +1,4 @@
+import { application } from "./application";
 import { pastedText, type PastedText } from "@codexnest/protocol";
 import type {
   AppSnapshot,
@@ -18,7 +19,7 @@ import type {
 
 import type { ConnectionSettings } from "./storage";
 
-const DATABASE_NAME = "codexnest-offline";
+const DATABASE_NAME = `${application.storagePrefix}-offline`;
 const DATABASE_VERSION = 1;
 const THREAD_CACHE_LIMIT_BYTES = 250 * 1024 * 1024;
 const THREAD_CACHE_CLEANUP_INTERVAL_MS = 30_000;
@@ -99,6 +100,7 @@ export type NewSessionSubmission = {
 };
 
 export type OutboxMessage = PastedText & {
+  draftUpdatedAt?: number | null;
   projectDraft?: { projectId: string; updatedAt: number };
   id: string;
   connectionKey: string;
@@ -373,6 +375,7 @@ export function outboxMessageIntent(value: OutboxMessage): string {
     value.planImplementationMode,
     value.userInputSubmission,
     value.projectDraft,
+    ...(value.draftUpdatedAt !== undefined ? [value.draftUpdatedAt] : []),
   ]);
 }
 

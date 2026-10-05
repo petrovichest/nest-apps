@@ -1,3 +1,4 @@
+import { application } from "../application";
 import { type FormEvent, useState } from "react";
 
 import { ApiClient } from "../api";
@@ -7,7 +8,7 @@ import { ActionLabel } from "./ActionLabel";
 
 export function SetupScreen({ onConnected }: { onConnected(settings: ConnectionSettings): void }) {
   const { language, t } = useI18n();
-  const [baseUrl, setBaseUrl] = useState("http://");
+  const [baseUrl, setBaseUrl] = useState(application.isClaude ? window.location.origin : "http://");
   const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -20,7 +21,10 @@ export function SetupScreen({ onConnected }: { onConnected(settings: ConnectionS
       const settings = { baseUrl: normalizeBaseUrl(baseUrl, language), token: token.trim() };
       if (!settings.token) throw new Error(t("Введите bearer token"));
       const api = new ApiClient(settings);
-      await api.health();
+      const health = await api.health();
+      if (application.isClaude && health.provider !== "claude" && health.app !== "claudenest") {
+        throw new Error(t("Это приложение подключается к ClaudeNest"));
+      }
       await api.summary();
       await saveConnectionSettings(settings);
       onConnected(settings);
@@ -39,7 +43,7 @@ export function SetupScreen({ onConnected }: { onConnected(settings: ConnectionS
     <main className="setup-page">
       <form className="setup-card" onSubmit={submit}>
         <header className="setup-heading">
-          <div className="setup-identity">CodexNest</div>
+          <div className="setup-identity">{application.name}</div>
           <h1>{t("Подключение к CodexNest")}</h1>
           <p className="muted">{t("Укажите адрес домашнего сервера и bearer token.")}</p>
         </header>
@@ -50,7 +54,9 @@ export function SetupScreen({ onConnected }: { onConnected(settings: ConnectionS
             inputMode="url"
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
-            placeholder="http://192.168.1.42:4310"
+            placeholder={
+              application.isClaude ? "https://claude.home.arpa" : "http://192.168.1.42:4310"
+            }
             autoCapitalize="none"
             required
           />

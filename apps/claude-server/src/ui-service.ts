@@ -1,0 +1,1022 @@
+import { createHash, randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { mkdir, realpath, stat } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { Readable } from "node:stream";
+import {
+  pastedText,
+  serializePastedMessage,
+  trimPastedMessage,
+  validPastedText,
+} from "@codexnest/protocol";
+import type {
+  AppSnapshot,
+  AttentionRequest,
+  AttentionResponse,
+  ModelOption,
+  Project,
+  QueuedMessage,
+  QueueMessageRequest,
+  ServerEvent,
+  ServerFrame,
+  SessionSettings,
+  ThreadDetail,
+  ThreadDraft,
+  ThreadFileAttachment,
+  ThreadSummary,
+  UpdateThreadDraftRequest,
+  UpdateUserInputDraftRequest,
+} from "@codexnest/protocol";
+import { AttachmentStore } from "./attachments";
+import { ClaudeProcess } from "./claude";
+import { readHistory } from "./history";
+import type { SessionManager } from "./manager";
+import { NativeView } from "./native-view";
+import type { RunnerConnection } from "./rpc";
+import { UiStore, type UiThread } from "./ui-store";
+import { writeJsonAtomic } from "./io";
+import {
+  AppError,
+  assertUuid,
+  record,
+  type CommandReceipt,
+  type PendingRequest,
+  type RpcMessage,
+  type RunnerEvent,
+  type RunnerSnapshot,
+} from "./types";
+
+const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+export function commandId(value: string): string {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
+    return value.toLowerCase();
+  const hex = hash(value);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+export function emptyDraft(): ThreadDraft {
+  return { input: "", images: [], goalMode: false, annotations: [], updatedAt: Date.now() };
+}
+export function validateDraft(value: UpdateThreadDraftRequest): void {
+  if (
+    typeof value.input !== "string" ||
+    !Array.isArray(value.images) ||
+    !Array.isArray(value.annotations) ||
+    !validPastedText(value, value.input) ||
+    (value.files !== undefined && !Array.isArray(value.files)) ||
+    value.images.some(
+      (image) =>
+        !image ||
+        typeof image.id !== "string" ||
+        typeof image.name !== "string" ||
+        typeof image.url !== "string",
+    )
+  )
+    throw new AppError("invalid_request", "Invalid draft");
+}
+function blankThread(
+  id: string,
+  cwd: string,
+  projectId: string | null,
+  title = "Новая сессия",
+  updatedAt = Date.now(),
+): UiThread {
+  return {
+    id,
+    cwd,
+    projectId,
+    title,
+    createdAt: updatedAt,
+    updatedAt,
+    readAt: updatedAt,
+    viewedAt: updatedAt,
+    pinned: false,
+    archived: false,
+    settings: { collaborationMode: "default" },
+    draft: null,
+    queue: [],
+    deliveries: {},
+  };
+}
+
+/** Adapts independent Claude owners to the existing Nest UI contract. */
+export class UiService extends EventEmitter {
+  readonly store: UiStore;
+  readonly attachments: AttachmentStore;
+  readonly instanceId = randomUUID();
+  sequence = 0;
+  private views = new Map<string, NativeView>();
+  private owners = new Map<string, RunnerSnapshot>();
+  private subscriptions = new Map<string, RunnerConnection>();
+  private attaching = new Map<string, Promise<void>>();
+  private dispatches = new Map<string, Promise<void>>();
+  private creations = new Map<
+    string,
+    { fingerprint: string; promise: Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> }
+  >();
+  private closed = false;
+  private reconnect?: NodeJS.Timeout;
+  constructor(readonly manager: SessionManager) {
+    super();
+    this.store = new UiStore(manager.config.stateDir);
+    this.attachments = new AttachmentStore(join(manager.config.stateDir, "attachments"));
+  }
+  async initialize(options: { probeModels?: boolean } = {}): Promise<void> {
+    await this.store.initialize();
+    const sessions = (await this.manager.list()) as Array<Record<string, unknown>>;
+    await this.store.update((data) => {
+      for (const session of sessions) {
+        const id = String(session.sessionId),
+          cwd = String(session.cwd ?? "");
+        if (!cwd || data.threads[id]) continue;
+        const project = data.projects.find((item) => item.path === cwd);
+        data.threads[id] = blankThread(
+          id,
+          cwd,
+          project?.id ?? null,
+          String(session.title ?? `Claude ${id.slice(0, 8)}`),
+          Number(session.updatedAt) || Date.now(),
+        );
+        data.threads[id]!.readAt = 0;
+        data.threads[id]!.viewedAt = 0;
+        data.threads[id]!.nativeHistory = typeof session.title === "string";
+      }
+    });
+    for (const session of sessions)
+      if (session.managed && session.state !== "unavailable")
+        await this.attach(String(session.sessionId)).catch(() => undefined);
+    if (options.probeModels !== false && !this.store.data.models.length)
+      await this.probeModels().catch(() => undefined);
+    this.reconnect = setInterval(() => {
+      for (const thread of Object.values(this.store.data.threads)) {
+        if (!this.subscriptions.has(thread.id))
+          void this.manager
+            .descriptor(thread.id)
+            .then((descriptor) => (descriptor ? this.attach(thread.id) : undefined))
+            .catch(() => undefined);
+        if (thread.queue.length) this.schedule(thread.id);
+      }
+    }, 5_000);
+    this.reconnect.unref();
+    for (const thread of Object.values(this.store.data.threads))
+      if (thread.queue.length) this.schedule(thread.id);
+  }
+  async probeModels(): Promise<void> {
+    const cwd = join(this.manager.config.stateDir, "model-probe");
+    await mkdir(cwd, { recursive: true, mode: 0o700 });
+    const process = new ClaudeProcess({
+      claudeBin: this.manager.config.claudeBin,
+      cwd,
+      sessionId: randomUUID(),
+      resume: false,
+      noSessionPersistence: true,
+      env: { CLAUDE_CONFIG_DIR: this.manager.config.configDir },
+    });
+    process.on("error", () => undefined);
+    try {
+      await process.start();
+      if (process.supportedModels.length)
+        await this.store.update((data) => {
+          data.models = process.supportedModels;
+        });
+    } finally {
+      await process.stop();
+    }
+  }
+  publish(event: ServerEvent): void {
+    if (this.closed) return;
+    const sequence = ++this.sequence;
+    this.emit("frame", {
+      type: "event",
+      sequence,
+      version: { instanceId: this.instanceId, sequence },
+      event,
+    } satisfies ServerFrame);
+  }
+  get threadIds(): string[] {
+    return Object.keys(this.store.data.threads);
+  }
+  thread(id: string): UiThread {
+    assertUuid(id);
+    const thread = this.store.data.threads[id.toLowerCase()];
+    if (!thread) throw new AppError("not_found", "Session not found", 404);
+    return thread;
+  }
+  project(id: string): Project {
+    const project = this.store.data.projects.find((item) => item.id === id);
+    if (!project) throw new AppError("not_found", "Project not found", 404);
+    return project;
+  }
+  modelOptions(): ModelOption[] {
+    return this.store.data.models.map((model) => ({
+      id: model.value,
+      displayName: model.displayName,
+      description: model.description,
+      isDefault: model.value === "default",
+      reasoningEfforts: (model.supportedEffortLevels ?? []).map((value) => ({
+        value,
+        description: null,
+        isDefault: value === "high",
+      })),
+      serviceTiers: [],
+      supportsPersonality: false,
+    }));
+  }
+  summary(id: string): ThreadSummary {
+    const thread = this.thread(id),
+      owner = this.owners.get(id),
+      view = this.views.get(id);
+    const last = view?.turns().at(-1);
+    const state = owner?.pendingRequests.length
+      ? "needsAttention"
+      : owner?.state === "running" || owner?.state === "starting"
+        ? "running"
+        : thread.queue.length
+          ? "queued"
+          : owner?.state === "failed"
+            ? "failed"
+            : owner?.state === "interrupted"
+              ? "interrupted"
+              : last?.status === "failed"
+                ? "failed"
+                : last?.status === "interrupted"
+                  ? "interrupted"
+                  : last
+                    ? "completed"
+                    : "idle";
+    return {
+      id,
+      projectId: thread.projectId,
+      title: thread.title,
+      preview: thread.queue.at(-1)?.text ?? "",
+      cwd: thread.cwd,
+      state,
+      unread: thread.updatedAt > thread.readAt,
+      unseen: thread.updatedAt > thread.viewedAt,
+      pinned: thread.pinned,
+      archived: thread.archived,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+      currentTurnId: view?.currentTurnId ?? null,
+      queuedMessageCount: thread.queue.length,
+      browserStatus: "disabled",
+      settings: thread.settings,
+      relation: { kind: "session", sessionId: id },
+      canAcceptDirectInput: true,
+      codexSettings: {
+        model: owner?.model ?? view?.model ?? thread.settings.model ?? null,
+        reasoningEffort: thread.settings.reasoningEffort ?? null,
+      },
+    };
+  }
+  snapshot(): AppSnapshot {
+    return {
+      provider: "claude",
+      capabilities: {
+        codexManagement: false,
+        rateLimits: false,
+        plan: false,
+        team: false,
+        goal: false,
+        forks: false,
+        browserIntegration: false,
+        fullTextSearch: false,
+        sessionApprovalGrants: false,
+        skills: false,
+        gitChanges: false,
+        artifacts: false,
+        appUpdates: false,
+        reasoningEffort: true,
+      },
+      instanceId: this.instanceId,
+      sequence: this.sequence,
+      uiLanguage: this.store.data.uiLanguage,
+      connection: { state: "ready", message: null, syncedAt: new Date().toISOString() },
+      projects: this.store.data.projects,
+      threads: this.threadIds.map((id) => this.summary(id)),
+      attention: this.attention(),
+      models: this.modelOptions(),
+      taskDefaults: this.store.data.taskDefaults,
+      forkOperations: [],
+      voiceTranscriptions: Object.values(this.store.data.voice)
+        .filter((value) => !value.cancelled && !value.applied)
+        .map((value) => value.job),
+    };
+  }
+  private async view(id: string): Promise<NativeView> {
+    const saved = this.views.get(id);
+    if (saved) return saved;
+    const thread = this.thread(id),
+      view = new NativeView(id, thread.cwd);
+    const history = await readHistory(this.manager.config.configDir, id).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    view.reset(history?.messages ?? []);
+    this.views.set(id, view);
+    return view;
+  }
+  async detail(id: string): Promise<ThreadDetail> {
+    const view = await this.view(id);
+    return {
+      version: { instanceId: this.instanceId, sequence: this.sequence },
+      summary: this.summary(id),
+      turns: view.turns(),
+      queuedMessages: this.thread(id).queue,
+      olderTurnsCursor: null,
+      draft: this.thread(id).draft,
+    };
+  }
+  async refresh(id: string): Promise<ThreadDetail> {
+    if (!this.subscriptions.has(id)) {
+      this.views.delete(id);
+      await this.view(id);
+      await this.attach(id).catch(() => undefined);
+    }
+    return this.detail(id);
+  }
+  attach(id: string): Promise<void> {
+    if (this.closed || this.subscriptions.has(id)) return Promise.resolve();
+    const current = this.attaching.get(id);
+    if (current) return current;
+    const task = this.attachOnce(id).finally(() => this.attaching.delete(id));
+    this.attaching.set(id, task);
+    return task;
+  }
+  private async attachOnce(id: string): Promise<void> {
+    const view = await this.view(id),
+      connection = await this.manager.subscribe(id);
+    if (this.closed) {
+      connection.close();
+      return;
+    }
+    this.subscriptions.set(id, connection);
+    let incoming = Promise.resolve();
+    connection.on("message", (message: RpcMessage) => {
+      incoming = incoming
+        .then(async () => {
+          if ("snapshot" in message) {
+            const owner = message.snapshot;
+            this.owners.set(id, owner);
+            const history = await readHistory(this.manager.config.configDir, id).catch(() => null);
+            view.reset([...(history?.messages ?? []), ...owner.currentEvents], {
+              live: ["running", "waiting"].includes(owner.state),
+            });
+            if (owner.supportedModels?.length)
+              await this.store.update((data) => {
+                data.models = owner.supportedModels!;
+              });
+            this.publish({ type: "models.changed", models: this.modelOptions() });
+            for (const turn of view.turns())
+              this.publish({ type: "turn.replaced", threadId: id, turn });
+            for (const attention of this.attention().filter((item) => item.threadId === id))
+              this.publish({ type: "attention.upserted", attention });
+            this.publish({ type: "thread.upserted", thread: this.summary(id) });
+            this.schedule(id);
+          } else if ("event" in message) await this.ingest(id, view, message.event);
+        })
+        .catch(() => this.publish({ type: "resync.required" }));
+    });
+    connection.once("close", () => {
+      if (this.subscriptions.get(id) === connection) this.subscriptions.delete(id);
+      this.owners.delete(id);
+      if (!this.closed) this.publish({ type: "thread.upserted", thread: this.summary(id) });
+    });
+    await connection.request("subscribe", {});
+    await incoming;
+  }
+  private async ingest(id: string, view: NativeView, event: RunnerEvent): Promise<void> {
+    const owner = this.owners.get(id);
+    if (!owner) return;
+    owner.sequence = event.sequence;
+    if (event.kind === "native") {
+      const native = record(event.data);
+      for (const update of view.apply(native)) this.publish(update);
+      if (native.type === "result") {
+        await this.touch(id);
+        this.publish({ type: "thread.upserted", thread: this.summary(id) });
+      }
+    } else if (event.kind === "state") {
+      owner.state = record(event.data).state as RunnerSnapshot["state"];
+      this.publish({ type: "thread.upserted", thread: this.summary(id) });
+      this.schedule(id);
+    } else if (event.kind === "request") {
+      const request = event.data as PendingRequest;
+      owner.pendingRequests = [
+        ...owner.pendingRequests.filter((item) => item.requestId !== request.requestId),
+        request,
+      ];
+      const attention = this.toAttention(id, request);
+      this.publish({ type: "attention.upserted", attention });
+      this.publish({ type: "thread.upserted", thread: this.summary(id) });
+    } else if (event.kind === "request.cancelled") {
+      const requestId = String(record(event.data).requestId);
+      owner.pendingRequests = owner.pendingRequests.filter((item) => item.requestId !== requestId);
+      this.publish({ type: "attention.removed", attentionId: `${id}:${requestId}` });
+    } else if (event.kind === "command") {
+      const receipt = event.data as CommandReceipt;
+      owner.commands = [
+        ...owner.commands.filter((item) => item.requestId !== receipt.requestId),
+        receipt,
+      ];
+      this.schedule(id);
+    }
+  }
+  private async touch(id: string): Promise<void> {
+    await this.store.update((data) => {
+      const thread = data.threads[id]!;
+      thread.updatedAt = Math.max(Date.now(), thread.updatedAt + 1);
+    });
+  }
+  async createProject(path: string): Promise<Project> {
+    const cwd = await realpath(path);
+    if (!(await stat(cwd)).isDirectory())
+      throw new AppError("invalid_request", "Project must be a directory");
+    const project = await this.store.update((data) => {
+      const saved = data.projects.find((item) => item.path === cwd);
+      if (saved) return saved;
+      const project: Project = {
+        id: randomUUID(),
+        displayName: basename(cwd) || cwd,
+        path: cwd,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      data.projects.push(project);
+      for (const thread of Object.values(data.threads))
+        if (thread.cwd === cwd) thread.projectId = project.id;
+      return project;
+    });
+    this.publish({ type: "project.upserted", project });
+    for (const thread of Object.values(this.store.data.threads))
+      if (thread.projectId === project.id)
+        this.publish({ type: "thread.upserted", thread: this.summary(thread.id) });
+    return project;
+  }
+  async createThread(
+    projectId: string,
+    clientCreationId: string,
+    draft?: UpdateThreadDraftRequest,
+  ): Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> {
+    assertUuid(clientCreationId, "clientCreationId");
+    const fingerprint = hash({ projectId, draft: draft ?? null });
+    const previous = this.creations.get(clientCreationId);
+    if (previous) {
+      if (previous.fingerprint !== fingerprint)
+        throw new AppError("conflict", "Creation ID was reused with different input", 409);
+      return previous.promise;
+    }
+    const promise = this.createThreadOnce(projectId, clientCreationId, fingerprint, draft).finally(
+      () => this.creations.delete(clientCreationId),
+    );
+    this.creations.set(clientCreationId, { fingerprint, promise });
+    return promise;
+  }
+  private async createThreadOnce(
+    projectId: string,
+    clientCreationId: string,
+    fingerprint: string,
+    draft?: UpdateThreadDraftRequest,
+  ): Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> {
+    const project = this.project(projectId),
+      prior = this.store.data.creations[clientCreationId];
+    if (prior) {
+      if (prior.projectId !== projectId || (prior.fingerprint && prior.fingerprint !== fingerprint))
+        throw new AppError("conflict", "Creation ID was reused with different input", 409);
+      return { thread: this.summary(prior.threadId), draft: this.thread(prior.threadId).draft };
+    }
+    if (draft) validateDraft(draft);
+    const id = randomUUID(),
+      refs: ThreadFileAttachment[] = [];
+    try {
+      if (draft?.files?.length) {
+        await this.attachments.validate(projectId, draft.files);
+        const { createReadStream } = await import("node:fs");
+        for (const ref of draft.files)
+          refs.push(
+            await this.attachments.save(
+              id,
+              ref.name,
+              ref.mediaType,
+              createReadStream(ref.path),
+              ref.size,
+            ),
+          );
+      }
+      await this.store.update((data) => {
+        if (!data.projects.some((item) => item.id === projectId))
+          throw new AppError("conflict", "Project was removed during session creation", 409);
+        const thread = blankThread(id, project.path, projectId);
+        thread.settings = {
+          collaborationMode: "default",
+          ...(data.taskDefaults.model ? { model: data.taskDefaults.model } : {}),
+        };
+        if (draft)
+          thread.draft = {
+            ...draft,
+            ...(refs.length ? { files: refs } : {}),
+            updatedAt: Date.now(),
+            goalMode: false,
+          };
+        data.threads[id] = thread;
+        data.creations[clientCreationId] = { projectId, threadId: id, fingerprint };
+      });
+    } catch (error) {
+      await this.attachments.removeThread(id).catch(() => undefined);
+      throw error;
+    }
+    this.publish({ type: "thread.upserted", thread: this.summary(id) });
+    return { thread: this.summary(id), draft: this.thread(id).draft };
+  }
+  async setDraft(
+    id: string,
+    value: UpdateThreadDraftRequest,
+    expected?: string,
+  ): Promise<ThreadDraft> {
+    this.thread(id);
+    validateDraft(value);
+    if (value.files?.length) await this.attachments.validate(id, value.files);
+    return this.store.update((data) => {
+      const thread = data.threads[id]!,
+        current = thread.draft?.updatedAt ?? null;
+      if (expected !== undefined && (expected === "none" ? null : Number(expected)) !== current)
+        throw new AppError("conflict", "Draft changed on another device", 409);
+      thread.draft = {
+        ...value,
+        goalMode: false,
+        updatedAt: Math.max(Date.now(), (current ?? 0) + 1),
+      };
+      return thread.draft;
+    });
+  }
+  async enqueue(id: string, body: QueueMessageRequest): Promise<QueuedMessage> {
+    const thread = this.thread(id),
+      text = typeof body.input === "string" ? body.input : "";
+    if (!validPastedText(body, text))
+      throw new AppError("invalid_request", "Invalid pasted text metadata");
+    if (!text.trim() && !body.pasteBlocks?.length && !body.images?.length && !body.files?.length)
+      throw new AppError("invalid_request", "Message is empty");
+    if (body.replyToUserInput || body.goal)
+      throw new AppError("invalid_request", "Use the Claude attention response for questions");
+    const clientId = body.clientMessageId ?? randomUUID();
+    if (typeof clientId !== "string" || !clientId.trim() || clientId.length > 300)
+      throw new AppError("invalid_request", "Invalid client message ID");
+    const fingerprint = hash({
+      input: text,
+      ...pastedText(body),
+      images: body.images ?? [],
+      files: body.files ?? [],
+    });
+    const saved = thread.deliveries[clientId];
+    if (saved) {
+      if (saved.fingerprint !== fingerprint)
+        throw new AppError("conflict", "Message ID was reused with different input", 409);
+      return (
+        thread.queue.find((item) => item.id === saved.messageId) ?? {
+          id: saved.messageId,
+          threadId: id,
+          text,
+          createdAt: thread.createdAt,
+          status: "dispatching",
+          deliveryVersion: 1,
+        }
+      );
+    }
+    if (body.files?.length) await this.attachments.validate(id, body.files);
+    const imageFiles: ThreadFileAttachment[] = [];
+    let fresh = false,
+      durable = false;
+    let clearedProject: { projectId: string; draft: ThreadDraft } | undefined;
+    try {
+      for (const url of body.images ?? []) {
+        const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/=\r\n]+)$/.exec(
+          url,
+        );
+        if (!match)
+          throw new AppError("invalid_request", "Images must be supported image data URLs");
+        const buffer = Buffer.from(match[2]!, "base64");
+        if (buffer.length > 5 * 1024 * 1024)
+          throw new AppError("invalid_request", "Image exceeds 5 MiB");
+        imageFiles.push(
+          await this.attachments.save(
+            id,
+            `image-${imageFiles.length + 1}`,
+            match[1]!,
+            Readable.from(buffer),
+            buffer.length,
+          ),
+        );
+      }
+      const message = await this.store.update((data) => {
+        const current = data.threads[id]!,
+          prior = current.deliveries[clientId];
+        if (prior) {
+          if (prior.fingerprint !== fingerprint)
+            throw new AppError("conflict", "Message ID conflict", 409);
+          return (
+            current.queue.find((item) => item.id === prior.messageId) ?? {
+              id: prior.messageId,
+              threadId: id,
+              text,
+              createdAt: current.createdAt,
+              status: "dispatching" as const,
+              deliveryVersion: 1 as const,
+            }
+          );
+        }
+        const message: QueuedMessage = {
+          id: commandId(clientId),
+          threadId: id,
+          text,
+          ...pastedText(body),
+          ...(body.images?.length ? { images: body.images } : {}),
+          ...(body.files?.length ? { files: body.files } : {}),
+          createdAt: Date.now(),
+          status: "queued",
+          deliveryVersion: 1,
+        };
+        fresh = true;
+        current.queue.push(message);
+        current.deliveries[clientId] = {
+          fingerprint,
+          messageId: message.id,
+          accepted: false,
+          ...(imageFiles.length ? { imageFiles } : {}),
+        };
+        if (current.title === "Новая сессия")
+          current.title = text.replace(/\s+/g, " ").slice(0, 100) || "Вложения";
+        current.updatedAt = Date.now();
+        const sentDraft = current.draft,
+          expectedDraft = (body as QueueMessageRequest & { draftUpdatedAt?: number | null })
+            .draftUpdatedAt;
+        if (sentDraft) {
+          const draftText = trimPastedMessage(sentDraft.input, sentDraft),
+            messageText = trimPastedMessage(text, body);
+          const matches =
+            expectedDraft !== undefined
+              ? expectedDraft === sentDraft.updatedAt
+              : !sentDraft.annotations.length &&
+                serializePastedMessage(draftText.input, draftText) ===
+                  serializePastedMessage(messageText.input, messageText) &&
+                JSON.stringify(sentDraft.images.map((image) => image.url)) ===
+                  JSON.stringify(body.images ?? []) &&
+                JSON.stringify(sentDraft.files ?? []) === JSON.stringify(body.files ?? []);
+          if (matches) current.draft = null;
+        }
+        const projectDraft = body.projectDraft;
+        if (
+          projectDraft &&
+          current.projectId === projectDraft.projectId &&
+          data.projectDrafts[projectDraft.projectId]?.updatedAt === projectDraft.updatedAt
+        ) {
+          const draft = emptyDraft();
+          data.projectDrafts[projectDraft.projectId] = draft;
+          clearedProject = { projectId: projectDraft.projectId, draft };
+        }
+        return message;
+      });
+      durable = true;
+      if (clearedProject) this.publish({ type: "projectDraft.changed", ...clearedProject });
+      this.publishQueue(id);
+      this.schedule(id);
+      return message;
+    } finally {
+      if (!fresh || !durable)
+        await Promise.allSettled(imageFiles.map((file) => this.attachments.remove(id, file.id)));
+    }
+  }
+  publishQueue(id: string): void {
+    this.publish({ type: "queue.changed", threadId: id, messages: this.thread(id).queue });
+    this.publish({ type: "thread.upserted", thread: this.summary(id) });
+  }
+  schedule(id: string): void {
+    if (this.closed || !this.manager.accepting || this.dispatches.has(id)) return;
+    const task = this.dispatch(id)
+      .catch(() => undefined)
+      .finally(() => {
+        this.dispatches.delete(id);
+        const first = this.thread(id).queue[0],
+          owner = this.owners.get(id);
+        if (first && !first.deliveryError && owner && ["idle", "interrupted"].includes(owner.state))
+          queueMicrotask(() => this.schedule(id));
+      });
+    this.dispatches.set(id, task);
+  }
+  private async dispatch(id: string): Promise<void> {
+    if (!this.thread(id).queue.length) return;
+    const descriptor = await this.manager.descriptor(id);
+    if (descriptor && !this.owners.has(id)) {
+      try {
+        await this.attach(id);
+      } catch {
+        if (await this.manager.launcher.active(id)) return;
+      }
+    }
+    const owner = this.owners.get(id);
+    if (owner && !["idle", "interrupted", "closed"].includes(owner.state)) {
+      const first = this.thread(id).queue[0],
+        receipt = owner.commands.find((item) => item.requestId === first?.id);
+      if (first && receipt?.status === "unknown")
+        await this.deliveryError(
+          id,
+          first.id,
+          "Claude receipt has an unknown outcome; automatic resend is disabled",
+          false,
+        );
+      else if (first && receipt) await this.accepted(id, first.id);
+      return;
+    }
+    const admission = await this.store.update((data) => {
+      if (this.closed || !this.manager.accepting) return null;
+      const thread = data.threads[id]!,
+        message = thread.queue[0];
+      if (!message || message.deliveryError) return null;
+      const delivery = Object.values(thread.deliveries).find(
+        (item) => item.messageId === message.id,
+      );
+      if (!delivery) throw new AppError("conflict", "Queued message receipt is missing", 409);
+      message.status = "dispatching";
+      return { thread, message, delivery };
+    });
+    if (!admission) return;
+    const { thread, message, delivery } = admission;
+    this.publishQueue(id);
+    const known = owner?.commands.find((item) => item.requestId === message.id);
+    if (known?.status === "unknown") {
+      await this.deliveryError(
+        id,
+        message.id,
+        "Claude receipt has an unknown outcome; reconcile before sending another message",
+        false,
+      );
+      return;
+    }
+    if (known) {
+      await this.accepted(id, message.id);
+      if (known.status === "completed") queueMicrotask(() => this.schedule(id));
+      return;
+    }
+    try {
+      if (
+        descriptor &&
+        owner &&
+        ((delivery.imageFiles?.length && !owner.capabilities?.uploadedImages) ||
+          (message.files?.length && !owner.capabilities?.contentBlocks))
+      )
+        throw new AppError(
+          "conflict",
+          "The existing owner cannot accept these attachments; finish and release it before using attachments",
+          409,
+        );
+      const content = {
+        ...(message.files?.length ? { files: message.files } : {}),
+        ...(delivery.imageFiles?.length ? { images: delivery.imageFiles } : {}),
+      };
+      const prompt = serializePastedMessage(message.text, pastedText(message));
+      const result =
+        descriptor || thread.nativeHistory || this.views.get(id)?.turns().length
+          ? await this.manager.send(id, message.id, prompt, content, {
+              model: thread.settings.model,
+              effort: thread.settings.reasoningEffort,
+              permissionMode: this.store.data.permissionMode,
+            })
+          : await this.manager.create({
+              sessionId: id,
+              requestId: message.id,
+              cwd: thread.cwd,
+              prompt,
+              model: thread.settings.model,
+              effort: thread.settings.reasoningEffort,
+              permissionMode: this.store.data.permissionMode,
+              ...content,
+            });
+      const receipt = result as CommandReceipt;
+      if (receipt.status === "unknown")
+        throw new AppError(
+          "conflict",
+          "Unknown delivery outcome; automatic resend is disabled",
+          409,
+        );
+      await this.accepted(id, message.id);
+      await this.attach(id);
+    } catch (error) {
+      const snapshot = await this.manager.snapshot(id).catch(() => undefined);
+      const receipt = snapshot?.commands.find((item) => item.requestId === message.id);
+      if (receipt && receipt.status !== "unknown") {
+        await this.accepted(id, message.id);
+        await this.attach(id).catch(() => undefined);
+      } else if (
+        snapshot &&
+        !receipt &&
+        ["running", "waiting"].includes(snapshot.state) &&
+        error instanceof AppError &&
+        error.code === "conflict"
+      ) {
+        await this.store.update((data) => {
+          const entry = data.threads[id]!.queue.find((item) => item.id === message.id);
+          if (entry) entry.status = "queued";
+        });
+        this.publishQueue(id);
+      } else
+        await this.deliveryError(
+          id,
+          message.id,
+          receipt?.status === "unknown"
+            ? "Claude receipt has an unknown outcome; automatic resend is disabled"
+            : error instanceof Error
+              ? error.message
+              : "Claude delivery failed",
+          receipt?.status !== "unknown" && error instanceof AppError && error.code !== "conflict",
+        );
+    }
+  }
+  private async accepted(id: string, messageId: string): Promise<void> {
+    await this.store.update((data) => {
+      const thread = data.threads[id]!;
+      thread.nativeHistory = true;
+      thread.queue = thread.queue.filter((item) => item.id !== messageId);
+      for (const delivery of Object.values(thread.deliveries))
+        if (delivery.messageId === messageId) {
+          delivery.accepted = true;
+          delete delivery.imageFiles;
+        }
+    });
+    this.publishQueue(id);
+  }
+  private async deliveryError(
+    id: string,
+    messageId: string,
+    message: string,
+    retryable: boolean,
+  ): Promise<void> {
+    await this.store.update((data) => {
+      const entry = data.threads[id]!.queue.find((item) => item.id === messageId);
+      if (entry) {
+        entry.status = "queued";
+        entry.deliveryError = { message, retryable };
+      }
+    });
+    this.publishQueue(id);
+  }
+  async settings(id: string, patch: Partial<SessionSettings>): Promise<ThreadSummary> {
+    patch = { ...patch };
+    if (patch.model === null) patch.model = "default";
+    if (patch.reasoningEffort === null) patch.reasoningEffort = undefined;
+    const thread = this.thread(id);
+    if (patch.collaborationMode && patch.collaborationMode !== "default")
+      throw new AppError("invalid_request", "Claude prototype supports standard sessions");
+    if (patch.model && !this.modelOptions().some((item) => item.id === patch.model))
+      throw new AppError("invalid_request", "Model is not in Claude's available catalog");
+    const descriptor = await this.manager.descriptor(id),
+      owner = this.owners.get(id);
+    if (
+      descriptor &&
+      patch.reasoningEffort !== undefined &&
+      patch.reasoningEffort !== thread.settings.reasoningEffort
+    )
+      throw new AppError("conflict", "Effort can be selected before the first message", 409);
+    if (descriptor && patch.model && patch.model !== thread.settings.model) {
+      if (!owner?.capabilities?.setModel)
+        throw new AppError("conflict", "This owner cannot change its model", 409);
+      await this.manager.command(id, "setModel", { requestId: randomUUID(), model: patch.model });
+      owner.model = patch.model;
+      await writeJsonAtomic(join(this.manager.config.stateDir, "sessions", id, "descriptor.json"), {
+        ...descriptor,
+        model: patch.model,
+      });
+    }
+    await this.store.update((data) => {
+      data.threads[id]!.settings = {
+        ...data.threads[id]!.settings,
+        ...patch,
+        collaborationMode: "default",
+      };
+    });
+    this.publish({ type: "thread.upserted", thread: this.summary(id) });
+    return this.summary(id);
+  }
+  attention(): AttentionRequest[] {
+    return [...this.owners].flatMap(([id, owner]) =>
+      owner.pendingRequests.map((request) => this.toAttention(id, request)),
+    );
+  }
+  private toAttention(id: string, request: PendingRequest): AttentionRequest {
+    const key = `${id}:${request.requestId}`,
+      base = {
+        id: key,
+        threadId: id,
+        turnId: this.views.get(id)?.currentTurnId ?? null,
+        itemId: null,
+        createdAt: this.thread(id).updatedAt,
+      };
+    if (request.toolName === "AskUserQuestion" && Array.isArray(request.input.questions))
+      return {
+        ...base,
+        kind: "userInput",
+        isBlocking: true,
+        autoResolutionMs: null,
+        draftKey: key,
+        draft: this.store.data.questionDrafts[key] ?? null,
+        questions: request.input.questions.map((raw, index) => {
+          const question = record(raw);
+          return {
+            id: `question-${index}`,
+            header: String(question.header ?? ""),
+            question: String(question.question ?? ""),
+            isOther: true,
+            isSecret: false,
+            multiSelect: question.multiSelect === true,
+            options: Array.isArray(question.options)
+              ? question.options.map((raw) => {
+                  const option = record(raw);
+                  return {
+                    label: String(option.label ?? ""),
+                    description: String(option.description ?? ""),
+                  };
+                })
+              : null,
+          };
+        }),
+      };
+    if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(request.toolName))
+      return {
+        ...base,
+        kind: "fileChangeApproval",
+        reason: `${request.toolName}: ${String(request.input.file_path ?? request.input.notebook_path ?? "")}`,
+        grantRoot: null,
+        canAcceptForSession: false,
+      };
+    return {
+      ...base,
+      kind: "commandApproval",
+      command:
+        request.toolName === "Bash"
+          ? String(request.input.command ?? "")
+          : `${request.toolName}: ${JSON.stringify(request.input)}`,
+      cwd: this.thread(id).cwd,
+      reason: `Claude requests ${request.toolName}`,
+      networkHost: null,
+      canAcceptForSession: false,
+      proposedPolicyChanges: [],
+    };
+  }
+  async respond(attentionId: string, answer: AttentionResponse): Promise<void> {
+    const attention = this.attention().find((item) => item.id === attentionId);
+    if (!attention?.threadId) throw new AppError("conflict", "Request is no longer pending", 409);
+    const id = attention.threadId,
+      targetRequestId = attentionId.slice(id.length + 1),
+      request = this.owners
+        .get(id)!
+        .pendingRequests.find((item) => item.requestId === targetRequestId)!;
+    let response: Record<string, unknown>;
+    if (answer.kind === "userInput" && attention.kind === "userInput") {
+      const answers: Record<string, string> = {};
+      for (const question of attention.questions) {
+        const selected = answer.answers[question.id];
+        if (!Array.isArray(selected) || !selected.length)
+          throw new AppError("invalid_request", "All questions require an answer");
+        answers[question.question] = selected.join(", ");
+      }
+      response = { behavior: "allow", updatedInput: { ...request.input, answers } };
+    } else if (answer.kind === "approval") {
+      if (answer.decision === "acceptForSession")
+        throw new AppError("invalid_request", "Session-wide grants are unavailable");
+      if (answer.decision === "cancel") {
+        await this.manager.command(id, "interrupt", { requestId: randomUUID() });
+        return;
+      }
+      response =
+        answer.decision === "accept"
+          ? { behavior: "allow", updatedInput: request.input }
+          : { behavior: "deny", message: "User declined this tool request" };
+    } else throw new AppError("invalid_request", "Unsupported attention response");
+    await this.manager.command(id, "respond", {
+      requestId: randomUUID(),
+      targetRequestId,
+      response,
+    });
+  }
+  async questionDraft(key: string, value: UpdateUserInputDraftRequest): Promise<void> {
+    const attention = this.attention().find((item) => item.id === key);
+    if (attention?.kind !== "userInput")
+      throw new AppError("conflict", "Question is no longer pending", 409);
+    await this.store.update((data) => {
+      const prior = data.questionDrafts[key];
+      data.questionDrafts[key] = {
+        ...value,
+        revision: (prior?.revision ?? 0) + 1,
+        updatedAt: Date.now(),
+      };
+    });
+    this.publish({
+      type: "attention.upserted",
+      attention: this.attention().find((item) => item.id === key)!,
+    });
+  }
+  async close(): Promise<void> {
+    this.closed = true;
+    clearInterval(this.reconnect);
+    for (const connection of this.subscriptions.values()) connection.close();
+    await Promise.allSettled([...this.dispatches.values()]);
+    await this.store.flush();
+  }
+}

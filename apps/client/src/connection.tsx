@@ -738,6 +738,9 @@ export function ConnectionProvider({
                         : {}),
                       clientMessageId: message.id,
                       ...(message.projectDraft ? { projectDraft: message.projectDraft } : {}),
+                      ...(message.draftUpdatedAt !== undefined
+                        ? { draftUpdatedAt: message.draftUpdatedAt }
+                        : {}),
                       ...(message.replyToAsyncQuestion
                         ? { replyToAsyncQuestion: message.replyToAsyncQuestion }
                         : {}),
@@ -856,6 +859,7 @@ export function ConnectionProvider({
         files: body.files ?? [],
         goal: body.goal ?? false,
         ...(body.projectDraft ? { projectDraft: body.projectDraft } : {}),
+        ...(body.draftUpdatedAt !== undefined ? { draftUpdatedAt: body.draftUpdatedAt } : {}),
         ...(body.planImplementationMode
           ? { planImplementationMode: body.planImplementationMode }
           : {}),

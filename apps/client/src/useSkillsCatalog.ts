@@ -1,3 +1,4 @@
+import { application } from "./application";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { SkillsCatalogResponse } from "@codexnest/protocol";
@@ -13,6 +14,7 @@ type CatalogRequest = {
 };
 
 export function useSkillsCatalog(cwd: string | null, skillsEpoch: number, active = true) {
+  active = active && application.capabilities.skills;
   const { api } = useConnection();
   const [catalog, setCatalog] = useState<SkillsCatalogResponse | null>(null);
   const [loading, setLoading] = useState(false);

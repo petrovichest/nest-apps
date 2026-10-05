@@ -1,6 +1,7 @@
+import { application } from "./application";
 import { useSyncExternalStore } from "react";
 
-export const TYPOGRAPHY_KEY = "codexnest.typography";
+export const TYPOGRAPHY_KEY = `${application.storagePrefix}.typography`;
 export const TYPOGRAPHY_MIN = 10;
 export const TYPOGRAPHY_MAX = 32;
 

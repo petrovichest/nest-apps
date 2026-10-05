@@ -1,3 +1,4 @@
+import { application } from "../application";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import type {
@@ -105,7 +106,8 @@ export function ThreadSearchDialog({
     try {
       const page = await api.searchThreads(term, index === 1, request.cursor, request.scope);
       if (requestGeneration !== generation.current) return;
-      const startMessages = request.scope === "titles" && !page.nextCursor;
+      const startMessages =
+        application.capabilities.fullTextSearch && request.scope === "titles" && !page.nextCursor;
       const next: SearchPageRequest | null = page.nextCursor
         ? { scope: request.scope, cursor: page.nextCursor }
         : startMessages
@@ -220,7 +222,11 @@ export function ThreadSearchDialog({
         <div className="dialog-heading">
           <h2 id="thread-search-title">{t("Поиск по диалогам")}</h2>
           <p className="search-context">
-            {t("Сообщения и названия во всех проектах, включая архив")}
+            {t(
+              application.capabilities.fullTextSearch
+                ? "Сообщения и названия во всех проектах, включая архив"
+                : "Названия во всех проектах, включая архив",
+            )}
           </p>
         </div>
         <button type="button" className="icon-button" aria-label={t("Закрыть")} onClick={onClose}>

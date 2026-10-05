@@ -1,3 +1,4 @@
+import { application } from "./application";
 import { pastedText } from "@codexnest/protocol";
 import type {
   ApiError,
@@ -74,7 +75,7 @@ export class ApiClient {
   constructor(public readonly settings: ConnectionSettings) {}
 
   health(): Promise<HealthResponse> {
-    return this.request("/api/v1/health", { authenticated: false });
+    return this.request("/api/v1/health", { authenticated: application.isClaude });
   }
 
   summary(): Promise<SummaryResponse> {
@@ -694,7 +695,7 @@ export class ApiClient {
   }
 
   webSocketUrl(): string {
-    const url = new URL("/api/v1/events", `${this.settings.baseUrl}/`);
+    const url = new URL(application.eventsPath, `${this.settings.baseUrl}/`);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     return url.toString();
   }

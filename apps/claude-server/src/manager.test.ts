@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Config } from "./config.js";
@@ -234,4 +234,64 @@ describe("Claude backend manager integration", () => {
     });
     expect(launcher.starts).toBe(1);
   });
+
+  it.each(["previous", "explicit"] as const)(
+    "resumes native history with %s launch preferences after its old owner exits",
+    async (preferenceSource) => {
+      const { directory, config, backend, launcher, input } = await fixture();
+      // This executable only serves a fake empty roster; model work stays in FakeClaude.
+      config.claudeBin = join(directory, "fake-claude-roster");
+      await writeFile(
+        config.claudeBin,
+        '#!/bin/sh\nif [ "$1" = agents ] && [ "$2" = --json ]; then printf \'[]\'; else exit 99; fi\n',
+        { mode: 0o700 },
+      );
+      const first = await backend();
+      await first.create({ ...input, model: "opus", effort: "high", permissionMode: "manual" });
+      const previous = launcher.owners.get(input.sessionId)!;
+      previous.transport.emit("event", { type: "result", subtype: "success" });
+      await first.close();
+      await previous.runner.close();
+      const historyDirectory = join(config.configDir, "projects", "native-project");
+      await mkdir(historyDirectory, { recursive: true });
+      await writeFile(
+        join(historyDirectory, `${input.sessionId}.jsonl`),
+        JSON.stringify({
+          type: "user",
+          uuid: input.requestId,
+          sessionId: input.sessionId,
+          cwd: directory,
+          message: { role: "user", content: input.prompt },
+        }) + "\n",
+      );
+      const replacement = await backend();
+      const requestId = randomUUID();
+      const launch =
+        preferenceSource === "explicit"
+          ? { model: "sonnet", effort: "medium", permissionMode: "acceptEdits" as const }
+          : undefined;
+      expect(
+        await replacement.send(
+          input.sessionId,
+          requestId,
+          "Continue native history",
+          undefined,
+          launch,
+        ),
+      ).toMatchObject({ requestId, status: "completed" });
+      expect(launcher.starts).toBe(2);
+      const resumed = launcher.owners.get(input.sessionId)!;
+      expect(resumed.runner.descriptor).toMatchObject({
+        sessionId: input.sessionId,
+        cwd: directory,
+        resume: true,
+        ...(launch ?? { model: "opus", effort: "high", permissionMode: "manual" }),
+      });
+      expect(resumed.transport.sends).toEqual([{ requestId, text: "Continue native history" }]);
+      expect(previous.transport.sends).toHaveLength(1);
+      expect(resumed.runner.snapshot().runnerInstanceId).not.toBe(
+        previous.runner.snapshot().runnerInstanceId,
+      );
+    },
+  );
 });

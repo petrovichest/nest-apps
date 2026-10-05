@@ -1,0 +1,508 @@
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
+import type {
+  Project,
+  QueuedMessage,
+  ServerFrame,
+  ThreadDetail,
+  ThreadDraft,
+  ThreadFileAttachment,
+} from "@codexnest/protocol";
+import { afterEach, describe, expect, it } from "vitest";
+import WebSocket from "ws";
+import { buildApp } from "./app";
+import type { Config } from "./config";
+import type { SessionManager } from "./manager";
+import { AppError } from "./types";
+import { UiService } from "./ui-service";
+
+const cleanup: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const dispose of cleanup.splice(0).reverse()) await dispose();
+});
+async function fixture() {
+  const directory = await mkdtemp("/tmp/claude-ui-http-");
+  const clientDist = join(directory, "client");
+  await mkdir(clientDist);
+  await Promise.all([
+    writeFile(
+      join(clientDist, "index.html"),
+      "<!doctype html><html><body>ClaudeNest test shell</body></html>",
+    ),
+    writeFile(join(clientDist, "sw.js"), "self.testOnly = true;"),
+    writeFile(join(clientDist, "asset.js"), "window.testOnly = true;"),
+  ]);
+  const config: Config = {
+    host: "127.0.0.1",
+    port: 1,
+    stateDir: join(directory, "state"),
+    runtimeDir: join(directory, "runtime"),
+    configDir: join(directory, "native"),
+    claudeBin: "/fake/never-executed-claude",
+    nodeBin: process.execPath,
+    releasePath: "/test/release",
+    runnerPath: "/test/release/runner.js",
+    serverEnvFile: join(directory, "server.env"),
+    token: "private-test-token-with-at-least-32-characters",
+    allowedOrigins: new Set(["http://claude.home.arpa"]),
+    clientDist,
+  };
+  const operations: string[] = [];
+  const unexpected = (name: string) => {
+    operations.push(name);
+    throw new Error(`Unexpected native operation: ${name}`);
+  };
+  const manager = {
+    config,
+    accepting: false,
+    list: async () => [],
+    descriptor: async () => undefined,
+    create: async () => unexpected("create"),
+    send: async () => unexpected("send"),
+    subscribe: async () => unexpected("subscribe"),
+    snapshot: async () => unexpected("snapshot"),
+    command: async () => unexpected("command"),
+    close: async () => {},
+  } as unknown as SessionManager;
+  const ui = new UiService(manager);
+  await ui.initialize({ probeModels: false });
+  const app = await buildApp(manager, ui);
+  await app.ready();
+  cleanup.push(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const headers = { authorization: `Bearer ${config.token}`, origin: "http://claude.home.arpa" };
+  const reserve = async () => {
+    const projectResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects",
+      headers,
+      payload: { path: directory },
+    });
+    expect(projectResponse.statusCode).toBe(200);
+    const project = projectResponse.json<Project>();
+    const threadResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${project.id}/threads`,
+      headers,
+      payload: { clientCreationId: randomUUID() },
+    });
+    expect(threadResponse.statusCode).toBe(200);
+    return { project, id: threadResponse.json<{ thread: { id: string } }>().thread.id };
+  };
+  return { app, ui, manager, config, directory, headers, reserve, operations };
+}
+
+describe("Claude browser UI HTTP and global stream", () => {
+  it("serves the PWA shell without credentials while guarding APIs and foreign origins", async () => {
+    const { app, headers } = await fixture();
+    const shell = await app.inject({ url: "/" });
+    expect(shell.statusCode).toBe(200);
+    expect(shell.body).toContain("ClaudeNest test shell");
+    expect(shell.headers["cache-control"]).toBe("no-cache");
+    expect(shell.headers["x-content-type-options"]).toBe("nosniff");
+    expect((await app.inject({ url: "/sw.js" })).headers["cache-control"]).toBe("no-cache");
+    expect((await app.inject({ url: "/asset.js" })).statusCode).toBe(200);
+    expect(
+      (await app.inject({ url: "/project/route", headers: { accept: "text/html" } })).body,
+    ).toBe(shell.body);
+    expect((await app.inject({ url: "/api/v1/summary" })).statusCode).toBe(401);
+    expect(
+      (
+        await app.inject({
+          url: "/api/v1/health",
+          headers: { ...headers, authorization: "Bearer wrong" },
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await app.inject({
+          url: "/api/v1/summary",
+          headers: { ...headers, origin: "https://unrelated.example" },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect((await app.inject({ url: "/api/v1/health", headers })).json()).toMatchObject({
+      provider: "claude",
+      app: "claudenest",
+    });
+  });
+
+  it("keeps missing native/API/download responses as JSON instead of serving the SPA", async () => {
+    const { app, headers } = await fixture();
+    for (const url of [
+      "/api/v1/unknown",
+      `/api/v1/sessions/${randomUUID()}/history`,
+      `/downloads/${randomUUID()}`,
+    ]) {
+      const response = await app.inject({ url, headers: { ...headers, accept: "text/html" } });
+      expect(response.statusCode).toBe(404);
+      expect(response.headers["content-type"]).toContain("application/json");
+      expect(response.json()).toMatchObject({ error: { code: "not_found" } });
+      expect(response.body).not.toContain("test shell");
+    }
+  });
+
+  it("rejects unauthenticated global WebSockets and sends one authenticated snapshot plus ordered UI events", async () => {
+    const { app, headers, config, reserve, ui } = await fixture();
+    await expect(
+      app.injectWS("/api/v1/ui/events", { headers: { origin: "https://unrelated.example" } }),
+    ).rejects.toThrow();
+    const denied = await app.injectWS("/api/v1/ui/events", { headers });
+    const deniedClose = once(denied, "close");
+    denied.send(JSON.stringify({ type: "authenticate", token: "wrong" }));
+    expect((await deniedClose)[0]).toBe(1008);
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const socket = new WebSocket(`${address.replace(/^http/, "ws")}/api/v1/ui/events`, {
+      headers: { origin: headers.origin },
+    });
+    await once(socket, "open");
+    const received: ServerFrame[] = [];
+    socket.on("message", (raw) => received.push(JSON.parse(raw.toString()) as ServerFrame));
+    socket.send(JSON.stringify({ type: "authenticate", token: config.token }));
+    await expect.poll(() => received.length).toBe(1);
+    expect(received[0]).toMatchObject({
+      type: "snapshot",
+      snapshot: { provider: "claude", instanceId: ui.instanceId, threads: [], attention: [] },
+    });
+    const { id } = await reserve();
+    await expect.poll(() => received.filter((frame) => frame.type === "event").length).toBe(2);
+    const events = received.filter((frame) => frame.type === "event");
+    expect(events.map((frame) => frame.sequence)).toEqual([1, 2]);
+    expect(events.map((frame) => frame.version)).toEqual([
+      { instanceId: ui.instanceId, sequence: 1 },
+      { instanceId: ui.instanceId, sequence: 2 },
+    ]);
+    expect(events[1]).toMatchObject({ event: { type: "thread.upserted", thread: { id } } });
+    socket.send(JSON.stringify({ type: "ping" }));
+    await expect.poll(() => received.at(-1)).toEqual({ type: "pong" });
+    const closed = once(socket, "close");
+    socket.close();
+    await closed;
+    await expect.poll(() => ui.listenerCount("frame")).toBe(0);
+  });
+
+  it("preserves shared project, blank-thread, draft conflict, and durable queue contracts", async () => {
+    const { app, ui, directory, headers, reserve, operations } = await fixture();
+    const { project, id } = await reserve();
+    expect(project.path).toBe(directory);
+    const detail = (
+      await app.inject({ url: `/api/v1/threads/${id}`, headers })
+    ).json<ThreadDetail>();
+    expect(detail).toMatchObject({
+      summary: { id, projectId: project.id, state: "idle" },
+      turns: [],
+      queuedMessages: [],
+      draft: null,
+    });
+    const value = { input: "Draft text", images: [], goalMode: false, annotations: [] };
+    const draftResponse = await app.inject({
+      method: "PUT",
+      url: `/api/v1/threads/${id}/draft?expectedUpdatedAt=none`,
+      headers,
+      payload: value,
+    });
+    expect(draftResponse.statusCode).toBe(200);
+    expect(draftResponse.json()).toMatchObject(value);
+    expect(
+      (
+        await app.inject({
+          method: "PUT",
+          url: `/api/v1/threads/${id}/draft?expectedUpdatedAt=none`,
+          headers,
+          payload: { ...value, input: "Stale update" },
+        })
+      ).statusCode,
+    ).toBe(409);
+    const clientMessageId = randomUUID(),
+      payload = { input: "Send later", clientMessageId };
+    const queued = await app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/queue`,
+      headers,
+      payload,
+    });
+    expect(queued.statusCode).toBe(202);
+    expect(queued.json()).toMatchObject({
+      id: clientMessageId,
+      threadId: id,
+      text: "Send later",
+      status: "queued",
+      deliveryVersion: 1,
+    });
+    expect(
+      (
+        await app.inject({ method: "POST", url: `/api/v1/threads/${id}/queue`, headers, payload })
+      ).json<QueuedMessage>().id,
+    ).toBe(clientMessageId);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/v1/threads/${id}/queue`,
+          headers,
+          payload: { ...payload, input: "Different" },
+        })
+      ).statusCode,
+    ).toBe(409);
+    expect(ui.thread(id).queue).toHaveLength(1);
+    const queuedDetail = (
+      await app.inject({ url: `/api/v1/threads/${id}`, headers })
+    ).json<ThreadDetail>();
+    expect(queuedDetail.queuedMessages).toHaveLength(1);
+    expect(queuedDetail.summary.state).toBe("queued");
+    expect(JSON.parse(await readFile(ui.store.path, "utf8")).threads[id].queue[0].id).toBe(
+      clientMessageId,
+    );
+    expect(operations).toEqual([]);
+  });
+
+  it("merges a stale editor's project draft changes while preserving newer remote input", async () => {
+    const { app, headers, reserve } = await fixture();
+    const { project } = await reserve();
+    const empty = { input: "", images: [], goalMode: false, annotations: [] };
+    const firstValue = { ...empty, input: "Original draft" };
+    const first = await app.inject({
+      method: "PUT",
+      url: `/api/v1/projects/${project.id}/draft`,
+      headers,
+      payload: { base: empty, value: firstValue },
+    });
+    expect(first.statusCode).toBe(200);
+    const base = first.json<ThreadDraft>();
+    const remoteValue = { ...base, input: "Newer text from another device" };
+    const remote = await app.inject({
+      method: "PUT",
+      url: `/api/v1/projects/${project.id}/draft`,
+      headers,
+      payload: { base, value: remoteValue },
+    });
+    expect(remote.statusCode).toBe(200);
+    const image = { id: "local-image", name: "image.png", url: "data:image/png;base64,aW1hZ2U=" };
+    const stale = await app.inject({
+      method: "PUT",
+      url: `/api/v1/projects/${project.id}/draft`,
+      headers,
+      payload: { base, value: { ...base, images: [image] } },
+    });
+    expect(stale.statusCode).toBe(200);
+    expect(stale.json()).toMatchObject({
+      input: "Newer text from another device",
+      images: [image],
+      goalMode: false,
+    });
+    const rejected = await app.inject({
+      method: "PUT",
+      url: `/api/v1/projects/${project.id}/draft?expectedUpdatedAt=${base.updatedAt}`,
+      headers,
+      payload: { base, value: { ...base, input: "Obsolete forced replacement" } },
+    });
+    expect(rejected.statusCode).toBe(409);
+    const final = await app.inject({ url: `/api/v1/projects/${project.id}/draft`, headers });
+    expect(final.json()).toMatchObject({
+      input: "Newer text from another device",
+      images: [image],
+    });
+  });
+
+  it("retains a dispatchable delivery ledger when editing a queued message", async () => {
+    const { app, ui, manager, headers, reserve } = await fixture();
+    const { id } = await reserve(),
+      clientMessageId = randomUUID();
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/queue`,
+      headers,
+      payload: { input: "Original", clientMessageId },
+    });
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/threads/${id}/queue/${clientMessageId}`,
+      headers,
+      payload: { input: "Edited" },
+    });
+    expect(updated.statusCode).toBe(200);
+    const message = updated.json<QueuedMessage>();
+    expect(message.text).toBe("Edited");
+    expect(
+      Object.values(ui.thread(id).deliveries).some((delivery) => delivery.messageId === message.id),
+    ).toBe(true);
+    expect(ui.thread(id).queue.map((entry) => entry.id)).toEqual([message.id]);
+    const dispatched: Array<{ prompt: string; requestId: string }> = [];
+    manager.create = async (input) => {
+      dispatched.push({ prompt: input.prompt, requestId: input.requestId });
+      throw new AppError("conflict", "Test owner refused delivery", 409);
+    };
+    manager.snapshot = async () => {
+      throw new AppError("not_found", "No test owner", 404);
+    };
+    manager.accepting = true;
+    ui.schedule(id);
+    await expect
+      .poll(() => ui.thread(id).queue[0]?.deliveryError?.message)
+      .toBe("Test owner refused delivery");
+    expect(dispatched).toEqual([{ prompt: "Edited", requestId: clientMessageId }]);
+  });
+
+  it("normalizes nullable model and effort selections before starting a new owner", async () => {
+    const { app, ui, manager, headers, reserve } = await fixture();
+    const { id } = await reserve();
+    await ui.store.update((data) => {
+      data.models = [
+        { value: "default", displayName: "Default", description: "Claude default" },
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          description: "Claude Sonnet",
+          supportedEffortLevels: ["high"],
+        },
+      ];
+    });
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `/api/v1/threads/${id}/settings`,
+          headers,
+          payload: { model: "sonnet", reasoningEffort: "high" },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const defaults = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/threads/${id}/settings`,
+      headers,
+      payload: { model: null, reasoningEffort: null },
+    });
+    expect(defaults.statusCode).toBe(200);
+    expect(defaults.json()).toMatchObject({
+      settings: { model: "default" },
+      codexSettings: { model: "default", reasoningEffort: null },
+    });
+    expect(ui.thread(id).settings.reasoningEffort).toBeUndefined();
+    const dispatched: Array<{ model?: string; effort?: string }> = [];
+    manager.create = async (input) => {
+      dispatched.push({ model: input.model, effort: input.effort });
+      throw new AppError("conflict", "Test owner refused delivery", 409);
+    };
+    manager.snapshot = async () => {
+      throw new AppError("not_found", "No test owner", 404);
+    };
+    manager.accepting = true;
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/queue`,
+      headers,
+      payload: { input: "Use defaults", clientMessageId: randomUUID() },
+    });
+    await expect.poll(() => dispatched).toEqual([{ model: "default", effort: undefined }]);
+  });
+
+  it("streams private attachment uploads and limits download tickets to the owning session", async () => {
+    const { app, headers, reserve, operations, directory } = await fixture();
+    const { id } = await reserve(),
+      { id: otherId } = await reserve();
+    const chunks = [Buffer.from("First chunk\n"), Buffer.from("Second chunk\n")],
+      contents = Buffer.concat(chunks);
+    const upload = await app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/attachments?name=notes.txt&mediaType=text%2Fplain`,
+      headers: {
+        ...headers,
+        "content-type": "application/octet-stream",
+        "content-length": String(contents.length),
+      },
+      payload: Readable.from(chunks),
+    });
+    expect(upload.statusCode).toBe(200);
+    const attachment = upload.json<ThreadFileAttachment>();
+    expect(attachment).toMatchObject({
+      name: "notes.txt",
+      mediaType: "text/plain",
+      size: contents.length,
+    });
+    expect(await readFile(attachment.path)).toEqual(contents);
+    expect((await stat(attachment.path)).mode & 0o777).toBe(0o600);
+    expect((await stat(dirname(dirname(attachment.path)))).mode & 0o777).toBe(0o700);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/v1/threads/${otherId}/downloads`,
+          headers,
+          payload: { path: attachment.path },
+        })
+      ).statusCode,
+    ).toBe(404);
+    const outside = join(directory, "outside.txt");
+    await writeFile(outside, "outside");
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/v1/threads/${id}/downloads`,
+          headers,
+          payload: { path: outside },
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/v1/threads/${id}/downloads`,
+          payload: { path: attachment.path },
+        })
+      ).statusCode,
+    ).toBe(401);
+    const ticket = await app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/downloads`,
+      headers,
+      payload: { path: attachment.path },
+    });
+    expect(ticket.statusCode).toBe(200);
+    const url = ticket.json<{ downloadUrl: string }>().downloadUrl;
+    expect(url).toMatch(/^\/downloads\/[0-9a-f-]+$/);
+    const download = await app.inject({ url });
+    expect(download.statusCode).toBe(200);
+    expect(download.rawPayload).toEqual(contents);
+    expect(download.headers["cache-control"]).toBe("private, no-store");
+    expect(download.headers["content-disposition"]).toContain("notes.txt");
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/v1/threads/${otherId}/queue`,
+          headers,
+          payload: { input: "Wrong session", files: [attachment] },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/v1/threads/${id}/queue`,
+          headers,
+          payload: { input: "Read attachment", files: [attachment], clientMessageId: randomUUID() },
+        })
+      ).statusCode,
+    ).toBe(202);
+    expect(
+      (
+        await app.inject({
+          method: "DELETE",
+          url: `/api/v1/threads/${id}/attachments/${attachment.id}`,
+          headers,
+        })
+      ).statusCode,
+    ).toBe(409);
+    expect(operations).toEqual([]);
+  });
+});
