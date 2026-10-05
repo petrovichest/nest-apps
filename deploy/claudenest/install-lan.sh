@@ -32,7 +32,7 @@ else
 fi
 # Prove this is the CA already trusted for Codex. Never invent or replace a CA.
 openssl verify -no-CApath -no-CAstore -CAfile "$ca_cert" "$codex_cert" >/dev/null
-if rg -q 'claude\.home\.arpa' "$caddy_config"; then
+if grep -Eq 'claude\.home\.arpa' "$caddy_config"; then
   echo 'Claude host already exists in Caddy; inspect it before applying this script.' >&2
   exit 1
 fi
