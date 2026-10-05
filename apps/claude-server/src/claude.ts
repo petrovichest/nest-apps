@@ -214,6 +214,12 @@ export class ClaudeProcess extends EventEmitter {
     await this.control({ subtype: "interrupt" });
   }
 
+  /** Experimental CLI /usage data; skips the local transcript scan behind its behaviors section. */
+  async readUsage(): Promise<JsonObject> {
+    this.assertReady();
+    return this.control({ subtype: "get_usage", skip_behaviors: true });
+  }
+
   stop(): Promise<void> {
     this.stopPromise ??= this.stopOnce();
     return this.stopPromise;

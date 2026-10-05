@@ -19,6 +19,7 @@ import {
   type RunnerSnapshot,
 } from "./types";
 import { UiService, commandId } from "./ui-service";
+import { parseClaudeUsage } from "./rate-limits";
 import type { UiData } from "./ui-store";
 
 type Delivery = {
@@ -1471,5 +1472,57 @@ describe("Claude UI durable session facade", () => {
     expect(manager.commands).toEqual([]);
     await service.respond(`${id}:tool`, { kind: "approval", decision: "cancel" });
     expect(manager.commands.at(-1)).toMatchObject({ id, method: "interrupt" });
+  });
+});
+
+describe("Claude plan rate limits", () => {
+  it("shares one CLI usage read, publishes progress, and keeps the last limits after a failure", async () => {
+    const { start } = await fixture();
+    const service = await start();
+    expect(service.snapshot().capabilities?.rateLimits).toBe(true);
+    const limits = {
+      primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 1_000 },
+      secondary: null,
+    };
+    let finish!: (value: typeof limits) => void;
+    const read = vi
+      .spyOn(service, "readRateLimits")
+      .mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+      .mockImplementationOnce(async () =>
+        parseClaudeUsage({ rate_limits_available: true, rate_limits: null }),
+      );
+    const frames: ServerFrame[] = [];
+    service.on("frame", (frame: ServerFrame) => frames.push(frame));
+
+    const first = service.refreshRateLimits();
+    expect(service.refreshRateLimits()).toBe(first);
+    expect(service.snapshot().codexRateLimits).toMatchObject({ limits: null, refreshing: true });
+    finish(limits);
+    await expect(first).resolves.toEqual(limits);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(service.snapshot().codexRateLimits).toMatchObject({
+      limits,
+      refreshing: false,
+      refreshError: false,
+    });
+
+    await expect(service.refreshRateLimits()).rejects.toThrow("usage is currently unavailable");
+    expect(service.snapshot().codexRateLimits).toMatchObject({
+      limits,
+      refreshing: false,
+      refreshError: true,
+    });
+    expect(
+      frames.map((frame) =>
+        frame.type === "event" && frame.event.type === "codexRateLimits.changed"
+          ? [frame.event.codexRateLimits.refreshing, frame.event.codexRateLimits.refreshError]
+          : null,
+      ),
+    ).toEqual([
+      [true, false],
+      [false, false],
+      [true, false],
+      [false, true],
+    ]);
   });
 });

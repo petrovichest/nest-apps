@@ -11,7 +11,7 @@ export const application = {
   eventsPath: isClaude ? "/api/v1/ui/events" : "/api/v1/events",
   capabilities: {
     codexManagement: !isClaude,
-    rateLimits: !isClaude,
+    rateLimits: true,
     plan: !isClaude,
     team: !isClaude,
     goal: !isClaude,

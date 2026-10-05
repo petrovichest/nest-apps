@@ -122,6 +122,23 @@ describe("Claude model metadata and controls", () => {
     ]);
     await process.stop();
   });
+  it("reads plan usage without the local transcript scan", async () => {
+    const { child, process } = setup({ noSessionPersistence: true });
+    await process.start();
+    const usage = process.readUsage();
+    const request = child.sent.at(-1)!;
+    expect(request.request).toEqual({ subtype: "get_usage", skip_behaviors: true });
+    child.output({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: request.request_id,
+        response: { rate_limits_available: false, rate_limits: null },
+      },
+    });
+    await expect(usage).resolves.toEqual({ rate_limits_available: false, rate_limits: null });
+    await process.stop();
+  });
   it("changes model and permission mode only after matching success acknowledgements", async () => {
     const { child, process } = setup();
     await process.start();

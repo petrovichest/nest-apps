@@ -67,6 +67,8 @@ export async function registerUiRoutes(
     pendingAttentionCount: ui.attention().length,
     syncedAt: new Date().toISOString(),
   }));
+  // Shared client contract; the path keeps the Codex name used by the sidebar.
+  app.get("/api/v1/codex/rate-limits", async () => ui.refreshRateLimits());
   app.get("/api/v1/threads/search", async (request) => {
     const q = query(request),
       needle = (q.q ?? "").toLocaleLowerCase();

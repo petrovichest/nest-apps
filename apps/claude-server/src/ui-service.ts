@@ -12,6 +12,8 @@ import {
 import type {
   AppSnapshot,
   AttentionRequest,
+  CodexRateLimitsResponse,
+  CodexRateLimitsState,
   AttentionResponse,
   GlobalPermissionSettings,
   ModelOption,
@@ -33,6 +35,7 @@ import { ClaudeProcess } from "./claude";
 import { readHistory } from "./history";
 import type { SessionManager } from "./manager";
 import { NativeView } from "./native-view";
+import { parseClaudeUsage } from "./rate-limits";
 import type { RunnerConnection } from "./rpc";
 import { UiStore, type UiThread } from "./ui-store";
 import { writeJsonAtomic } from "./io";
@@ -48,6 +51,7 @@ import {
   type ClaudePermissionMode,
 } from "./types";
 
+const RATE_LIMITS_POLL_MS = 300_000;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export function commandId(value: string): string {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
@@ -119,12 +123,22 @@ export class UiService extends EventEmitter {
   >();
   private closed = false;
   private reconnect?: NodeJS.Timeout;
+  private rateLimits: CodexRateLimitsState = {
+    limits: null,
+    updatedAt: null,
+    refreshing: false,
+    refreshError: false,
+  };
+  private rateLimitsRequest?: Promise<CodexRateLimitsResponse>;
+  private rateLimitsTimer?: NodeJS.Timeout;
   constructor(readonly manager: SessionManager) {
     super();
     this.store = new UiStore(manager.config.stateDir);
     this.attachments = new AttachmentStore(join(manager.config.stateDir, "attachments"));
   }
-  async initialize(options: { probeModels?: boolean } = {}): Promise<void> {
+  async initialize(
+    options: { probeModels?: boolean; pollRateLimits?: boolean } = {},
+  ): Promise<void> {
     await this.store.initialize();
     const sessions = (await this.manager.list()) as Array<Record<string, unknown>>;
     await this.store.update((data) => {
@@ -150,6 +164,11 @@ export class UiService extends EventEmitter {
         await this.attach(String(session.sessionId)).catch(() => undefined);
     if (options.probeModels !== false && !this.store.data.models.length)
       await this.probeModels().catch(() => undefined);
+    if (options.pollRateLimits ?? options.probeModels !== false) {
+      this.rateLimitsTimer = setInterval(() => this.pollRateLimits(), RATE_LIMITS_POLL_MS);
+      this.rateLimitsTimer.unref();
+      this.pollRateLimits();
+    }
     this.reconnect = setInterval(() => {
       for (const thread of Object.values(this.store.data.threads)) {
         if (!this.subscriptions.has(thread.id))
@@ -164,7 +183,8 @@ export class UiService extends EventEmitter {
     for (const thread of Object.values(this.store.data.threads))
       if (thread.queue.length) this.schedule(thread.id);
   }
-  async probeModels(): Promise<void> {
+  /** Runs a short-lived CLI that never receives a prompt or persists a session. */
+  private async withProbe<T>(use: (process: ClaudeProcess) => Promise<T>): Promise<T> {
     const cwd = join(this.manager.config.stateDir, "model-probe");
     await mkdir(cwd, { recursive: true, mode: 0o700 });
     const process = new ClaudeProcess({
@@ -178,13 +198,51 @@ export class UiService extends EventEmitter {
     process.on("error", () => undefined);
     try {
       await process.start();
+      return await use(process);
+    } finally {
+      await process.stop();
+    }
+  }
+  async probeModels(): Promise<void> {
+    await this.withProbe(async (process) => {
       if (process.supportedModels.length)
         await this.store.update((data) => {
           data.models = process.supportedModels;
         });
-    } finally {
-      await process.stop();
-    }
+    });
+  }
+  async readRateLimits(): Promise<CodexRateLimitsResponse> {
+    return parseClaudeUsage(await this.withProbe((process) => process.readUsage()));
+  }
+  private setRateLimits(state: CodexRateLimitsState): void {
+    this.rateLimits = state;
+    this.publish({ type: "codexRateLimits.changed", codexRateLimits: state });
+  }
+  refreshRateLimits(): Promise<CodexRateLimitsResponse> {
+    if (this.rateLimitsRequest) return this.rateLimitsRequest;
+    if (this.closed) return Promise.reject(new AppError("unavailable", "Service is closing", 503));
+    this.setRateLimits({ ...this.rateLimits, refreshing: true, refreshError: false });
+    this.rateLimitsRequest = this.readRateLimits()
+      .then((limits) => {
+        this.setRateLimits({
+          limits,
+          updatedAt: Date.now(),
+          refreshing: false,
+          refreshError: false,
+        });
+        return limits;
+      })
+      .catch((error: unknown) => {
+        this.setRateLimits({ ...this.rateLimits, refreshing: false, refreshError: true });
+        throw error;
+      })
+      .finally(() => {
+        this.rateLimitsRequest = undefined;
+      });
+    return this.rateLimitsRequest;
+  }
+  private pollRateLimits(): void {
+    if (!this.closed) void this.refreshRateLimits().catch(() => undefined);
   }
   publish(event: ServerEvent): void {
     if (this.closed) return;
@@ -284,7 +342,7 @@ export class UiService extends EventEmitter {
       provider: "claude",
       capabilities: {
         codexManagement: false,
-        rateLimits: false,
+        rateLimits: true,
         plan: false,
         team: false,
         goal: false,
@@ -302,6 +360,7 @@ export class UiService extends EventEmitter {
       sequence: this.sequence,
       uiLanguage: this.store.data.uiLanguage,
       connection: { state: "ready", message: null, syncedAt: new Date().toISOString() },
+      codexRateLimits: this.rateLimits,
       projects: this.store.data.projects,
       threads: this.threadIds.map((id) => this.summary(id)),
       attention: this.attention(),
@@ -1218,6 +1277,7 @@ export class UiService extends EventEmitter {
   async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.reconnect);
+    clearInterval(this.rateLimitsTimer);
     for (const connection of this.subscriptions.values()) connection.close();
     await Promise.allSettled([...this.dispatches.values(), ...this.permissionUpdates.values()]);
     await this.store.flush();
