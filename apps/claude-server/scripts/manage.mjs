@@ -34,6 +34,11 @@ const quote = (value) => {
 };
 const unitQuote = (value) => quote(value.replaceAll("%", "%%"));
 const executableQuote = (value) => unitQuote(value.replaceAll("$", "$$"));
+// WorkingDirectory takes one literal path; unlike ExecStart it does not unquote.
+const directoryValue = (value) => {
+  if (/[\r\n]/.test(value)) throw new Error("Service paths must be single-line");
+  return value.replaceAll("%", "%%");
+};
 
 async function configuration() {
   const values = {};
@@ -196,7 +201,7 @@ try {
     }
     await setRelease(release);
     const nodeBin = await realpath(process.execPath);
-    const service = `[Unit]\nDescription=ClaudeNest prototype API (session services remain independent)\nAfter=network-online.target\n\n[Service]\nType=exec\nWorkingDirectory=${unitQuote(join(root, "current"))}\nEnvironmentFile=${unitQuote(envPath)}\nExecStart=${executableQuote(nodeBin)} ${executableQuote(join(root, "current/apps/claude-server/dist/index.js"))}\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=45\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+    const service = `[Unit]\nDescription=ClaudeNest prototype API (session services remain independent)\nAfter=network-online.target\n\n[Service]\nType=exec\nWorkingDirectory=${directoryValue(join(root, "current"))}\nEnvironmentFile=${unitQuote(envPath)}\nExecStart=${executableQuote(nodeBin)} ${executableQuote(join(root, "current/apps/claude-server/dist/index.js"))}\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=45\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
     await writeFile(join(serviceDirectory, "claudenest.service"), service, { mode: 0o600 });
     await exec("systemctl", ["--user", "daemon-reload"]);
     if (process.argv.includes("--start")) {
