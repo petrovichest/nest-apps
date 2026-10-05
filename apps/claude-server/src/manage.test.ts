@@ -244,6 +244,7 @@ describe("ClaudeNest release management", () => {
     expect(env).toContain(`CLAUDENEST_RELEASE_PATH=${JSON.stringify(test.oldRelease)}`);
     expect(env).toContain('CLAUDENEST_START_PAUSED="0"');
     expect(await test.commands()).toEqual([
+      ["--user", "daemon-reload"],
       ["--user", "restart", "claudenest.service"],
       ["--user", "stop", "claudenest.service"],
       ["--user", "start", "claudenest.service"],
@@ -295,6 +296,9 @@ describe("ClaudeNest release management", () => {
       "internal/restart/prepare",
       "internal/restart/resume",
     ]);
-    expect(await test.commands()).toEqual([["--user", "restart", "claudenest.service"]]);
+    expect(await test.commands()).toEqual([
+      ["--user", "daemon-reload"],
+      ["--user", "restart", "claudenest.service"],
+    ]);
   });
 });

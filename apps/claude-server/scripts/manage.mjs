@@ -134,6 +134,15 @@ async function executable(name) {
   }
   throw new Error("Installed Claude executable was not found");
 }
+
+async function writeService() {
+  await mkdir(serviceDirectory, { recursive: true });
+  const nodeBin = await realpath(process.execPath);
+  const service = `[Unit]\nDescription=ClaudeNest prototype API (session services remain independent)\nAfter=network-online.target\n\n[Service]\nType=exec\nWorkingDirectory=${directoryValue(join(root, "current"))}\nEnvironmentFile=${directoryValue(envPath)}\nExecStart=${executableQuote(nodeBin)} ${executableQuote(join(root, "current/apps/claude-server/dist/index.js"))}\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=45\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+  await writeFile(join(serviceDirectory, "claudenest.service"), service, { mode: 0o600 });
+  await exec("systemctl", ["--user", "daemon-reload"]);
+}
+
 let operationLock;
 try {
   if (["setup", "update", "restart", "stop"].includes(command)) {
@@ -200,10 +209,7 @@ try {
       if (error.code !== "EEXIST") throw error;
     }
     await setRelease(release);
-    const nodeBin = await realpath(process.execPath);
-    const service = `[Unit]\nDescription=ClaudeNest prototype API (session services remain independent)\nAfter=network-online.target\n\n[Service]\nType=exec\nWorkingDirectory=${directoryValue(join(root, "current"))}\nEnvironmentFile=${unitQuote(envPath)}\nExecStart=${executableQuote(nodeBin)} ${executableQuote(join(root, "current/apps/claude-server/dist/index.js"))}\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=45\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
-    await writeFile(join(serviceDirectory, "claudenest.service"), service, { mode: 0o600 });
-    await exec("systemctl", ["--user", "daemon-reload"]);
+    await writeService();
     if (process.argv.includes("--start")) {
       await exec("systemctl", ["--user", "enable", "--now", "claudenest.service"]);
       await waitHealthy(release);
@@ -227,6 +233,7 @@ try {
     // can invalidate the compatibility proof required by an offline rollback.
     try {
       await setRelease(release, true);
+      await writeService();
       await exec("systemctl", ["--user", "restart", "claudenest.service"]);
       await waitHealthy(release, "draining");
       await api("internal/restart/prepare", { supportedRunnerProtocols: oldProtocols });
