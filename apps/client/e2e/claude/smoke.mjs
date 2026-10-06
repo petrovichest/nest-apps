@@ -29,23 +29,30 @@ async function assertSidebarLayout(page) {
     return {
       controls: bounds(controls),
       settings: bounds(controls.querySelector('a[href="/settings"]')),
+      update: bounds(controls.querySelector(".app-update-indicator")),
+      limits: bounds(controls.querySelector(".codex-limits")),
       connection: bounds(controls.querySelector(".server-connection")),
-      project: bounds(controls.querySelector("button.sidebar-control-action")),
+      project: bounds(controls.querySelector("button.sidebar-control-action:not(.codex-limits)")),
       search: bounds(controls.querySelector(".sidebar-search-action")),
     };
   });
   const center = (bounds) => bounds.top + bounds.height / 2;
   assert.ok(
-    Math.abs(center(layout.settings) - center(layout.connection)) < 1,
-    "Settings and server status stay on the same row",
+    Math.abs(center(layout.settings) - center(layout.update)) < 1,
+    "Settings and app update stay on the same row",
   );
+  assert.ok(
+    Math.abs(center(layout.limits) - center(layout.connection)) < 1,
+    "Plan limits and server status stay on the same row",
+  );
+  assert.ok(layout.limits.top >= layout.settings.bottom, "Plan limits use the second row");
   assert.ok(
     Math.abs(center(layout.project) - center(layout.search)) < 1,
     "Add project and search stay on the same row",
   );
-  assert.ok(layout.project.top >= layout.settings.bottom, "Project controls use the second row");
+  assert.ok(layout.project.top >= layout.limits.bottom, "Project controls use the third row");
   assert.ok(layout.project.width > layout.search.width * 3, "Add project keeps the wide column");
-  for (const name of ["settings", "connection", "project", "search"]) {
+  for (const name of ["settings", "update", "limits", "connection", "project", "search"]) {
     assert.ok(
       layout[name].left >= layout.controls.left - 1 &&
         layout[name].right <= layout.controls.right + 1,

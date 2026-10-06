@@ -1606,7 +1606,7 @@ function Sidebar({
           <SlidersIcon />
           {t("Настройки")}
         </NavLink>
-        {application.capabilities.appUpdates && !application.isClaude && (
+        {application.capabilities.appUpdates && (
           <NavLink
             aria-label={
               updateAvailable ? t("Доступно обновление CodexNest") : t("Обновление CodexNest")
@@ -2687,8 +2687,10 @@ function formatRateLimitWindow(
   t: Translate,
 ): string {
   const remaining = Math.round(Math.max(0, Math.min(100, 100 - window.usedPercent)));
+  // Sub-day windows reset too often for a date to be useful; their length identifies them.
+  const shortWindow = window.windowDurationMins !== null && window.windowDurationMins < 1_440;
   const reset =
-    window.resetsAt === null
+    window.resetsAt === null || shortWindow
       ? rateLimitDuration(window.windowDurationMins, t)
       : new Intl.DateTimeFormat(language === "ru" ? "ru-RU" : "en-US", {
           day: "2-digit",

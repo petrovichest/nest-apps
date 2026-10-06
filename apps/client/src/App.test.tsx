@@ -1603,9 +1603,7 @@ describe("App routing and navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Показать лимиты Codex" }));
     expect(screen.queryByRole("dialog", { name: "Лимиты Codex" })).not.toBeInTheDocument();
     expect(
-      await screen.findByText(
-        `${formatter.format(primaryReset)} 80% · ${formatter.format(secondaryReset)} 62%`,
-      ),
+      await screen.findByText(`5 ч 80% · ${formatter.format(secondaryReset)} 62%`),
     ).toBeInTheDocument();
     expect(api.readCodexRateLimits).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog", { name: "Лимиты Codex" })).not.toBeInTheDocument();
@@ -1663,7 +1661,7 @@ describe("App routing and navigation", () => {
     const api = mockConnection(englishSnapshot);
     const reset = Date.UTC(2026, 6, 28, 12, 30);
     api.readCodexRateLimits.mockResolvedValue({
-      primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: reset },
+      primary: { usedPercent: 25, windowDurationMins: 10_080, resetsAt: reset },
       secondary: null,
     });
 

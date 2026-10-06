@@ -1012,6 +1012,15 @@
   flex: 0 0 auto;
 }
 
+/* Fixed columns keep rows paired when an optional control (e.g. app updates) is absent. */
+.sidebar-controls > .sidebar-control-action {
+  grid-column: 1;
+}
+
+.sidebar-controls > .sidebar-compact-control {
+  grid-column: 2;
+}
+
 .sidebar-control-action {
   font-size: var(--text-ui);
   line-height: 1.4;
