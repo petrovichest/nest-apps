@@ -23,6 +23,122 @@ const LEGACY_INSTALLATION_KEYS = [
 ];
 
 const ENGLISH: Record<string, string> = {
+  "Автоматическое переключение": "Automatic account switching",
+  "Авторизовано аккаунтов: {{count}}": "Signed-in accounts: {{count}}",
+  "Версия CLI недоступна": "CLI version unavailable",
+  "Добавить аккаунт": "Add account",
+  "Добавьте аккаунт Claude": "Add a Claude account",
+  "Войдите через приложение и настройте подключение для аккаунта.":
+    "Sign in through the app and configure the account connection.",
+  "При ошибке лимита выбираем аккаунт с наибольшим остатком на 5 часов. Аккаунты с исчерпанным недельным лимитом пропускаются.":
+    "When a quota error occurs, choose the account with the most remaining 5-hour quota. Accounts with exhausted weekly quotas are skipped.",
+  "Загружаем аккаунты…": "Loading accounts…",
+  "Обновить лимиты аккаунтов": "Refresh account quotas",
+  "Обновить лимиты": "Refresh quotas",
+  "Без авторизации": "Not signed in",
+  "Аккаунт без авторизации": "Account not signed in",
+  Авторизован: "Signed in",
+  Используется: "In use",
+  "Нужен вход": "Sign-in required",
+  "Недельный лимит": "Weekly quota exhausted",
+  "Лимит на 5 часов": "5-hour quota exhausted",
+  "Ошибка подключения": "Connection error",
+  "Действия аккаунта {{email}}": "Actions for {{email}}",
+  "Использовать аккаунт": "Use account",
+  "Войти заново": "Sign in again",
+  "Войти в Claude": "Sign in to Claude",
+  "Удалить аккаунт": "Remove account",
+  "Удалить аккаунт {{email}}? История чатов сохранится.":
+    "Remove account {{email}}? Chat history will be kept.",
+  Настроить: "Configure",
+  "5 часов": "5 hours",
+  "7 дней": "7 days",
+  "Осталось {{percent}}%": "{{percent}}% remaining",
+  "Сброс: {{time}}": "Resets: {{time}}",
+  "Время сброса неизвестно": "Reset time unknown",
+  "Лимиты обновлены в {{time}}": "Quotas refreshed at {{time}}",
+  "Не удалось обновить лимиты. Показаны последние полученные данные.":
+    "Could not refresh quotas. Showing the latest available data.",
+  "Проверьте подключение в настройках аккаунта.": "Check the connection in account settings.",
+  "Не удалось загрузить аккаунты Claude. Повторите обновление.":
+    "Could not load Claude accounts. Try refreshing again.",
+  "Не удалось изменить настройки аккаунтов Claude.": "Could not change Claude account settings.",
+  "Через прокси": "Use proxy",
+  "Без прокси": "No proxy",
+  "Тип прокси": "Proxy type",
+  Адрес: "Address",
+  "Адрес недоступен": "Address unavailable",
+  Логин: "Username",
+  "Логин: {{username}}": "Username: {{username}}",
+  Пароль: "Password",
+  "Подключение аккаунта": "Account connection",
+  "Текущее подключение: {{connection}}": "Current connection: {{connection}}",
+  "Сначала настройте подключение. Почта аккаунта появится после входа в Claude.":
+    "Configure the connection first. The account email will appear after signing in to Claude.",
+  "Вставьте новый прокси, чтобы изменить подключение": "Paste a new proxy to change the connection",
+  "Вставьте прокси в любом формате": "Paste a proxy in any format",
+  "Вставьте строку как получили от провайдера — разберём автоматически.":
+    "Paste the line as received from your provider. It will be parsed automatically.",
+  "Не удалось распознать прокси. Проверьте адрес и порт в строке.":
+    "Could not parse the proxy. Check the address and port in the line.",
+  "Выберите правильный разбор прокси": "Choose the correct proxy interpretation",
+  "Прокси распознан": "Proxy recognized",
+  "Показать прокси": "Show proxy",
+  "Скрыть прокси": "Hide proxy",
+  "Проверить прокси": "Test proxy",
+  "Проверить подключение": "Test connection",
+  "Подключение доступно": "Connection available",
+  "Подключение доступно · {{latency}} мс": "Connection available · {{latency}} ms",
+  "Подключение недоступно. Проверьте адрес, порт, логин и пароль прокси.":
+    "Connection unavailable. Check the proxy address, port, username, and password.",
+  "Не удалось проверить подключение через прокси.": "Could not test the proxy connection.",
+  "Запросы Claude Code для этого аккаунта будут идти через выбранный прокси.":
+    "Claude Code requests for this account will use the selected proxy.",
+  "Запросы Claude Code для этого аккаунта будут идти без прокси.":
+    "Claude Code requests for this account will use a direct connection.",
+  "Сохранить подключение": "Save connection",
+  "Перейти к входу": "Continue to sign in",
+  "Подключаем…": "Connecting…",
+  "Не удалось сохранить подключение аккаунта.": "Could not save the account connection.",
+  "Не удалось начать вход. Проверьте подключение и попробуйте снова.":
+    "Could not start sign-in. Check the connection and try again.",
+  "Откройте страницу Claude и войдите в нужный аккаунт. Вернитесь сюда, чтобы завершить подключение.":
+    "Open the Claude page and sign in to the account you want. Return here to finish connecting.",
+  "Открыть страницу входа": "Open sign-in page",
+  "Скопировать ссылку": "Copy link",
+  "Ссылка скопирована": "Link copied",
+  "Не удалось скопировать ссылку.": "Could not copy the link.",
+  "Не удалось открыть страницу входа. Скопируйте ссылку и откройте её в браузере.":
+    "Could not open the sign-in page. Copy the link and open it in your browser.",
+  "Ожидаем код авторизации…": "Waiting for authorization code…",
+  "Проверяем авторизацию…": "Checking sign-in…",
+  "Вход выполнен": "Signed in",
+  "Вход не завершён. Начните заново.": "Sign-in was not completed. Start again.",
+  "Вход отменён": "Sign-in cancelled",
+  "Готовим страницу входа…": "Preparing sign-in page…",
+  "Начать вход заново": "Start sign-in again",
+  "Скопируйте выданный Claude код целиком и вставьте сюда.":
+    "Copy the complete code provided by Claude and paste it here.",
+  "Код авторизации": "Authorization code",
+  "Вставьте код из браузера": "Paste the code from your browser",
+  "Подтвердить код": "Confirm code",
+  "Не удалось подтвердить код. Вставьте его целиком или начните вход заново.":
+    "Could not confirm the code. Paste the complete code or start sign-in again.",
+  "Не удалось проверить вход. Повторяем проверку…": "Could not check sign-in. Trying again…",
+  "Вход выполнен. Не удалось обновить список аккаунтов; закройте окно и нажмите обновление.":
+    "Signed in. Could not refresh the account list; close this window and select Refresh.",
+  "После входа покажем почту и лимиты аккаунта.":
+    "After sign-in, the account email and quotas will appear.",
+  "Ожидаем аккаунт с доступными лимитами": "Waiting for an account with available quota",
+  "Переключаем аккаунт и продолжаем задачу": "Switching accounts and continuing the task",
+  "Не удалось продолжить задачу после переключения аккаунта":
+    "Could not continue the task after switching accounts",
+  "Нет аккаунта с доступной квотой. Ожидаем восстановления лимитов.":
+    "No account has available quota. Waiting for quotas to recover.",
+  "Переключаем аккаунт и продолжаем незавершённую задачу…":
+    "Switching accounts and continuing the unfinished task…",
+  "Не удалось продолжить сессию после переключения аккаунта.":
+    "Could not continue the session after switching accounts.",
   "Названия во всех проектах, включая архив":
     "Titles across all projects, including archived sessions",
   "Настройте URL локального STT, чтобы включить микрофон.":

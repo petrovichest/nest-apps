@@ -116,6 +116,7 @@ export class NativeView {
   private readonly messageTurns = new Map<string, TurnView>();
   private readonly sourceMetadata = new Map<string, Json>();
   private readonly continuingTurns = new Set<string>();
+  private readonly quotaContinuations = new Set<string>();
   private readonly tools = new Map<
     string,
     {
@@ -146,6 +147,11 @@ export class NativeView {
     /** Renders one native subagent: its sidechain transcript and live events for this tool use. */
     readonly subagentToolUseId?: string,
   ) {}
+
+  /** Keeps the native recovery input in Claude's history while hiding it in the chat. */
+  rememberQuotaContinuation(id: string): void {
+    this.quotaContinuations.add(id);
+  }
 
   /** Events that belong to another conversation than the one this view renders. */
   private foreign(event: Json): boolean {
@@ -402,6 +408,24 @@ export class NativeView {
     event = this.withSourceMetadata(event);
     if (this.foreign(event)) return [];
     if (
+      event.type === "user" &&
+      (event.claudenest_quota_continuation === true ||
+        this.quotaContinuations.has(string(event.uuid)))
+    ) {
+      const id = string(event.uuid);
+      this.quotaContinuations.add(id);
+      const turn =
+        this.userTurns.get(id) ??
+        this.active ??
+        this.makeTurn(`continuation:${id}`, timestamp(event.timestamp));
+      this.userTurns.set(id, turn);
+      this.active = turn;
+      turn.status = "inProgress";
+      turn.completedAt = null;
+      turn.durationMs = null;
+      return [{ type: "turn.replaced", threadId: this.sessionId, turn: structuredClone(turn) }];
+    }
+    if (
       event.type === "attachment" &&
       object(event.attachment) &&
       event.attachment.type === "queued_command"
@@ -542,7 +566,8 @@ export class NativeView {
     }
     if (event.type === "assistant" && object(event.message)) {
       const message = event.message;
-      if (typeof message.model === "string") this.effectiveModel = message.model;
+      if (typeof message.model === "string" && message.model !== "<synthetic>")
+        this.effectiveModel = message.model;
       const messageId = string(message.id) || string(event.uuid) || `assistant:${stable(event)}`;
       const turn = this.ensureTurn(messageId, timestamp(event.timestamp));
       const parts = Array.isArray(message.content)
@@ -997,7 +1022,8 @@ export class NativeView {
     if (event.type === "message_start" && object(event.message)) {
       const id = string(event.message.id) || string(outer.uuid) || `stream:${stable(event)}`;
       const turn = this.ensureTurn(id, timestamp(outer.timestamp));
-      if (typeof event.message.model === "string") this.effectiveModel = event.message.model;
+      if (typeof event.message.model === "string" && event.message.model !== "<synthetic>")
+        this.effectiveModel = event.message.model;
       this.latestStream = this.streams.get(id) ?? {
         id,
         turnId: turn.id,

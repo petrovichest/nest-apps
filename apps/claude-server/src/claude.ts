@@ -2,7 +2,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { isAbsolute } from "node:path";
+import type { ParsedClaudeProxy } from "@codexnest/protocol";
 import type { ClaudeModel, ClaudePermissionMode } from "./types.js";
+import { createClaudeProxyEnvironment, type ClaudeProxyEnvironment } from "./proxy.js";
 
 export const MAX_NATIVE_LINE_BYTES = 16 * 1024 * 1024;
 const MAX_LINE_BYTES = MAX_NATIVE_LINE_BYTES;
@@ -34,6 +36,9 @@ export interface ClaudeProcessOptions {
   permissionMode?: ClaudePermissionMode;
   noSessionPersistence?: boolean;
   env?: NodeJS.ProcessEnv;
+  /** Undefined preserves legacy inherited connection settings; null explicitly selects direct. */
+  proxy?: ParsedClaudeProxy | null;
+  proxyEnvironment?: typeof createClaudeProxyEnvironment;
   spawnProcess?: typeof spawn;
 }
 
@@ -46,6 +51,7 @@ export class ClaudeProcess extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
   private startPromise?: Promise<void>;
   private stopPromise?: Promise<void>;
+  private proxyConnection?: ClaudeProxyEnvironment;
   private initialized = false;
   private exited = false;
   private failed = false;
@@ -77,7 +83,21 @@ export class ClaudeProcess extends EventEmitter {
   }
 
   private async startOnce(): Promise<void> {
-    const env = { ...process.env, ...this.options.env };
+    let env = { ...process.env, ...this.options.env };
+    if (this.options.proxy !== undefined) {
+      const configDir = env.CLAUDE_CONFIG_DIR;
+      const nativeDefault =
+        Object.hasOwn(this.options.env ?? {}, "CLAUDE_CONFIG_DIR") &&
+        this.options.env?.CLAUDE_CONFIG_DIR === undefined;
+      if (!configDir && !nativeDefault)
+        throw new Error("Managed Claude account requires its native config directory");
+      this.proxyConnection = await (this.options.proxyEnvironment ?? createClaudeProxyEnvironment)(
+        this.options.proxy,
+        configDir ?? "",
+        { env },
+      );
+      env = this.proxyConnection.env;
+    }
     // CLI session authentication and normal project/user settings stay inherited.
     delete env.CLAUDECODE;
     const args = [
@@ -111,6 +131,7 @@ export class ClaudeProcess extends EventEmitter {
         stdio: ["pipe", "pipe", "pipe"],
       }) as ChildProcessWithoutNullStreams;
     } catch {
+      await this.closeProxy();
       throw new Error("Could not start installed Claude CLI");
     }
     const child = this.child;
@@ -131,6 +152,7 @@ export class ClaudeProcess extends EventEmitter {
       this.initialized = false;
       this.rejectControls(new Error("Claude CLI exited before its control response"));
       this.requests.clear();
+      void this.closeProxy();
       this.emit("exit", { code, signal });
     });
     // spawn errors have no exit event, but always have close.
@@ -138,6 +160,7 @@ export class ClaudeProcess extends EventEmitter {
       this.exited = true;
       this.initialized = false;
       this.rejectControls(new Error("Claude CLI closed before its control response"));
+      void this.closeProxy();
     });
     try {
       const metadata = await this.control(
@@ -173,6 +196,7 @@ export class ClaudeProcess extends EventEmitter {
     } catch (error) {
       child.stdin.end();
       if (!this.exited) child.kill("SIGTERM");
+      await this.closeProxy();
       throw error;
     }
   }
@@ -235,7 +259,7 @@ export class ClaudeProcess extends EventEmitter {
 
   private async stopOnce(): Promise<void> {
     const child = this.child;
-    if (!child || this.exited) return;
+    if (!child || this.exited) return this.closeProxy();
     // End stdin only after interrupt has cancelled any outstanding host prompts.
     if (this.initialized && !this.failed) {
       try {
@@ -245,12 +269,19 @@ export class ClaudeProcess extends EventEmitter {
       }
     }
     child.stdin.end();
-    if (await this.waitForExit(STOP_GRACE_MS)) return;
+    if (await this.waitForExit(STOP_GRACE_MS)) return this.closeProxy();
     child.kill("SIGTERM");
-    if (await this.waitForExit(STOP_GRACE_MS)) return;
+    if (await this.waitForExit(STOP_GRACE_MS)) return this.closeProxy();
     child.kill("SIGKILL");
     await this.waitForExit(STOP_GRACE_MS);
+    await this.closeProxy();
     if (!this.exited) throw new Error("Claude CLI did not exit after stop");
+  }
+
+  private async closeProxy(): Promise<void> {
+    const connection = this.proxyConnection;
+    this.proxyConnection = undefined;
+    await connection?.close().catch(() => undefined);
   }
 
   private waitForExit(timeoutMs: number): Promise<boolean> {

@@ -1,4 +1,5 @@
 import { pastedText, type PastedText } from "./pasted-text.js";
+import type { ClaudeAccountsStatus } from "./claude-accounts.js";
 export * from "./pasted-text.js";
 
 export type AppProvider = "codex" | "claude";
@@ -316,6 +317,8 @@ export type ThreadSummary = {
   currentTurnId: string | null;
   /** The server will continue this thread after temporary model overload. */
   capacityRetry?: { failedTurnId: string; nextAttemptAt: number };
+  /** Claude account recovery after an exhausted subscription quota. */
+  quotaRecovery?: { state: "waiting" | "resuming" | "failed"; message: string };
   /** A completed plan still needs a user response, even if its mode was changed. */
   awaitingPlanResponse?: boolean;
   /** The completed plan whose response requirement the user dismissed. */
@@ -999,6 +1002,7 @@ export type AppSnapshot = {
   uiLanguage: UiLanguage;
   connection: ConnectionView;
   codexRateLimits?: CodexRateLimitsState;
+  claudeAccounts?: ClaudeAccountsStatus;
   projects: Project[];
   threads: ThreadSummary[];
   attention: AttentionRequest[];
@@ -1012,6 +1016,7 @@ export type AppSnapshot = {
 export type ServerEvent =
   | { type: "connection.changed"; connection: ConnectionView }
   | { type: "codexRateLimits.changed"; codexRateLimits: CodexRateLimitsState }
+  | { type: "claudeAccounts.changed"; claudeAccounts: ClaudeAccountsStatus }
   | { type: "project.upserted"; project: Project }
   | { type: "projects.reordered"; projects: Project[] }
   | { type: "project.removed"; projectId: string }
@@ -1869,3 +1874,5 @@ export function mergeProjectDraft(
     annotations: mergeItems(current.annotations, base.annotations, value.annotations),
   };
 }
+export * from "./claude-accounts.js";
+export * from "./claude-proxy.js";

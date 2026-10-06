@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Config } from "./config.js";
+import type { ClaudeAccounts, ClaudeLaunchAccount } from "./accounts.js";
+import { QUOTA_CONTINUATION_MESSAGE } from "./quota-recovery.js";
 import { SessionManager, type SessionLauncher } from "./manager.js";
 import { SessionRunner, type RunnerTransport } from "./runner.js";
 import type { CommandReceipt, RunnerDescriptor } from "./types.js";
@@ -33,9 +35,12 @@ class FakeLauncher implements SessionLauncher {
   readonly owners = new Map<string, { runner: SessionRunner; transport: FakeClaude }>();
   starts = 0;
   loseNextLaunchAcknowledgement = false;
+  configureNextTransport?: (transport: FakeClaude) => void;
   readonly unavailableOwners = new Set<string>();
   async available(): Promise<void> {}
   async active(id: string): Promise<boolean> {
+    const owner = this.owners.get(id);
+    if (owner?.runner.snapshot().state === "closed") await owner.runner.close();
     return (
       this.unavailableOwners.has(id) ||
       (this.owners.has(id) && this.owners.get(id)!.runner.snapshot().state !== "closed")
@@ -44,6 +49,8 @@ class FakeLauncher implements SessionLauncher {
   async start(descriptor: RunnerDescriptor): Promise<void> {
     this.starts++;
     const transport = new FakeClaude();
+    this.configureNextTransport?.(transport);
+    this.configureNextTransport = undefined;
     const runner = new SessionRunner(descriptor, {
       transportFactory: () => transport,
       claudeVersion: "fake-2.1.289",
@@ -90,8 +97,8 @@ async function fixture() {
     for (const { runner } of launcher.owners.values()) await runner.close();
     await rm(directory, { recursive: true, force: true });
   });
-  async function backend() {
-    const manager = new SessionManager(config, launcher);
+  async function backend(accounts?: ClaudeAccounts) {
+    const manager = new SessionManager(config, launcher, accounts);
     managers.push(manager);
     await manager.initialize();
     return manager;
@@ -106,6 +113,200 @@ async function fixture() {
 }
 
 describe("Claude backend manager integration", () => {
+  it("preserves the original native default configuration in a persisted runner descriptor", async () => {
+    const { backend, launcher, input, config } = await fixture();
+    const account: ClaudeLaunchAccount = {
+      accountId: "original",
+      configDir: config.configDir,
+      proxy: null,
+      defaultConfig: true,
+    };
+    const accounts = { launchAccount: async () => account } as unknown as ClaudeAccounts;
+    const manager = await backend(accounts);
+    await manager.create(input);
+    expect(await manager.descriptor(input.sessionId)).toMatchObject({
+      accountId: "original",
+      configDir: config.configDir,
+      defaultConfig: true,
+    });
+    expect(launcher.owners.get(input.sessionId)!.runner.descriptor.defaultConfig).toBe(true);
+  });
+  it("resumes the same UUID with the selected account proxy and a fresh continuation once", async () => {
+    const { backend, launcher, input, config } = await fixture();
+    const a: ClaudeLaunchAccount = { accountId: "a", configDir: config.configDir, proxy: null };
+    const b: ClaudeLaunchAccount = {
+      accountId: "b",
+      configDir: join(config.stateDir, "account-b"),
+      proxy: {
+        protocol: "socks5",
+        host: "proxy.example",
+        port: 1080,
+        url: "socks5h://proxy.example:1080",
+      },
+    };
+    let current = a;
+    const accounts = {
+      status: () => ({ autoSwitch: true }),
+      launchAccount: async () => current,
+      rotate: async () => {
+        current = b;
+        return b;
+      },
+      accountIdForConfigDir: () => "a",
+    } as unknown as ClaudeAccounts;
+    const manager = await backend(accounts);
+    await manager.create(input);
+    const old = launcher.owners.get(input.sessionId)!;
+    old.transport.emit("event", { type: "result", is_error: true });
+    const recovery = {
+      failedRunnerInstanceId: old.runner.runnerInstanceId,
+      failedAccountId: "a",
+      continuationId: randomUUID(),
+    };
+    expect(await manager.recoverQuota(input.sessionId, recovery, () => true)).toMatchObject({
+      state: "continued",
+    });
+    expect(old.transport.stops).toBe(1);
+    const replacement = launcher.owners.get(input.sessionId)!;
+    expect(replacement.runner.descriptor).toMatchObject({
+      sessionId: input.sessionId,
+      resume: true,
+      accountId: "b",
+      configDir: b.configDir,
+      proxy: b.proxy,
+    });
+    expect(replacement.transport.sends).toEqual([
+      { requestId: recovery.continuationId, text: QUOTA_CONTINUATION_MESSAGE },
+    ]);
+    await manager.recoverQuota(input.sessionId, recovery, () => true);
+    expect(launcher.starts).toBe(2);
+    expect(replacement.transport.sends).toHaveLength(1);
+    expect(old.transport.sends).toEqual([{ requestId: input.requestId, text: input.prompt }]);
+  });
+
+  it("reconciles an API crash between replacement launch and continuation delivery", async () => {
+    const { backend, launcher, input, config } = await fixture();
+    const account = { accountId: "next", configDir: config.configDir, proxy: null };
+    const accounts = {
+      status: () => ({ autoSwitch: true }),
+      launchAccount: async () => account,
+      rotate: async () => account,
+      accountIdForConfigDir: () => "next",
+    } as unknown as ClaudeAccounts;
+    const first = await backend(accounts);
+    await first.create(input);
+    const old = launcher.owners.get(input.sessionId)!;
+    old.transport.emit("event", { type: "result", is_error: true });
+    const recovery = {
+      failedRunnerInstanceId: old.runner.runnerInstanceId,
+      continuationId: randomUUID(),
+    };
+    launcher.loseNextLaunchAcknowledgement = true;
+    await expect(first.recoverQuota(input.sessionId, recovery, () => true)).rejects.toThrow(
+      "lost launch acknowledgement",
+    );
+    await first.close();
+    const restarted = await backend(accounts);
+    await restarted.recoverQuota(input.sessionId, recovery, () => true);
+    expect(launcher.starts).toBe(2);
+    expect(launcher.owners.get(input.sessionId)!.transport.sends).toEqual([
+      { requestId: recovery.continuationId, text: QUOTA_CONTINUATION_MESSAGE },
+    ]);
+  });
+
+  it("never replays a continuation with an unknown receipt outcome", async () => {
+    const { backend, launcher, input, config } = await fixture();
+    const account = { accountId: "next", configDir: config.configDir, proxy: null };
+    const accounts = {
+      status: () => ({ autoSwitch: true }),
+      launchAccount: async () => account,
+      rotate: async () => account,
+      accountIdForConfigDir: () => "next",
+    } as unknown as ClaudeAccounts;
+    const manager = await backend(accounts);
+    await manager.create(input);
+    const old = launcher.owners.get(input.sessionId)!;
+    old.transport.emit("event", { type: "result", is_error: true });
+    const recovery = {
+      failedRunnerInstanceId: old.runner.runnerInstanceId,
+      continuationId: randomUUID(),
+    };
+    launcher.configureNextTransport = (transport) => {
+      const send = transport.sendUser.bind(transport);
+      transport.sendUser = (requestId, text) => {
+        send(requestId, text);
+        throw new Error("Write outcome lost");
+      };
+    };
+    await expect(manager.recoverQuota(input.sessionId, recovery, () => true)).rejects.toMatchObject(
+      { code: "delivery_unknown" },
+    );
+    await expect(manager.recoverQuota(input.sessionId, recovery, () => true)).rejects.toMatchObject(
+      { code: "conflict" },
+    );
+    expect(launcher.starts).toBe(2);
+    expect(launcher.owners.get(input.sessionId)!.transport.sends).toHaveLength(1);
+  });
+
+  it("waits without releasing an owner when every account is exhausted and honors cancellation", async () => {
+    const { backend, launcher, input, config } = await fixture();
+    const account = { accountId: "a", configDir: config.configDir, proxy: null };
+    const accounts = {
+      status: () => ({ autoSwitch: true }),
+      launchAccount: async () => account,
+      rotate: async () => null,
+      accountIdForConfigDir: () => "a",
+    } as unknown as ClaudeAccounts;
+    const manager = await backend(accounts);
+    await manager.create(input);
+    const old = launcher.owners.get(input.sessionId)!;
+    old.transport.emit("event", { type: "result", is_error: true });
+    const recovery = {
+      failedRunnerInstanceId: old.runner.runnerInstanceId,
+      continuationId: randomUUID(),
+    };
+    expect(await manager.recoverQuota(input.sessionId, recovery, () => true)).toEqual({
+      state: "waiting",
+    });
+    expect(await manager.recoverQuota(input.sessionId, recovery, () => false)).toEqual({
+      state: "cancelled",
+    });
+    expect(launcher.starts).toBe(1);
+    expect(old.transport.stops).toBe(0);
+  });
+
+  it("can reuse the only account after waiting for its quota reset and a fresh eligibility check", async () => {
+    const { backend, launcher, input, config } = await fixture();
+    const account = { accountId: "only", configDir: config.configDir, proxy: null };
+    const excluded: Array<string | undefined> = [];
+    const accounts = {
+      status: () => ({ autoSwitch: true }),
+      launchAccount: async () => account,
+      rotate: async (failed?: string) => {
+        excluded.push(failed);
+        return failed ? null : account;
+      },
+      accountIdForConfigDir: () => "only",
+    } as unknown as ClaudeAccounts;
+    const manager = await backend(accounts);
+    await manager.create(input);
+    const old = launcher.owners.get(input.sessionId)!;
+    old.transport.emit("event", { type: "result", is_error: true });
+    const recovery = {
+      failedRunnerInstanceId: old.runner.runnerInstanceId,
+      failedAccountId: "only",
+      continuationId: randomUUID(),
+      failedResetAt: Date.now() - 1,
+    };
+    expect(await manager.recoverQuota(input.sessionId, recovery, () => true)).toEqual({
+      state: "waiting",
+    });
+    expect(
+      await manager.recoverQuota(input.sessionId, { ...recovery, wasWaiting: true }, () => true),
+    ).toMatchObject({ state: "continued" });
+    expect(excluded).toEqual(["only", undefined]);
+    expect(launcher.owners.get(input.sessionId)!.transport.sends).toHaveLength(1);
+  });
   it("steers a live owner durably without launching, interrupting, or resetting its native task", async () => {
     const { backend, launcher, input } = await fixture();
     const manager = await backend();

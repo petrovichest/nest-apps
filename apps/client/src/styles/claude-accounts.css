@@ -1,0 +1,624 @@
+.claude-accounts {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-5);
+}
+
+.claude-accounts-heading,
+.claude-account-card-heading,
+.claude-account-actions,
+.claude-account-footer,
+.claude-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.claude-accounts-heading {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.claude-accounts-heading > div:first-child {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.claude-accounts-heading h2 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-section);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-copy);
+}
+
+.claude-account-meta {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--text-caption);
+  line-height: var(--leading-copy);
+  overflow-wrap: anywhere;
+}
+
+.claude-account-actions {
+  flex-wrap: wrap;
+}
+
+.claude-accounts button,
+.claude-account-dialog button,
+.claude-login-open {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: var(--control-height);
+  font-size: var(--text-ui);
+  line-height: var(--leading-copy);
+  padding-block: var(--space-2);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.claude-accounts .icon-button,
+.claude-account-dialog .icon-button {
+  padding: 0;
+  flex: 0 0 var(--control-height);
+}
+
+.claude-account-primary {
+  background: var(--color-lapis);
+  color: var(--color-lapis-contrast);
+  font-weight: var(--weight-action);
+  border-radius: 999px;
+}
+
+.claude-account-primary:is(:hover, :focus-visible):not(:disabled) {
+  background: var(--color-lapis);
+  color: var(--color-lapis-contrast);
+  box-shadow: var(--sidebar-surface-shadow);
+}
+
+.claude-account-surface {
+  min-width: 0;
+  padding: var(--space-6);
+  border-radius: var(--chat-radius-surface);
+  background: var(--color-floating);
+  box-shadow: var(--sidebar-surface-shadow);
+}
+
+.claude-auto-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.claude-auto-switch > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.claude-auto-switch label {
+  color: var(--color-ink-strong);
+  font-weight: var(--weight-medium);
+}
+
+.claude-auto-switch p,
+.claude-account-empty p {
+  margin: var(--space-1) 0 0;
+  color: var(--color-muted);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+
+.claude-account-switch {
+  appearance: none;
+  position: relative;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 25px;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-line-strong);
+  cursor: pointer;
+}
+
+.claude-account-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: var(--color-floating);
+}
+
+.claude-account-switch:checked {
+  background: var(--color-lapis);
+}
+
+.claude-account-switch:checked::after {
+  transform: translateX(17px);
+  background: var(--color-lapis-contrast);
+}
+
+.claude-account-switch:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.claude-account-card {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.claude-account-avatar {
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--color-muted);
+  background: color-mix(in srgb, var(--color-ink) 4%, transparent);
+  font-size: var(--text-ui);
+}
+
+.claude-account-identity {
+  min-width: 0;
+  flex: 1;
+}
+
+.claude-account-identity h3,
+.claude-account-empty h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-ui);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.claude-account-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-inline-end: var(--space-1);
+  border-radius: 50%;
+  background: var(--color-muted);
+  vertical-align: middle;
+}
+
+.claude-account-dot.authenticated {
+  background: var(--color-success);
+}
+
+.claude-account-state {
+  flex: 0 1 auto;
+  font-size: var(--text-caption);
+  line-height: var(--leading-copy);
+  overflow-wrap: anywhere;
+}
+
+.claude-account-state.current,
+.claude-account-state.warning {
+  border-radius: 999px;
+  padding: var(--space-1) var(--space-2-5);
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+}
+
+.claude-account-state.authenticated,
+.claude-account-success {
+  color: var(--color-success);
+}
+
+.claude-account-state.warning {
+  color: var(--color-warning-text);
+  background: var(--color-warning);
+}
+
+.claude-account-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.claude-account-menu summary {
+  display: grid;
+  place-items: center;
+  width: var(--control-height);
+  min-height: var(--control-height);
+  border-radius: 50%;
+  list-style: none;
+  cursor: pointer;
+}
+
+.claude-account-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.claude-account-menu > div {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  z-index: 4;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 48px));
+  padding: var(--space-2);
+  display: grid;
+  background: var(--color-floating);
+  border-radius: var(--chat-radius-card);
+  box-shadow: var(--sidebar-panel-shadow);
+}
+
+.claude-account-menu button {
+  justify-content: flex-start;
+  text-align: start;
+}
+
+.claude-account-quotas {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-6);
+}
+
+.claude-account-quota {
+  min-width: 0;
+}
+
+.claude-account-quota-label {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-2);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-ui);
+}
+
+.claude-account-quota-label strong {
+  font-weight: var(--weight-semibold);
+}
+
+.claude-account-quota-track {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-ink) 15%, transparent);
+  margin-bottom: var(--space-2);
+}
+
+.claude-account-quota-track > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-ink-strong);
+}
+
+.claude-account-quota.exhausted {
+  color: var(--color-warning-text);
+}
+
+.claude-account-quota.exhausted .claude-account-quota-track {
+  background: color-mix(in srgb, var(--color-warning-text) 30%, transparent);
+}
+
+.claude-account-footer {
+  flex-wrap: wrap;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+}
+
+.claude-account-footer p {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 200px;
+  min-width: 0;
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--text-ui);
+  overflow-wrap: anywhere;
+}
+
+.claude-account-footer svg,
+.claude-account-updated svg,
+.claude-login-connection svg,
+.claude-proxy-preview svg,
+.claude-account-success svg,
+.claude-login-note svg {
+  flex: 0 0 18px;
+}
+
+.claude-account-updated,
+.claude-account-success,
+.claude-login-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.claude-account-empty {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+}
+
+.claude-account-dialog {
+  padding: var(--space-6);
+  gap: var(--space-6);
+}
+
+.claude-account-dialog .dialog-heading h2 {
+  line-height: max(28px, calc(var(--text-dialog) * 1.35));
+  overflow-wrap: anywhere;
+}
+
+.claude-account-dialog .dialog-heading p {
+  overflow-wrap: anywhere;
+}
+
+.claude-account-form,
+.claude-login-code {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.claude-account-form > label,
+.claude-connection-options legend,
+.claude-proxy-candidates legend {
+  color: var(--color-ink-strong);
+  font-weight: var(--weight-medium);
+  font-size: var(--text-label);
+}
+
+.claude-connection-options,
+.claude-proxy-candidates {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.claude-connection-options legend,
+.claude-proxy-candidates legend {
+  margin-bottom: var(--space-2);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.claude-connection-options > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--chat-radius-surface);
+  background: var(--color-canvas);
+}
+
+.claude-connection-options label {
+  position: relative;
+  flex: 1 1 150px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: var(--control-height);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 999px;
+  text-align: center;
+  color: var(--color-muted);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+
+.claude-connection-options label.selected {
+  background: var(--color-floating);
+  color: var(--color-ink-strong);
+  box-shadow: var(--sidebar-surface-shadow);
+}
+
+.claude-connection-options label:has(input:focus-visible) {
+  outline: 2px solid var(--color-lapis);
+  outline-offset: 2px;
+}
+
+.claude-connection-options input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  opacity: 0;
+}
+
+.claude-proxy-input {
+  position: relative;
+  min-width: 0;
+}
+
+.claude-proxy-input > input {
+  padding-inline-end: calc(var(--control-height) + var(--space-4));
+}
+
+.claude-proxy-input > button {
+  position: absolute;
+  right: var(--space-1);
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.claude-account-hint {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--text-small);
+  line-height: var(--leading-copy);
+  overflow-wrap: anywhere;
+}
+
+.claude-account-hint.danger {
+  color: var(--color-danger);
+}
+
+.claude-proxy-preview,
+.claude-login-connection {
+  padding: var(--space-4);
+  border-radius: var(--chat-radius-card);
+  background: color-mix(in srgb, var(--color-ink) 4%, transparent);
+  min-width: 0;
+}
+
+.claude-proxy-preview > p {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  color: var(--color-success);
+  font-size: var(--text-ui);
+}
+
+.claude-proxy-preview dl {
+  display: grid;
+  grid-template-columns: minmax(60px, auto) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  font-size: var(--text-ui);
+}
+
+.claude-proxy-preview dt {
+  color: var(--color-muted);
+}
+
+.claude-proxy-preview dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.claude-proxy-candidates label {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding-block: var(--space-2);
+}
+
+.claude-proxy-candidates label span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.claude-proxy-candidates small {
+  display: block;
+  color: var(--color-muted);
+}
+
+.claude-proxy-test {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+}
+
+.claude-account-success {
+  margin: 0;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+
+.claude-dialog-actions {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+  margin-top: var(--space-2);
+}
+
+.claude-login-connection p {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: var(--space-2) 0 0;
+  color: var(--color-muted);
+  font-size: var(--text-ui);
+  overflow-wrap: anywhere;
+}
+
+.claude-login-open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  text-align: center;
+  text-decoration: none;
+}
+
+.claude-login-status {
+  text-align: center;
+}
+
+.claude-login-code {
+  margin-top: var(--space-2);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+}
+
+.claude-login-note {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+}
+
+@media (max-width: 600px) {
+  .claude-account-surface,
+  .claude-account-dialog {
+    padding: var(--space-5);
+  }
+
+  .claude-account-card-heading {
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr) var(--control-height);
+    column-gap: var(--space-3);
+    row-gap: var(--space-2);
+  }
+
+  .claude-account-state {
+    grid-row: 2;
+    grid-column: 2 / 4;
+    justify-self: start;
+  }
+
+  .claude-account-menu {
+    grid-row: 1;
+    grid-column: 3;
+  }
+
+  .claude-account-quotas {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  .claude-account-footer p {
+    flex-basis: 100%;
+  }
+
+  .claude-auto-switch {
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .claude-account-switch {
+    margin-top: var(--space-1);
+  }
+
+  .claude-dialog-actions > button {
+    flex: 1 1 120px;
+  }
+}
+
+@media (forced-colors: active) {
+  .claude-account-switch {
+    appearance: auto;
+  }
+  .claude-account-switch::after {
+    display: none;
+  }
+  .claude-account-quota-track {
+    border: 1px solid CanvasText;
+  }
+  .claude-account-quota-track > span {
+    background: Highlight;
+  }
+}

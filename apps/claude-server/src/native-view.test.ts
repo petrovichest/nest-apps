@@ -40,6 +40,80 @@ function stream(event: Record<string, unknown>) {
 }
 
 describe("native Claude view", () => {
+  it("keeps the actual model when a quota error reports a synthetic model", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply(assistant);
+    view.apply({
+      type: "assistant",
+      error: "rate_limit",
+      message: {
+        id: "error",
+        model: "<synthetic>",
+        content: [{ type: "text", text: "Quota exhausted" }],
+      },
+    });
+    expect(view.model).toBe("sonnet");
+  });
+  it("continues the existing turn without exposing an internal quota input", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply(assistant);
+    view.apply({ type: "result", is_error: true, errors: ["Quota exhausted"] });
+    view.rememberQuotaContinuation("quota-input");
+    view.apply({
+      ...user,
+      uuid: "quota-input",
+      message: { content: "Internal continuation instruction" },
+    });
+    view.apply({
+      ...assistant,
+      uuid: "resumed-uuid",
+      message: { id: "resumed", content: [{ type: "text", text: "Continued" }] },
+    });
+    expect(view.turns()).toHaveLength(1);
+    expect(view.turns()[0]).toMatchObject({
+      id: "user-1",
+      status: "inProgress",
+      completedAt: null,
+    });
+    expect(
+      view
+        .turns()[0]!
+        .items.filter((item) => item.type === "userMessage")
+        .map((item) => item.id),
+    ).toEqual(["user-1"]);
+    expect(JSON.stringify(view.turns())).not.toContain("Internal continuation instruction");
+  });
+
+  it("hides all saved continuation inputs after rebuilding native history", () => {
+    const view = new NativeView("session", "/project");
+    view.rememberQuotaContinuation("quota-1");
+    view.rememberQuotaContinuation("quota-2");
+    view.reset([
+      user,
+      assistant,
+      { type: "result", is_error: true },
+      { ...user, uuid: "quota-1", message: { content: "Hidden one" } },
+      {
+        ...assistant,
+        uuid: "resumed-1",
+        message: { id: "resumed-1", content: [{ type: "text", text: "Progress" }] },
+      },
+      { type: "result", is_error: true },
+      { ...user, uuid: "quota-2", message: { content: "Hidden two" } },
+      {
+        ...assistant,
+        uuid: "resumed-2",
+        message: { id: "resumed-2", content: [{ type: "text", text: "Done" }] },
+      },
+      { type: "result", subtype: "success" },
+    ]);
+    expect(view.turns()).toHaveLength(1);
+    expect(view.turns()[0]!.status).toBe("completed");
+    expect(JSON.stringify(view.turns())).not.toContain("Hidden");
+  });
+
   it("builds stable user-UUID turns and normalized historical messages", () => {
     const view = normalizeNativeEvents([user, assistant], {
       sessionId: "session",

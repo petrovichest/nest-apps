@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import type { ServerFrame } from "@codexnest/protocol";
+import type { ClaudeAccountsStatus, ServerFrame } from "@codexnest/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "./config";
 import type { SessionManager } from "./manager";
@@ -22,6 +22,7 @@ import { UiService, commandId } from "./ui-service";
 import { subagentThreadId } from "./types";
 import { parseClaudeUsage } from "./rate-limits";
 import type { UiData } from "./ui-store";
+import type { ClaudeLaunchAccount } from "./accounts";
 
 type Delivery = {
   sessionId: string;
@@ -34,6 +35,27 @@ type Delivery = {
   model?: string;
   effort?: string;
 };
+class FakeAccounts extends EventEmitter {
+  autoSwitch = true;
+  available = true;
+  readonly confirm = vi.fn(async () => true);
+  selected: ClaudeLaunchAccount = { accountId: "a", configDir: "/native", proxy: null };
+  async launchAccount(): Promise<ClaudeLaunchAccount> {
+    return this.selected;
+  }
+  status(): ClaudeAccountsStatus {
+    return { cliVersion: "fake", autoSwitch: this.autoSwitch, currentAccountId: "a", accounts: [] };
+  }
+  accountIdForConfigDir(): string {
+    return "a";
+  }
+  confirmQuotaExhausted(): Promise<boolean> {
+    return this.confirm();
+  }
+  async refresh(): Promise<void> {
+    this.emit("changed", this.status());
+  }
+}
 class FakeConnection extends EventEmitter {
   closed = false;
   constructor(private readonly snapshot: () => RunnerSnapshot) {
@@ -55,6 +77,13 @@ class FakeConnection extends EventEmitter {
 /** Never invokes a CLI, starts a service, or uses the installed application's state. */
 class FakeManager {
   accepting = false;
+  accounts?: FakeAccounts;
+  readonly recoveries: Array<{
+    id: string;
+    continuationId: string;
+    failedRunnerInstanceId: string;
+  }> = [];
+  recoveryHook?: () => Promise<void>;
   readonly owners = new Map<string, RunnerSnapshot>();
   readonly connections = new Map<string, FakeConnection[]>();
   readonly external: Array<Record<string, unknown>> = [];
@@ -169,6 +198,32 @@ class FakeManager {
     const owner = this.owners.get(id);
     if (!owner) throw new AppError("not_found", "No owner", 404);
     return structuredClone(owner);
+  }
+  async recoverQuota(
+    id: string,
+    recovery: { continuationId: string; failedRunnerInstanceId: string },
+    allowed: () => boolean,
+  ) {
+    this.recoveries.push({ id, ...recovery });
+    await this.recoveryHook?.();
+    if (!allowed() || !this.accounts?.autoSwitch) return { state: "cancelled" as const };
+    if (!this.accounts.available) return { state: "waiting" as const };
+    const owner = this.owners.get(id)!;
+    const receipt: CommandReceipt = {
+      requestId: recovery.continuationId,
+      kind: "send",
+      fingerprint: "continuation",
+      status: "completed",
+    };
+    if (!owner.commands.some((item) => item.requestId === recovery.continuationId)) {
+      owner.runnerInstanceId = randomUUID();
+      owner.state = "running";
+      owner.awaitingResult = true;
+      owner.commands.push(receipt);
+      owner.currentEvents = [];
+      delete owner.quotaFailure;
+    }
+    return { state: "continued" as const, receipt };
   }
   async subscribe(id: string): Promise<RunnerConnection> {
     if (!this.owners.has(id)) throw new AppError("not_found", "No owner", 404);
@@ -304,6 +359,187 @@ async function waitForQueue(service: UiService, id: string, count: number): Prom
 }
 
 describe("Claude UI durable session facade", () => {
+  it.each(["configuration and proxy", "native default configuration"])(
+    "releases an idle owner when %s changes for the same account",
+    async (change) => {
+      const { manager, start, reserve } = await fixture();
+      manager.accounts = new FakeAccounts();
+      manager.accounts.selected.configDir = manager.config.configDir;
+      manager.accounts.selected.proxy = undefined;
+      manager.accepting = true;
+      const service = await start(),
+        id = await reserve(service);
+      await service.enqueue(id, { clientMessageId: randomUUID(), input: "First task", images: [] });
+      await waitForQueue(service, id, 0);
+      manager.emit(id, "native", { type: "result", is_error: false });
+      manager.emit(id, "state", { state: "idle", awaitingResult: false });
+      await expect.poll(() => service.summary(id).state).toBe("completed");
+      manager.accounts.selected =
+        change === "native default configuration"
+          ? { ...manager.accounts.selected, defaultConfig: true }
+          : {
+              accountId: "a",
+              configDir: "/new/native/auth",
+              proxy: {
+                protocol: "https",
+                host: "proxy.example",
+                port: 443,
+                url: "https://proxy.example:443",
+              },
+            };
+      await service.enqueue(id, {
+        clientMessageId: randomUUID(),
+        input: "Second task",
+        images: [],
+      });
+      await waitForQueue(service, id, 0);
+      expect(manager.commands.filter((command) => command.method === "release")).toHaveLength(1);
+      expect(manager.sends.map((delivery) => delivery.prompt)).toEqual(["Second task"]);
+    },
+  );
+  it("recovers a confirmed quota once and blocks later queued input until continuation", async () => {
+    const { manager, start, reserve } = await fixture();
+    manager.accounts = new FakeAccounts();
+    manager.accepting = true;
+    const service = await start(),
+      id = await reserve(service);
+    await service.enqueue(id, {
+      clientMessageId: randomUUID(),
+      input: "Original task",
+      images: [],
+    });
+    await waitForQueue(service, id, 0);
+    manager.accounts.available = false;
+    manager.emit(id, "native", {
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        rateLimitType: "five_hour",
+        resetsAt: Date.now() + 60_000,
+      },
+    });
+    manager.emit(id, "native", { type: "assistant", error: "rate_limit" });
+    manager.emit(id, "native", { type: "result", is_error: true });
+    manager.emit(id, "state", { state: "idle", awaitingResult: false });
+    await expect.poll(() => service.thread(id).quotaRecovery?.state).toBe("waiting");
+    const token = service.thread(id).quotaRecovery!.continuationId;
+    await service.enqueue(id, {
+      clientMessageId: randomUUID(),
+      input: "Later user input",
+      images: [],
+    });
+    expect(service.thread(id).queue).toHaveLength(1);
+    expect(manager.sends).toHaveLength(0);
+    manager.accounts.available = true;
+    manager.accounts.emit("changed", manager.accounts.status());
+    await expect.poll(() => service.thread(id).quotaRecovery?.state).toBe("continued");
+    expect(manager.recoveries.map((item) => item.continuationId)).toEqual([token, token]);
+    expect(manager.creates).toHaveLength(1);
+    expect(manager.sends).toHaveLength(0);
+    await service.refresh(id);
+    expect(manager.recoveries).toHaveLength(2);
+  });
+
+  it("preserves the same recovery token across API restart and cancels quota waiting", async () => {
+    const { manager, start, reserve } = await fixture();
+    manager.accounts = new FakeAccounts();
+    manager.accounts.available = false;
+    manager.accepting = true;
+    const first = await start(),
+      id = await reserve(first);
+    await first.enqueue(id, { clientMessageId: randomUUID(), input: "Original", images: [] });
+    await waitForQueue(first, id, 0);
+    manager.emit(id, "native", { type: "assistant", error: "rate_limit" });
+    manager.emit(id, "native", { type: "result", is_error: true });
+    manager.emit(id, "state", { state: "idle", awaitingResult: false });
+    await expect.poll(() => first.thread(id).quotaRecovery?.state).toBe("waiting");
+    const token = first.thread(id).quotaRecovery!.continuationId;
+    await first.close();
+    const restarted = await start();
+    await expect.poll(() => manager.recoveries.length).toBe(2);
+    await expect.poll(() => restarted.thread(id).quotaRecovery?.state).toBe("waiting");
+    expect(restarted.thread(id).quotaRecovery!.continuationId).toBe(token);
+    await restarted.interrupt(id);
+    expect(restarted.thread(id).quotaRecovery?.state).toBe("cancelled");
+    manager.accounts.available = true;
+    manager.accounts.emit("changed", manager.accounts.status());
+    expect(manager.recoveries).toHaveLength(2);
+  });
+
+  it("does not recover false quota errors, subagent errors, or errors with automation off", async () => {
+    const { manager, start, reserve } = await fixture();
+    manager.accounts = new FakeAccounts();
+    manager.accounts.confirm.mockResolvedValue(false);
+    manager.accepting = true;
+    const service = await start(),
+      id = await reserve(service);
+    await service.enqueue(id, { clientMessageId: randomUUID(), input: "Task", images: [] });
+    await waitForQueue(service, id, 0);
+    manager.emit(id, "native", {
+      type: "assistant",
+      parent_tool_use_id: "child",
+      error: "rate_limit",
+    });
+    manager.emit(id, "native", { type: "result", parent_tool_use_id: "child", is_error: true });
+    await service.refresh(id);
+    expect(manager.recoveries).toHaveLength(0);
+    manager.emit(id, "native", { type: "assistant", error: "rate_limit" });
+    manager.emit(id, "native", { type: "result", is_error: true });
+    manager.emit(id, "state", { state: "idle", awaitingResult: false });
+    await expect.poll(() => service.thread(id).quotaRecovery?.state).toBe("cancelled");
+    expect(manager.recoveries).toHaveLength(0);
+    expect(service.summary(id).state).toBe("failed");
+    manager.accounts.autoSwitch = false;
+    manager.emit(id, "native", { type: "user", uuid: randomUUID() });
+    manager.emit(id, "native", { type: "assistant", error: "rate_limit" });
+    manager.emit(id, "native", { type: "result", is_error: true });
+    expect(manager.recoveries).toHaveLength(0);
+  });
+  it("cancels an in-flight account rotation before any continuation can be admitted", async () => {
+    const { manager, start, reserve } = await fixture();
+    manager.accounts = new FakeAccounts();
+    manager.accepting = true;
+    let release!: () => void;
+    manager.recoveryHook = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const service = await start(),
+      id = await reserve(service);
+    await service.enqueue(id, { clientMessageId: randomUUID(), input: "Task", images: [] });
+    await waitForQueue(service, id, 0);
+    const instance = manager.owners.get(id)!.runnerInstanceId;
+    manager.emit(id, "native", { type: "assistant", error: "rate_limit" });
+    manager.emit(id, "native", { type: "result", is_error: true });
+    manager.emit(id, "state", { state: "idle", awaitingResult: false });
+    await expect.poll(() => manager.recoveries.length).toBe(1);
+    const cancellation = service.interrupt(id);
+    await expect.poll(() => service.thread(id).quotaRecovery?.state).toBe("cancelled");
+    release();
+    await cancellation;
+    expect(manager.owners.get(id)!.runnerInstanceId).toBe(instance);
+    expect(manager.owners.get(id)!.commands).toHaveLength(1);
+  });
+
+  it("turning automation off cancels durable waiting without probing or continuing", async () => {
+    const { manager, start, reserve } = await fixture();
+    manager.accounts = new FakeAccounts();
+    manager.accounts.available = false;
+    manager.accepting = true;
+    const service = await start(),
+      id = await reserve(service);
+    await service.enqueue(id, { clientMessageId: randomUUID(), input: "Task", images: [] });
+    await waitForQueue(service, id, 0);
+    manager.emit(id, "native", { type: "assistant", error: "rate_limit" });
+    manager.emit(id, "native", { type: "result", is_error: true });
+    manager.emit(id, "state", { state: "idle", awaitingResult: false });
+    await expect.poll(() => service.thread(id).quotaRecovery?.state).toBe("waiting");
+    manager.accounts.autoSwitch = false;
+    manager.accounts.emit("changed", manager.accounts.status());
+    await expect.poll(() => service.thread(id).quotaRecovery?.state).toBe("cancelled");
+    expect(manager.recoveries).toHaveLength(1);
+    expect(manager.accounts.confirm).toHaveBeenCalledTimes(1);
+  });
   it("reserves a thread and draft without starting a native owner", async () => {
     const { manager, start, directory, config } = await fixture();
     const service = await start(),

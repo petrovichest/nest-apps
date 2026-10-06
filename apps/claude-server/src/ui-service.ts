@@ -14,6 +14,7 @@ import type {
   AttentionRequest,
   CodexRateLimitsResponse,
   CodexRateLimitsState,
+  ClaudeAccountsStatus,
   AttentionResponse,
   GlobalPermissionSettings,
   ModelOption,
@@ -39,6 +40,7 @@ import { parseClaudeUsage } from "./rate-limits";
 import type { RunnerConnection } from "./rpc";
 import { UiStore, type UiThread } from "./ui-store";
 import { writeJsonAtomic } from "./io";
+import { isMainNativeEvent, nativeQuotaFailure, quotaModel } from "./quota-recovery";
 import {
   AppError,
   assertUuid,
@@ -138,6 +140,26 @@ export class UiService extends EventEmitter {
   };
   private rateLimitsRequest?: Promise<CodexRateLimitsResponse>;
   private rateLimitsTimer?: NodeJS.Timeout;
+  private readonly quotaEvents = new Map<string, Record<string, unknown>[]>();
+  private readonly recoveries = new Map<string, Promise<void>>();
+  private readonly accountsChanged = (status: ClaudeAccountsStatus): void => {
+    this.publish({ type: "claudeAccounts.changed", claudeAccounts: status });
+    const selected = status.accounts.find((account) => account.id === status.currentAccountId);
+    this.setRateLimits(
+      selected?.rateLimits ?? {
+        limits: null,
+        updatedAt: null,
+        refreshing: false,
+        refreshError: false,
+      },
+    );
+    for (const thread of Object.values(this.store.data.threads))
+      if (
+        thread.quotaRecovery &&
+        ["pending", "waiting", "resuming"].includes(thread.quotaRecovery.state)
+      )
+        this.recoverQuota(thread.id);
+  };
   constructor(readonly manager: SessionManager) {
     super();
     this.store = new UiStore(manager.config.stateDir);
@@ -147,6 +169,10 @@ export class UiService extends EventEmitter {
     options: { probeModels?: boolean; pollRateLimits?: boolean } = {},
   ): Promise<void> {
     await this.store.initialize();
+    if (this.manager.accounts) {
+      this.manager.accounts.on("changed", this.accountsChanged);
+      this.accountsChanged(this.manager.accounts.status());
+    }
     const sessions = (await this.manager.list()) as Array<Record<string, unknown>>;
     await this.store.update((data) => {
       for (const session of sessions) {
@@ -169,9 +195,13 @@ export class UiService extends EventEmitter {
     for (const session of sessions)
       if (session.managed && session.state !== "unavailable")
         await this.attach(String(session.sessionId)).catch(() => undefined);
+      else if (session.managed && this.manager.accounts) {
+        const saved = await this.manager.savedSnapshot(String(session.sessionId));
+        if (saved) await this.observeQuotaFailure(String(session.sessionId), saved);
+      }
     if (options.probeModels !== false && !this.store.data.models.length)
       await this.probeModels().catch(() => undefined);
-    if (options.pollRateLimits ?? options.probeModels !== false) {
+    if (!this.manager.accounts && (options.pollRateLimits ?? options.probeModels !== false)) {
       this.rateLimitsTimer = setInterval(() => this.pollRateLimits(), RATE_LIMITS_POLL_MS);
       this.rateLimitsTimer.unref();
       this.pollRateLimits();
@@ -184,23 +214,36 @@ export class UiService extends EventEmitter {
             .then((descriptor) => (descriptor ? this.attach(thread.id) : undefined))
             .catch(() => undefined);
         if (thread.queue.length) this.schedule(thread.id);
+        if (thread.quotaRecovery && ["pending", "resuming"].includes(thread.quotaRecovery.state))
+          this.recoverQuota(thread.id);
       }
     }, 5_000);
     this.reconnect.unref();
     for (const thread of Object.values(this.store.data.threads))
-      if (thread.queue.length) this.schedule(thread.id);
+      if (
+        thread.quotaRecovery &&
+        ["pending", "waiting", "resuming"].includes(thread.quotaRecovery.state)
+      )
+        this.recoverQuota(thread.id);
+      else if (thread.queue.length) this.schedule(thread.id);
   }
   /** Runs a short-lived CLI that never receives a prompt or persists a session. */
   private async withProbe<T>(use: (process: ClaudeProcess) => Promise<T>): Promise<T> {
     const cwd = join(this.manager.config.stateDir, "model-probe");
     await mkdir(cwd, { recursive: true, mode: 0o700 });
+    const account = await this.manager.accounts?.launchAccount();
     const process = new ClaudeProcess({
       claudeBin: this.manager.config.claudeBin,
       cwd,
       sessionId: randomUUID(),
       resume: false,
       noSessionPersistence: true,
-      env: { CLAUDE_CONFIG_DIR: this.manager.config.configDir },
+      env: {
+        CLAUDE_CONFIG_DIR: account?.defaultConfig
+          ? undefined
+          : (account?.configDir ?? this.manager.config.configDir),
+      },
+      proxy: account?.proxy,
     });
     process.on("error", () => undefined);
     try {
@@ -219,6 +262,15 @@ export class UiService extends EventEmitter {
     });
   }
   async readRateLimits(): Promise<CodexRateLimitsResponse> {
+    if (this.manager.accounts) {
+      const status = this.manager.accounts.status();
+      await this.manager.accounts.refresh(status.currentAccountId ?? undefined);
+      const updated = this.manager.accounts.status();
+      const limits = updated.accounts.find((account) => account.id === updated.currentAccountId)
+        ?.rateLimits.limits;
+      if (!limits) throw new AppError("unavailable", "Selected account usage is unavailable", 503);
+      return limits;
+    }
     return parseClaudeUsage(await this.withProbe((process) => process.readUsage()));
   }
   private setRateLimits(state: CodexRateLimitsState): void {
@@ -226,6 +278,7 @@ export class UiService extends EventEmitter {
     this.publish({ type: "codexRateLimits.changed", codexRateLimits: state });
   }
   refreshRateLimits(): Promise<CodexRateLimitsResponse> {
+    if (this.manager.accounts) return this.readRateLimits();
     if (this.rateLimitsRequest) return this.rateLimitsRequest;
     if (this.closed) return Promise.reject(new AppError("unavailable", "Service is closing", 503));
     this.setRateLimits({ ...this.rateLimits, refreshing: true, refreshError: false });
@@ -298,21 +351,29 @@ export class UiService extends EventEmitter {
     const last = view?.turns().at(-1);
     const state = owner?.pendingRequests.length
       ? "needsAttention"
-      : owner?.state === "running" || owner?.state === "starting"
+      : thread.quotaRecovery && ["pending", "resuming"].includes(thread.quotaRecovery.state)
         ? "running"
-        : thread.queue.length
+        : thread.quotaRecovery?.state === "waiting"
           ? "queued"
-          : owner?.state === "failed"
-            ? "failed"
-            : owner?.state === "interrupted"
-              ? "interrupted"
-              : last?.status === "failed"
-                ? "failed"
-                : last?.status === "interrupted"
-                  ? "interrupted"
-                  : last
-                    ? "completed"
-                    : "idle";
+          : thread.quotaRecovery?.state === "cancelled" &&
+              thread.quotaRecovery.cancelledByUser &&
+              last?.status === "failed"
+            ? "interrupted"
+            : owner?.state === "running" || owner?.state === "starting"
+              ? "running"
+              : thread.queue.length
+                ? "queued"
+                : owner?.state === "failed"
+                  ? "failed"
+                  : owner?.state === "interrupted"
+                    ? "interrupted"
+                    : last?.status === "failed"
+                      ? "failed"
+                      : last?.status === "interrupted"
+                        ? "interrupted"
+                        : last
+                          ? "completed"
+                          : "idle";
     return {
       id,
       projectId: thread.projectId,
@@ -332,6 +393,26 @@ export class UiService extends EventEmitter {
       settings: thread.settings,
       ...(thread.awaitingPlanResponse ? { awaitingPlanResponse: true } : {}),
       ...(thread.dismissedPlanTurnId ? { dismissedPlanTurnId: thread.dismissedPlanTurnId } : {}),
+      ...(thread.quotaRecovery &&
+      ["pending", "waiting", "resuming", "failed"].includes(thread.quotaRecovery.state)
+        ? {
+            quotaRecovery: {
+              state:
+                thread.quotaRecovery.state === "waiting"
+                  ? ("waiting" as const)
+                  : thread.quotaRecovery.state === "failed"
+                    ? ("failed" as const)
+                    : ("resuming" as const),
+              message:
+                thread.quotaRecovery.state === "waiting"
+                  ? "Нет аккаунта с доступной квотой. Ожидаем восстановления лимитов."
+                  : thread.quotaRecovery.state === "failed"
+                    ? (thread.quotaRecovery.error ??
+                      "Не удалось продолжить сессию после переключения аккаунта.")
+                    : "Переключаем аккаунт и продолжаем незавершённую задачу…",
+            },
+          }
+        : {}),
       permissionPreset:
         this.store.data.permissionMode === "bypassPermissions" ||
         owner?.permissionMode === "bypassPermissions"
@@ -465,6 +546,7 @@ export class UiService extends EventEmitter {
       uiLanguage: this.store.data.uiLanguage,
       connection: { state: "ready", message: null, syncedAt: new Date().toISOString() },
       codexRateLimits: this.rateLimits,
+      ...(this.manager.accounts ? { claudeAccounts: this.manager.accounts.status() } : {}),
       projects: this.store.data.projects,
       threads: this.threadIds.map((id) => this.summary(id)),
       attention: this.attention(),
@@ -663,6 +745,8 @@ export class UiService extends EventEmitter {
       return view;
     }
     const view = new NativeView(id, thread.cwd);
+    for (const continuationId of thread.quotaContinuationIds ?? [])
+      view.rememberQuotaContinuation(continuationId);
     for (const [toolUseId, text] of Object.entries(thread.planTexts ?? {}))
       view.rememberPlanText(toolUseId, text);
     const history = await readHistory(this.manager.config.configDir, id).catch((error) => {
@@ -719,6 +803,7 @@ export class UiService extends EventEmitter {
           if ("snapshot" in message) {
             const owner = message.snapshot;
             this.owners.set(id, owner);
+            this.quotaEvents.set(id, this.quotaEvidence(owner.currentEvents));
             await this.applyPermissions(id);
             const history = await readHistory(this.manager.config.configDir, id).catch(() => null);
             view.reset([...(history?.messages ?? []), ...owner.currentEvents], {
@@ -737,14 +822,17 @@ export class UiService extends EventEmitter {
             for (const attention of this.attention().filter((item) => item.threadId === id))
               this.publish({ type: "attention.upserted", attention });
             this.publish({ type: "thread.upserted", thread: this.summary(id) });
+            await this.observeQuotaFailure(id, owner);
             this.schedule(id);
           } else if ("event" in message) await this.ingest(id, view, message.event);
         })
         .catch(() => this.publish({ type: "resync.required" }));
     });
     connection.once("close", () => {
-      if (this.subscriptions.get(id) === connection) this.subscriptions.delete(id);
-      this.owners.delete(id);
+      if (this.subscriptions.get(id) === connection) {
+        this.subscriptions.delete(id);
+        this.owners.delete(id);
+      }
       if (!this.closed) this.publish({ type: "thread.upserted", thread: this.summary(id) });
     });
     await connection.request("subscribe", {});
@@ -765,13 +853,32 @@ export class UiService extends EventEmitter {
         native = { ...native, timestamp: Date.now() };
       const childToolUseId =
         typeof native.parent_tool_use_id === "string" ? native.parent_tool_use_id : "";
+      if (isMainNativeEvent(native)) {
+        const nativeModel =
+          native.type === "system" && native.subtype === "init"
+            ? native.model
+            : native.type === "assistant" &&
+                native.message &&
+                typeof native.message === "object" &&
+                !Array.isArray(native.message)
+              ? (native.message as Record<string, unknown>).model
+              : undefined;
+        if (typeof nativeModel === "string" && quotaModel(nativeModel)) owner.model = nativeModel;
+        let evidence = this.quotaEvents.get(id) ?? [];
+        if (native.type === "user" && native.claudenest_delivery !== "steer") evidence = [];
+        evidence.push(...this.quotaEvidence([native]));
+        this.quotaEvents.set(id, evidence.slice(-50));
+      }
       if (childToolUseId)
         for (const update of this.views.get(subagentThreadId(id, childToolUseId))?.apply(native) ??
           [])
           this.publish(update);
       for (const update of view.apply(native)) this.publish(update);
       if (native.type !== "stream_event") await this.syncSubagents(id);
-      if (native.type === "result") {
+      if (native.type === "result" && isMainNativeEvent(native)) {
+        const failure = nativeQuotaFailure(this.quotaEvents.get(id) ?? []);
+        owner.quotaFailure = failure ? { terminalSequence: event.sequence, ...failure } : undefined;
+        await this.observeQuotaFailure(id, owner);
         if (owner.state === "interrupted") owner.awaitingResult = false;
         await this.touch(id);
         this.publish({ type: "thread.upserted", thread: this.summary(id) });
@@ -823,6 +930,158 @@ export class UiService extends EventEmitter {
       const thread = data.threads[id]!;
       thread.updatedAt = Math.max(Date.now(), thread.updatedAt + 1);
     });
+  }
+
+  private quotaEvidence(events: Record<string, unknown>[]): Record<string, unknown>[] {
+    return events.filter(
+      (event) =>
+        isMainNativeEvent(event) &&
+        (event.type === "rate_limit_event" ||
+          event.type === "result" ||
+          (event.type === "assistant" && event.error === "rate_limit")),
+    );
+  }
+
+  private async observeQuotaFailure(id: string, owner: RunnerSnapshot): Promise<void> {
+    if (!this.manager.accounts?.status().autoSwitch || this.thread(id).subagent) return;
+    const failure =
+      owner.quotaFailure ??
+      (() => {
+        const detected = nativeQuotaFailure(owner.currentEvents);
+        return detected ? { ...detected, terminalSequence: owner.sequence } : undefined;
+      })();
+    if (!failure) return;
+    const saved = this.thread(id).quotaRecovery;
+    if (
+      saved?.failedRunnerInstanceId === owner.runnerInstanceId &&
+      saved.terminalSequence === failure.terminalSequence
+    )
+      return;
+    const descriptor = await this.manager.descriptor(id);
+    const failedAccountId =
+      owner.accountId ??
+      descriptor?.accountId ??
+      (descriptor ? this.manager.accounts.accountIdForConfigDir(descriptor.configDir) : undefined);
+    await this.store.update((data) => {
+      const thread = data.threads[id]!;
+      const continuationId = stableUuid(
+        `quota:${id}:${owner.runnerInstanceId}:${failure.terminalSequence}`,
+      );
+      thread.quotaContinuationIds = [
+        ...new Set([...(thread.quotaContinuationIds ?? []), continuationId]),
+      ];
+      thread.quotaRecovery = {
+        failedRunnerInstanceId: owner.runnerInstanceId,
+        terminalSequence: failure.terminalSequence,
+        failedAccountId,
+        model: quotaModel(owner.model ?? descriptor?.model, owner.supportedModels),
+        continuationId,
+        confirmed: failure.confirmed,
+        failedResetAt: failure.resetAt,
+        state: "pending",
+      };
+    });
+    this.views.get(id)?.rememberQuotaContinuation(this.thread(id).quotaRecovery!.continuationId);
+    this.publish({ type: "thread.upserted", thread: this.summary(id) });
+    this.recoverQuota(id);
+  }
+
+  private recoverQuota(id: string): void {
+    if (this.closed || !this.manager.accepting || this.recoveries.has(id) || !this.manager.accounts)
+      return;
+    const recovery = this.thread(id).quotaRecovery;
+    if (!recovery || !["pending", "waiting", "resuming"].includes(recovery.state)) return;
+    const allowed = () =>
+      !this.closed &&
+      this.thread(id).quotaRecovery?.continuationId === recovery.continuationId &&
+      ["pending", "waiting", "resuming"].includes(this.thread(id).quotaRecovery!.state);
+    const task = (async () => {
+      try {
+        if (!this.manager.accounts!.status().autoSwitch) {
+          await this.store.update((data) => {
+            if (data.threads[id]!.quotaRecovery?.continuationId === recovery.continuationId)
+              data.threads[id]!.quotaRecovery!.state = "cancelled";
+          });
+          return;
+        }
+        if (!recovery.confirmed) {
+          const exhausted = recovery.failedAccountId
+            ? await this.manager.accounts!.confirmQuotaExhausted(
+                recovery.failedAccountId,
+                recovery.model,
+              )
+            : false;
+          if (!allowed()) return;
+          await this.store.update((data) => {
+            const current = data.threads[id]!.quotaRecovery!;
+            current.confirmed = exhausted;
+            if (!exhausted) current.state = "cancelled";
+          });
+          if (!exhausted) return;
+        }
+        if (!allowed()) return;
+        await this.store.update((data) => {
+          const current = data.threads[id]!.quotaRecovery!;
+          if (current.continuationId === recovery.continuationId && current.state !== "cancelled")
+            current.state = "resuming";
+        });
+        this.publish({ type: "thread.upserted", thread: this.summary(id) });
+        const result = await this.manager.recoverQuota(id, recovery, allowed);
+        if (this.closed || !allowed()) return;
+        await this.store.update((data) => {
+          const current = data.threads[id]!.quotaRecovery!;
+          current.state = result.state;
+          if (result.state === "waiting") current.wasWaiting = true;
+          delete current.error;
+          if (result.state === "continued") data.threads[id]!.nativeHistory = true;
+        });
+        if (result.state === "continued") {
+          this.subscriptions.get(id)?.close();
+          this.subscriptions.delete(id);
+          this.owners.delete(id);
+          await this.attach(id).catch(() => undefined);
+        }
+      } catch (error) {
+        if (this.closed || !allowed()) return;
+        await this.store.update((data) => {
+          const current = data.threads[id]!.quotaRecovery!;
+          current.state =
+            error instanceof AppError && error.code === "unavailable" ? "pending" : "failed";
+          current.error =
+            error instanceof Error ? error.message : "Failed to resume Claude session";
+        });
+      } finally {
+        if (!this.closed) this.publish({ type: "thread.upserted", thread: this.summary(id) });
+      }
+    })().finally(() => {
+      this.recoveries.delete(id);
+      if (!this.closed) this.schedule(id);
+    });
+    this.recoveries.set(id, task);
+  }
+
+  /** Cancel both waiting recovery and any continuation admitted concurrently. */
+  async interrupt(id: string): Promise<void> {
+    const thread = this.thread(id);
+    if (thread.subagent)
+      throw new AppError("conflict", "A subagent is controlled by its parent session", 409);
+    const activeRecovery =
+      thread.quotaRecovery &&
+      ["pending", "waiting", "resuming"].includes(thread.quotaRecovery.state);
+    if (activeRecovery) {
+      await this.store.update((data) => {
+        const recovery = data.threads[id]!.quotaRecovery!;
+        recovery.state = "cancelled";
+        recovery.cancelledByUser = true;
+      });
+      this.publish({ type: "thread.upserted", thread: this.summary(id) });
+      await this.recoveries.get(id);
+    }
+    const owner = await this.manager.snapshot(id).catch(() => undefined);
+    if (owner && ["running", "waiting"].includes(owner.state))
+      await this.manager.command(id, "interrupt", { requestId: randomUUID() });
+    else if (!activeRecovery) throw new AppError("conflict", "Session is not running", 409);
+    this.publish({ type: "thread.upserted", thread: this.summary(id) });
   }
   async createProject(path: string): Promise<Project> {
     const cwd = await realpath(path);
@@ -1128,6 +1387,11 @@ export class UiService extends EventEmitter {
   }
   schedule(id: string): void {
     if (this.closed || !this.manager.accepting || this.dispatches.has(id)) return;
+    if (
+      this.thread(id).quotaRecovery &&
+      ["pending", "waiting", "resuming"].includes(this.thread(id).quotaRecovery!.state)
+    )
+      return;
     const initial = this.nextMessage(this.thread(id))?.id,
       initialState = this.owners.get(id)?.state;
     const task = this.dispatch(id)
@@ -1150,6 +1414,11 @@ export class UiService extends EventEmitter {
   }
   private async dispatch(id: string): Promise<void> {
     if (!this.thread(id).queue.length) return;
+    if (
+      this.thread(id).quotaRecovery &&
+      ["pending", "waiting", "resuming"].includes(this.thread(id).quotaRecovery!.state)
+    )
+      return;
     const descriptor = await this.manager.descriptor(id);
     if (descriptor && !this.owners.has(id)) {
       try {
@@ -1177,7 +1446,22 @@ export class UiService extends EventEmitter {
       return;
     }
     if (owner?.state === "interrupted" && owner.awaitingResult) return;
-    const idle = owner && ["idle", "interrupted", "closed"].includes(owner.state);
+    const idle = owner && ["idle", "interrupted", "failed", "closed"].includes(owner.state);
+    const currentAccountId = this.manager.accounts?.status().currentAccountId;
+    const selectedAccount =
+      idle && currentAccountId ? await this.manager.accounts?.launchAccount() : undefined;
+    const ownerAccountId =
+      owner?.accountId ??
+      descriptor?.accountId ??
+      (descriptor ? this.manager.accounts?.accountIdForConfigDir(descriptor.configDir) : undefined);
+    const accountConnectionChanged =
+      selectedAccount &&
+      descriptor &&
+      (descriptor.configDir !== selectedAccount.configDir ||
+        Boolean(descriptor.defaultConfig) !== Boolean(selectedAccount.defaultConfig) ||
+        (descriptor.proxy === undefined) !== (selectedAccount.proxy === undefined) ||
+        descriptor.proxy?.protocol !== selectedAccount.proxy?.protocol ||
+        descriptor.proxy?.url !== selectedAccount.proxy?.url);
     if (
       owner &&
       !idle &&
@@ -1194,7 +1478,11 @@ export class UiService extends EventEmitter {
       owner &&
       idle &&
       owner.state !== "closed" &&
-      (owner.releasePath !== this.manager.config.releasePath || !owner.capabilities?.steer)
+      (owner.state === "failed" ||
+        owner.releasePath !== this.manager.config.releasePath ||
+        !owner.capabilities?.steer ||
+        accountConnectionChanged ||
+        (currentAccountId && ownerAccountId && currentAccountId !== ownerAccountId))
     ) {
       try {
         await this.manager.command(id, "release", { requestId: randomUUID() });
@@ -1532,8 +1820,13 @@ export class UiService extends EventEmitter {
     this.closed = true;
     clearInterval(this.reconnect);
     clearInterval(this.rateLimitsTimer);
+    this.manager.accounts?.off("changed", this.accountsChanged);
     for (const connection of this.subscriptions.values()) connection.close();
-    await Promise.allSettled([...this.dispatches.values(), ...this.permissionUpdates.values()]);
+    await Promise.allSettled([
+      ...this.dispatches.values(),
+      ...this.permissionUpdates.values(),
+      ...this.recoveries.values(),
+    ]);
     await this.store.flush();
   }
 }

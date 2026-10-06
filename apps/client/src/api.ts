@@ -9,6 +9,11 @@ import type {
   UserInputVoiceTarget,
   CodexRateLimitsResponse,
   CodexManagementStatus,
+  ClaudeAccountsStatus,
+  ClaudeLoginStatus,
+  ClaudeProxyInput,
+  ClaudeProxyTestResult,
+  CreateClaudeLoginRequest,
   CreateDirectoryRequest,
   CreateProjectRequest,
   CreateProjectThreadResponse,
@@ -232,6 +237,81 @@ export class ApiClient {
 
   readCodexSettings(): Promise<CodexManagementStatus> {
     return this.request("/api/v1/settings/codex");
+  }
+
+  readClaudeAccounts(): Promise<ClaudeAccountsStatus> {
+    return this.request("/api/v1/settings/claude");
+  }
+
+  refreshClaudeAccounts(accountId?: string): Promise<ClaudeAccountsStatus> {
+    return this.request("/api/v1/settings/claude/refresh", {
+      method: "POST",
+      body: accountId ? { accountId } : {},
+      timeoutMs: null,
+    });
+  }
+
+  updateClaudeAutoSwitch(autoSwitch: boolean): Promise<ClaudeAccountsStatus> {
+    return this.request("/api/v1/settings/claude", { method: "PATCH", body: { autoSwitch } });
+  }
+
+  selectClaudeAccount(accountId: string): Promise<ClaudeAccountsStatus> {
+    return this.request(
+      `/api/v1/settings/claude/accounts/${encodeURIComponent(accountId)}/select`,
+      {
+        method: "POST",
+      },
+    );
+  }
+
+  removeClaudeAccount(accountId: string): Promise<ClaudeAccountsStatus> {
+    return this.request(`/api/v1/settings/claude/accounts/${encodeURIComponent(accountId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  updateClaudeAccountProxy(
+    accountId: string,
+    proxy: ClaudeProxyInput,
+  ): Promise<ClaudeAccountsStatus> {
+    return this.request(`/api/v1/settings/claude/accounts/${encodeURIComponent(accountId)}`, {
+      method: "PATCH",
+      body: { proxy },
+    });
+  }
+
+  testClaudeProxy(proxy: ClaudeProxyInput): Promise<ClaudeProxyTestResult> {
+    return this.request("/api/v1/settings/claude/proxy/test", {
+      method: "POST",
+      body: { proxy },
+      timeoutMs: null,
+    });
+  }
+
+  startClaudeLogin(body: CreateClaudeLoginRequest): Promise<ClaudeLoginStatus> {
+    return this.request("/api/v1/settings/claude/logins", {
+      method: "POST",
+      body,
+      timeoutMs: null,
+    });
+  }
+
+  readClaudeLogin(loginId: string): Promise<ClaudeLoginStatus> {
+    return this.request(`/api/v1/settings/claude/logins/${encodeURIComponent(loginId)}`);
+  }
+
+  submitClaudeLoginCode(loginId: string, code: string): Promise<ClaudeLoginStatus> {
+    return this.request(`/api/v1/settings/claude/logins/${encodeURIComponent(loginId)}/code`, {
+      method: "POST",
+      body: { code },
+      timeoutMs: null,
+    });
+  }
+
+  cancelClaudeLogin(loginId: string): Promise<ClaudeLoginStatus> {
+    return this.request(`/api/v1/settings/claude/logins/${encodeURIComponent(loginId)}`, {
+      method: "DELETE",
+    });
   }
 
   checkCodex(): Promise<CodexManagementStatus> {

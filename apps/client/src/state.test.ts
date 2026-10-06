@@ -236,6 +236,38 @@ describe("clientReducer", () => {
       text: "Revised",
     });
   });
+  it("updates Claude accounts from the live projection and rejects stale account changes", () => {
+    const claudeAccounts = {
+      cliVersion: "2.1.289",
+      autoSwitch: true,
+      currentAccountId: "a",
+      accounts: [],
+    };
+    let state = clientReducer(initialState, {
+      type: "snapshot",
+      snapshot: { ...snapshot, claudeAccounts },
+    });
+    const event = {
+      type: "claudeAccounts.changed" as const,
+      claudeAccounts: { ...claudeAccounts, currentAccountId: "b" },
+    };
+    state = clientReducer(state, {
+      type: "event",
+      version: { instanceId: "legacy", sequence: 5 },
+      event,
+    });
+    expect(state.snapshot?.claudeAccounts?.currentAccountId).toBe("b");
+    expect(
+      clientReducer(state, {
+        type: "event",
+        version: { instanceId: "legacy", sequence: 4 },
+        event: { ...event, claudeAccounts },
+      }),
+    ).toBe(state);
+    const restored = clientReducer(state, { type: "network", network: "offline" });
+    expect(restored.snapshot?.claudeAccounts?.currentAccountId).toBe("b");
+  });
+
   it("restores cached limits and applies only current, ordered server updates", () => {
     const codexRateLimits = {
       limits: {

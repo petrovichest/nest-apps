@@ -46,6 +46,7 @@ import {
 } from "./Icons";
 import { ApplicationSettingsCard } from "./ApplicationSettingsCard";
 import { CodexSettingsCard, CodexSettingsProvider, ProxySettingsCard } from "./CodexSettingsCard";
+import { ClaudeAccountsSettings } from "./ClaudeAccountsSettings";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { RecoverySettingsCard } from "./RecoverySettingsCard";
 import { SettingsGroup, SettingsRow } from "./SettingsPresentation";
@@ -619,6 +620,7 @@ export function SettingsPage({
             id="settings-section-panel-codex"
             role="tabpanel"
           >
+            {application.isClaude && activeSection === "codex" && <ClaudeAccountsSettings />}
             <SettingsGroup
               as="form"
               description={t(

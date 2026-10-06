@@ -352,6 +352,12 @@ describe("the shared Claude interface", () => {
       settings: { baseUrl: "https://claude.home.arpa" },
       readPermissionSettings: vi.fn(),
       updatePermissionSettings: vi.fn().mockResolvedValue(ask),
+      readClaudeAccounts: vi.fn(async () => ({
+        cliVersion: "2.1.289",
+        autoSwitch: true,
+        currentAccountId: null,
+        accounts: [],
+      })),
     };
     connection.mockReturnValue({
       api,

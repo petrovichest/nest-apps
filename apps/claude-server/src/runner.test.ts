@@ -5,7 +5,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunnerConnection } from "./rpc.js";
-import { ClaudeControlRejectedError } from "./claude.js";
+import { ClaudeControlRejectedError, type ClaudeProcessOptions } from "./claude.js";
 import { SessionRunner, type RunnerOptions, type RunnerTransport } from "./runner.js";
 import type {
   ClaudePermissionMode,
@@ -112,6 +112,55 @@ async function fixture(options: RunnerOptions = {}) {
 }
 
 describe("isolated Claude session runner", () => {
+  it("omits the config override for the original native default and keeps isolated account overrides", async () => {
+    const { descriptor } = await fixture();
+    for (const defaultConfig of [true, false]) {
+      // Construction is inert: inspect the real CLI transport without spawning it.
+      const runner = new SessionRunner({ ...descriptor, defaultConfig });
+      const transport = (runner as unknown as { transport: { options: ClaudeProcessOptions } })
+        .transport;
+      expect(transport.options.env).toHaveProperty(
+        "CLAUDE_CONFIG_DIR",
+        defaultConfig ? undefined : descriptor.configDir,
+      );
+    }
+  });
+  it("does not release the main task or pending permissions on a subagent result", async () => {
+    const { fake, runner, client } = await fixture();
+    const connection = await client();
+    await connection.request("send", { requestId: randomUUID(), text: "Main task" });
+    fake.emit("request", {
+      request_id: "approval",
+      request: { subtype: "can_use_tool", tool_name: "Bash", input: {} },
+    });
+    fake.emit("event", { type: "result", parent_tool_use_id: "child-tool", is_error: true });
+    expect(runner.snapshot()).toMatchObject({ state: "waiting", awaitingResult: true });
+    expect(runner.snapshot().pendingRequests).toHaveLength(1);
+  });
+
+  it("persists main quota evidence with its runner identity and terminal sequence", async () => {
+    const { fake, runner, client, descriptor } = await fixture();
+    const connection = await client();
+    await connection.request("send", { requestId: randomUUID(), text: "Finish task" });
+    fake.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        rateLimitType: "five_hour",
+        resetsAt: Date.now() + 60_000,
+      },
+    });
+    fake.emit("event", { type: "assistant", error: "rate_limit" });
+    fake.emit("event", { type: "result", is_error: true });
+    expect(runner.snapshot().quotaFailure).toMatchObject({ confirmed: true });
+    await vi.waitFor(async () => {
+      const saved = JSON.parse(
+        await readFile(join(descriptor.stateDirectory, "runner-state.json"), "utf8"),
+      );
+      expect(saved.quotaFailure).toEqual(runner.snapshot().quotaFailure);
+      expect(saved.runnerInstanceId).toBe(runner.runnerInstanceId);
+    });
+  });
   it("keeps the same Claude owner alive and permissions pending after backend disconnect", async () => {
     const { fake, runner, client, descriptor } = await fixture();
     const first = await client();

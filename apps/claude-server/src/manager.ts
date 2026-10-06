@@ -4,6 +4,7 @@ import { mkdir, readdir, realpath, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Config } from "./config";
+import type { ClaudeAccounts, ClaudeLaunchAccount } from "./accounts";
 import { listHistory, readHistory } from "./history";
 import { readJson, writeJsonAtomic } from "./io";
 import { RunnerConnection } from "./rpc";
@@ -15,7 +16,9 @@ import {
   type RunnerSnapshot,
   type RunnerAttachment,
   type ClaudePermissionMode,
+  type CommandReceipt,
 } from "./types";
+import { QUOTA_CONTINUATION_MESSAGE, quotaModel } from "./quota-recovery";
 
 const exec = promisify(execFile);
 export interface SessionLauncher {
@@ -111,6 +114,7 @@ export class SessionManager {
   constructor(
     readonly config: Config,
     readonly launcher: SessionLauncher = new SystemdLauncher(config.serverEnvFile),
+    readonly accounts?: ClaudeAccounts,
   ) {}
 
   async initialize(): Promise<void> {
@@ -225,12 +229,14 @@ export class SessionManager {
     model?: string,
     effort?: string,
     permissionMode?: ClaudePermissionMode,
+    account?: ClaudeLaunchAccount,
   ): Promise<RunnerDescriptor> {
     const canonicalCwd = await realpath(cwd).catch(() => {
       throw new AppError("invalid_request", "Project directory does not exist");
     });
     if (!(await stat(canonicalCwd)).isDirectory())
       throw new AppError("invalid_request", "Project path must be a directory");
+    const selected = account ?? (await this.accounts?.launchAccount());
     return {
       sessionId: id,
       cwd: canonicalCwd,
@@ -238,7 +244,14 @@ export class SessionManager {
       nodeBin: this.config.nodeBin,
       releasePath: this.config.releasePath,
       runnerPath: this.config.runnerPath,
-      configDir: this.config.configDir,
+      configDir: selected?.configDir ?? this.config.configDir,
+      ...(selected
+        ? {
+            accountId: selected.accountId,
+            proxy: selected.proxy,
+            defaultConfig: selected.defaultConfig,
+          }
+        : {}),
       socketPath: join(this.config.runtimeDir, `${id}.sock`),
       stateDirectory: this.directory(id),
       resume,
@@ -253,10 +266,16 @@ export class SessionManager {
   private async assertNotExternallyActive(id: string): Promise<void> {
     let sessions: Array<Record<string, unknown>>;
     try {
+      const account = await this.accounts?.launchAccount();
       const { stdout } = await exec(this.config.claudeBin, ["agents", "--json"], {
         timeout: 10_000,
         maxBuffer: 8 * 1024 * 1024,
-        env: { ...process.env, CLAUDE_CONFIG_DIR: this.config.configDir },
+        env: {
+          ...process.env,
+          CLAUDE_CONFIG_DIR: account?.defaultConfig
+            ? undefined
+            : (account?.configDir ?? this.config.configDir),
+        },
       });
       const parsed: unknown = JSON.parse(stdout);
       if (!Array.isArray(parsed)) throw new Error("Invalid session roster");
@@ -445,6 +464,147 @@ export class SessionManager {
   async snapshot(id: string): Promise<RunnerSnapshot> {
     assertUuid(id, "sessionId");
     return (await this.connect(id.toLowerCase())).request<RunnerSnapshot>("snapshot");
+  }
+
+  /** Read-only recovery evidence when the API missed a terminal owner event. */
+  async savedSnapshot(id: string): Promise<RunnerSnapshot | undefined> {
+    return readJson<RunnerSnapshot>(join(this.directory(id), "runner-state.json"));
+  }
+
+  async recoverQuota(
+    id: string,
+    recovery: {
+      failedRunnerInstanceId: string;
+      failedAccountId?: string;
+      model?: string;
+      failedResetAt?: number;
+      wasWaiting?: boolean;
+      continuationId: string;
+    },
+    allowed: () => boolean,
+  ): Promise<{ state: "waiting" | "continued" | "cancelled"; receipt?: CommandReceipt }> {
+    this.assertAccepting();
+    assertUuid(id, "sessionId");
+    assertUuid(recovery.continuationId, "continuationId");
+    id = id.toLowerCase();
+    return this.withLock(id, async () => {
+      if (!allowed() || !this.accounts?.status().autoSwitch) return { state: "cancelled" };
+      let connection = await this.connect(id).catch((error) => {
+        if (error instanceof AppError && error.code === "conflict") throw error;
+        return undefined;
+      });
+      const snapshot = await connection?.request<RunnerSnapshot>("snapshot");
+      let previous = await this.descriptor(id);
+      if (!previous) throw new AppError("conflict", "Missing failed session descriptor", 409);
+      if (!snapshot) {
+        if (await this.launcher.active(id))
+          throw new AppError("unavailable", "Existing session owner is not reachable", 503);
+        const receipts = await readJson<CommandReceipt[]>(
+          join(this.directory(id), "commands.json"),
+        );
+        if (receipts?.some((item) => item.requestId === recovery.continuationId))
+          throw new AppError(
+            "conflict",
+            "Continuation outcome requires reconciliation; it will not be resent",
+            409,
+          );
+      }
+      const existing = snapshot?.commands.find(
+        (item) => item.requestId === recovery.continuationId,
+      );
+      if (existing) {
+        if (existing.status === "unknown")
+          throw new AppError(
+            "conflict",
+            "Continuation outcome requires reconciliation; it will not be resent",
+            409,
+          );
+        return { state: "continued", receipt: existing };
+      }
+      if (
+        (!snapshot && previous.quotaRecoveryId === recovery.continuationId) ||
+        (snapshot && snapshot.runnerInstanceId !== recovery.failedRunnerInstanceId)
+      ) {
+        if (previous.quotaRecoveryId !== recovery.continuationId)
+          throw new AppError("conflict", "A different owner has already resumed this session", 409);
+        if (snapshot?.state === "failed")
+          throw new AppError(
+            "conflict",
+            "The continuation owner failed before admitting the task",
+            409,
+          );
+      } else {
+        const failedAccountId =
+          recovery.failedAccountId ??
+          previous.accountId ??
+          this.accounts.accountIdForConfigDir(previous.configDir);
+        const canReuseFailed =
+          recovery.wasWaiting && (!recovery.failedResetAt || recovery.failedResetAt <= Date.now());
+        const next = await this.accounts.rotate(
+          canReuseFailed ? undefined : failedAccountId,
+          recovery.model ??
+            quotaModel(snapshot?.model ?? previous.model, snapshot?.supportedModels),
+        );
+        if (!allowed() || !this.accounts.status().autoSwitch) return { state: "cancelled" };
+        if (!next) return { state: "waiting" };
+        if (snapshot) {
+          if (
+            snapshot.awaitingResult ||
+            snapshot.pendingRequests.length ||
+            !["idle", "interrupted", "failed", "closed"].includes(snapshot.state)
+          )
+            throw new AppError(
+              "unavailable",
+              "Failed task has not released its native result yet",
+              503,
+            );
+          if (snapshot.state !== "closed")
+            await connection!.request("release", { requestId: recovery.continuationId });
+        }
+        const deadline = Date.now() + 10_000;
+        while (await this.launcher.active(id)) {
+          if (Date.now() >= deadline)
+            throw new AppError("unavailable", "Previous Claude owner is still stopping", 503);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        this.connections.get(id)?.close();
+        this.connections.delete(id);
+        if (!allowed() || !this.accounts.status().autoSwitch) return { state: "cancelled" };
+        const nextDescriptor = await this.makeDescriptor(
+          id,
+          previous.cwd,
+          true,
+          previous.model,
+          previous.effort,
+          previous.permissionMode,
+          next,
+        );
+        nextDescriptor.quotaRecoveryId = recovery.continuationId;
+        connection = await this.launch(nextDescriptor);
+        previous = nextDescriptor;
+      }
+      if (!allowed() || !this.accounts.status().autoSwitch) return { state: "cancelled" };
+      if (!connection) {
+        if (await this.launcher.active(id))
+          throw new AppError("unavailable", "Existing session owner is not reachable", 503);
+        // No command is replayed after an unacknowledged write to an old owner.
+        const receipts = await readJson<CommandReceipt[]>(
+          join(this.directory(id), "commands.json"),
+        );
+        if (receipts?.some((item) => item.requestId === recovery.continuationId))
+          throw new AppError(
+            "conflict",
+            "Continuation outcome requires reconciliation; it will not be resent",
+            409,
+          );
+        connection = await this.launch(previous);
+      }
+      const receipt = await connection.request<CommandReceipt>("send", {
+        requestId: recovery.continuationId,
+        text: QUOTA_CONTINUATION_MESSAGE,
+      });
+      return { state: "continued", receipt };
+    });
   }
 
   async subscribe(id: string): Promise<RunnerConnection> {

@@ -509,6 +509,9 @@ function applyVersionedEvent(
     case "codexRateLimits.changed":
       snapshot.codexRateLimits = event.codexRateLimits;
       break;
+    case "claudeAccounts.changed":
+      snapshot.claudeAccounts = event.claudeAccounts;
+      break;
     case "projectDraft.changed":
       return {
         ...clientReducer(state, {

@@ -2,9 +2,12 @@ import { buildApp } from "./app";
 import { loadConfig } from "./config";
 import { SessionManager } from "./manager";
 import { UiService } from "./ui-service";
+import { ClaudeAccounts } from "./accounts";
 
 const config = await loadConfig();
-const manager = new SessionManager(config);
+const accounts = new ClaudeAccounts(config);
+await accounts.initialize();
+const manager = new SessionManager(config, undefined, accounts);
 await manager.initialize();
 const ui = new UiService(manager);
 await ui.initialize();

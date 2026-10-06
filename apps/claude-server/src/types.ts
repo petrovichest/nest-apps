@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import type { ParsedClaudeProxy } from "@codexnest/protocol";
+import type { NativeQuotaFailure } from "./quota-recovery";
 export const RUNNER_PROTOCOL_VERSION = 1 as const;
 export const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -32,6 +34,12 @@ export interface RunnerDescriptor {
   releasePath: string;
   runnerPath: string;
   configDir: string;
+  /** Original native default uses ~/.claude.json and must omit CLAUDE_CONFIG_DIR. */
+  defaultConfig?: boolean;
+  accountId?: string;
+  proxy?: ParsedClaudeProxy | null;
+  /** Associates a replacement owner with its durable continuation command. */
+  quotaRecoveryId?: string;
   socketPath: string;
   stateDirectory: string;
   resume: boolean;
@@ -67,6 +75,8 @@ export interface RunnerSnapshot {
   runnerPid: number;
   claudePid?: number;
   cwd: string;
+  accountId?: string;
+  quotaFailure?: NativeQuotaFailure;
   state: RunnerState;
   awaitingResult?: boolean;
   sequence: number;

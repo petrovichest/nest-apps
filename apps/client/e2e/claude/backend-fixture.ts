@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildApp } from "../../../claude-server/src/app";
+import { ClaudeAccounts } from "../../../claude-server/src/accounts";
 import type { Config } from "../../../claude-server/src/config";
 import { SessionManager, type SessionLauncher } from "../../../claude-server/src/manager";
 import { SessionRunner, type RunnerTransport } from "../../../claude-server/src/runner";
@@ -216,7 +217,23 @@ export async function startFixture(clientDist: string) {
     clientDist: resolve(clientDist),
   };
   const launcher = new SmokeLauncher();
-  const manager = new SessionManager(config, launcher);
+  const accounts = new ClaudeAccounts(config, {
+    poll: false,
+    readVersion: async () => "2.1.289",
+    readAuth: async () => ({
+      loggedIn: true,
+      authMethod: "claude.ai",
+      email: "smoke@example.com",
+      subscriptionType: "max",
+    }),
+    readUsage: async () => ({
+      primary: { usedPercent: 38, windowDurationMins: 300, resetsAt: Date.now() + 3_600_000 },
+      secondary: { usedPercent: 62, windowDurationMins: 10_080, resetsAt: Date.now() + 86_400_000 },
+    }),
+  });
+  await accounts.initialize();
+  await accounts.refresh();
+  const manager = new SessionManager(config, launcher, accounts);
   await manager.initialize();
   const ui = new UiService(manager);
   await ui.initialize({ probeModels: false });

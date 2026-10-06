@@ -209,6 +209,40 @@ afterEach(() => {
 });
 
 describe("ClaudeProcess stream-json transport", () => {
+  it("native default auth explicitly omits the config override in the final CLI environment", async () => {
+    const { process, spawnProcess } = setup({ env: { CLAUDE_CONFIG_DIR: undefined }, proxy: null });
+    await process.start();
+    expect(Object.hasOwn(spawnProcess.mock.calls[0]![2]!.env!, "CLAUDE_CONFIG_DIR")).toBe(false);
+    await process.stop();
+  });
+  it("owns the proxy environment until CLI exit and cleans up on startup failure", async () => {
+    const close = vi.fn(async () => {});
+    const proxyEnvironment = vi.fn(async () => ({
+      env: { CLAUDE_CONFIG_DIR: "/managed", HTTPS_PROXY: "http://127.0.0.1:1234" },
+      close,
+    }));
+    const managed = setup({
+      env: { CLAUDE_CONFIG_DIR: "/managed" },
+      proxy: null,
+      proxyEnvironment,
+    });
+    await managed.process.start();
+    expect(proxyEnvironment).toHaveBeenCalledWith(null, "/managed", expect.any(Object));
+    expect(managed.spawnProcess.mock.calls[0]?.[2]?.env?.HTTPS_PROXY).toBe("http://127.0.0.1:1234");
+    expect(close).not.toHaveBeenCalled();
+    await managed.process.stop();
+    expect(close).toHaveBeenCalledTimes(1);
+    const failed = setup({
+      env: { CLAUDE_CONFIG_DIR: "/managed" },
+      proxy: null,
+      proxyEnvironment,
+      spawnProcess: vi.fn(() => {
+        throw new Error("private upstream");
+      }) as unknown as typeof spawn,
+    });
+    await expect(failed.process.start()).rejects.toThrow("Could not start installed Claude CLI");
+    expect(close).toHaveBeenCalledTimes(2);
+  });
   it.each([false, true])("adds explicit image delivery guidance when resume=%s", async (resume) => {
     const { process, spawnProcess } = setup({ resume });
     await process.start();

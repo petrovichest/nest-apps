@@ -32,6 +32,21 @@ export interface UiThread {
   /** A plan from ExitPlanMode is shown to the user and awaits approval or revision. */
   awaitingPlanResponse?: boolean;
   dismissedPlanTurnId?: string;
+  /** Native user UUIDs for internal continuation cues, hidden only in the UI. */
+  quotaContinuationIds?: string[];
+  quotaRecovery?: {
+    failedRunnerInstanceId: string;
+    terminalSequence: number;
+    failedAccountId?: string;
+    model?: string;
+    continuationId: string;
+    confirmed: boolean;
+    failedResetAt?: number;
+    wasWaiting?: boolean;
+    cancelledByUser?: boolean;
+    state: "pending" | "waiting" | "resuming" | "continued" | "failed" | "cancelled";
+    error?: string;
+  };
   /** A read-only native subagent launched by a tool call of the parent session. */
   subagent?: {
     parentId: string;

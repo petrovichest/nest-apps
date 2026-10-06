@@ -11,6 +11,7 @@ import { AppError, assertUuid, record } from "./types";
 import type { UiService } from "./ui-service";
 import { AppManager } from "./app-management";
 import { registerUiRoutes } from "./ui-routes";
+import { registerAccountRoutes } from "./account-routes";
 import { VoiceServiceError } from "./voice";
 import { AttachmentTooLargeError, AttachmentValidationError } from "./attachments";
 
@@ -120,6 +121,7 @@ export async function buildApp(manager: SessionManager, ui?: UiService) {
     appServer: { state: "ready", installedVersion: null, message: null },
   }));
   const appManager = new AppManager(manager.config);
+  if (manager.accounts) await registerAccountRoutes(app, manager.accounts);
   app.get("/api/v1/settings/app", () => appManager.status());
   app.post("/api/v1/settings/app/check", () => appManager.check());
   app.post("/api/v1/settings/app/update", () => appManager.update());
@@ -341,6 +343,7 @@ export async function buildApp(manager: SessionManager, ui?: UiService) {
     await stopVoice?.();
     await ui?.close();
     await manager.close();
+    await manager.accounts?.close();
   });
   return app;
 }

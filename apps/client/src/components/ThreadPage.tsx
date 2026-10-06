@@ -4680,6 +4680,16 @@ export function ThreadPage({
             error={error ?? pendingVoiceRecordingError}
             hasSupplementalContent={annotations.length > 0}
           >
+            {workspaceSummary.quotaRecovery && (
+              <div className="input-availability-notice" role="status">
+                <span>{t(workspaceSummary.quotaRecovery.message)}</span>
+                {workspaceSummary.quotaRecovery.state !== "failed" && (
+                  <button type="button" disabled={busy} onClick={() => void stopTask()}>
+                    {t("Остановить задачу")}
+                  </button>
+                )}
+              </div>
+            )}
             {inputUnavailable && (
               <div className="input-availability-notice" role="status">
                 <span>

@@ -171,7 +171,7 @@ export async function registerUiRoutes(
       const path = paths?.get(thread.id);
       const snippet = paths
         ? path
-          ? await transcriptMatch(path, needle)
+          ? await transcriptMatch(path, needle, ui.thread(thread.id).quotaContinuationIds)
           : null
         : thread.title.toLocaleLowerCase().includes(needle.toLocaleLowerCase())
           ? thread.title
@@ -545,7 +545,7 @@ export async function registerUiRoutes(
   app.post("/api/v1/threads/:id/interrupt", async (request) => {
     const id = params(request).id;
     ui.thread(id);
-    await ui.manager.command(id, "interrupt", { requestId: randomUUID() });
+    await ui.interrupt(id);
     return { interrupted: true };
   });
   app.post("/api/v1/attention/:id/respond", async (request, reply) => {

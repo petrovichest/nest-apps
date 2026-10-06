@@ -119,7 +119,7 @@ try {
   assert.equal(fixture.launcher.owners.get(threadId).transport.permissionMode, "bypassPermissions");
   assert.equal(await page.locator(".composer-permissions-hint, .codex-settings-hint").count(), 0);
   await composer.fill("Уточнение текущего хода");
-  await composer.press("Enter");
+  await composer.press("Control+Enter");
   await page.getByText("Дополнение принято: Уточнение текущего хода", { exact: true }).waitFor();
   assert.equal(
     fixture.launcher.owners
@@ -142,15 +142,17 @@ try {
   await composerVoice.getByRole("button", { name: "Остановить запись", exact: true }).waitFor();
   await page.waitForTimeout(150);
   await composerVoice.getByRole("button", { name: "Остановить запись", exact: true }).click();
-  await page.waitForFunction(() => document.body.innerText.includes("Голосовая проверка работает"));
-  assert.equal(fixture.launcher.owners.get(threadId).transport.sends, 3);
+  await page
+    .getByText("Дополнение принято: Голосовая проверка работает", { exact: true })
+    .waitFor();
+  assert.equal(fixture.launcher.owners.get(threadId).transport.sends, 4);
   assert.equal(fixture.launcher.owners.get(threadId).transport.interruptions, 0);
   assert.equal(
     fixture.launcher.owners
       .get(threadId)
       .runner.snapshot()
       .currentEvents.filter((event) => event.type === "user").length,
-    3,
+    4,
   );
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator(".composer-permissions-hint, .codex-settings-hint").count(), 0);
@@ -174,7 +176,7 @@ try {
       document.querySelector(".attention-stack textarea")?.value === "Голосовая проверка работает",
   );
   await attention.getByRole("button", { name: "Отправить ответы", exact: true }).click();
-  await page.getByText(/Получено сообщение 4:/).waitFor();
+  await page.getByText("Ответы приняты. Продолжаю работу.", { exact: true }).waitFor();
   assert.equal(fixture.launcher.owners.get(threadId).transport.sends, 4);
   assert.equal(fixture.launcher.owners.get(threadId).transport.interruptions, 0);
   assert.equal(
@@ -194,7 +196,7 @@ try {
   assert.equal(
     fixture.requests
       .filter((request) => request.url.includes("/search"))
-      .every((request) => request.url.includes("scope=titles")),
+      .every((request) => /scope=(titles|messages)/.test(request.url)),
     true,
   );
   await page.getByRole("button", { name: "Модель и уровень рассуждений" }).click();
@@ -213,6 +215,40 @@ try {
   assert.equal(await page.getByRole("tab", { name: "Обслуживание", exact: true }).count(), 1);
   assert.equal(await page.getByRole("tab", { name: "Скиллы", exact: true }).count(), 0);
   await page.getByRole("tab", { name: "Claude", exact: true }).click();
+  await page.getByText("smoke@example.com", { exact: true }).waitFor();
+  const automaticAccounts = page.getByRole("switch", {
+    name: "Автоматическое переключение",
+    exact: true,
+  });
+  assert.equal(await automaticAccounts.isChecked(), true);
+  const changedAccounts = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      new URL(response.url()).pathname === "/api/v1/settings/claude",
+  );
+  await automaticAccounts.click();
+  assert.equal((await changedAccounts).status(), 200);
+  await page.waitForFunction(() => !document.querySelector(".claude-account-switch").checked);
+  const enabledAccounts = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      new URL(response.url()).pathname === "/api/v1/settings/claude",
+  );
+  await automaticAccounts.click();
+  assert.equal((await enabledAccounts).status(), 200);
+  await page.waitForFunction(() => document.querySelector(".claude-account-switch").checked);
+  await page.getByRole("button", { name: "Добавить аккаунт", exact: true }).click();
+  const accountDialog = page.getByRole("dialog", { name: "Добавить аккаунт", exact: true });
+  await accountDialog.waitFor();
+  await accountDialog
+    .getByLabel("Прокси", { exact: true })
+    .fill("socks5://smoke-user:smoke-password@proxy.example:1080");
+  assert.equal(
+    await accountDialog.getByLabel("Тип прокси", { exact: true }).inputValue(),
+    "socks5",
+  );
+  await accountDialog.getByText("proxy.example:1080", { exact: true }).waitFor();
+  await accountDialog.getByRole("button", { name: "Отмена", exact: true }).click();
   await page.getByRole("radio", { name: /Полный доступ/ }).waitFor();
   assert.equal(await page.getByRole("radio", { name: /Полный доступ/ }).isChecked(), true);
   assert.equal(await page.getByRole("radio", { name: /Подтверждать автоматически/ }).count(), 0);
@@ -250,7 +286,7 @@ try {
   await page.getByText("Распознавание речи", { exact: true }).scrollIntoViewIfNeeded();
   await page.getByRole("tab", { name: "Обслуживание" }).click();
   await page.getByText("Обновление ClaudeNest", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Скачать свежий APK" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Скачать свежий APK" }).count(), 1);
   assert.equal(
     await page.getByRole("button", { name: "Скачать расширение для Chrome" }).count(),
     0,
@@ -271,12 +307,16 @@ try {
     "No unsupported Codex API requests",
   );
   assert.deepEqual(
-    fixture.requests.filter((request) => request.status >= 400),
+    fixture.requests.filter(
+      (request) =>
+        request.status >= 400 &&
+        !(request.url === "/api/v1/settings/app/check" && request.status === 503),
+    ),
     [],
-    "All real compatibility API requests succeeded",
+    "Compatibility requests succeed; update probes are unavailable in this unmanaged fixture",
   );
   console.log(
-    `Claude browser smoke passed: projects, session creation, active-turn text and voice steering without interruption, explicit FIFO, attachments, original composer controls, multi-select question voice, title search, live model, draft reload and settings. Screenshots: ${screenshots}`,
+    `Claude browser smoke passed: projects, session creation, active-turn text and voice steering without interruption, explicit FIFO, attachments, original composer controls, multi-select question voice, search, live model, draft reload, account settings, automatic switching and proxy parsing. Screenshots: ${screenshots}`,
   );
 } catch (error) {
   console.error(

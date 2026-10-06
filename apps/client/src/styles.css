@@ -1,3 +1,5 @@
+@import "./styles/claude-accounts.css";
+
 .sr-only {
   position: absolute;
   width: 1px;

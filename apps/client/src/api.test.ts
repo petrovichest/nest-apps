@@ -10,6 +10,55 @@ describe("ApiClient", () => {
     vi.unstubAllGlobals();
   });
 
+  it("uses authenticated Claude account management endpoints and encodes account/login identifiers", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(
+        async () => new Response("{}", { headers: { "Content-Type": "application/json" } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient({ baseUrl: "https://claudenest.example", token: "token" });
+    const proxy = {
+      enabled: true,
+      protocol: "socks5" as const,
+      value: "socks5h://user:secret@proxy.example:1080",
+    };
+    await api.readClaudeAccounts();
+    await api.refreshClaudeAccounts("account/id");
+    await api.updateClaudeAutoSwitch(false);
+    await api.selectClaudeAccount("account/id");
+    await api.removeClaudeAccount("account/id");
+    await api.updateClaudeAccountProxy("account/id", proxy);
+    await api.testClaudeProxy(proxy);
+    await api.startClaudeLogin({ proxy });
+    await api.startClaudeLogin({ accountId: "account/id" });
+    await api.readClaudeLogin("login/id");
+    await api.submitClaudeLoginCode("login/id", "complete-code#state");
+    await api.cancelClaudeLogin("login/id");
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url.pathname, init.method])).toEqual([
+      ["/api/v1/settings/claude", "GET"],
+      ["/api/v1/settings/claude/refresh", "POST"],
+      ["/api/v1/settings/claude", "PATCH"],
+      ["/api/v1/settings/claude/accounts/account%2Fid/select", "POST"],
+      ["/api/v1/settings/claude/accounts/account%2Fid", "DELETE"],
+      ["/api/v1/settings/claude/accounts/account%2Fid", "PATCH"],
+      ["/api/v1/settings/claude/proxy/test", "POST"],
+      ["/api/v1/settings/claude/logins", "POST"],
+      ["/api/v1/settings/claude/logins", "POST"],
+      ["/api/v1/settings/claude/logins/login%2Fid", "GET"],
+      ["/api/v1/settings/claude/logins/login%2Fid/code", "POST"],
+      ["/api/v1/settings/claude/logins/login%2Fid", "DELETE"],
+    ]);
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(init.headers.get("Authorization")).toBe("Bearer token");
+      expect(url.search).toBe("");
+    }
+    expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({ proxy });
+    expect(JSON.parse(fetchMock.mock.calls[8][1].body)).toEqual({ accountId: "account/id" });
+    expect(JSON.parse(fetchMock.mock.calls[10][1].body)).toEqual({ code: "complete-code#state" });
+  });
+
   it("lists and updates skills for an encoded workspace", async () => {
     const catalog = { cwd: "/work/one two", skills: [], errors: [] };
     const fetchMock = vi

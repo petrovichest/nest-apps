@@ -6,6 +6,11 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 import { ClaudeControlRejectedError, ClaudeProcess, MAX_NATIVE_LINE_BYTES } from "./claude.js";
 import { writeJsonAtomic } from "./io.js";
 import { nativeResultInterrupted } from "./types.js";
+import {
+  isMainNativeEvent,
+  nativeQuotaFailure,
+  type NativeQuotaFailure,
+} from "./quota-recovery.js";
 import type {
   ClaudeModel,
   ClaudePermissionMode,
@@ -110,6 +115,7 @@ export class SessionRunner {
   private nativeTaskRunning = false;
   private interruptRequested = false;
   private terminalError?: string;
+  private quotaFailure?: NativeQuotaFailure;
   private commandQueue = Promise.resolve();
   private persistenceQueue = Promise.resolve();
   private closing?: Promise<void>;
@@ -136,7 +142,8 @@ export class SessionRunner {
           cwd: descriptor.cwd,
           sessionId: descriptor.sessionId,
           resume: descriptor.resume,
-          env: { CLAUDE_CONFIG_DIR: descriptor.configDir },
+          env: { CLAUDE_CONFIG_DIR: descriptor.defaultConfig ? undefined : descriptor.configDir },
+          proxy: descriptor.proxy,
           ...(descriptor.model ? { model: descriptor.model } : {}),
           ...(descriptor.effort ? { effort: descriptor.effort } : {}),
           ...(descriptor.permissionMode ? { permissionMode: descriptor.permissionMode } : {}),
@@ -198,6 +205,8 @@ export class SessionRunner {
       runnerPid: process.pid,
       ...(this.transport.pid ? { claudePid: this.transport.pid } : {}),
       cwd: this.descriptor.cwd,
+      ...(this.descriptor.accountId ? { accountId: this.descriptor.accountId } : {}),
+      ...(this.quotaFailure ? { quotaFailure: this.quotaFailure } : {}),
       state: this.state,
       awaitingResult: this.awaitingResult,
       sequence: this.sequence,
@@ -449,6 +458,7 @@ export class SessionRunner {
           this.currentBytes = 0;
           this.currentTruncated = false;
           this.activeSendRequestId = requestId;
+          this.quotaFailure = undefined;
           this.interruptRequested = false;
           this.nativeTaskRunning = true;
         } else this.steeredInputs.add(requestId);
@@ -601,10 +611,14 @@ export class SessionRunner {
       event = { ...event, timestamp: Date.now() };
     const inputId = event.type === "user" ? (event.uuid ?? event.request_id) : undefined;
     const inputReceipt = typeof inputId === "string" ? this.receipts.get(inputId) : undefined;
+    if (inputId === this.descriptor.quotaRecoveryId)
+      event = { ...event, claudenest_quota_continuation: true };
     if (inputReceipt?.kind === "steer" && this.steeredInputs.has(inputReceipt.requestId))
       event = { ...event, claudenest_delivery: "steer" };
     const interrupted =
-      event.type === "result" && (this.interruptRequested || nativeResultInterrupted(event));
+      event.type === "result" &&
+      isMainNativeEvent(event) &&
+      (this.interruptRequested || nativeResultInterrupted(event));
     if (interrupted) event = { ...event, claudenest_interrupted: true };
     const bytes = Buffer.byteLength(JSON.stringify(event));
     this.current.push({ event, bytes });
@@ -612,6 +626,10 @@ export class SessionRunner {
     while (this.currentBytes > this.options.snapshotByteLimit && this.current.length) {
       this.currentBytes -= this.current.shift()!.bytes;
       this.currentTruncated = true;
+    }
+    if (event.type === "result" && isMainNativeEvent(event)) {
+      const failure = nativeQuotaFailure(this.current.map(({ event }) => event));
+      this.quotaFailure = failure ? { terminalSequence: this.sequence + 1, ...failure } : undefined;
     }
     this.emit("native", event);
     if (event.type === "user") {
@@ -651,7 +669,7 @@ export class SessionRunner {
         if (this.state !== "interrupted") this.refreshState();
       }
     }
-    if (event.type === "result") {
+    if (event.type === "result" && isMainNativeEvent(event)) {
       this.nativeTaskRunning = false;
       if (this.activeSendRequestId) {
         const receipt = this.receipts.get(this.activeSendRequestId);

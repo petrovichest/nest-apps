@@ -49,8 +49,13 @@ function messageText(entry: Json): string {
 }
 
 /** Scans one native transcript and returns the first message matching the search text. */
-export async function transcriptMatch(path: string, needle: string): Promise<string | null> {
+export async function transcriptMatch(
+  path: string,
+  needle: string,
+  hiddenInputs: readonly string[] = [],
+): Promise<string | null> {
   const lowered = needle.toLocaleLowerCase();
+  const hidden = new Set(hiddenInputs);
   // JSON escapes only quotes, backslashes and control characters, so other text appears verbatim.
   // eslint-disable-next-line no-control-regex -- JSON escapes the U+0000–U+001F range.
   const verbatim = !/["\\\u0000-\u001f]/.test(needle);
@@ -66,6 +71,8 @@ export async function transcriptMatch(path: string, needle: string): Promise<str
         continue;
       }
       if (!object(entry)) continue;
+      if (entry.type === "user" && typeof entry.uuid === "string" && hidden.has(entry.uuid))
+        continue;
       const match = matchSnippet(messageText(entry), needle);
       if (match) return match.snippet;
     }
