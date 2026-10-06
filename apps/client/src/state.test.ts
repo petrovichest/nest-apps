@@ -240,6 +240,7 @@ describe("clientReducer", () => {
     const claudeAccounts = {
       cliVersion: "2.1.289",
       autoSwitch: true,
+      warmLimits: true,
       currentAccountId: "a",
       accounts: [],
     };

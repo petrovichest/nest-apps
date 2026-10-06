@@ -360,6 +360,7 @@ describe("the shared Claude interface", () => {
       readClaudeAccounts: vi.fn(async () => ({
         cliVersion: "2.1.289",
         autoSwitch: true,
+        warmLimits: true,
         currentAccountId: null,
         accounts: [],
       })),

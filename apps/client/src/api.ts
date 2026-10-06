@@ -255,6 +255,10 @@ export class ApiClient {
     return this.request("/api/v1/settings/claude", { method: "PATCH", body: { autoSwitch } });
   }
 
+  updateClaudeWarmLimits(warmLimits: boolean): Promise<ClaudeAccountsStatus> {
+    return this.request("/api/v1/settings/claude", { method: "PATCH", body: { warmLimits } });
+  }
+
   selectClaudeAccount(accountId: string): Promise<ClaudeAccountsStatus> {
     return this.request(
       `/api/v1/settings/claude/accounts/${encodeURIComponent(accountId)}/select`,

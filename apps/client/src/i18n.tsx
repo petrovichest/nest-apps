@@ -27,6 +27,9 @@ const ENGLISH: Record<string, string> = {
   Автопереключение: "Auto-switch accounts",
   "При лимите — другой доступный аккаунт.":
     "Switch to an available account when the quota runs out.",
+  "Прогрев лимитов": "Warm up limits",
+  "Запускать простаивающее 5-часовое окно коротким запросом.":
+    "Start an idle 5-hour window with a short request.",
   "Тариф неизвестен": "Plan unknown",
   "Войдите в аккаунт, чтобы получить лимиты.": "Sign in to see the account quotas.",
   "Не удалось получить лимиты": "Could not get quotas",

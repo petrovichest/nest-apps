@@ -165,6 +165,21 @@ describe("native Claude account storage and login", () => {
     expect(started.filter((args) => args[0] === "-p")).toHaveLength(1);
   });
 
+  it("stops warming when the setting is disabled", async () => {
+    const started: string[][] = [];
+    const spawnProcess = vi.fn((_bin, args) => {
+      started.push(args as string[]);
+      const child = new LoginChild();
+      queueMicrotask(() => child.close(0));
+      return child;
+    }) as unknown as typeof spawn;
+    const idle: NativeClaudeUsage = { primary: null, secondary: usage().secondary };
+    const { accounts } = await fixture({ spawnProcess, readUsage: async () => idle });
+    expect((await accounts.setWarmLimits(false)).warmLimits).toBe(false);
+    await accounts.refresh();
+    expect(started.filter((args) => args[0] === "-p")).toHaveLength(0);
+  });
+
   it("does not warm accounts without limits or with a running window", async () => {
     const started: string[][] = [];
     const spawnProcess = vi.fn((_bin, args) => {

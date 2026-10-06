@@ -73,6 +73,8 @@ type SavedAccount = Omit<ClaudeLaunchAccount, "proxy"> & {
 type Registry = {
   version: 1;
   autoSwitch: boolean;
+  /** Missing in older registries; warming stays on unless explicitly disabled. */
+  warmLimits?: boolean;
   currentAccountId: string | null;
   accounts: SavedAccount[];
 };
@@ -197,6 +199,7 @@ export class ClaudeAccounts extends EventEmitter {
     return {
       cliVersion: this.cliVersion,
       autoSwitch: this.registry.autoSwitch,
+      warmLimits: this.registry.warmLimits !== false,
       currentAccountId: this.registry.currentAccountId,
       accounts: this.registry.accounts.map((account): ClaudeAccount => ({
         id: account.accountId,
@@ -398,6 +401,17 @@ export class ClaudeAccounts extends EventEmitter {
       throw new AppError("invalid_request", "autoSwitch must be a boolean");
     return this.edit(async () => {
       this.registry.autoSwitch = enabled;
+      await this.save();
+      this.emitChanged();
+      return this.status();
+    });
+  }
+  async setWarmLimits(enabled: boolean): Promise<ClaudeAccountsStatus> {
+    await this.initialize();
+    if (typeof enabled !== "boolean")
+      throw new AppError("invalid_request", "warmLimits must be a boolean");
+    return this.edit(async () => {
+      this.registry.warmLimits = enabled;
       await this.save();
       this.emitChanged();
       return this.status();
@@ -888,6 +902,7 @@ export class ClaudeAccounts extends EventEmitter {
     launched: ClaudeLaunchAccount,
     usage: NativeClaudeUsage,
   ): Promise<boolean> {
+    if (this.registry.warmLimits === false) return false;
     const now = this.now();
     // A present weekly window proves a subscription; API-key accounts report no limits at all.
     if (!usage.secondary || (usage.primary?.resetsAt ?? 0) > now) return false;

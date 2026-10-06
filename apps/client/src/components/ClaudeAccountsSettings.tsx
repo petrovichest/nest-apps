@@ -163,6 +163,25 @@ export function ClaudeAccountsSettings() {
           />
         </div>
       )}
+      {status && (
+        <div className="claude-auto-switch claude-account-surface">
+          <div>
+            <label htmlFor={`${headingId}-warm`}>{t("Прогрев лимитов")}</label>
+            <p>{t("Запускать простаивающее 5-часовое окно коротким запросом.")}</p>
+          </div>
+          <input
+            id={`${headingId}-warm`}
+            className="claude-account-switch"
+            type="checkbox"
+            role="switch"
+            checked={status.warmLimits}
+            disabled={busy}
+            onChange={(event) =>
+              void perform(() => api.updateClaudeWarmLimits(event.target.checked))
+            }
+          />
+        </div>
+      )}
       {!loading && status && accounts.length === 0 && (
         <div className="claude-account-surface claude-account-empty">
           <h3>{t("Добавьте аккаунт Claude")}</h3>

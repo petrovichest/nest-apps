@@ -26,6 +26,7 @@ export type ClaudeAccount = {
 export type ClaudeAccountsStatus = {
   cliVersion: string | null;
   autoSwitch: boolean;
+  warmLimits: boolean;
   currentAccountId: string | null;
   accounts: ClaudeAccount[];
 };

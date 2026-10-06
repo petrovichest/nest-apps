@@ -12,6 +12,7 @@ async function fixture() {
   const status = {
     cliVersion: "2.1.289",
     autoSwitch: true,
+    warmLimits: true,
     currentAccountId: "account",
     accounts: [],
   };
@@ -25,6 +26,7 @@ async function fixture() {
   const accounts = {
     status: vi.fn(() => status),
     setAutoSwitch: vi.fn(async () => status),
+    setWarmLimits: vi.fn(async () => status),
     refresh: vi.fn(async () => status),
     updateProxy: vi.fn(async () => status),
     select: vi.fn(async () => status),
@@ -58,6 +60,11 @@ describe("Claude account management API", () => {
     ).toBe(400);
     await app.inject({ method: "PATCH", url: prefix, payload: { autoSwitch: false } });
     expect(accounts.setAutoSwitch).toHaveBeenCalledExactlyOnceWith(false);
+    await app.inject({ method: "PATCH", url: prefix, payload: { warmLimits: false } });
+    expect(accounts.setWarmLimits).toHaveBeenCalledExactlyOnceWith(false);
+    expect(
+      (await app.inject({ method: "PATCH", url: prefix, payload: { warmLimits: 1 } })).statusCode,
+    ).toBe(400);
   });
   it("refreshes all or one account and dispatches account actions", async () => {
     const { app, accounts } = await fixture();

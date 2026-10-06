@@ -12,6 +12,12 @@ export async function registerAccountRoutes(
   app.get(prefix, () => accounts.status());
   app.patch(prefix, async (request) => {
     const body = record(request.body);
+    if (body.warmLimits !== undefined) {
+      if (typeof body.warmLimits !== "boolean")
+        throw new AppError("invalid_request", "warmLimits must be a boolean");
+      if (body.autoSwitch === undefined) return accounts.setWarmLimits(body.warmLimits);
+      await accounts.setWarmLimits(body.warmLimits);
+    }
     if (typeof body.autoSwitch !== "boolean")
       throw new AppError("invalid_request", "autoSwitch must be a boolean");
     return accounts.setAutoSwitch(body.autoSwitch);

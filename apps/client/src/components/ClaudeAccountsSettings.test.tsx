@@ -388,6 +388,7 @@ function status(overrides: Partial<ClaudeAccountsStatus> = {}): ClaudeAccountsSt
   return {
     cliVersion: "2.1.289",
     autoSwitch: true,
+    warmLimits: true,
     currentAccountId: "account",
     accounts: [account()],
     ...overrides,
