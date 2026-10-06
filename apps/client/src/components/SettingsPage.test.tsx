@@ -539,7 +539,7 @@ describe("SettingsPage", () => {
 
     renderPage();
     openSection("Codex");
-    fireEvent.change(screen.getByRole("combobox", { name: "Session model" }), {
+    fireEvent.change(screen.getByRole("combobox", { name: "Модель сессии" }), {
       target: { value: "gpt" },
     });
     fireEvent.change(screen.getByRole("combobox", { name: "Title model" }), {
@@ -597,7 +597,7 @@ describe("SettingsPage", () => {
 
     renderPage();
     openSection("Codex");
-    expect(screen.getByRole("combobox", { name: "Session model" })).toHaveValue(
+    expect(screen.getByRole("combobox", { name: "Модель сессии" })).toHaveValue(
       "retired-session-model",
     );
     expect(screen.queryByRole("combobox", { name: "Service tier" })).not.toBeInTheDocument();
@@ -614,7 +614,7 @@ describe("SettingsPage", () => {
     openSection("Приложение");
     openSection("Codex");
 
-    expect(screen.getByRole("combobox", { name: "Session model" })).toHaveValue(
+    expect(screen.getByRole("combobox", { name: "Модель сессии" })).toHaveValue(
       "retired-session-model",
     );
     expect(screen.getByRole("combobox", { name: "Title model" })).toHaveValue("gpt");

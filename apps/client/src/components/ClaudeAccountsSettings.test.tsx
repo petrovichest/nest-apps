@@ -43,9 +43,9 @@ describe("ClaudeAccountsSettings", () => {
     render(<ClaudeAccountsSettings />);
     expect(await screen.findByText("person@example.com")).toBeInTheDocument();
     expect(screen.getByText("Недельный лимит")).toBeInTheDocument();
-    expect(screen.getByText("Осталось 0%")).toBeInTheDocument();
-    expect(screen.getAllByText("Недоступно")).toHaveLength(2);
-    expect(screen.getByText("Нужен вход")).toBeInTheDocument();
+    expect(screen.getByText("0%")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("Лимит недоступен")).toHaveLength(2);
+    expect(screen.getByText("Войдите в аккаунт, чтобы получить лимиты.")).toBeInTheDocument();
     expect(screen.queryByText(/Основной|Резервный|Личный|Оплачено до/)).not.toBeInTheDocument();
     expect(api.readClaudeAccounts).toHaveBeenCalledOnce();
     expect(api.refreshClaudeAccounts).not.toHaveBeenCalled();
@@ -63,7 +63,7 @@ describe("ClaudeAccountsSettings", () => {
       }),
     );
     render(<ClaudeAccountsSettings />);
-    const toggle = await screen.findByRole("switch", { name: "Автоматическое переключение" });
+    const toggle = await screen.findByRole("switch", { name: "Автопереключение" });
     expect(toggle).toBeChecked();
     expect(screen.queryByRole("button", { name: "Использовать аккаунт" })).not.toBeInTheDocument();
     fireEvent.click(toggle);
@@ -72,6 +72,45 @@ describe("ClaudeAccountsSettings", () => {
     fireEvent.click(within(second).getByLabelText("Действия аккаунта other@example.com"));
     fireEvent.click(within(second).getByRole("button", { name: "Использовать аккаунт" }));
     await waitFor(() => expect(api.selectClaudeAccount).toHaveBeenCalledWith("other"));
+  });
+
+  it("shows one usage error and explicit retry without inventing network failures or unknown reset data", async () => {
+    const api = mockApi(
+      status({
+        accounts: [
+          account({
+            plan: "pro",
+            connectionError: "Could not refresh this account's connection or limits",
+            rateLimits: { limits: null, updatedAt: null, refreshing: false, refreshError: true },
+          }),
+        ],
+      }),
+    );
+    render(<ClaudeAccountsSettings />);
+    const card = await screen.findByRole("article", { name: "person@example.com" });
+    expect(within(card).getByText("Pro")).toBeInTheDocument();
+    expect(within(card).getAllByRole("status")).toHaveLength(1);
+    expect(within(card).getByText("Не удалось получить лимиты")).toBeInTheDocument();
+    expect(within(card).queryByText("Ошибка подключения")).not.toBeInTheDocument();
+    expect(within(card).queryByText("Показаны последние данные.")).not.toBeInTheDocument();
+    expect(within(card).queryByText("Время сброса неизвестно")).not.toBeInTheDocument();
+    expect(within(card).queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(card.querySelectorAll(".claude-account-quota-track")).toHaveLength(0);
+    fireEvent.click(within(card).getByRole("button", { name: "Повторить" }));
+    await waitFor(() =>
+      expect(api.refreshClaudeAccounts).toHaveBeenCalledExactlyOnceWith("account"),
+    );
+  });
+
+  it("mentions previous usage only when the card has real quota values", async () => {
+    mockApi(
+      status({ accounts: [account({ rateLimits: { ...limits(62, 38), refreshError: true } })] }),
+    );
+    render(<ClaudeAccountsSettings />);
+    const card = await screen.findByRole("article", { name: "person@example.com" });
+    expect(within(card).getByText("Показаны последние данные.")).toBeInTheDocument();
+    expect(within(card).getAllByRole("progressbar")).toHaveLength(2);
+    expect(within(card).getByText("38%")).toBeInTheDocument();
   });
 
   it("keeps positive fractional quotas available for manual selection", async () => {
@@ -90,7 +129,7 @@ describe("ClaudeAccountsSettings", () => {
     );
     render(<ClaudeAccountsSettings />);
     const card = await screen.findByRole("article", { name: "fractional@example.com" });
-    expect(within(card).getAllByText("Осталось <1%")).toHaveLength(2);
+    expect(within(card).getAllByText("<1%")).toHaveLength(2);
     expect(within(card).queryByText("Недельный лимит")).not.toBeInTheDocument();
     expect(within(card).queryByText("Лимит на 5 часов")).not.toBeInTheDocument();
     fireEvent.click(within(card).getByLabelText("Действия аккаунта fractional@example.com"));
@@ -306,7 +345,7 @@ describe("ClaudeAccountsSettings", () => {
     const updated = status({ accounts: [account({ rateLimits: limits(80, 20) })] });
     connection.mockReturnValue({ api, state: { snapshot: { claudeAccounts: updated } } });
     rerender(<ClaudeAccountsSettings />);
-    expect(screen.getByText("Осталось 20%")).toBeInTheDocument();
+    expect(screen.getByText("20%")).toBeInTheDocument();
     expect(api.readClaudeAccounts).toHaveBeenCalledOnce();
     expect(api.refreshClaudeAccounts).not.toHaveBeenCalled();
   });

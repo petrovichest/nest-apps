@@ -218,6 +218,7 @@ export async function startFixture(clientDist: string) {
   };
   const launcher = new SmokeLauncher();
   const accounts = new ClaudeAccounts(config, {
+    env: {},
     poll: false,
     readVersion: async () => "2.1.289",
     readAuth: async () => ({

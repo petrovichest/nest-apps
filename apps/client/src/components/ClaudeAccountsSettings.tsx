@@ -98,13 +98,13 @@ export function ClaudeAccountsSettings() {
         <div>
           <h2 id={headingId}>Claude Code CLI</h2>
           <p className="claude-account-meta">
-            {status?.cliVersion ? `CLI ${status.cliVersion}` : t("Версия CLI недоступна")}
+            {status?.cliVersion ?? t("Версия CLI недоступна")}
             {status && (
               <>
                 {" "}
                 ·{" "}
-                {t("Авторизовано аккаунтов: {{count}}", {
-                  count: accounts.filter((a) => a.authenticated).length,
+                {t("Аккаунтов: {{count}}", {
+                  count: accounts.length,
                 })}
               </>
             )}
@@ -122,12 +122,13 @@ export function ClaudeAccountsSettings() {
           </button>
           <button
             type="button"
-            className="claude-account-primary"
+            className="claude-account-primary claude-add-account"
+            aria-label={t("Добавить аккаунт")}
             disabled={loading || busy}
             onClick={() => setDialog({ mode: "add" })}
           >
             <PlusIcon />
-            {t("Добавить аккаунт")}
+            <span className="claude-add-account-label">{t("Добавить аккаунт")}</span>
           </button>
         </div>
       </header>
@@ -145,12 +146,8 @@ export function ClaudeAccountsSettings() {
       {status && (
         <div className="claude-auto-switch claude-account-surface">
           <div>
-            <label htmlFor={`${headingId}-auto`}>{t("Автоматическое переключение")}</label>
-            <p>
-              {t(
-                "При ошибке лимита выбираем аккаунт с наибольшим остатком на 5 часов. Аккаунты с исчерпанным недельным лимитом пропускаются.",
-              )}
-            </p>
+            <label htmlFor={`${headingId}-auto`}>{t("Автопереключение")}</label>
+            <p>{t("При лимите — другой доступный аккаунт.")}</p>
           </div>
           <input
             id={`${headingId}-auto`}
@@ -255,16 +252,21 @@ function AccountCard({
     weeklyExhausted ||
     fiveHourExhausted;
   const label = !account.authenticated
-    ? t("Нужен вход")
-    : account.connectionError
-      ? t("Ошибка подключения")
-      : weeklyExhausted
-        ? t("Недельный лимит")
-        : fiveHourExhausted
-          ? t("Лимит на 5 часов")
-          : current
-            ? t("Используется")
-            : t("Авторизован");
+    ? null
+    : weeklyExhausted
+      ? t("Недельный лимит")
+      : fiveHourExhausted
+        ? t("Лимит на 5 часов")
+        : current
+          ? t("Используется")
+          : account.authenticated
+            ? t("Авторизован")
+            : null;
+  const hasKnownLimits =
+    remaining(account.rateLimits.limits?.primary) !== null ||
+    remaining(account.rateLimits.limits?.secondary) !== null;
+  const usageFailed =
+    account.authenticated && Boolean(account.connectionError || account.rateLimits.refreshError);
 
   return (
     <article
@@ -277,18 +279,20 @@ function AccountCard({
         </span>
         <div className="claude-account-identity">
           <h3>{account.email ?? t("Без авторизации")}</h3>
-          <p className="claude-account-meta">
+          <p className="claude-account-meta claude-account-identity-meta">
             <span
               className={`claude-account-dot${account.authenticated ? " authenticated" : ""}`}
             />
-            Claude{account.plan && ` · ${account.plan}`}
+            {account.plan ? formatPlan(account.plan) : t("Тариф неизвестен")}
+            {label && (
+              <span
+                className={`claude-account-state${weeklyExhausted || fiveHourExhausted ? " warning" : current ? " current" : " authenticated"}`}
+              >
+                {label}
+              </span>
+            )}
           </p>
         </div>
-        <span
-          className={`claude-account-state${blocked ? " warning" : current ? " current" : " authenticated"}`}
-        >
-          {label}
-        </span>
         <details className="claude-account-menu">
           <summary
             aria-label={t("Действия аккаунта {{email}}", {
@@ -315,29 +319,49 @@ function AccountCard({
           </div>
         </details>
       </header>
-      <div className="claude-account-quotas">
-        <Quota
-          label={t("5 часов")}
-          window={account.rateLimits.limits?.primary}
-          language={language}
-          t={t}
-        />
-        <Quota
-          label={t("7 дней")}
-          window={account.rateLimits.limits?.secondary}
-          language={language}
-          t={t}
-        />
+      <div className="claude-account-quota-group" role="group" aria-label={t("Остаток лимитов")}>
+        <p className="claude-account-meta">{t("Остаток лимитов")}</p>
+        <div className="claude-account-quotas">
+          <Quota
+            label={t("5 часов")}
+            window={account.rateLimits.limits?.primary}
+            language={language}
+            t={t}
+          />
+          <Quota
+            label={t("7 дней")}
+            window={account.rateLimits.limits?.secondary}
+            language={language}
+            t={t}
+          />
+        </div>
       </div>
-      {account.rateLimits.refreshError && (
+      {!account.authenticated ? (
         <p className="claude-account-hint" role="status">
-          {t("Не удалось обновить лимиты. Показаны последние полученные данные.")}
+          {t("Войдите в аккаунт, чтобы получить лимиты.")}
         </p>
-      )}
-      {account.connectionError && (
-        <p className="claude-account-hint danger" role="status">
-          {t("Проверьте подключение в настройках аккаунта.")}
-        </p>
+      ) : usageFailed ? (
+        <div className="claude-account-feedback" role="status">
+          <div>
+            <p>{t("Не удалось получить лимиты")}</p>
+            {hasKnownLimits && (
+              <p className="claude-account-hint">{t("Показаны последние данные.")}</p>
+            )}
+          </div>
+          <button
+            type="button"
+            disabled={busy || account.rateLimits.refreshing}
+            onClick={onRefresh}
+          >
+            {t("Повторить")}
+          </button>
+        </div>
+      ) : (
+        !hasKnownLimits && (
+          <p className="claude-account-hint" role="status">
+            {t(account.rateLimits.refreshing ? "Получаем лимиты…" : "Лимиты ещё не получены.")}
+          </p>
+        )
       )}
       <footer className="claude-account-footer">
         <p>
@@ -345,13 +369,19 @@ function AccountCard({
           {proxyDescription(account.proxy, t)}
         </p>
         {!account.authenticated && (
-          <button type="button" disabled={busy} onClick={onLogin}>
-            {t("Войти в Claude")}
+          <button type="button" disabled={busy} onClick={onLogin} aria-label={t("Войти в Claude")}>
+            {t("Войти")}
           </button>
         )}
-        <button type="button" disabled={busy} onClick={onConfigure}>
+        <button
+          type="button"
+          className="claude-configure-account"
+          disabled={busy}
+          onClick={onConfigure}
+          aria-label={t("Настроить")}
+        >
           <SlidersIcon />
-          {t("Настроить")}
+          <span>{t("Настроить")}</span>
         </button>
       </footer>
     </article>
@@ -374,17 +404,19 @@ function Quota({
     <div className={`claude-account-quota${value === 0 ? " exhausted" : ""}`}>
       <div className="claude-account-quota-label">
         <span>{label}</span>
-        <strong>
-          {value === null
-            ? t("Недоступно")
-            : t("Осталось {{percent}}%", {
-                percent: value > 0 && value < 1 ? "<1" : Math.round(value),
-              })}
+        <strong
+          aria-label={
+            value === null
+              ? t("Лимит недоступен")
+              : t("Осталось {{percent}}%", {
+                  percent: value > 0 && value < 1 ? "<1" : Math.round(value),
+                })
+          }
+        >
+          {value === null ? "—" : `${value > 0 && value < 1 ? "<1" : Math.round(value)}%`}
         </strong>
       </div>
-      {value === null ? (
-        <div className="claude-account-quota-track" aria-hidden="true" />
-      ) : (
+      {value !== null && (
         <div
           className="claude-account-quota-track"
           role="progressbar"
@@ -396,17 +428,17 @@ function Quota({
           <span style={{ width: `${value}%` }} />
         </div>
       )}
-      <p className="claude-account-meta">
-        {window?.resetsAt
-          ? t("Сброс: {{time}}", {
-              time: new Intl.DateTimeFormat(language === "ru" ? "ru-RU" : "en-US", {
-                weekday: "short",
-                hour: "2-digit",
-                minute: "2-digit",
-              }).format(new Date(window.resetsAt)),
-            })
-          : t("Время сброса неизвестно")}
-      </p>
+      {window?.resetsAt && (
+        <p className="claude-account-meta">
+          {t("Сброс: {{time}}", {
+            time: new Intl.DateTimeFormat(language === "ru" ? "ru-RU" : "en-US", {
+              weekday: "short",
+              hour: "2-digit",
+              minute: "2-digit",
+            }).format(new Date(window.resetsAt)),
+          })}
+        </p>
+      )}
     </div>
   );
 }
@@ -1024,6 +1056,14 @@ function remaining(window?: CodexRateLimitWindow | null): number | null {
   return window && Number.isFinite(window.usedPercent)
     ? Math.max(0, Math.min(100, 100 - window.usedPercent))
     : null;
+}
+
+function formatPlan(plan: string): string {
+  return (
+    ({ pro: "Pro", max: "Max", team: "Team", enterprise: "Enterprise" } as Record<string, string>)[
+      plan.toLowerCase()
+    ] ?? plan
+  );
 }
 
 function quotaExhausted(window?: CodexRateLimitWindow | null): boolean {

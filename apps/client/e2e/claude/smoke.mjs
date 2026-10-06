@@ -217,7 +217,7 @@ try {
   await page.getByRole("tab", { name: "Claude", exact: true }).click();
   await page.getByText("smoke@example.com", { exact: true }).waitFor();
   const automaticAccounts = page.getByRole("switch", {
-    name: "Автоматическое переключение",
+    name: "Автопереключение",
     exact: true,
   });
   assert.equal(await automaticAccounts.isChecked(), true);

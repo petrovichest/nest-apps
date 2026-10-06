@@ -21,7 +21,7 @@
 }
 
 .claude-accounts-heading > div:first-child {
-  flex: 1 1 220px;
+  flex: 1 1 0;
   min-width: 0;
 }
 
@@ -41,7 +41,8 @@
 }
 
 .claude-account-actions {
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  gap: var(--space-1);
 }
 
 .claude-accounts button,
@@ -99,6 +100,7 @@
 .claude-auto-switch label {
   color: var(--color-ink-strong);
   font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
 }
 
 .claude-auto-switch p,
@@ -149,7 +151,7 @@
 
 .claude-account-card {
   display: grid;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 .claude-account-avatar {
@@ -187,6 +189,18 @@
   vertical-align: middle;
 }
 
+.claude-account-identity-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+
+.claude-account-identity-meta .claude-account-dot {
+  flex: 0 0 5px;
+  margin: 0;
+}
+
 .claude-account-dot.authenticated {
   background: var(--color-success);
 }
@@ -203,6 +217,10 @@
   border-radius: 999px;
   padding: var(--space-1) var(--space-2-5);
   background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+}
+
+.claude-account-state.current {
+  color: var(--color-ink-strong);
 }
 
 .claude-account-state.authenticated,
@@ -251,6 +269,12 @@
 .claude-account-menu button {
   justify-content: flex-start;
   text-align: start;
+}
+
+.claude-account-quota-group {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .claude-account-quotas {
@@ -309,7 +333,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  flex: 1 1 200px;
+  flex: 1 1 0;
   min-width: 0;
   margin: 0;
   color: var(--color-muted);
@@ -338,6 +362,29 @@
   display: grid;
   gap: var(--space-3);
   justify-items: start;
+}
+
+.claude-account-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--color-muted);
+}
+
+.claude-account-feedback > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.claude-account-feedback p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.claude-account-feedback button {
+  flex: 0 0 auto;
 }
 
 .claude-account-dialog {
@@ -562,22 +609,44 @@
 }
 
 @media (max-width: 600px) {
-  .claude-account-surface,
+  .claude-accounts {
+    gap: var(--space-4);
+  }
+
+  .claude-account-surface {
+    padding: var(--space-4);
+  }
+
+  .claude-account-card {
+    gap: var(--space-3);
+  }
+
+  .claude-add-account,
+  .claude-configure-account {
+    flex: 0 0 var(--control-height);
+    width: var(--control-height);
+    padding: 0;
+  }
+
+  .claude-add-account-label,
+  .claude-configure-account > span {
+    display: none;
+  }
+
   .claude-account-dialog {
     padding: var(--space-5);
   }
 
   .claude-account-card-heading {
     display: grid;
-    grid-template-columns: 38px minmax(0, 1fr) var(--control-height);
+    grid-template-columns: var(--control-height) minmax(0, 1fr) var(--control-height);
     column-gap: var(--space-3);
     row-gap: var(--space-2);
   }
 
-  .claude-account-state {
-    grid-row: 2;
-    grid-column: 2 / 4;
-    justify-self: start;
+  .claude-account-avatar {
+    width: var(--control-height);
+    height: var(--control-height);
   }
 
   .claude-account-menu {
@@ -586,12 +655,11 @@
   }
 
   .claude-account-quotas {
-    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-4);
   }
 
-  .claude-account-footer p {
-    flex-basis: 100%;
+  .claude-account-footer {
+    padding-top: var(--space-3);
   }
 
   .claude-auto-switch {

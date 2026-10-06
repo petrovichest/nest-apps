@@ -23,6 +23,20 @@ const LEGACY_INSTALLATION_KEYS = [
 ];
 
 const ENGLISH: Record<string, string> = {
+  "Аккаунтов: {{count}}": "Accounts: {{count}}",
+  Автопереключение: "Auto-switch accounts",
+  "При лимите — другой доступный аккаунт.":
+    "Switch to an available account when the quota runs out.",
+  "Тариф неизвестен": "Plan unknown",
+  "Войдите в аккаунт, чтобы получить лимиты.": "Sign in to see the account quotas.",
+  "Не удалось получить лимиты": "Could not get quotas",
+  "Показаны последние данные.": "Showing the latest available data.",
+  "Получаем лимиты…": "Fetching quotas…",
+  "Лимиты ещё не получены.": "Quotas have not been fetched yet.",
+  "Лимит недоступен": "Quota unavailable",
+  "Остаток лимитов": "Quota remaining",
+  "Модель сессии": "Session model",
+  Войти: "Sign in",
   "Автоматическое переключение": "Automatic account switching",
   "Авторизовано аккаунтов: {{count}}": "Signed-in accounts: {{count}}",
   "Версия CLI недоступна": "CLI version unavailable",

@@ -83,6 +83,7 @@ async function fixture(overrides: ClaudeAccountsOptions = {}, nativeDefault = fa
   const children: Array<{ child: LoginChild; env: NodeJS.ProcessEnv; args: string[] }> = [];
   let nextEmail = "second@example.com";
   const options: ClaudeAccountsOptions = {
+    env: {},
     poll: false,
     now: () => NOW,
     readVersion: async () => "2.1.289",
@@ -140,6 +141,129 @@ async function fixture(overrides: ClaudeAccountsOptions = {}, nativeDefault = fa
 }
 
 describe("native Claude account storage and login", () => {
+  it("retains the service HTTPS proxy after verifying the original authenticated native account", async () => {
+    const upstream = "https://native-user:native-secret@proxy.example:8443";
+    const readUsage = vi.fn(
+      async (account: Parameters<NonNullable<ClaudeAccountsOptions["readUsage"]>>[0]) => {
+        if (!account.proxy || account.proxy.url !== upstream)
+          throw new Error("Direct native usage is unavailable");
+        return usage(35, 40);
+      },
+    );
+    const { accounts, config, options, add } = await fixture(
+      { env: { HTTPS_PROXY: upstream, HTTP_PROXY: "http://other-proxy.example:8080" }, readUsage },
+      true,
+    );
+    const original = accounts.status().currentAccountId!;
+    await accounts.refresh(original);
+    expect(accounts.status().accounts[0]).toMatchObject({
+      authenticated: true,
+      proxy: {
+        enabled: true,
+        protocol: "https",
+        host: "proxy.example",
+        port: 8443,
+        hasPassword: true,
+      },
+      rateLimits: { refreshError: false, limits: { primary: { usedPercent: 35 } } },
+    });
+    expect(readUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultConfig: true,
+        proxy: expect.objectContaining({ url: upstream }),
+      }),
+    );
+    expect(JSON.stringify(accounts.status())).not.toContain("native-secret");
+    expect((await stat(join(config.stateDir, "claude-accounts.json"))).mode & 0o777).toBe(0o600);
+    const added = await add("direct@example.com");
+    await accounts.select(added.id);
+    expect((await accounts.launchAccount()).proxy).toBeNull();
+    await accounts.updateProxy(original, direct);
+    const reopened = new ClaudeAccounts(config, options);
+    cleanup.push(() => reopened.close());
+    await reopened.initialize();
+    await reopened.select(original);
+    expect((await reopened.launchAccount()).proxy).toBeNull();
+    expect(
+      reopened.status().accounts.find((account) => account.id === original)?.proxy.enabled,
+    ).toBe(false);
+  });
+  it("upgrades an already saved original null proxy without overwriting explicit or managed direct choices", async () => {
+    const { accounts, config, options, add } = await fixture();
+    const original = accounts.status().currentAccountId!;
+    const managed = await add("direct@example.com");
+    const path = join(config.stateDir, "claude-accounts.json");
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    for (const account of saved.accounts) delete account.proxyConfigured;
+    await writeFile(path, JSON.stringify(saved), { mode: 0o600 });
+    const reopened = new ClaudeAccounts(config, {
+      ...options,
+      env: { https_proxy: "http://user:private@proxy.example:8080" },
+    });
+    cleanup.push(() => reopened.close());
+    await reopened.initialize();
+    expect(
+      reopened.status().accounts.find((account) => account.id === original)?.proxy,
+    ).toMatchObject({ enabled: true, host: "proxy.example" });
+    expect(
+      reopened.status().accounts.find((account) => account.id === managed.id)?.proxy.enabled,
+    ).toBe(false);
+    await reopened.updateProxy(original, {
+      enabled: true,
+      protocol: "http",
+      value: "chosen.example:3128",
+    });
+    const explicitlySaved = JSON.parse(await readFile(path, "utf8"));
+    delete explicitlySaved.accounts.find(
+      (account: { accountId: string }) => account.accountId === original,
+    ).proxyConfigured;
+    await writeFile(path, JSON.stringify(explicitlySaved), { mode: 0o600 });
+    const preserved = new ClaudeAccounts(config, {
+      ...options,
+      env: { HTTPS_PROXY: "http://wrong.example:8080" },
+    });
+    cleanup.push(() => preserved.close());
+    await preserved.initialize();
+    expect(preserved.status().accounts.find((account) => account.id === original)?.proxy.host).toBe(
+      "chosen.example",
+    );
+  });
+  it.each(["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"])(
+    "imports the original native %s connection without exposing credentials",
+    async (name) => {
+      const { accounts } = await fixture({
+        env: { [name]: "socks5://user:private@proxy.example:1080" },
+      });
+      expect(accounts.status().accounts[0]?.proxy).toMatchObject({
+        enabled: true,
+        protocol: "socks5",
+        host: "proxy.example",
+        port: 1080,
+      });
+      expect(JSON.stringify(accounts.status())).not.toContain("private");
+    },
+  );
+  it("keeps settings available for an invalid imported proxy and never falls back to direct", async () => {
+    const readUsage = vi.fn(async () => usage());
+    const { accounts } = await fixture({
+      env: { HTTPS_PROXY: "invalid-proxy-with-private-password" },
+      readUsage,
+    });
+    expect(accounts.status().accounts[0]?.connectionError).toContain("needs configuration");
+    await expect(accounts.launchAccount()).rejects.toThrow("needs configuration");
+    await accounts.refresh();
+    expect(readUsage).not.toHaveBeenCalled();
+    expect(accounts.status().accounts[0]?.rateLimits).toMatchObject({
+      refreshing: false,
+      refreshError: true,
+    });
+    expect(JSON.stringify(accounts.status())).not.toContain("private-password");
+    const id = accounts.status().currentAccountId!;
+    await accounts.updateProxy(id, direct);
+    expect((await accounts.launchAccount()).proxy).toBeNull();
+    await accounts.refresh(id);
+    expect(accounts.status().accounts[0]?.rateLimits.refreshError).toBe(false);
+  });
   it.each([false, true])(
     "uses native default auth/global settings only for the original default slot=%s",
     async (nativeDefault) => {

@@ -30,6 +30,8 @@ import {
 const POLL_MS = 5 * 60_000;
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
 const MAX_OUTPUT_BYTES = 256 * 1024;
+const IMPORTED_PROXY_ERROR =
+  "The original Claude proxy needs configuration; choose a valid proxy or explicitly select direct connection";
 const unknownLimits = (): CodexRateLimitsState => ({
   limits: null,
   updatedAt: null,
@@ -56,6 +58,8 @@ export type NativeClaudeUsage = CodexRateLimitsResponse & {
 };
 type SavedAccount = Omit<ClaudeLaunchAccount, "proxy"> & {
   proxy: ParsedClaudeProxy | null;
+  /** Explicit per-account choice, including direct; false marks an imported native connection. */
+  proxyConfigured?: boolean;
   email: string | null;
   plan: string | null;
   authenticated: boolean;
@@ -92,6 +96,8 @@ export type ClaudeAccountsOptions = {
   poll?: boolean;
   /** Test override for the native default ~/.claude location. */
   defaultConfigDir?: string;
+  /** Native service environment; injectable so tests never inspect real proxy credentials. */
+  env?: NodeJS.ProcessEnv;
 };
 
 /** Account metadata is application-owned; actual authentication stays native to Claude Code. */
@@ -112,6 +118,7 @@ export class ClaudeAccounts extends EventEmitter {
   private cliVersion: string | null = null;
   private readonly registryPath: string;
   private readonly defaultConfigDir: string;
+  private readonly ambientEnv: NodeJS.ProcessEnv;
   constructor(
     readonly config: Config,
     private readonly options: ClaudeAccountsOptions = {},
@@ -119,6 +126,7 @@ export class ClaudeAccounts extends EventEmitter {
     super();
     this.registryPath = join(config.stateDir, "claude-accounts.json");
     this.defaultConfigDir = resolve(options.defaultConfigDir ?? join(homedir(), ".claude"));
+    this.ambientEnv = options.env ?? process.env;
   }
 
   initialize(): Promise<void> {
@@ -146,19 +154,24 @@ export class ClaudeAccounts extends EventEmitter {
         )
           throw new Error("Claude account config directory is invalid");
         account.rateLimits = { ...(account.rateLimits ?? unknownLimits()), refreshing: false };
+        if (account.proxyConfigured === undefined)
+          account.proxyConfigured =
+            directory !== resolve(this.config.configDir) || account.proxy !== null;
       }
       this.registry = saved;
     } else {
       const account = this.blankAccount(resolve(this.config.configDir));
+      account.proxyConfigured = false;
       if (
         resolve(this.config.configDir) === this.defaultConfigDir &&
-        process.env.CLAUDE_CONFIG_DIR === undefined
+        this.ambientEnv.CLAUDE_CONFIG_DIR === undefined
       )
         account.defaultConfig = true;
       this.registry.accounts.push(account);
       this.registry.currentAccountId = account.accountId;
       await this.save();
     }
+    for (const account of this.registry.accounts) this.importNativeConnection(account);
     await Promise.all([
       this.readVersion()
         .then((version) => {
@@ -220,8 +233,12 @@ export class ClaudeAccounts extends EventEmitter {
     return found;
   }
   private launch(account: SavedAccount): ClaudeLaunchAccount {
+    if (this.importConnectionBlocked(account))
+      throw new AppError("unavailable", account.connectionError!, 503);
     const legacy =
-      resolve(account.configDir) === resolve(this.config.configDir) && !account.authenticated;
+      resolve(account.configDir) === resolve(this.config.configDir) &&
+      !account.authenticated &&
+      account.proxyConfigured !== true;
     return structuredClone({
       accountId: account.accountId,
       configDir: account.configDir,
@@ -234,12 +251,48 @@ export class ClaudeAccounts extends EventEmitter {
       accountId: randomUUID(),
       configDir,
       proxy,
+      proxyConfigured: true,
       email: null,
       plan: null,
       authenticated: false,
       rateLimits: unknownLimits(),
       connectionError: null,
     };
+  }
+  private importConnectionBlocked(account: SavedAccount): boolean {
+    return (
+      account.proxyConfigured === false &&
+      account.proxy === null &&
+      account.connectionError === IMPORTED_PROXY_ERROR
+    );
+  }
+  private importNativeConnection(account: SavedAccount): void {
+    if (
+      resolve(account.configDir) !== resolve(this.config.configDir) ||
+      account.proxyConfigured !== false ||
+      account.proxy !== null
+    )
+      return;
+    const value = [
+      "HTTPS_PROXY",
+      "https_proxy",
+      "HTTP_PROXY",
+      "http_proxy",
+      "ALL_PROXY",
+      "all_proxy",
+    ]
+      .map((key) => this.ambientEnv[key])
+      .find((entry) => entry?.trim());
+    if (!value) return;
+    try {
+      account.proxy = proxyFromInput({ enabled: true, protocol: "http", value });
+      account.connectionError = null;
+      account.rateLimits = unknownLimits();
+    } catch {
+      // Do not silently replace an unrecognized native proxy with direct traffic.
+      account.connectionError = IMPORTED_PROXY_ERROR;
+      account.rateLimits = { ...unknownLimits(), refreshError: true };
+    }
   }
 
   async refresh(accountId?: string): Promise<ClaudeAccountsStatus> {
@@ -252,6 +305,11 @@ export class ClaudeAccounts extends EventEmitter {
   private refreshAccount(account: SavedAccount): Promise<void> {
     const pending = this.refreshes.get(account.accountId);
     if (pending) return pending;
+    if (this.importConnectionBlocked(account)) {
+      account.rateLimits = { ...account.rateLimits, refreshing: false, refreshError: true };
+      this.emitChanged();
+      return Promise.resolve();
+    }
     account.rateLimits = { ...account.rateLimits, refreshing: true, refreshError: false };
     this.emitChanged();
     const launched = this.launch(account);
@@ -384,6 +442,7 @@ export class ClaudeAccounts extends EventEmitter {
     return this.edit(async () => {
       const account = this.account(id);
       account.proxy = proxy;
+      account.proxyConfigured = true;
       account.connectionError = null;
       account.rateLimits = unknownLimits();
       account.modelLimits = undefined;
@@ -732,7 +791,7 @@ export class ClaudeAccounts extends EventEmitter {
     // Copy only MCP configuration, never native identity, credentials or account-policy caches.
     const originalDefault =
       (resolve(this.config.configDir) === this.defaultConfigDir &&
-        process.env.CLAUDE_CONFIG_DIR === undefined) ||
+        this.ambientEnv.CLAUDE_CONFIG_DIR === undefined) ||
       this.registry.accounts.some(
         (account) =>
           account.defaultConfig && resolve(account.configDir) === resolve(this.config.configDir),
@@ -794,7 +853,9 @@ export class ClaudeAccounts extends EventEmitter {
     proxy: ParsedClaudeProxy | null,
     directory: string,
   ): Promise<ClaudeProxyEnvironment> {
-    return (this.options.proxyEnvironment ?? createClaudeProxyEnvironment)(proxy, directory);
+    return (this.options.proxyEnvironment ?? createClaudeProxyEnvironment)(proxy, directory, {
+      env: this.ambientEnv,
+    });
   }
   private async readAuth(account: ClaudeLaunchAccount): Promise<NativeClaudeAuth> {
     if (this.options.readAuth) return this.options.readAuth(account);
@@ -866,7 +927,7 @@ export class ClaudeAccounts extends EventEmitter {
           bytes = 0,
           done = false;
         const env = connection?.env ?? {
-          ...process.env,
+          ...this.ambientEnv,
           ...(account
             ? { CLAUDE_CONFIG_DIR: account.defaultConfig ? undefined : account.configDir }
             : {}),

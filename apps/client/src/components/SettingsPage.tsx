@@ -632,7 +632,7 @@ export function SettingsPage({
             >
               <SettingsRow
                 description={t("Модель, которая будет выбрана для новых сессий.")}
-                label="Session model"
+                label={t("Модель сессии")}
                 labelFor="settings-session-model"
               >
                 <select
