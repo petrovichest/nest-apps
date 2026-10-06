@@ -260,6 +260,30 @@ describe("Claude browser UI HTTP and global stream", () => {
     expect(state.operations).toEqual([]);
   });
 
+  it("stores the title model next to the default model and clears it with null", async () => {
+    const state = await fixture();
+    await state.ui.store.update((data) => {
+      data.models = [
+        { value: "haiku", displayName: "Haiku", description: "" },
+        { value: "sonnet", displayName: "Sonnet", description: "" },
+      ] as typeof data.models;
+    });
+    const put = (payload: object) =>
+      state.app.inject({
+        method: "PUT",
+        url: "/api/v1/settings/task-defaults",
+        headers: state.headers,
+        payload,
+      });
+    expect((await put({ model: "sonnet" })).json()).toEqual({ model: "sonnet" });
+    expect((await put({ titleModel: "haiku" })).json()).toEqual({
+      model: "sonnet",
+      titleModel: "haiku",
+    });
+    expect((await put({ titleModel: "missing" })).statusCode).toBe(400);
+    expect((await put({ titleModel: null })).json()).toEqual({ model: "sonnet" });
+  });
+
   it("defaults to full access and applies permission settings live with optimistic version checks", async () => {
     const state = await fixture(),
       { id } = await state.reserve();

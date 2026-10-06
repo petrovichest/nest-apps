@@ -1374,7 +1374,7 @@ export class UiService extends EventEmitter {
   private async refineTitle(id: string, provisional: string, text: string): Promise<void> {
     if (!this.generateTitle) return;
     try {
-      const title = await this.generateTitle(text);
+      const title = await this.generateTitle(text, this.store.data.taskDefaults.titleModel);
       let changed = false;
       await this.store.update((data) => {
         const thread = data.threads[id];

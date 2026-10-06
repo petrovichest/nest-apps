@@ -359,6 +359,21 @@ async function waitForQueue(service: UiService, id: string, count: number): Prom
 }
 
 describe("Claude UI durable session facade", () => {
+  it("renames a new session with the generated title from the configured title model", async () => {
+    const { manager, reserve } = await fixture();
+    manager.accepting = true;
+    const generate = vi.fn(async () => "Fix session titles");
+    const service = new UiService(manager as unknown as SessionManager, generate);
+    await service.initialize({ probeModels: false });
+    await service.store.update((data) => {
+      data.taskDefaults = { titleModel: "sonnet" };
+    });
+    const id = await reserve(service);
+    await service.enqueue(id, { clientMessageId: randomUUID(), input: "Fix titles", images: [] });
+    await expect.poll(() => service.summary(id).title).toBe("Fix session titles");
+    expect(generate).toHaveBeenCalledWith("Fix titles", "sonnet");
+    await service.close();
+  });
   it.each(["configuration and proxy", "native default configuration"])(
     "releases an idle owner when %s changes for the same account",
     async (change) => {

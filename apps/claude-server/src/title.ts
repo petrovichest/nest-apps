@@ -21,14 +21,14 @@ const TITLE_SCHEMA = {
   additionalProperties: false,
 };
 
-export type TitleGenerator = (text: string) => Promise<string>;
+export type TitleGenerator = (text: string, model?: string) => Promise<string>;
 
 export function claudeTitleGenerator(options: {
   claudeBin: string;
   configDir?: string;
   model?: string;
 }): TitleGenerator {
-  return async (text) => {
+  return async (text, model) => {
     const cwd = await mkdtemp(join(tmpdir(), "claudenest-title-"));
     const env = { ...process.env };
     delete env.CLAUDECODE;
@@ -41,7 +41,7 @@ export function claudeTitleGenerator(options: {
           "--output-format",
           "json",
           "--model",
-          options.model ?? "haiku",
+          model || options.model || "haiku",
           "--tools",
           "",
           "--no-session-persistence",

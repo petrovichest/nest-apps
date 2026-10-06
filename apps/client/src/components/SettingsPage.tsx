@@ -665,38 +665,36 @@ export function SettingsPage({
                   ))}
                 </select>
               </SettingsRow>
-              {!application.isClaude && (
-                <SettingsRow
-                  description={t("Модель для автоматических названий сессий.")}
-                  label="Title model"
-                  labelFor="settings-title-model"
+              <SettingsRow
+                description={t("Модель для автоматических названий сессий.")}
+                label="Title model"
+                labelFor="settings-title-model"
+              >
+                <select
+                  disabled={!defaultModel || taskDefaultsSaving}
+                  id="settings-title-model"
+                  value={taskDefaults.titleModel ?? ""}
+                  onChange={(event) =>
+                    setTaskDefaults((current) => ({
+                      ...current,
+                      titleModel: event.target.value || undefined,
+                    }))
+                  }
                 >
-                  <select
-                    disabled={!defaultModel || taskDefaultsSaving}
-                    id="settings-title-model"
-                    value={taskDefaults.titleModel ?? ""}
-                    onChange={(event) =>
-                      setTaskDefaults((current) => ({
-                        ...current,
-                        titleModel: event.target.value || undefined,
-                      }))
-                    }
-                  >
-                    <option value="">{t("По умолчанию")}</option>
-                    {taskDefaults.titleModel &&
-                      !models.some((model) => model.id === taskDefaults.titleModel) && (
-                        <option value={taskDefaults.titleModel}>
-                          {taskDefaults.titleModel} — {t("Недоступна")}
-                        </option>
-                      )}
-                    {models.map((model) => (
-                      <option value={model.id} key={model.id}>
-                        {model.displayName}
+                  <option value="">{t("По умолчанию")}</option>
+                  {taskDefaults.titleModel &&
+                    !models.some((model) => model.id === taskDefaults.titleModel) && (
+                      <option value={taskDefaults.titleModel}>
+                        {taskDefaults.titleModel} — {t("Недоступна")}
                       </option>
-                    ))}
-                  </select>
-                </SettingsRow>
-              )}
+                    )}
+                  {models.map((model) => (
+                    <option value={model.id} key={model.id}>
+                      {model.displayName}
+                    </option>
+                  ))}
+                </select>
+              </SettingsRow>
               {!application.isClaude && (
                 <SettingsRow
                   description={t("Стиль ответов для новых задач.")}

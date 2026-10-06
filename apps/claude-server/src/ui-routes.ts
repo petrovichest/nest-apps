@@ -229,10 +229,17 @@ export async function registerUiRoutes(
   });
   app.put("/api/v1/settings/task-defaults", async (request) => {
     const body = record(request.body);
-    if (body.model && !ui.modelOptions().some((model) => model.id === body.model))
-      throw new AppError("invalid_request", "Unknown Claude model");
+    for (const key of ["model", "titleModel"])
+      if (body[key] && !ui.modelOptions().some((model) => model.id === body[key]))
+        throw new AppError("invalid_request", "Unknown Claude model");
     await ui.store.update((data) => {
-      data.taskDefaults = { ...(typeof body.model === "string" ? { model: body.model } : {}) };
+      const next = { ...data.taskDefaults };
+      for (const key of ["model", "titleModel"] as const) {
+        if (body[key] === undefined) continue;
+        if (typeof body[key] === "string" && body[key]) next[key] = body[key];
+        else delete next[key];
+      }
+      data.taskDefaults = next;
     });
     ui.publish({ type: "taskDefaults.changed", taskDefaults: ui.store.data.taskDefaults });
     return ui.store.data.taskDefaults;
