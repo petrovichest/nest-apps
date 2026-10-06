@@ -864,6 +864,7 @@ export function ThreadPage({
   const optimisticTurnMessages: OptimisticMessage[] = optimisticMessages.filter(
     (message) => message.destination === "turn",
   );
+  let turnMessagesNeedSort = false;
   if (application.isClaude) {
     for (const message of detail?.queuedMessages ?? []) {
       if (message.deliveryMode !== "steer") continue;
@@ -883,8 +884,10 @@ export function ThreadPage({
         turnId: summary?.currentTurnId ?? null,
         serverAccepted: true,
       });
+      turnMessagesNeedSort = true;
     }
   }
+  if (turnMessagesNeedSort) optimisticTurnMessages.sort((a, b) => a.createdAt - b.createdAt);
   const optimisticQueuedMessages = optimisticMessages.filter(
     (message) => message.destination === "queue",
   );
@@ -4237,10 +4240,11 @@ export function ThreadPage({
                         ? undefined
                         : display.completionResponseId;
                       const pendingRows = turnOptimisticMessages.length ? 1 : 0;
-                      // An optimistic clarification must stay below a plan already in this turn.
-                      const pendingAtEnd = entries.some(
-                        (entry) => !Array.isArray(entry) && entry.type === "plan",
-                      );
+                      // A message sent into a running turn stays below what the agent already
+                      // produced, and an optimistic clarification below a plan in the turn.
+                      const pendingAtEnd =
+                        (active && entries.length > 0) ||
+                        entries.some((entry) => !Array.isArray(entry) && entry.type === "plan");
                       const leadingPendingRows = pendingAtEnd ? 0 : pendingRows;
                       const pendingMessages = turnOptimisticMessages.length > 0 && (
                         <div
