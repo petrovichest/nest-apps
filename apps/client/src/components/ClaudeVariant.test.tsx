@@ -627,7 +627,7 @@ describe("the shared Claude interface", () => {
     expect(onSubmit).toHaveBeenCalledWith("queue");
   });
 
-  it("limits search to titles and opens a match without message occurrence requests", async () => {
+  it("searches titles before native message history and opens title matches directly", async () => {
     const thread = {
       id: "thread",
       title: "Голос и файлы",
@@ -636,8 +636,8 @@ describe("the shared Claude interface", () => {
       archived: false,
     } as ThreadSummary;
     const api = {
-      searchThreads: vi.fn(async (_query, archived) => ({
-        data: archived ? [] : [{ thread, snippet: "" }],
+      searchThreads: vi.fn(async (_query, archived, _cursor, scope) => ({
+        data: archived || scope !== "titles" ? [] : [{ thread, snippet: "" }],
         nextCursor: null,
       })),
       searchOccurrences: vi.fn(),
@@ -656,10 +656,15 @@ describe("the shared Claude interface", () => {
     const results = within(screen.getByRole("region", { name: "Не в архиве" }));
     fireEvent.click(await results.findByRole("button", { name: /Голос и файлы/ }));
     expect(screen.getByLabelText("route")).toHaveTextContent("/threads/thread");
-    expect(api.searchThreads.mock.calls).toEqual([
-      ["Голос", false, undefined, "titles"],
-      ["Голос", true, undefined, "titles"],
-    ]);
+    await waitFor(() => expect(api.searchThreads).toHaveBeenCalledTimes(4));
+    expect(api.searchThreads.mock.calls).toEqual(
+      expect.arrayContaining([
+        ["Голос", false, undefined, "titles"],
+        ["Голос", false, undefined, "messages"],
+        ["Голос", true, undefined, "titles"],
+        ["Голос", true, undefined, "messages"],
+      ]),
+    );
     expect(api.searchOccurrences).not.toHaveBeenCalled();
   });
 });
