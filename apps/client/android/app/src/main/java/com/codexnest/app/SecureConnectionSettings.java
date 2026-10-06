@@ -25,8 +25,8 @@ final class SecureConnectionSettings {
 
     private static final String CAPACITOR_PREFERENCES = "CapacitorStorage";
     private static final String SECURE_PREFERENCES = "WSSecureStorageSharedPreferences";
-    private static final String URL_KEY = "codexnest.serverUrl";
-    private static final String TOKEN_ALIAS = "capacitor-storage_codexnest.token";
+    private static final String URL_KEY = BuildConfig.STORAGE_PREFIX + ".serverUrl";
+    private static final String TOKEN_ALIAS = "capacitor-storage_" + BuildConfig.STORAGE_PREFIX + ".token";
     private static final String CIPHER_TRANSFORMATION = "AES/GCM/NoPadding";
     private static final String DATA_IV_SEPARATOR = "\u0010";
     private static final int BASE64_FLAGS = Base64.NO_PADDING | Base64.NO_WRAP;

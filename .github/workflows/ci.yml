@@ -131,8 +131,6 @@ jobs:
           cache: gradle
       - if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
         run: npm ci
-      - if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
-        run: npm run android:sync -w @codexnest/client
       - name: Validate Android signing secrets
         if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
         env:
@@ -152,7 +150,7 @@ jobs:
         run: |
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/codexnest.jks"
           chmod 0600 "$RUNNER_TEMP/codexnest.jks"
-      - name: Test Android and build signed rolling APK
+      - name: Test Android and build signed rolling APKs
         if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
         env:
           CODEXNEST_KEYSTORE_PATH: ${{ runner.temp }}/codexnest.jks
@@ -163,30 +161,48 @@ jobs:
         run: |
           set -euo pipefail
           export CODEXNEST_ANDROID_VERSION_CODE="$((2000000 + GITHUB_RUN_NUMBER))"
-          ./gradlew testDebugUnitTest assembleRelease
-          apk=app/build/outputs/apk/release/app-release.apk
-          test -s "$apk" || { printf 'Signed APK was not created at %s\n' "$apk" >&2; exit 1; }
           android_build_tools="$(printf '%s\n' "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
-          if ! apk_signature="$("$android_build_tools/apksigner" verify --print-certs "$apk" 2>&1)"; then
-            printf '%s\n' "$apk_signature" >&2
-            exit 1
-          fi
-          printf '%s\n' "$apk_signature" | sed -n '/certificate SHA-256 digest:/p'
-          apk_certificate="$(printf '%s\n' "$apk_signature" | sed -nE 's/^[[:space:]]*(V[0-9]+ )?Signer.* certificate SHA-256 digest: ([[:xdigit:]]{64})[[:space:]]*$/\2/p' | tr '[:upper:]' '[:lower:]' | sort -u)"
           signing_certificate="$RUNNER_TEMP/codexnest-signing-certificate.der"
           keytool -exportcert -keystore "$CODEXNEST_KEYSTORE_PATH" -alias "$CODEXNEST_KEY_ALIAS" -storepass:env CODEXNEST_KEYSTORE_PASSWORD -file "$signing_certificate"
           keystore_certificate="$(sha256sum "$signing_certificate" | cut -d ' ' -f 1)"
           rm -f -- "$signing_certificate"
-          printf 'APK signing certificate SHA-256: %s\n' "$apk_certificate"
           printf 'Keystore certificate SHA-256: %s\n' "$keystore_certificate"
-          test -n "$apk_certificate" || { printf 'APK signer certificate was not reported\n' >&2; exit 1; }
-          test "$apk_certificate" = "$keystore_certificate" || { printf 'APK signer does not match the configured signing key\n' >&2; exit 1; }
-          apk_metadata="$("$android_build_tools/aapt" dump badging "$apk" | sed -n '/^package:/p')"
-          printf '%s\n' "$apk_metadata"
-          [[ "$apk_metadata" == *"name='com.codexnest.app'"* ]]
-          [[ "$apk_metadata" == *"versionCode='$CODEXNEST_ANDROID_VERSION_CODE'"* ]]
-          [[ "$apk_metadata" == *"versionName='$CODEXNEST_ANDROID_VERSION_NAME'"* ]]
-          cp "$apk" ../../../release/CodexNest-latest.apk
+          for provider in codex claude; do
+            export NEST_APP_PROVIDER="$provider"
+            app_name=CodexNest
+            application_id=com.codexnest.app
+            if [[ "$provider" == claude ]]; then
+              app_name=ClaudeNest
+              application_id=com.claudenest.app
+            fi
+            npm --prefix .. run android:sync
+            ./gradlew testDebugUnitTest assembleRelease
+            apk=app/build/outputs/apk/release/app-release.apk
+            test -s "$apk" || { printf 'Signed APK was not created at %s\n' "$apk" >&2; exit 1; }
+            if ! apk_signature="$("$android_build_tools/apksigner" verify --print-certs "$apk" 2>&1)"; then
+              printf '%s\n' "$apk_signature" >&2
+              exit 1
+            fi
+            apk_certificate="$(printf '%s\n' "$apk_signature" | sed -nE 's/^[[:space:]]*(V[0-9]+ )?Signer.* certificate SHA-256 digest: ([[:xdigit:]]{64})[[:space:]]*$/\2/p' | tr '[:upper:]' '[:lower:]' | sort -u)"
+            printf '%s APK signing certificate SHA-256: %s\n' "$app_name" "$apk_certificate"
+            test -n "$apk_certificate" || { printf 'APK signer certificate was not reported\n' >&2; exit 1; }
+            test "$apk_certificate" = "$keystore_certificate" || { printf 'APK signer does not match the configured signing key\n' >&2; exit 1; }
+            apk_metadata="$("$android_build_tools/aapt" dump badging "$apk" | sed -n '/^package:/p')"
+            printf '%s\n' "$apk_metadata"
+            [[ "$apk_metadata" == *"name='$application_id'"* ]]
+            [[ "$apk_metadata" == *"versionCode='$CODEXNEST_ANDROID_VERSION_CODE'"* ]]
+            [[ "$apk_metadata" == *"versionName='$CODEXNEST_ANDROID_VERSION_NAME'"* ]]
+            unzip -p "$apk" assets/capacitor.config.json | node -e 'let text = ""; process.stdin.on("data", chunk => text += chunk); process.stdin.on("end", () => { if (JSON.parse(text).appId !== process.argv[1]) process.exit(1); });' "$application_id"
+            if [[ "$provider" == claude ]]; then
+              unzip -p "$apk" assets/public/index.html | grep -F 'data-application="claudenest"' > /dev/null
+            else
+              if unzip -p "$apk" assets/public/index.html | grep -F 'data-application="claudenest"' > /dev/null; then
+                printf 'CodexNest APK contains the ClaudeNest web client\n' >&2
+                exit 1
+              fi
+            fi
+            cp "$apk" "../../../release/$app_name-latest.apk"
+          done
         working-directory: apps/client/android
       - name: Check main before rolling publication
         if: steps.source.outputs.current == 'true'
@@ -214,8 +230,8 @@ jobs:
           printf 'CodexNest and ClaudeNest from verified commit `%s`.\n\nCodexNest: `curl -fsSL https://github.com/%s/releases/download/%s/install.sh | bash`\n\nClaudeNest: `curl -fsSL https://github.com/%s/releases/download/%s/install-claudenest.sh | bash`\n\nThe installers build the server and web client from this exact commit.\n' \
             "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$tag" "$GITHUB_REPOSITORY" "$tag" > release/notes.md
           if [[ "$GITHUB_REF_TYPE" != tag ]]; then
-            release_assets+=(release/CodexNest-latest.apk)
-            printf '\nThe signed CodexNest Android APK and Chrome extension are built from the same verified commit.\n' >> release/notes.md
+            release_assets+=(release/CodexNest-latest.apk release/ClaudeNest-latest.apk)
+            printf '\nThe signed CodexNest and ClaudeNest Android APKs and the CodexNest Chrome extension are built from the same verified commit.\n' >> release/notes.md
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${release_assets[@]}" --clobber

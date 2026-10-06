@@ -15,7 +15,7 @@ public class MainActivity extends BridgeActivity {
 
     static final String EXTRA_THREAD_ID = "com.codexnest.app.THREAD_ID";
     private static final String CAPACITOR_PREFERENCES = "CapacitorStorage";
-    private static final String PENDING_THREAD_KEY = "codexnest.pendingThreadId";
+    private static final String PENDING_THREAD_KEY = BuildConfig.STORAGE_PREFIX + ".pendingThreadId";
 
     @Override
     public void onCreate(Bundle savedInstanceState) {

@@ -23,7 +23,7 @@
 
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
-            android:name=".MainActivity"
+            android:name="com.codexnest.app.MainActivity"
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
@@ -47,13 +47,13 @@
         </provider>
 
         <service
-            android:name=".SelfHostedNotificationService"
+            android:name="com.codexnest.app.SelfHostedNotificationService"
             android:exported="false"
             android:foregroundServiceType="remoteMessaging"
             android:stopWithTask="false" />
 
         <receiver
-            android:name=".NotificationBootReceiver"
+            android:name="com.codexnest.app.NotificationBootReceiver"
             android:enabled="true"
             android:exported="false">
             <intent-filter>

@@ -48,7 +48,7 @@ async function fixture() {
     runnerPath: "/test/release/runner.js",
     serverEnvFile: join(directory, "server.env"),
     token: "private-test-token-with-at-least-32-characters",
-    allowedOrigins: new Set(["http://claude.home.arpa"]),
+    allowedOrigins: new Set(["http://localhost", "http://claude.home.arpa"]),
     clientDist,
   };
   const operations: string[] = [];
@@ -431,17 +431,18 @@ describe("Claude browser UI HTTP and global stream", () => {
   });
 
   it("rejects unauthenticated global WebSockets and sends one authenticated snapshot plus ordered UI events", async () => {
-    const { app, headers, config, reserve, ui } = await fixture();
+    const { app, config, reserve, ui } = await fixture();
+    const origin = "http://localhost";
     await expect(
       app.injectWS("/api/v1/ui/events", { headers: { origin: "https://unrelated.example" } }),
     ).rejects.toThrow();
-    const denied = await app.injectWS("/api/v1/ui/events", { headers });
+    const denied = await app.injectWS("/api/v1/ui/events", { headers: { origin } });
     const deniedClose = once(denied, "close");
     denied.send(JSON.stringify({ type: "authenticate", token: "wrong" }));
     expect((await deniedClose)[0]).toBe(1008);
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
     const socket = new WebSocket(`${address.replace(/^http/, "ws")}/api/v1/ui/events`, {
-      headers: { origin: headers.origin },
+      headers: { origin },
     });
     await once(socket, "open");
     const received: ServerFrame[] = [];

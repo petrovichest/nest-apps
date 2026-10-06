@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as CapacitorCore from "@capacitor/core";
 import type {
+  AppUpdateStatus,
   AttentionRequest,
   ModelOption,
   QueuedMessage,
@@ -21,7 +23,16 @@ import { ApiClientError } from "../api";
 
 vi.hoisted(() => vi.stubEnv("VITE_APP_PROVIDER", "claude"));
 const connection = vi.hoisted(() => vi.fn());
+const openDownloadUrl = vi.hoisted(() => vi.fn());
+const isNativePlatform = vi.hoisted(() => vi.fn());
+const getAppInfo = vi.hoisted(() => vi.fn());
 vi.mock("../connection", () => ({ useConnection: connection }));
+vi.mock("../downloads", () => ({ openDownloadUrl }));
+vi.mock("@capacitor/core", async (importOriginal) => {
+  const original = await importOriginal<typeof CapacitorCore>();
+  return { ...original, Capacitor: { ...original.Capacitor, isNativePlatform } };
+});
+vi.mock("@capacitor/app", () => ({ App: { getInfo: getAppInfo } }));
 vi.mock("../offline-store", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   loadLocalDraft: async () => null,
@@ -41,6 +52,8 @@ vi.mock("../offline-store", async (importOriginal) => ({
 
 beforeEach(() => {
   vi.resetAllMocks();
+  isNativePlatform.mockReturnValue(false);
+  openDownloadUrl.mockResolvedValue(undefined);
   localStorage.clear();
 });
 afterEach(() => {
@@ -70,19 +83,12 @@ const models: ModelOption[] = [
 ];
 
 describe("the shared Claude interface", () => {
-  it("keeps Codex APK and extension downloads out of Claude settings", async () => {
+  it.each([true, false])("downloads the Claude APK with managed updates %s", async (supported) => {
     const api = {
-      readAppSettings: vi.fn(async () => ({
-        supported: true,
-        currentVersion: "0.1.9",
-        latestVersion: null,
-        updateAvailable: false,
-        operation: "idle",
-        result: "none",
-        message: null,
-        checkedAt: null,
-        updatedAt: null,
-      })),
+      settings: { baseUrl: "https://claude.home.arpa" },
+      readAppSettings: vi.fn(async () => claudeUpdateStatus({ supported })),
+      checkAppUpdate: vi.fn(),
+      updateApp: vi.fn(),
     };
     connection.mockReturnValue({ api, state: { network: "connected" } });
 
@@ -90,16 +96,69 @@ describe("the shared Claude interface", () => {
 
     expect(await screen.findByText("0.1.9")).toBeInTheDocument();
     expect(screen.getByText("Обновление ClaudeNest")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Скачать свежий APK" })).not.toBeInTheDocument();
+    const download = screen.getByRole("button", { name: "Скачать свежий APK" });
+    expect(download).toBeEnabled();
     expect(
       screen.queryByRole("button", { name: "Скачать расширение для Chrome" }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("APK на этом устройстве")).not.toBeInTheDocument();
+    expect(screen.getByText("APK на этом устройстве")).toBeInTheDocument();
+    expect(screen.getByText("Только в Android")).toBeInTheDocument();
+    expect(getAppInfo).not.toHaveBeenCalled();
     expect(
       screen.getByText(
-        "Сервер и веб-интерфейс обновляются из одной проверенной CI-сборки с автоматическим откатом.",
+        "Сервер, веб-интерфейс и APK выпускаются из одной проверенной CI-сборки. При неудачном обновлении сервер автоматически возвращается к предыдущей версии.",
       ),
     ).toBeInTheDocument();
+    fireEvent.click(download);
+    await waitFor(() =>
+      expect(openDownloadUrl).toHaveBeenCalledWith(
+        "https://claude.home.arpa",
+        "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/ClaudeNest-latest.apk",
+      ),
+    );
+    expect(api.readAppSettings).toHaveBeenCalledOnce();
+    expect(api.checkAppUpdate).not.toHaveBeenCalled();
+    expect(api.updateApp).not.toHaveBeenCalled();
+  });
+
+  it("shows the installed Claude Android APK version and build", async () => {
+    isNativePlatform.mockReturnValue(true);
+    getAppInfo.mockResolvedValue({
+      name: "ClaudeNest",
+      id: "com.claudenest.app",
+      version: "0.1.9-abcdef0",
+      build: "1000090",
+    });
+    connection.mockReturnValue({ api: {}, state: { network: "disconnected" } });
+
+    render(<ApplicationSettingsCard initialStatus={claudeUpdateStatus()} />);
+
+    expect(await screen.findByText("0.1.9-abcdef0 (1000090)")).toBeInTheDocument();
+    expect(getAppInfo).toHaveBeenCalledOnce();
+  });
+
+  it("reports a failed Claude APK download", async () => {
+    openDownloadUrl.mockRejectedValueOnce(new Error("browser failed"));
+    connection.mockReturnValue({
+      api: { settings: { baseUrl: "https://claude.home.arpa" } },
+      state: { network: "disconnected" },
+    });
+
+    render(<ApplicationSettingsCard initialStatus={claudeUpdateStatus()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Скачать свежий APK" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Не удалось открыть загрузку APK");
+  });
+
+  it("asks for the Claude server address in Android instead of using the WebView origin", () => {
+    isNativePlatform.mockReturnValue(true);
+    render(<SetupScreen onConnected={vi.fn()} />);
+
+    expect(screen.getByLabelText("Адрес сервера")).toHaveValue("http://");
+    expect(screen.getByLabelText("Адрес сервера")).toHaveAttribute(
+      "placeholder",
+      "http://192.168.1.42:4311",
+    );
   });
 
   it("starts setup at the current origin, verifies Claude identity and saves only its token", async () => {
@@ -237,6 +296,7 @@ describe("the shared Claude interface", () => {
         network: "connected",
         snapshot: {
           models,
+          threads: [],
           taskDefaults: {},
           permissionSettings: {
             preset: "full-access",
@@ -298,6 +358,7 @@ describe("the shared Claude interface", () => {
       state: {
         snapshot: {
           models,
+          threads: [],
           permissionSettings: { ...ask, preset: "full-access", version: "1" },
         },
       },
@@ -602,6 +663,22 @@ describe("the shared Claude interface", () => {
     expect(api.searchOccurrences).not.toHaveBeenCalled();
   });
 });
+
+function claudeUpdateStatus(overrides: Partial<AppUpdateStatus> = {}): AppUpdateStatus {
+  return {
+    supported: true,
+    canUpdateWithActiveTurns: true,
+    currentVersion: "0.1.9",
+    latestVersion: null,
+    updateAvailable: false,
+    operation: "idle",
+    result: "none",
+    message: null,
+    checkedAt: null,
+    updatedAt: null,
+    ...overrides,
+  };
+}
 
 function renderActiveClaudeThread(
   queuedMessages: QueuedMessage[] = [],

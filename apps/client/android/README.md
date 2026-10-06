@@ -1,6 +1,6 @@
 # Android build
 
-CodexNest targets Android 10 (API 29) and newer. The app uses `http://localhost` as its
+CodexNest and ClaudeNest target Android 10 (API 29) and newer. Both use `http://localhost` as their
 Capacitor origin. Network Security Configuration permits the user-selected LAN/VPN HTTP
 deployment and trusts system CA certificates plus CA certificates explicitly installed
 by the device owner, without disabling normal TLS hostname/IP verification. Install only
@@ -30,6 +30,27 @@ npm run android:sync -w @codexnest/client
 cd apps/client/android
 ./gradlew assembleDebug
 ```
+
+For ClaudeNest, use `npm run android:debug:claude -w @codexnest/client` from the
+repository root. For a signed build, provide the signing environment below and
+run `npm run android:release:claude -w @codexnest/client`.
+
+Both apps share one native project. `NEST_APP_PROVIDER` selects `codex` (the
+default) or `claude` in Capacitor and Gradle. Claude uses `dist-claude`, the
+`com.claudenest.app` application ID and its own encrypted connection credentials;
+Codex retains `dist` and `com.codexnest.app`. Both apps can be installed together.
+If building directly with Gradle, sync the same provider first:
+
+```bash
+npm run build:claude -w @codexnest/client
+npm run android:sync:claude -w @codexnest/client
+cd apps/client/android
+NEST_APP_PROVIDER=claude ./gradlew testDebugUnitTest assembleDebug
+```
+
+The build rejects missing or mismatched synced assets. After switching back to
+Codex, run its default `android:sync` before building. Each build writes the same
+`app/build/outputs/apk/` paths, so save an APK before building the other provider.
 
 Android updates must always be signed with the same key as the installed APK.
 CodexNest's existing signing key can continue to be used as long as it has not
@@ -62,10 +83,12 @@ export CODEXNEST_KEY_PASSWORD=...
 ```
 
 Every successful push to `main` that is still the branch head updates the GitHub
-`Latest` release, `rolling-latest`, with signed `CodexNest-latest.apk`, installers,
+`Latest` release, `rolling-latest`, with signed `CodexNest-latest.apk` and
+`ClaudeNest-latest.apk`, installers,
 and the Chrome extension from the same verified commit. The pipeline runs
 `testDebugUnitTest assembleRelease`, verifies the APK signature against the
-configured keystore certificate, and checks `com.codexnest.app`, version name,
+configured keystore certificate, and checks the selected application ID, bundled
+web client, version name,
 and version code. Only the public certificate SHA-256 digest is printed.
 
 `CODEXNEST_ANDROID_VERSION_NAME` matches the rolling release version, while
@@ -75,7 +98,7 @@ Preserve the existing signing key to update installed APKs without reinstalling.
 Versioned `v*` releases continue to publish installers and extension assets
 without an APK.
 
-The repository needs four Android signing secrets:
+Both applications use the existing signing key and these four repository secrets:
 
 - `CODEXNEST_ANDROID_KEYSTORE_BASE64`: the existing keystore encoded as base64.
 - `CODEXNEST_ANDROID_KEY_ALIAS`: its signing key alias.
@@ -93,7 +116,8 @@ assets are uploaded before the manifests, with the authoritative
 
 Notifications do not use Firebase, Google Play Services, or a third-party push provider.
 The Android app starts a `remoteMessaging` foreground service that keeps an authenticated
-WebSocket connection to the configured CodexNest server. Android displays a permanent,
+WebSocket connection to the configured server. CodexNest uses `/api/v1/events`;
+ClaudeNest uses `/api/v1/ui/events`. Android displays a permanent,
 low-priority connection notification while this service is active; this is required for
 reliable real-time delivery when the app is in the background.
 

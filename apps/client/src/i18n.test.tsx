@@ -86,6 +86,17 @@ describe("interface localization", () => {
     expect(translate("en", "Изменения интегрированы")).toBe("Changes integrated");
     expect(translate("en", "Исчерпан бюджет токенов")).toBe("Token budget exhausted");
   });
+
+  it("describes the shared Claude APK release and server rollback accurately", () => {
+    expect(
+      translate(
+        "en",
+        "Сервер, веб-интерфейс и APK выпускаются из одной проверенной CI-сборки. При неудачном обновлении сервер автоматически возвращается к предыдущей версии.",
+      ),
+    ).toBe(
+      "The server, web interface, and APK are released from the same verified CI build. If a server update fails, the server automatically returns to the previous version.",
+    );
+  });
 });
 
 function LanguageProbe() {

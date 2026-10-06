@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ClaudeNest</string>
+    <string name="title_activity_main">ClaudeNest</string>
+    <string name="notification_channel_connection">Подключение ClaudeNest</string>
+    <string name="notification_channel_events">События ClaudeNest</string>
+    <string name="notification_attention">Claude ждёт решения</string>
+    <string name="notification_default_task">Задача Claude</string>
+    <string name="notification_open_details">Откройте ClaudeNest для подробностей</string>
+</resources>

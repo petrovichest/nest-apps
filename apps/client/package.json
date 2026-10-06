@@ -14,8 +14,11 @@
     "docs:images": "playwright test --config=playwright.docs.config.ts",
     "android:sync": "cap sync android",
     "android:open": "cap open android",
-    "android:debug": "npm run build && cap sync android && cd android && ./gradlew assembleDebug",
-    "android:release": "npm run build && cap sync android && cd android && ./gradlew assembleRelease",
+    "android:debug": "npm run build && NEST_APP_PROVIDER=codex cap sync android && cd android && NEST_APP_PROVIDER=codex ./gradlew assembleDebug",
+    "android:release": "npm run build && NEST_APP_PROVIDER=codex cap sync android && cd android && NEST_APP_PROVIDER=codex ./gradlew assembleRelease",
+    "android:sync:claude": "NEST_APP_PROVIDER=claude cap sync android",
+    "android:debug:claude": "npm run build:claude && npm run android:sync:claude && cd android && NEST_APP_PROVIDER=claude ./gradlew assembleDebug",
+    "android:release:claude": "npm run build:claude && npm run android:sync:claude && cd android && NEST_APP_PROVIDER=claude ./gradlew assembleRelease",
     "dev:claude": "vite --mode claude",
     "build:claude": "tsc -b && vite build --mode claude",
     "smoke:claude": "npm run build:claude && node e2e/claude/smoke.mjs"

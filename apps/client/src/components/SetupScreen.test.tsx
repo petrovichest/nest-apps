@@ -1,9 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Capacitor } from "@capacitor/core";
 
 import { SetupScreen } from "./SetupScreen";
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   localStorage.clear();
 });
@@ -14,6 +16,22 @@ describe("SetupScreen", () => {
 
     expect(screen.getByText("CodexNest", { selector: ".setup-identity" })).toBeInTheDocument();
     expect(container.querySelector(".brand-mark")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Адрес сервера")).toHaveValue("http://");
+    expect(screen.getByLabelText("Адрес сервера")).toHaveAttribute(
+      "placeholder",
+      "http://192.168.1.42:4310",
+    );
+  });
+
+  it("keeps manual Codex server setup in Android", () => {
+    vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
+    render(<SetupScreen onConnected={vi.fn()} />);
+
+    expect(screen.getByLabelText("Адрес сервера")).toHaveValue("http://");
+    expect(screen.getByLabelText("Адрес сервера")).toHaveAttribute(
+      "placeholder",
+      "http://192.168.1.42:4310",
+    );
   });
 
   it("shows the permanent LAN interception warning for HTTP", () => {

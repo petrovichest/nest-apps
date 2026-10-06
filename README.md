@@ -44,8 +44,8 @@ curl -fsSL https://github.com/petrovichest/nest-apps/releases/latest/download/in
 The installer supplies its pinned Node.js runtime and managed user services; it
 does not install or sign in to Codex CLI. Follow the
 [first connection instructions](./deploy/DEPLOYMENT.md#6-проверка-и-первый-вход)
-to open the browser client or connect the
-browser/PWA client. Android APK releases will be added later.
+to open the browser/PWA client or connect the Android app. Download the latest
+APK from Settings → Maintenance or the GitHub rolling release.
 
 ## What you can do
 
@@ -297,7 +297,7 @@ versioned releases. The rolling manifest `NestApps-latest.json` pins one tested
 commit for both applications. Installers build immutable releases on the host;
 Settings → Maintenance updates the selected server and its web client together.
 The rolling pipeline publishes installers, the Codex browser extension, and a
-signed `CodexNest-latest.apk` from the same commit. Android unit tests and APK
+signed `CodexNest-latest.apk` and `ClaudeNest-latest.apk` from the same commit. Android unit tests and APK
 signature, application ID, and version checks must pass before publication.
 `CodexNest-latest.json` mirrors the authoritative `NestApps-latest.json`, which is
 uploaded after all other assets. Versioned releases do not publish APKs.
@@ -305,11 +305,12 @@ uploaded after all other assets. Versioned releases do not publish APKs.
 Keep all six repository secrets when migrating GitHub configuration:
 `CODEXNEST_ANDROID_KEYSTORE_BASE64`, `CODEXNEST_ANDROID_KEY_ALIAS`,
 `CODEXNEST_ANDROID_KEYSTORE_PASSWORD`, and `CODEXNEST_ANDROID_KEY_PASSWORD` sign
-the Android APK with the existing key. `WEB_EXT_API_KEY` and `WEB_EXT_API_SECRET`
+both Android APKs with the existing key. `WEB_EXT_API_KEY` and `WEB_EXT_API_SECRET`
 are retained but unused; Firefox builds and signing remain disabled. See the
 [Android build guide](./apps/client/android/README.md) for update compatibility.
 
-ClaudeNest uses its own API, release directories, credentials and PWA identity.
+ClaudeNest uses its own API, release directories, credentials, PWA identity and
+Android application ID. Its Android app can be installed alongside CodexNest.
 See [ClaudeNest installation and updates](./apps/claude-server/README.md).
 
 ```bash

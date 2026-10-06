@@ -22,8 +22,7 @@ import { SettingsGroup } from "./SettingsPresentation";
 
 type Action = "checking" | "updating" | null;
 
-const LATEST_ANDROID_APK_URL =
-  "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/CodexNest-latest.apk";
+const LATEST_ANDROID_APK_URL = `https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/${application.name}-latest.apk`;
 const LATEST_CHROME_EXTENSION_URL =
   "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/codexnest-browser-latest.zip";
 const REPOSITORY_URL = "https://github.com/petrovichest/nest-apps";
@@ -193,7 +192,7 @@ export function ApplicationSettingsCard({
       className="application-settings-card"
       description={t(
         application.isClaude
-          ? "Сервер и веб-интерфейс обновляются из одной проверенной CI-сборки с автоматическим откатом."
+          ? "Сервер, веб-интерфейс и APK выпускаются из одной проверенной CI-сборки. При неудачном обновлении сервер автоматически возвращается к предыдущей версии."
           : "Сервер, APK и расширение для Chrome обновляются из одной проверенной CI-сборки с автоматическим откатом.",
       )}
       icon={<ServerIcon />}
@@ -214,12 +213,10 @@ export function ApplicationSettingsCard({
             <dt>{t("Актуальная версия в GitHub")}</dt>
             <dd className="settings-technical">{status?.latestVersion ?? t("Не проверялась")}</dd>
           </div>
-          {!application.isClaude && (
-            <div>
-              <dt>{t("APK на этом устройстве")}</dt>
-              <dd className="settings-technical">{apkVersionLabel}</dd>
-            </div>
-          )}
+          <div>
+            <dt>{t("APK на этом устройстве")}</dt>
+            <dd className="settings-technical">{apkVersionLabel}</dd>
+          </div>
           <div>
             <dt>{t("Состояние")}</dt>
             <dd>{operationLabel(status?.operation, t)}</dd>
@@ -326,17 +323,15 @@ export function ApplicationSettingsCard({
                 <GitHubIcon />
                 <span>{t("Открыть GitHub")}</span>
               </a>
+              <button type="button" onClick={() => void downloadApk()}>
+                <DownloadIcon />
+                <span>{t("Скачать свежий APK")}</span>
+              </button>
               {!application.isClaude && (
-                <>
-                  <button type="button" onClick={() => void downloadApk()}>
-                    <DownloadIcon />
-                    <span>{t("Скачать свежий APK")}</span>
-                  </button>
-                  <button type="button" onClick={() => void downloadChromeExtension()}>
-                    <BrowserIcon />
-                    <span>{t("Скачать расширение для Chrome")}</span>
-                  </button>
-                </>
+                <button type="button" onClick={() => void downloadChromeExtension()}>
+                  <BrowserIcon />
+                  <span>{t("Скачать расширение для Chrome")}</span>
+                </button>
               )}
             </div>
           </div>

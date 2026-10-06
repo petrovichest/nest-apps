@@ -49,7 +49,7 @@ async function fixture() {
     runnerPath: join(directory, "immutable-release", "runner-main.js"),
     serverEnvFile: join(directory, "server.env"),
     token: "test-token-with-at-least-thirty-two-characters",
-    allowedOrigins: new Set(["http://localhost:4311"]),
+    allowedOrigins: new Set(["http://localhost", "http://localhost:4311"]),
   };
   await Promise.all(
     [config.runtimeDir, config.configDir, config.releasePath].map((path) =>
@@ -97,6 +97,53 @@ async function fixture() {
 }
 
 describe("Claude backend HTTP and WebSocket integration", () => {
+  it("allows Android CORS preflight without credentials while enforcing origin and token on APIs", async () => {
+    const { backend, config } = await fixture();
+    const { app } = await backend();
+    const origin = "http://localhost";
+    const preflightHeaders = {
+      origin,
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "authorization,content-type,x-codexnest-audio-duration-ms",
+    };
+    const preflight = await app.inject({
+      method: "OPTIONS",
+      url: "/api/v1/sessions",
+      headers: preflightHeaders,
+    });
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers["access-control-allow-origin"]).toBe(origin);
+    expect(preflight.headers["access-control-allow-methods"]).toBe(
+      "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+    );
+    expect(preflight.headers["access-control-allow-headers"]).toBe(
+      "authorization, content-type, x-codexnest-audio-duration-ms",
+    );
+    const rejectedPreflight = await app.inject({
+      method: "OPTIONS",
+      url: "/api/v1/sessions",
+      headers: { ...preflightHeaders, origin: "https://unrelated.example" },
+    });
+    expect(rejectedPreflight.statusCode).toBe(403);
+    expect(rejectedPreflight.headers["access-control-allow-origin"]).toBeUndefined();
+    for (const authorization of [undefined, "Bearer incorrect"]) {
+      expect(
+        (
+          await app.inject({
+            url: "/api/v1/health",
+            headers: { origin, ...(authorization ? { authorization } : {}) },
+          })
+        ).statusCode,
+      ).toBe(401);
+    }
+    const authenticated = await app.inject({
+      url: "/api/v1/health",
+      headers: { origin, authorization: `Bearer ${config.token}` },
+    });
+    expect(authenticated.statusCode).toBe(200);
+    expect(authenticated.headers["access-control-allow-origin"]).toBe(origin);
+  });
+
   it("requires its own bearer token, rejects foreign origins, and validates input", async () => {
     const { backend, headers, input, launchCount } = await fixture();
     const { app } = await backend();

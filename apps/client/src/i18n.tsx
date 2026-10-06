@@ -492,8 +492,8 @@ const ENGLISH: Record<string, string> = {
   "Загрузки и ссылки": "Downloads and links",
   "Сервер, APK и расширение для Chrome обновляются из одной проверенной CI-сборки с автоматическим откатом.":
     "The server, APK, and Chrome extension update from the same verified CI build with automatic rollback.",
-  "Сервер и веб-интерфейс обновляются из одной проверенной CI-сборки с автоматическим откатом.":
-    "The server and web interface update from the same verified CI build with automatic rollback.",
+  "Сервер, веб-интерфейс и APK выпускаются из одной проверенной CI-сборки. При неудачном обновлении сервер автоматически возвращается к предыдущей версии.":
+    "The server, web interface, and APK are released from the same verified CI build. If a server update fails, the server automatically returns to the previous version.",
   "Получаем версию CodexNest…": "Loading CodexNest version…",
   "Технические детали": "Technical details",
   "Повторить загрузку технических деталей": "Retry loading technical details",

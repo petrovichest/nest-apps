@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import { stat } from "node:fs/promises";
@@ -30,6 +31,13 @@ function equalToken(value: unknown, token: string): boolean {
 
 export async function buildApp(manager: SessionManager, ui?: UiService) {
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024 * 1024, forceCloseConnections: true });
+  await app.register(cors, {
+    origin(origin, callback) {
+      callback(null, !origin || manager.config.allowedOrigins.has(origin));
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["authorization", "content-type", "x-codexnest-audio-duration-ms"],
+  });
   await app.register(websocket, {
     options: { maxPayload: 1_048_576 },
     preClose(done) {
@@ -86,7 +94,12 @@ export async function buildApp(manager: SessionManager, ui?: UiService) {
         .code(403)
         .send({ error: { code: "unauthorized", message: "Origin not allowed" } });
     const path = request.url.split("?")[0]!;
-    if (!path.startsWith("/api/") || path === "/api/v1/events" || path === "/api/v1/ui/events")
+    if (
+      request.method === "OPTIONS" ||
+      !path.startsWith("/api/") ||
+      path === "/api/v1/events" ||
+      path === "/api/v1/ui/events"
+    )
       return;
     const token = /^Bearer\s+(\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
     if (!equalToken(token, manager.config.token))

@@ -1,10 +1,12 @@
 # ClaudeNest
 
 Independent Linux backend for the installed Claude Code CLI, with the existing
-Nest frontend built as a separate browser/PWA application. Codex remains the
-default build. Claude has its own icon, install identity, credentials, browser
-storage, backend, systemd services and metadata. There is no Claude Android APK
-in this milestone.
+Nest frontend built as a separate browser/PWA and Android application. Codex
+remains the default build. Claude has its own icon, install identity, credentials,
+storage, backend, systemd services and metadata. Download `ClaudeNest-latest.apk`
+from Settings → Maintenance or the GitHub rolling release; it can be installed
+alongside CodexNest and includes background task and decision notifications.
+See the [Android build guide](../client/android/README.md) for local builds.
 
 Requirements: Node 24, a systemd user manager with linger, and an installed Claude
 CLI signed in using its own normal login. Tested protocol baseline: Claude 2.1.289.
@@ -204,8 +206,10 @@ external tool execution or guaranteed native persistence before a crash.
 
 All `/api/` HTTP calls require `Authorization: Bearer TOKEN`. Public static assets
 contain no credentials; private downloads use short-lived scoped tickets.
-Cross-origin requests are
-rejected unless their Origin is listed in `CLAUDENEST_ALLOWED_ORIGINS`. Keep access
+Cross-origin requests are rejected unless their Origin is listed in
+`CLAUDENEST_ALLOWED_ORIGINS` or is the bundled Android origin `http://localhost`,
+which is always allowed. CORS preflight requests do not require a bearer token;
+the actual API calls still do. Keep access
 local or on the owner's trusted private network, as with CodexNest.
 
 - `GET /api/v1/health`: readiness, API release, runner protocol.

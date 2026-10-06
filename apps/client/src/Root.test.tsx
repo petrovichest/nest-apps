@@ -15,7 +15,10 @@ const loadConnection = vi.hoisted(() => vi.fn());
 
 vi.mock("@capacitor/core", async (original) => ({
   ...(await original<typeof CapacitorCore>()),
-  Capacitor: { getPlatform: native.getPlatform },
+  Capacitor: {
+    getPlatform: native.getPlatform,
+    isNativePlatform: () => native.getPlatform() !== "web",
+  },
   SystemBars: { setStyle: native.setStyle },
   SystemBarsStyle: { Dark: "DARK", Light: "LIGHT" },
   SystemBarType: { StatusBar: "StatusBar", NavigationBar: "NavigationBar" },

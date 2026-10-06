@@ -1,5 +1,6 @@
 import { application } from "../application";
 import { type FormEvent, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 
 import { ApiClient } from "../api";
 import { localizeKnownServerText, useI18n } from "../i18n";
@@ -8,7 +9,10 @@ import { ActionLabel } from "./ActionLabel";
 
 export function SetupScreen({ onConnected }: { onConnected(settings: ConnectionSettings): void }) {
   const { language, t } = useI18n();
-  const [baseUrl, setBaseUrl] = useState(application.isClaude ? window.location.origin : "http://");
+  const nativePlatform = Capacitor.isNativePlatform();
+  const [baseUrl, setBaseUrl] = useState(
+    application.isClaude && !nativePlatform ? window.location.origin : "http://",
+  );
   const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -55,7 +59,11 @@ export function SetupScreen({ onConnected }: { onConnected(settings: ConnectionS
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
             placeholder={
-              application.isClaude ? "https://claude.home.arpa" : "http://192.168.1.42:4310"
+              application.isClaude
+                ? nativePlatform
+                  ? "http://192.168.1.42:4311"
+                  : "https://claude.home.arpa"
+                : "http://192.168.1.42:4310"
             }
             autoCapitalize="none"
             required

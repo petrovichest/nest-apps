@@ -179,7 +179,7 @@ public class SelfHostedNotificationService extends Service {
             return;
         }
         HttpUrl webSocketUrl = base.newBuilder()
-            .encodedPath("/api/v1/events")
+            .encodedPath(BuildConfig.EVENTS_PATH)
             .query(null)
             .fragment(null)
             .build();
@@ -339,7 +339,7 @@ public class SelfHostedNotificationService extends Service {
         );
         return new NotificationCompat.Builder(this, SERVICE_CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("CodexNest")
+            .setContentTitle(text(R.string.app_name))
             .setContentText(text(status))
             .setContentIntent(contentIntent)
             .setOngoing(true)
