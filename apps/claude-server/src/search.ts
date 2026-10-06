@@ -52,6 +52,7 @@ function messageText(entry: Json): string {
 export async function transcriptMatch(path: string, needle: string): Promise<string | null> {
   const lowered = needle.toLocaleLowerCase();
   // JSON escapes only quotes, backslashes and control characters, so other text appears verbatim.
+  // eslint-disable-next-line no-control-regex -- JSON escapes the U+0000–U+001F range.
   const verbatim = !/["\\\u0000-\u001f]/.test(needle);
   const stream = createReadStream(path, { encoding: "utf8" });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
