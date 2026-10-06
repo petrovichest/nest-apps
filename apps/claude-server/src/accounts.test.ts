@@ -141,6 +141,45 @@ async function fixture(overrides: ClaudeAccountsOptions = {}, nativeDefault = fa
 }
 
 describe("native Claude account storage and login", () => {
+  it("warms an idle 5-hour window once and rereads the usage", async () => {
+    const idle: NativeClaudeUsage = {
+      primary: null,
+      secondary: { usedPercent: 30, windowDurationMins: 10080, resetsAt: NOW + 100_000_000 },
+    };
+    const started: string[][] = [];
+    const spawnProcess = vi.fn((_bin, args) => {
+      started.push(args as string[]);
+      const child = new LoginChild();
+      queueMicrotask(() => child.close(0));
+      return child;
+    }) as unknown as typeof spawn;
+    let calls = 0;
+    const { accounts } = await fixture({
+      spawnProcess,
+      readUsage: async () => (calls++ === 0 ? idle : usage()),
+    });
+    await accounts.refresh();
+    expect(started.filter((args) => args[0] === "-p")).toHaveLength(1);
+    expect(accounts.status().accounts[0]!.rateLimits.limits?.primary?.usedPercent).toBe(20);
+    await accounts.refresh();
+    expect(started.filter((args) => args[0] === "-p")).toHaveLength(1);
+  });
+
+  it("does not warm accounts without limits or with a running window", async () => {
+    const started: string[][] = [];
+    const spawnProcess = vi.fn((_bin, args) => {
+      started.push(args as string[]);
+      const child = new LoginChild();
+      queueMicrotask(() => child.close(0));
+      return child;
+    }) as unknown as typeof spawn;
+    const { accounts, limits, config } = await fixture({ spawnProcess });
+    await accounts.refresh();
+    limits.set(config.configDir, { primary: null, secondary: null });
+    await accounts.refresh();
+    expect(started.filter((args) => args[0] === "-p")).toHaveLength(0);
+  });
+
   it("retains the service HTTPS proxy after verifying the original authenticated native account", async () => {
     const upstream = "https://native-user:native-secret@proxy.example:8443";
     const readUsage = vi.fn(

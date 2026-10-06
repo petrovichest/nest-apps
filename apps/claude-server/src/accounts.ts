@@ -28,6 +28,8 @@ import {
 } from "./proxy.js";
 
 const POLL_MS = 5 * 60_000;
+/** Spacing between warm-ups of one account, in case the usage endpoint lags behind the new window. */
+const WARM_RETRY_MS = 15 * 60_000;
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const IMPORTED_PROXY_ERROR =
@@ -112,6 +114,7 @@ export class ClaudeAccounts extends EventEmitter {
   private updates: Promise<unknown> = Promise.resolve();
   private rotation: Promise<unknown> = Promise.resolve();
   private refreshes = new Map<string, Promise<void>>();
+  private warmedAt = new Map<string, number>();
   private logins = new Map<string, Login>();
   private timer?: NodeJS.Timeout;
   private closed = false;
@@ -326,8 +329,13 @@ export class ClaudeAccounts extends EventEmitter {
           account.rateLimits = unknownLimits();
           return;
         }
-        const usage = await this.readUsage(launched);
+        let usage = await this.readUsage(launched);
         if (!unchanged()) return;
+        if (await this.warm(account, launched, usage)) {
+          const warmed = await this.readUsage(launched).catch(() => undefined);
+          if (!unchanged()) return;
+          if (warmed) usage = warmed;
+        }
         const { modelLimits, ...limits } = usage;
         const previousModels = Object.fromEntries(
           Object.entries(account.modelLimits ?? {}).filter(
@@ -872,6 +880,28 @@ export class ClaudeAccounts extends EventEmitter {
       };
     } catch {
       throw new Error("Could not verify the native Claude account");
+    }
+  }
+  /** Starts the idle 5-hour window with one minimal request so its timer never sits unused. */
+  private async warm(
+    account: SavedAccount,
+    launched: ClaudeLaunchAccount,
+    usage: NativeClaudeUsage,
+  ): Promise<boolean> {
+    const now = this.now();
+    // A present weekly window proves a subscription; API-key accounts report no limits at all.
+    if (!usage.secondary || (usage.primary?.resetsAt ?? 0) > now) return false;
+    if ((usage.secondary.usedPercent ?? 0) >= 100) return false;
+    if (now - (this.warmedAt.get(account.accountId) ?? 0) < WARM_RETRY_MS) return false;
+    this.warmedAt.set(account.accountId, now);
+    try {
+      await this.nativeCommand(
+        ["-p", "ok", "--model", "haiku", "--tools", "", "--no-session-persistence"],
+        launched,
+      );
+      return true;
+    } catch {
+      return false;
     }
   }
   private async readUsage(account: ClaudeLaunchAccount): Promise<NativeClaudeUsage> {
