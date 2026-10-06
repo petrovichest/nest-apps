@@ -887,7 +887,14 @@ export class ClaudeAccounts extends EventEmitter {
       proxy: account.proxy,
       env: { CLAUDE_CONFIG_DIR: account.defaultConfig ? undefined : account.configDir },
       spawnProcess: this.options.spawnProcess,
-      proxyEnvironment: this.options.proxyEnvironment,
+      proxyEnvironment: async (...args) => {
+        const connection = await (this.options.proxyEnvironment ?? createClaudeProxyEnvironment)(
+          ...args,
+        );
+        // The CLI treats the usage endpoint as nonessential and would answer without limits.
+        delete connection.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+        return connection;
+      },
     });
     process.on("error", () => undefined);
     try {
