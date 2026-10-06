@@ -12,7 +12,7 @@ export const application = {
   capabilities: {
     codexManagement: !isClaude,
     rateLimits: true,
-    plan: !isClaude,
+    plan: true,
     team: !isClaude,
     goal: !isClaude,
     forks: !isClaude,

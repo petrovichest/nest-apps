@@ -457,6 +457,9 @@ export async function registerUiRoutes(
     ui.schedule(p.id);
     return { turnId: p.messageId };
   });
+  app.post("/api/v1/threads/:id/plan/dismiss", async (request) =>
+    ui.dismissPlan(params(request).id, string(record(request.body).turnId, "turnId", 300)),
+  );
   app.post("/api/v1/threads/:id/interrupt", async (request) => {
     const id = params(request).id;
     ui.thread(id);

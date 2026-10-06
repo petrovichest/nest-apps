@@ -710,6 +710,7 @@ export class SessionRunner {
             : request.subtype === "can_use_tool"
               ? ("toolApproval" as const)
               : ("other" as const),
+        ...(typeof request.tool_use_id === "string" ? { toolUseId: request.tool_use_id } : {}),
       };
       this.pending.set(requestId, pending);
       if (

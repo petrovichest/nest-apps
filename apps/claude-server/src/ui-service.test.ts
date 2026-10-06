@@ -957,6 +957,119 @@ describe("Claude UI durable session facade", () => {
     expect(restarted.permissionSettings().preset).toBe("ask");
   });
 
+  it("runs plan sessions in Claude plan mode and hands ExitPlanMode plans to the user", async () => {
+    const { manager, start, reserve } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    await service.settings(id, { collaborationMode: "plan" });
+    manager.accepting = true;
+    await service.enqueue(id, { input: "Plan it", clientMessageId: randomUUID() });
+    await waitForQueue(service, id, 0);
+    expect(manager.creates[0]?.permissionMode).toBe("plan");
+    await expect.poll(() => manager.connections.get(id)?.length ?? 0).toBeGreaterThan(0);
+
+    manager.emit(id, "native", {
+      type: "assistant",
+      uuid: "plan-uuid",
+      message: {
+        id: "plan-message",
+        content: [{ type: "tool_use", id: "plan-tool", name: "ExitPlanMode", input: {} }],
+        stop_reason: "tool_use",
+      },
+    });
+    manager.emit(id, "request", {
+      requestId: "exit-plan",
+      toolName: "ExitPlanMode",
+      kind: "toolApproval",
+      toolUseId: "plan-tool",
+      input: { plan: "1. Do it", planFilePath: "/home/user/.claude/plans/plan.md" },
+    });
+    await expect.poll(() => service.summary(id).awaitingPlanResponse).toBe(true);
+    expect(service.thread(id).planTexts).toEqual({ "plan-tool": "1. Do it" });
+    expect((await service.detail(id)).turns.at(-1)?.items.at(-1)).toMatchObject({
+      type: "plan",
+      id: "plan-tool",
+      text: "1. Do it",
+    });
+    expect(manager.commands).toMatchObject([
+      {
+        id,
+        method: "respond",
+        params: { targetRequestId: "exit-plan", response: { behavior: "deny" } },
+      },
+    ]);
+    expect(service.attention()).toEqual([]);
+
+    await expect(
+      service.enqueue(id, {
+        input: "Team",
+        clientMessageId: randomUUID(),
+        planImplementationMode: "team",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    await service.enqueue(id, {
+      input: "Да, реализуй этот план",
+      clientMessageId: randomUUID(),
+      planImplementationMode: "default",
+    });
+    const summary = service.summary(id);
+    expect(summary.settings.collaborationMode).toBe("default");
+    expect(summary.awaitingPlanResponse).toBeUndefined();
+    expect(manager.commands.at(-1)).toMatchObject({
+      method: "setPermissionMode",
+      params: { permissionMode: "bypassPermissions" },
+    });
+  });
+
+  it("switches a live owner into plan mode and back when the plan is dismissed", async () => {
+    const { manager, start, directory } = await fixture();
+    const id = randomUUID();
+    manager.owners.set(id, snapshot(id, directory));
+    const service = await start();
+    await service.store.update((data) => {
+      data.threads[id] = {
+        ...data.threads[id]!,
+        id,
+        cwd: directory,
+        projectId: null,
+        title: "Plan",
+        createdAt: 1,
+        updatedAt: 1,
+        readAt: 0,
+        viewedAt: 0,
+        pinned: false,
+        archived: false,
+        settings: { collaborationMode: "default" },
+        draft: null,
+        queue: [],
+        deliveries: {},
+      };
+    });
+    await service.attach(id);
+    await service.settings(id, { collaborationMode: "plan" });
+    expect(manager.commands.at(-1)).toMatchObject({
+      method: "setPermissionMode",
+      params: { permissionMode: "plan" },
+    });
+    await expect(service.dismissPlan(id, "turn")).rejects.toMatchObject({ code: "conflict" });
+    await service.store.update((data) => {
+      data.threads[id]!.awaitingPlanResponse = true;
+    });
+    const dismissed = await service.dismissPlan(id, "turn");
+    expect(dismissed).toMatchObject({
+      settings: { collaborationMode: "default" },
+      dismissedPlanTurnId: "turn",
+    });
+    expect(dismissed.awaitingPlanResponse).toBeUndefined();
+    expect(manager.commands.at(-1)).toMatchObject({
+      method: "setPermissionMode",
+      params: { permissionMode: "bypassPermissions" },
+    });
+    await expect(service.settings(id, { collaborationMode: "team" })).rejects.toMatchObject({
+      code: "invalid_request",
+    });
+  });
+
   it("autoallows ordinary legacy approvals under full access while keeping questions and other controls pending", async () => {
     const { manager, start, directory } = await fixture();
     const id = randomUUID(),

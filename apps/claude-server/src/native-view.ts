@@ -89,6 +89,8 @@ function userContent(content: unknown): {
 }
 
 /** Pure incremental rendering of native history and live events; never does I/O. */
+const PLAN_FILE = /[\\/]\.claude[\\/]plans[\\/][^\\/]+\.md$/;
+
 export class NativeView {
   private readonly values: TurnView[] = [];
   private readonly byId = new Map<string, TurnView>();
@@ -101,6 +103,9 @@ export class NativeView {
     { turn: TurnView; item: ActivityItem; imagePath?: string }
   >();
   private readonly streams = new Map<string, StreamMessage>();
+  /** Claude omits the plan from ExitPlanMode's transcript input; ClaudeNest keeps it here. */
+  private readonly planTexts = new Map<string, string>();
+  private latestPlanFile = "";
   private active?: TurnView;
   private latestStream?: StreamMessage;
   private effectiveModel?: string;
@@ -127,6 +132,31 @@ export class NativeView {
           item.type === "tool" && item.status === "completed" && item.images?.includes(path),
       ),
     );
+  }
+
+  rememberPlanText(toolUseId: string, text: string): void {
+    this.planTexts.set(toolUseId, text);
+  }
+
+  /** Fills an ExitPlanMode plan from its permission request; older owners omit the tool ID. */
+  presentPlan(
+    toolUseId: string | undefined,
+    text: string,
+  ): { toolUseId: string; events: ServerEvent[] } | undefined {
+    for (const turn of [...this.values].reverse()) {
+      const item = [...turn.items]
+        .reverse()
+        .find((value) =>
+          toolUseId ? value.id === toolUseId : value.type === "plan" && !value.text.trim(),
+        );
+      if (item?.type !== "plan") continue;
+      this.planTexts.set(item.id, text);
+      item.text = text;
+      return { toolUseId: item.id, events: [this.upsert(turn, item)] };
+    }
+    if (!toolUseId) return undefined;
+    this.planTexts.set(toolUseId, text);
+    return { toolUseId, events: [] };
   }
 
   recordUserMessage(message: QueuedMessage): ServerEvent[] {
@@ -262,6 +292,7 @@ export class NativeView {
     this.continuingTurns.clear();
     this.tools.clear();
     this.streams.clear();
+    this.latestPlanFile = "";
     this.active = undefined;
     this.latestStream = undefined;
     this.effectiveModel = undefined;
@@ -320,6 +351,11 @@ export class NativeView {
       for (const result of results) {
         const match = this.tools.get(string(result.tool_use_id));
         if (!match) continue;
+        if (match.item.type === "plan") {
+          match.item.status = "completed";
+          changes.push(this.upsert(match.turn, match.item));
+          continue;
+        }
         const images = userContent(result.content).images;
         const output =
           textContent(result.content) ||
@@ -658,7 +694,20 @@ export class NativeView {
     if (name === "Read" && existing?.item.type === "tool" && existing.item.images?.length)
       return existing.item;
     let item: ActivityItem;
-    if (name === "Bash" || name === "Read" || name === "Grep" || name === "Glob") {
+    if (name === "Write" && PLAN_FILE.test(string(input.file_path)))
+      this.latestPlanFile = string(input.content);
+    if (name === "ExitPlanMode") {
+      // Its result only records ClaudeNest's review handoff, not a plan failure.
+      item = {
+        type: "plan",
+        id: toolId,
+        status: existing?.item.status ?? status,
+        text: string(input.plan) || this.planTexts.get(toolId) || this.latestPlanFile,
+        images: [],
+        timestamp: at,
+        phase: null,
+      };
+    } else if (name === "Bash" || name === "Read" || name === "Grep" || name === "Glob") {
       item = {
         type: "command",
         id: toolId,

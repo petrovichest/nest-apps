@@ -120,7 +120,12 @@ describe("isolated Claude session runner", () => {
     first.close();
     fake.emit("request", {
       request_id: "approval-1",
-      request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "touch example" } },
+      request: {
+        subtype: "can_use_tool",
+        tool_name: "Bash",
+        input: { command: "touch example" },
+        tool_use_id: "tool-1",
+      },
     });
     fake.emit("event", {
       type: "stream_event",
@@ -140,6 +145,7 @@ describe("isolated Claude session runner", () => {
         toolName: "Bash",
         input: { command: "touch example" },
         kind: "toolApproval",
+        toolUseId: "tool-1",
       },
     ]);
     await second.request("respond", {

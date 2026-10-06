@@ -32,6 +32,89 @@ describe("native Claude view", () => {
       phase: "final_answer",
     });
   });
+  it("projects ExitPlanMode as a completed plan from its plan file even after ClaudeNest declines it", () => {
+    const planTool = (id: string, file: string, content: string) => [
+      {
+        type: "assistant",
+        uuid: `${id}-write`,
+        message: {
+          id: `${id}-write-message`,
+          content: [
+            {
+              type: "tool_use",
+              id: `${id}-write`,
+              name: "Write",
+              input: { file_path: file, content },
+            },
+          ],
+          stop_reason: "tool_use",
+        },
+      },
+      {
+        type: "assistant",
+        uuid: `${id}-uuid`,
+        message: {
+          id: `${id}-message`,
+          content: [{ type: "tool_use", id, name: "ExitPlanMode", input: {} }],
+          stop_reason: "tool_use",
+        },
+      },
+      {
+        type: "user",
+        uuid: `${id}-result`,
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: id, is_error: true, content: "Declined" }],
+        },
+      },
+    ];
+    const view = normalizeNativeEvents(
+      [
+        user,
+        ...planTool("plan-tool", "/home/user/.claude/plans/first.md", "1. Do it"),
+        { type: "result", subtype: "success" },
+      ],
+      { sessionId: "session", cwd: "/project" },
+    );
+    expect(view.turns[0]).toMatchObject({ status: "completed" });
+    expect(view.turns[0]!.items.at(-1)).toEqual({
+      type: "plan",
+      id: "plan-tool",
+      status: "completed",
+      text: "1. Do it",
+      images: [],
+      timestamp: null,
+      phase: null,
+    });
+  });
+  it("fills a live ExitPlanMode plan from its permission request and keeps it across replay", () => {
+    const view = new NativeView("session", "/project");
+    const exit = {
+      type: "assistant",
+      uuid: "plan-uuid",
+      message: {
+        id: "message-plan",
+        content: [{ type: "tool_use", id: "plan-tool", name: "ExitPlanMode", input: {} }],
+        stop_reason: "tool_use",
+      },
+    };
+    view.apply(user);
+    view.apply(exit);
+    const legacy = view.presentPlan(undefined, "1. Do it");
+    expect(legacy?.toolUseId).toBe("plan-tool");
+    expect(legacy?.events).toEqual([
+      expect.objectContaining({
+        type: "activity.upserted",
+        item: expect.objectContaining({ type: "plan", text: "1. Do it" }),
+      }),
+    ]);
+    view.reset([user, exit]);
+    expect(view.turns()[0]!.items.at(-1)).toMatchObject({ type: "plan", text: "1. Do it" });
+    const restored = new NativeView("session", "/project");
+    restored.rememberPlanText("plan-tool", "1. Do it");
+    restored.reset([user, exit]);
+    expect(restored.turns()[0]!.items.at(-1)).toMatchObject({ type: "plan", text: "1. Do it" });
+  });
   it("streams deltas directly and replaces them with authoritative final blocks without duplicate text", () => {
     const view = new NativeView("session", "/project");
     view.apply(user);

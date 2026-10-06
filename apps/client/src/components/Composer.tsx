@@ -407,7 +407,6 @@ export function Composer({
     !settingsBusy &&
     !speechBusy &&
     Boolean(onSendQueuedNow);
-  const steerByDefault = application.isClaude && running;
   const planToggleEligible =
     application.capabilities.plan &&
     !running &&
@@ -734,9 +733,7 @@ export function Composer({
       return;
     }
     if (!canSubmit) return;
-    onSubmit(
-      steerByDefault ? (immediate ? "queue" : "immediate") : immediate ? "immediate" : "queue",
-    );
+    onSubmit(immediate ? "immediate" : "queue");
   }
 
   async function addImages(files: readonly File[]) {
@@ -1317,7 +1314,7 @@ export function Composer({
       className={`composer${keyboardOpen ? " keyboard-open" : ""}`}
       onSubmit={(event) => {
         event.preventDefault();
-        if (canSubmit) onSubmit(steerByDefault ? "immediate" : "queue");
+        if (canSubmit) onSubmit("queue");
       }}
     >
       {composerError && (
@@ -1564,7 +1561,7 @@ export function Composer({
                   })}
                 </span>
               )}
-            {running && !application.isClaude && (
+            {running && (
               <span className="composer-hint">{t("Сообщение будет добавлено в очередь")}</span>
             )}
           </div>
@@ -1670,7 +1667,7 @@ export function Composer({
             ) : (
               <button
                 aria-label={
-                  running && !application.isClaude
+                  running
                     ? t("Добавить в очередь")
                     : goalMode
                       ? t("Запустить цель")

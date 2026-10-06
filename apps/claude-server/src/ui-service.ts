@@ -52,6 +52,10 @@ import {
 } from "./types";
 
 const RATE_LIMITS_POLL_MS = 300_000;
+const MAX_PLAN_TEXTS = 20;
+const PLAN_REVIEW_MESSAGE =
+  "ClaudeNest is showing this plan to the user for review. End your turn now without further " +
+  "tool calls or a summary of the plan. The user will either approve it or reply with changes.";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export function commandId(value: string): string {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
@@ -117,6 +121,8 @@ export class UiService extends EventEmitter {
   private dispatches = new Map<string, Promise<void>>();
   private permissionUpdates = new Map<string, Promise<void>>();
   private approving = new Set<string>();
+  /** Bumped whenever the effective permission mode of any session may change. */
+  private permissionEpoch = 0;
   private creations = new Map<
     string,
     { fingerprint: string; promise: Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> }
@@ -322,6 +328,8 @@ export class UiService extends EventEmitter {
       queuedMessageCount: thread.queue.filter((message) => message.deliveryMode !== "steer").length,
       browserStatus: "disabled",
       settings: thread.settings,
+      ...(thread.awaitingPlanResponse ? { awaitingPlanResponse: true } : {}),
+      ...(thread.dismissedPlanTurnId ? { dismissedPlanTurnId: thread.dismissedPlanTurnId } : {}),
       permissionPreset:
         this.store.data.permissionMode === "bypassPermissions" ||
         owner?.permissionMode === "bypassPermissions"
@@ -343,7 +351,7 @@ export class UiService extends EventEmitter {
       capabilities: {
         codexManagement: false,
         rateLimits: true,
-        plan: false,
+        plan: true,
         team: false,
         goal: false,
         forks: false,
@@ -393,6 +401,7 @@ export class UiService extends EventEmitter {
       data.permissionMode = mode;
       data.permissionVersion++;
     });
+    this.permissionEpoch++;
     this.publish({ type: "permissions.changed", permissionSettings: this.permissionSettings() });
     await Promise.all([...this.owners.keys()].map((id) => this.applyPermissions(id)));
   }
@@ -400,11 +409,11 @@ export class UiService extends EventEmitter {
     const existing = this.permissionUpdates.get(id);
     if (existing) return existing;
     const task = (async () => {
-      let version: number;
+      let epoch: number;
       do {
-        version = this.store.data.permissionVersion;
+        epoch = this.permissionEpoch;
         await this.applyPermissionsOnce(id);
-      } while (!this.closed && version !== this.store.data.permissionVersion);
+      } while (!this.closed && epoch !== this.permissionEpoch);
     })().finally(() => this.permissionUpdates.delete(id));
     this.permissionUpdates.set(id, task);
     return task;
@@ -412,7 +421,7 @@ export class UiService extends EventEmitter {
   private async applyPermissionsOnce(id: string): Promise<void> {
     const owner = this.owners.get(id);
     if (!owner) return;
-    const mode = this.store.data.permissionMode;
+    const mode = this.permissionMode(id);
     if (
       owner.capabilities?.livePermissionMode &&
       owner.permissionMode !== mode &&
@@ -428,8 +437,79 @@ export class UiService extends EventEmitter {
         // Legacy CLI owners finish their work without being replaced or interrupted.
       }
     }
-    for (const request of [...owner.pendingRequests]) await this.autoApprove(id, request);
+    for (const request of [...owner.pendingRequests])
+      if (!(await this.presentPlan(id, request))) await this.autoApprove(id, request);
     this.publish({ type: "thread.upserted", thread: this.summary(id) });
+  }
+  /** Plan mode follows the session; every other session uses the global permission mode. */
+  private permissionMode(id: string): ClaudePermissionMode {
+    return this.store.data.threads[id]?.settings.collaborationMode === "plan"
+      ? "plan"
+      : this.store.data.permissionMode;
+  }
+  /**
+   * ExitPlanMode would approve the plan inside Claude's turn. Like Codex, the plan instead
+   * ends the turn and waits for the user to implement it or reply with revisions.
+   */
+  private async presentPlan(id: string, request: PendingRequest): Promise<boolean> {
+    if (request.toolName !== "ExitPlanMode") return false;
+    const key = `${id}:${request.requestId}`;
+    if (this.approving.has(key)) return true;
+    this.approving.add(key);
+    try {
+      await this.manager.command(id, "respond", {
+        requestId: commandId(`plan:${key}`),
+        targetRequestId: request.requestId,
+        response: { behavior: "deny", message: PLAN_REVIEW_MESSAGE },
+      });
+      const owner = this.owners.get(id);
+      if (owner)
+        owner.pendingRequests = owner.pendingRequests.filter(
+          (item) => item.requestId !== request.requestId,
+        );
+      const text = typeof request.input.plan === "string" ? request.input.plan : "",
+        presented = text ? this.views.get(id)?.presentPlan(request.toolUseId, text) : undefined;
+      await this.store.update((data) => {
+        const thread = data.threads[id];
+        if (!thread) return;
+        thread.awaitingPlanResponse = true;
+        delete thread.dismissedPlanTurnId;
+        if (presented)
+          thread.planTexts = Object.fromEntries(
+            [
+              ...Object.entries(thread.planTexts ?? {}).filter(
+                ([toolUseId]) => toolUseId !== presented.toolUseId,
+              ),
+              [presented.toolUseId, text] as const,
+            ].slice(-MAX_PLAN_TEXTS),
+          );
+      });
+      for (const event of presented?.events ?? []) this.publish(event);
+      this.publish({ type: "attention.removed", attentionId: key });
+      return true;
+    } catch {
+      // Keep the native request visible so the user can still answer it.
+      return !this.owners
+        .get(id)
+        ?.pendingRequests.some((item) => item.requestId === request.requestId);
+    } finally {
+      this.approving.delete(key);
+    }
+  }
+  async dismissPlan(id: string, turnId: string): Promise<ThreadSummary> {
+    this.thread(id);
+    await this.store.update((data) => {
+      const thread = data.threads[id]!;
+      if (!thread.awaitingPlanResponse)
+        throw new AppError("conflict", "The plan no longer awaits a response", 409);
+      thread.awaitingPlanResponse = false;
+      thread.dismissedPlanTurnId = turnId;
+      thread.settings = { ...thread.settings, collaborationMode: "default" };
+    });
+    this.permissionEpoch++;
+    await this.applyPermissions(id);
+    this.publish({ type: "thread.upserted", thread: this.summary(id) });
+    return this.summary(id);
   }
   private async autoApprove(id: string, request: PendingRequest): Promise<boolean> {
     if (
@@ -469,6 +549,8 @@ export class UiService extends EventEmitter {
     if (saved) return saved;
     const thread = this.thread(id),
       view = new NativeView(id, thread.cwd);
+    for (const [toolUseId, text] of Object.entries(thread.planTexts ?? {}))
+      view.rememberPlanText(toolUseId, text);
     const history = await readHistory(this.manager.config.configDir, id).catch((error) => {
       if (error.code === "ENOENT") return null;
       throw error;
@@ -583,7 +665,7 @@ export class UiService extends EventEmitter {
         ...owner.pendingRequests.filter((item) => item.requestId !== request.requestId),
         request,
       ];
-      if (!(await this.autoApprove(id, request))) {
+      if (!(await this.presentPlan(id, request)) && !(await this.autoApprove(id, request))) {
         const attention = this.toAttention(id, request);
         this.publish({ type: "attention.upserted", attention });
       }
@@ -748,6 +830,9 @@ export class UiService extends EventEmitter {
       throw new AppError("invalid_request", "Message is empty");
     if (body.replyToUserInput || body.goal)
       throw new AppError("invalid_request", "Use the Claude attention response for questions");
+    if (body.planImplementationMode !== undefined && body.planImplementationMode !== "default")
+      throw new AppError("invalid_request", "Claude implements plans in the standard mode");
+    const implementingPlan = body.planImplementationMode === "default";
     if (body.deliveryMode !== undefined && !["queue", "steer"].includes(body.deliveryMode))
       throw new AppError("invalid_request", "Invalid message delivery mode");
     const steering = body.deliveryMode === "steer";
@@ -834,6 +919,9 @@ export class UiService extends EventEmitter {
         };
         fresh = true;
         current.queue.push(message);
+        delete current.awaitingPlanResponse;
+        if (implementingPlan)
+          current.settings = { ...current.settings, collaborationMode: "default" };
         current.deliveries[clientId] = {
           fingerprint,
           messageId: message.id,
@@ -875,6 +963,13 @@ export class UiService extends EventEmitter {
       });
       durable = true;
       if (clearedProject) this.publish({ type: "projectDraft.changed", ...clearedProject });
+      if (fresh) {
+        if (implementingPlan) {
+          this.permissionEpoch++;
+          await this.applyPermissions(id);
+        }
+        this.publish({ type: "thread.upserted", thread: this.summary(id) });
+      }
       this.publishQueue(id);
       this.schedule(id);
       return message;
@@ -1048,7 +1143,7 @@ export class UiService extends EventEmitter {
             ? await this.manager.send(id, message.id, prompt, content, {
                 model: thread.settings.model,
                 effort: thread.settings.reasoningEffort,
-                permissionMode: this.store.data.permissionMode,
+                permissionMode: this.permissionMode(id),
               })
             : await this.manager.create({
                 sessionId: id,
@@ -1057,7 +1152,7 @@ export class UiService extends EventEmitter {
                 prompt,
                 model: thread.settings.model,
                 effort: thread.settings.reasoningEffort,
-                permissionMode: this.store.data.permissionMode,
+                permissionMode: this.permissionMode(id),
                 ...content,
               });
       const returned = result as CommandReceipt;
@@ -1145,8 +1240,11 @@ export class UiService extends EventEmitter {
     if (patch.model === null) patch.model = "default";
     if (patch.reasoningEffort === null) patch.reasoningEffort = undefined;
     const thread = this.thread(id);
-    if (patch.collaborationMode && patch.collaborationMode !== "default")
-      throw new AppError("invalid_request", "Claude prototype supports standard sessions");
+    if (patch.collaborationMode && !["default", "plan"].includes(patch.collaborationMode))
+      throw new AppError("invalid_request", "Claude supports standard and plan sessions");
+    const planChanged =
+      patch.collaborationMode !== undefined &&
+      patch.collaborationMode !== (thread.settings.collaborationMode ?? "default");
     if (patch.model && !this.modelOptions().some((item) => item.id === patch.model))
       throw new AppError("invalid_request", "Model is not in Claude's available catalog");
     const descriptor = await this.manager.descriptor(id),
@@ -1168,12 +1266,19 @@ export class UiService extends EventEmitter {
       });
     }
     await this.store.update((data) => {
-      data.threads[id]!.settings = {
-        ...data.threads[id]!.settings,
+      const current = data.threads[id]!;
+      current.settings = {
+        ...current.settings,
         ...patch,
-        collaborationMode: "default",
+        collaborationMode:
+          patch.collaborationMode ?? current.settings.collaborationMode ?? "default",
       };
+      if (current.settings.collaborationMode !== "plan") delete current.awaitingPlanResponse;
     });
+    if (planChanged) {
+      this.permissionEpoch++;
+      await this.applyPermissions(id);
+    }
     this.publish({ type: "thread.upserted", thread: this.summary(id) });
     return this.summary(id);
   }

@@ -29,6 +29,11 @@ export interface UiThread {
   draft: ThreadDraft | null;
   queue: QueuedMessage[];
   nativeHistory?: boolean;
+  /** A plan from ExitPlanMode is shown to the user and awaits approval or revision. */
+  awaitingPlanResponse?: boolean;
+  dismissedPlanTurnId?: string;
+  /** ExitPlanMode plans by tool use ID; Claude's transcript does not include their text. */
+  planTexts?: Record<string, string>;
   deliveries: Record<
     string,
     {

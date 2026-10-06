@@ -138,7 +138,7 @@ describe("the shared Claude interface", () => {
     expect(connected).not.toHaveBeenCalled();
   });
 
-  it("keeps live model switching while preventing effort changes and unsupported modes", () => {
+  it("keeps live model switching and Plan mode while preventing effort changes and unsupported modes", () => {
     const onChange = vi.fn();
     render(
       <SettingsPicker
@@ -150,9 +150,8 @@ describe("the shared Claude interface", () => {
         onChange={onChange}
       />,
     );
-    expect(
-      screen.queryByRole("button", { name: "Включить режим планирования" }),
-    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Включить режим планирования" }));
+    expect(onChange).toHaveBeenCalledWith({ collaborationMode: "plan" });
     expect(
       screen.queryByRole("button", { name: "Включить командный режим" }),
     ).not.toBeInTheDocument();
@@ -351,7 +350,7 @@ describe("the shared Claude interface", () => {
     expect(screen.getByRole("radio", { name: /Полный доступ/ })).toBeChecked();
   });
 
-  it("steers active Claude input with the original controls and explicit queue shortcut", () => {
+  it("queues active Claude input like Codex and steers with the modifier shortcut", () => {
     connection.mockReturnValue({ api: {} });
     const onSubmit = vi.fn();
     const onStop = vi.fn();
@@ -379,24 +378,24 @@ describe("the shared Claude interface", () => {
     fireEvent.submit(view.container.querySelector("form")!);
     fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
     fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
-    expect(onSubmit.mock.calls).toEqual([["immediate"], ["immediate"], ["queue"], ["queue"]]);
+    expect(onSubmit.mock.calls).toEqual([["queue"], ["queue"], ["immediate"], ["immediate"]]);
     expect(onStop).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: "Добавить в очередь" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Добавить в очередь" })).toBeEnabled();
+    expect(screen.getByText("Сообщение будет добавлено в очередь")).toBeInTheDocument();
   });
 
   it.each([
-    ["active", false, "steer"],
-    ["active", true, "queue"],
-    [null, false, "steer"],
-    [null, true, "queue"],
+    ["active", true, "steer"],
+    ["active", false, "queue"],
+    [null, true, "steer"],
+    [null, false, "queue"],
   ] as const)(
-    "delivers active input with current turn=%s and explicit queue=%s without interrupting",
-    async (currentTurnId, queue, mode) => {
+    "delivers active input with current turn=%s and steer shortcut=%s without interrupting",
+    async (currentTurnId, steer, mode) => {
       const context = renderActiveClaudeThread([], false, currentTurnId);
       const textarea = await screen.findByRole("textbox", { name: "Направить текущую задачу" });
       fireEvent.change(textarea, { target: { value: "Уточнение" } });
-      fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: queue });
+      fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: steer });
       await waitFor(() => expect(context.sendReliable).toHaveBeenCalledOnce());
       expect(context.sendReliable.mock.calls[0]?.[1]).toMatchObject({
         input: "Уточнение",
@@ -520,7 +519,7 @@ describe("the shared Claude interface", () => {
     );
   });
 
-  it("keeps file attachments and queue submission while ignoring the disabled Plan shortcut", async () => {
+  it("keeps file attachments and queue submission and toggles Plan mode with Shift+Tab", async () => {
     connection.mockReturnValue({ api: {} });
     const attachment = {
       id: "file",
@@ -559,7 +558,10 @@ describe("the shared Claude interface", () => {
     await waitFor(() => expect(upload).toHaveBeenCalledWith([file], 0));
     expect(onFilesChange).toHaveBeenCalledWith([attachment], 0);
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Tab", shiftKey: true });
-    expect(onSettingsChange).not.toHaveBeenCalled();
+    expect(onSettingsChange).toHaveBeenCalledWith({ collaborationMode: "plan" });
+    expect(screen.getByRole("button", { name: /план/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /оркестратор/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /цели/i })).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledWith("queue");
   });

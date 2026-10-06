@@ -4377,26 +4377,30 @@ export function ThreadPage({
                                           >
                                             {t("Да, реализуй этот план")}
                                           </button>
-                                          <button
-                                            className="implement-plan goal"
-                                            disabled={planAcceptanceDisabled}
-                                            title={planAcceptanceTitle}
-                                            type="button"
-                                            onClick={() => void implementPlan("goal")}
-                                          >
-                                            <TargetIcon />
-                                            {t("Запустить в режиме цели")}
-                                          </button>
-                                          <button
-                                            className="implement-plan orchestrator"
-                                            disabled={planAcceptanceDisabled}
-                                            title={planAcceptanceTitle}
-                                            type="button"
-                                            onClick={() => void implementPlan("team")}
-                                          >
-                                            <TeamIcon />
-                                            {t("Запустить в режиме оркестратора")}
-                                          </button>
+                                          {application.capabilities.goal && (
+                                            <button
+                                              className="implement-plan goal"
+                                              disabled={planAcceptanceDisabled}
+                                              title={planAcceptanceTitle}
+                                              type="button"
+                                              onClick={() => void implementPlan("goal")}
+                                            >
+                                              <TargetIcon />
+                                              {t("Запустить в режиме цели")}
+                                            </button>
+                                          )}
+                                          {application.capabilities.team && (
+                                            <button
+                                              className="implement-plan orchestrator"
+                                              disabled={planAcceptanceDisabled}
+                                              title={planAcceptanceTitle}
+                                              type="button"
+                                              onClick={() => void implementPlan("team")}
+                                            >
+                                              <TeamIcon />
+                                              {t("Запустить в режиме оркестратора")}
+                                            </button>
+                                          )}
                                           {workspaceSummary.awaitingPlanResponse && (
                                             <button
                                               className="implement-plan"

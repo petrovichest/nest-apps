@@ -54,6 +54,7 @@ export interface PendingRequest {
   toolName: string;
   input: Record<string, unknown>;
   kind?: "toolApproval" | "userQuestion" | "other";
+  toolUseId?: string;
 }
 
 export interface RunnerSnapshot {
