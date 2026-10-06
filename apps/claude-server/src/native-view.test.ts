@@ -666,6 +666,266 @@ describe("native Claude view", () => {
     expect(view.turns()[0]!.items[1]).toMatchObject({ timestamp: 20 });
   });
 
+  it("maps compact CLI blocks to their active streamed indices before the block stops", () => {
+    const view = new NativeView("session", "/project");
+    view.apply({ ...user, timestamp: 10 });
+    view.apply(stream({ type: "message_start", message: { id: "compact" } }));
+    const blocks = [
+      { type: "thinking", thinking: "Thought" },
+      { type: "text", text: "Answer" },
+      { type: "tool_use", id: "read-tool", name: "Read", input: { file_path: "/project/a.txt" } },
+    ];
+    blocks.forEach((block, index) => {
+      view.apply(stream({ type: "content_block_start", index, content_block: block }));
+      view.apply({
+        type: "assistant",
+        uuid: `compact-${index}`,
+        timestamp: 20 + index,
+        message: { id: "compact", stop_reason: null, content: [block] },
+      });
+      view.apply(stream({ type: "content_block_stop", index }));
+    });
+    expect(view.turns()[0]!.items.map((item) => item.id)).toEqual([
+      "user-1",
+      "compact:0",
+      "compact:1",
+      "read-tool",
+    ]);
+    expect(view.turns()[0]!.items[1]).toMatchObject({ type: "reasoning", text: "Thought" });
+    expect(view.turns()[0]!.items[2]).toMatchObject({
+      type: "agentMessage",
+      text: "Answer",
+      timestamp: 21,
+      status: "completed",
+    });
+  });
+
+  it("keeps separate compact text blocks and applies full final arrays from index zero", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply(stream({ type: "message_start", message: { id: "multi" } }));
+    for (const [index, text] of ["First", "Second"].entries()) {
+      view.apply(
+        stream({ type: "content_block_start", index, content_block: { type: "text", text } }),
+      );
+      view.apply({
+        type: "assistant",
+        uuid: `multi-${index}`,
+        message: { id: "multi", stop_reason: null, content: [{ type: "text", text }] },
+      });
+      view.apply(stream({ type: "content_block_stop", index }));
+    }
+    view.apply({
+      type: "assistant",
+      uuid: "full-multi",
+      message: {
+        id: "multi",
+        stop_reason: "end_turn",
+        content: [
+          { type: "text", text: "First" },
+          { type: "text", text: "Second" },
+        ],
+      },
+    });
+    expect(view.turns()[0]!.items.map((item) => item.id)).toEqual(["user-1", "multi:0", "multi:1"]);
+    expect(
+      view
+        .turns()[0]!
+        .items.slice(1)
+        .map((item) => "text" in item && item.text),
+    ).toEqual(["First", "Second"]);
+    view.apply(
+      stream({
+        type: "content_block_start",
+        index: 2,
+        content_block: { type: "text", text: "Pending" },
+      }),
+    );
+    const update = view.apply({
+      type: "assistant",
+      uuid: "full-single",
+      message: {
+        id: "multi",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Full single" }],
+      },
+    });
+    expect(update[0]).toMatchObject({ item: { id: "multi:0", text: "Full single" } });
+  });
+
+  it("uses canonical UUID metadata when SDK replay strips block indices and companion flags", () => {
+    const view = new NativeView("session", "/project");
+    const thought = {
+      type: "assistant",
+      uuid: "thought-source",
+      apiBlockIndex: 0,
+      timestamp: 20,
+      message: {
+        id: "canonical",
+        stop_reason: "end_turn",
+        content: [{ type: "thinking", thinking: "" }],
+      },
+    };
+    const answer = {
+      type: "assistant",
+      uuid: "answer-source",
+      apiBlockIndex: 1,
+      timestamp: 30,
+      message: {
+        id: "canonical",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Answer" }],
+      },
+    };
+    const companion = {
+      type: "user",
+      uuid: "note-source",
+      isMeta: true,
+      turnCompanion: true,
+      message: { content: "Transport note" },
+    };
+    const history = [{ ...user, timestamp: 10 }, thought, answer, companion];
+    const replay = [
+      user,
+      stream({ type: "message_start", message: { id: "canonical" } }),
+      stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "" },
+      }),
+      { ...thought, apiBlockIndex: undefined, message: { ...thought.message, stop_reason: null } },
+      stream({ type: "content_block_stop", index: 0 }),
+      stream({ type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+      { ...answer, apiBlockIndex: undefined, message: { ...answer.message, stop_reason: null } },
+      stream({ type: "content_block_stop", index: 1 }),
+      {
+        ...companion,
+        isMeta: undefined,
+        turnCompanion: undefined,
+        message: { content: [{ type: "text", text: "Transport note" }] },
+      },
+      { type: "result", timestamp: 40 },
+    ];
+    for (const preserveInputs of [false, true]) {
+      view.reset([...history, ...replay], { preserveInputs });
+      expect(view.turns()).toHaveLength(1);
+      expect(view.turns()[0]!.items).toMatchObject([
+        { id: "user-1" },
+        { id: "canonical:0", type: "reasoning" },
+        {
+          id: "canonical:1",
+          type: "agentMessage",
+          text: "Answer",
+          timestamp: 30,
+          phase: "final_answer",
+        },
+      ]);
+      expect(view.turns()[0]!.items).toHaveLength(3);
+    }
+  });
+
+  it("drops a formerly rendered companion input when canonical metadata becomes available", () => {
+    const view = new NativeView("session", "/project");
+    const companion = { ...user, uuid: "companion-source", message: { content: "Transport note" } };
+    view.apply(user);
+    view.apply(assistant);
+    view.apply(companion);
+    expect(view.turns()).toHaveLength(2);
+    view.reset(
+      [
+        user,
+        assistant,
+        { ...companion, isMeta: true, turnCompanion: true },
+        { ...companion, message: { content: [{ type: "text", text: "Transport note" }] } },
+      ],
+      { preserveInputs: true },
+    );
+    expect(view.turns()).toHaveLength(1);
+    expect(view.turns()[0]!.items.map((item) => item.id)).toEqual(["user-1", "message-1:0"]);
+  });
+
+  it("suppresses only the standalone SDK coordinate note after a completed image Read", () => {
+    const note =
+      "[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]";
+    const image = {
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" },
+    };
+    const sdk = {
+      type: "user",
+      uuid: "note",
+      message: { content: [{ type: "text", text: note }] },
+    };
+    const ready = () => {
+      const view = new NativeView("session", "/project");
+      view.apply(user);
+      view.apply({
+        type: "assistant",
+        message: {
+          id: "read",
+          content: [
+            {
+              type: "tool_use",
+              id: "read-image",
+              name: "Read",
+              input: { file_path: "/project/shot.png" },
+            },
+          ],
+        },
+      });
+      view.apply({
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", tool_use_id: "read-image", content: [image] }],
+        },
+      });
+      return view;
+    };
+    const view = ready();
+    view.apply(sdk);
+    expect(view.turns()[0]!.items.filter((item) => item.type === "userMessage")).toHaveLength(1);
+    for (const event of [
+      { ...sdk, message: { content: note } },
+      { ...sdk, claudenest_delivery: "steer" },
+      {
+        ...sdk,
+        message: {
+          content: [
+            { type: "text", text: note },
+            { type: "text", text: "User explanation" },
+          ],
+        },
+      },
+      { ...sdk, message: { content: [{ type: "text", text: note }, image] } },
+    ]) {
+      const actual = ready();
+      actual.apply(event);
+      expect(actual.turns()[0]!.items.filter((item) => item.type === "userMessage")).toHaveLength(
+        2,
+      );
+    }
+    const known = ready();
+    known.recordUserMessage({
+      id: "note",
+      threadId: "session",
+      text: note,
+      createdAt: Date.now(),
+      status: "dispatching",
+      deliveryMode: "steer",
+    });
+    known.apply(sdk);
+    expect(known.turns()[0]!.items.filter((item) => item.type === "userMessage")).toHaveLength(2);
+    const unread = new NativeView("session", "/project");
+    unread.apply(user);
+    unread.apply(sdk);
+    expect(
+      unread
+        .turns()
+        .flatMap((turn) => turn.items)
+        .filter((item) => item.type === "userMessage"),
+    ).toHaveLength(2);
+  });
+
   it("keeps Read images in tool details and ignores flagged companions without dropping real uploads", () => {
     const view = new NativeView("session", "/project");
     const image = {

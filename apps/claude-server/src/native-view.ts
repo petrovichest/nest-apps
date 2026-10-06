@@ -14,6 +14,7 @@ type StreamMessage = {
   turnId: string;
   blocks: Map<number, Json>;
   json: Map<number, string>;
+  activeBlock?: { index: number; type: string };
 };
 
 function object(value: unknown): value is Json {
@@ -29,6 +30,12 @@ function timestamp(value: unknown): number | null {
 }
 function stable(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
+}
+function sourceKey(event: Json): string {
+  const id = string(event.uuid);
+  return id && event.type === "assistant" && object(event.message)
+    ? `${id}:${string(event.message.id)}`
+    : id;
 }
 function textContent(content: unknown): string {
   if (typeof content === "string") return content;
@@ -87,6 +94,7 @@ export class NativeView {
   private readonly byId = new Map<string, TurnView>();
   private readonly userTurns = new Map<string, TurnView>();
   private readonly messageTurns = new Map<string, TurnView>();
+  private readonly sourceMetadata = new Map<string, Json>();
   private readonly continuingTurns = new Set<string>();
   private readonly tools = new Map<
     string,
@@ -145,12 +153,19 @@ export class NativeView {
   }
 
   reset(events: readonly Json[], options: { live?: boolean; preserveInputs?: boolean } = {}): void {
+    if (!options.preserveInputs) this.sourceMetadata.clear();
+    // SDK events omit transcript metadata, but retain the transcript entry UUID.
+    // Index it before replay so canonical block indices and companion flags win.
+    for (const event of events) this.rememberSourceMetadata(event);
+    events = events.map((event) => this.withSourceMetadata(event));
     const previous = options.preserveInputs
       ? this.values.flatMap((turn) => turn.items.map((item) => ({ turn, item })))
       : [];
     const retained = previous.filter(
       (entry): entry is { turn: TurnView; item: ActivityItem & { type: "userMessage" } } =>
-        entry.item.type === "userMessage",
+        entry.item.type === "userMessage" &&
+        this.sourceMetadata.get(entry.item.id)?.isMeta !== true &&
+        this.sourceMetadata.get(entry.item.id)?.turnCompanion !== true,
     );
     // Owner snapshots can precede a native input echo. Replay the existing
     // inputs at their stable neighboring activities, then retain their UI data.
@@ -274,6 +289,7 @@ export class NativeView {
   }
 
   apply(event: Json): ServerEvent[] {
+    event = this.withSourceMetadata(event);
     if (event.isSidechain === true || event.parent_tool_use_id) return [];
     if (
       event.type === "attachment" &&
@@ -350,6 +366,27 @@ export class NativeView {
         return changes;
       }
       const id = string(event.uuid) || `user:${stable(event)}`;
+      // Claude emits this one-block coordinate annotation after reading an image.
+      // Actual UI input is a string, an attachment, or already has delivery identity.
+      if (
+        !this.userTurns.has(id) &&
+        event.claudenest_delivery === undefined &&
+        Array.isArray(content) &&
+        content.length === 1 &&
+        object(content[0]) &&
+        content[0].type === "text" &&
+        /^\[Image: original \d+x\d+, displayed at \d+x\d+\. Multiply coordinates by \d+(?:\.\d+)? to map to original image\.\]$/.test(
+          user.text,
+        ) &&
+        this.active?.items.some(
+          (item) =>
+            item.type === "tool" &&
+            item.title === "Read" &&
+            item.status === "completed" &&
+            Boolean(item.images?.length),
+        )
+      )
+        return changes;
       let turn = this.userTurns.get(id);
       if (!turn) {
         const steering =
@@ -393,12 +430,22 @@ export class NativeView {
         this.continuingTurns.add(turn.id);
       else this.continuingTurns.delete(turn.id);
       const changes: ServerEvent[] = [];
+      const activeBlock = this.streams.get(messageId)?.activeBlock;
+      const compactBlock =
+        parts.length === 1 && message.stop_reason === null && activeBlock?.type === parts[0]?.type;
       const blockOffset =
         typeof event.apiBlockIndex === "number" &&
         Number.isInteger(event.apiBlockIndex) &&
         event.apiBlockIndex >= 0
           ? event.apiBlockIndex
-          : 0;
+          : compactBlock
+            ? activeBlock!.index
+            : 0;
+      if (compactBlock && string(event.uuid))
+        this.sourceMetadata.set(sourceKey(event), {
+          ...this.sourceMetadata.get(sourceKey(event)),
+          apiBlockIndex: blockOffset,
+        });
       parts.forEach((part, index) => {
         const item = this.block(
           turn,
@@ -468,6 +515,39 @@ export class NativeView {
     this.byId.set(id, turn);
     this.active = turn;
     return turn;
+  }
+  private rememberSourceMetadata(event: Json): void {
+    const id = sourceKey(event);
+    if (!id || event.isSidechain === true || event.parent_tool_use_id) return;
+    const metadata: Json = {};
+    if (
+      typeof event.apiBlockIndex === "number" &&
+      Number.isInteger(event.apiBlockIndex) &&
+      event.apiBlockIndex >= 0
+    )
+      metadata.apiBlockIndex = event.apiBlockIndex;
+    if (event.isMeta === true) metadata.isMeta = true;
+    if (event.turnCompanion === true) metadata.turnCompanion = true;
+    if (Object.keys(metadata).length)
+      this.sourceMetadata.set(id, { ...this.sourceMetadata.get(id), ...metadata });
+  }
+  private withSourceMetadata(event: Json): Json {
+    this.rememberSourceMetadata(event);
+    const source = this.sourceMetadata.get(sourceKey(event));
+    return source
+      ? {
+          ...event,
+          ...(source.isMeta === true ? { isMeta: true } : {}),
+          ...(source.turnCompanion === true ? { turnCompanion: true } : {}),
+          ...(event.apiBlockIndex === undefined &&
+          object(event.message) &&
+          Array.isArray(event.message.content) &&
+          event.message.content.length === 1 &&
+          source.apiBlockIndex !== undefined
+            ? { apiBlockIndex: source.apiBlockIndex }
+            : {}),
+        }
+      : event;
   }
   private ensureTurn(id: string, at: number | null): TurnView {
     const saved = this.messageTurns.get(id);
@@ -642,12 +722,17 @@ export class NativeView {
         json: new Map(),
       };
       this.streams.set(id, this.latestStream);
+      this.latestStream.activeBlock = undefined;
       return [];
     }
     const message = this.latestStream;
     if (!message) return [];
     const turn = this.byId.get(message.turnId)!;
     const index = typeof event.index === "number" ? event.index : 0;
+    if (event.type === "content_block_start" && object(event.content_block))
+      message.activeBlock = { index, type: string(event.content_block.type) };
+    else if (event.type === "content_block_stop" && message.activeBlock?.index === index)
+      message.activeBlock = undefined;
     const existing = turn.items.find((item) => item.id === `${message.id}:${index}`);
     if (existing?.status === "completed") return [];
     if (event.type === "content_block_start" && object(event.content_block))

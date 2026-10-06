@@ -1189,6 +1189,85 @@ describe("Claude UI durable session facade", () => {
     expect(manager.sends).toEqual([]);
   });
 
+  it("merges an older owner's compact SDK replay with canonical transcript block metadata", async () => {
+    const { manager, config, directory, start } = await fixture();
+    const id = randomUUID();
+    const user = {
+      type: "user",
+      uuid: "original-input",
+      cwd: directory,
+      timestamp: "2026-10-05T22:43:06.493Z",
+      message: { content: "Show the screenshots" },
+    };
+    const thinking = {
+      type: "assistant",
+      uuid: "thinking-record",
+      cwd: directory,
+      apiBlockIndex: 0,
+      timestamp: "2026-10-05T22:47:23.396Z",
+      message: {
+        id: "reply",
+        content: [{ type: "thinking", thinking: "Inspecting" }],
+        stop_reason: null,
+      },
+    };
+    const answer = {
+      ...thinking,
+      uuid: "answer-record",
+      apiBlockIndex: 1,
+      timestamp: "2026-10-05T22:47:28.511Z",
+      message: {
+        id: "reply",
+        content: [{ type: "text", text: "Here are the screenshots" }],
+        stop_reason: null,
+      },
+    };
+    const companion = {
+      ...user,
+      uuid: "image-companion",
+      isMeta: true,
+      turnCompanion: true,
+      message: { content: "[Image: original 2880x1800]" },
+    };
+    const events = [user, thinking, answer, companion];
+    const transcript = join(config.configDir, "projects", "compact-sdk");
+    await mkdir(transcript, { recursive: true });
+    await writeFile(
+      join(transcript, `${id}.jsonl`),
+      events.map((event) => JSON.stringify(event)).join("\n") + "\n",
+    );
+    const owner = snapshot(id, directory);
+    owner.currentEvents = [
+      user,
+      { type: "stream_event", event: { type: "message_start", message: { id: "reply" } } },
+      ...events.slice(1).map((event) => {
+        const sdk = { ...event } as Record<string, unknown>;
+        delete sdk.apiBlockIndex;
+        delete sdk.isMeta;
+        delete sdk.turnCompanion;
+        return sdk;
+      }),
+      { type: "result", subtype: "success", timestamp: "2026-10-05T22:47:29Z" },
+    ];
+    manager.owners.set(id, owner);
+    const service = await start();
+    await expect.poll(async () => (await service.detail(id)).turns[0]?.status).toBe("completed");
+    const turns = (await service.detail(id)).turns;
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.items.map((item) => [item.id, item.type])).toEqual([
+      ["original-input", "userMessage"],
+      ["reply:0", "reasoning"],
+      ["reply:1", "agentMessage"],
+    ]);
+    expect(turns[0]?.items[2]).toMatchObject({
+      text: "Here are the screenshots",
+      timestamp: Date.parse(answer.timestamp),
+      phase: "final_answer",
+    });
+    expect(manager.sends).toEqual([]);
+    expect(manager.creates).toEqual([]);
+  });
+
   it("projects external native history read-only and resumes its existing session UUID", async () => {
     const { manager, config, directory, start } = await fixture();
     const id = randomUUID(),
