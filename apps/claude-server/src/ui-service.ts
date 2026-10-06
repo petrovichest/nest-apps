@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, realpath, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { Readable } from "node:stream";
+import type { TitleGenerator } from "./title";
 import {
   pastedText,
   serializePastedMessage,
@@ -160,7 +161,10 @@ export class UiService extends EventEmitter {
       )
         this.recoverQuota(thread.id);
   };
-  constructor(readonly manager: SessionManager) {
+  constructor(
+    readonly manager: SessionManager,
+    private readonly generateTitle?: TitleGenerator,
+  ) {
     super();
     this.store = new UiStore(manager.config.stateDir);
     this.attachments = new AttachmentStore(join(manager.config.stateDir, "attachments"));
@@ -1249,7 +1253,8 @@ export class UiService extends EventEmitter {
     }
     if (body.files?.length) await this.attachments.validate(id, body.files);
     const imageFiles: ThreadFileAttachment[] = [];
-    let fresh = false,
+    let provisionalTitle = "",
+      fresh = false,
       durable = false;
     let clearedProject: { projectId: string; draft: ThreadDraft } | undefined;
     try {
@@ -1314,8 +1319,10 @@ export class UiService extends EventEmitter {
           ...(steering ? { mode: "steer" as const } : {}),
           ...(imageFiles.length ? { imageFiles } : {}),
         };
-        if (current.title === "Новая сессия")
+        if (current.title === "Новая сессия") {
           current.title = text.replace(/\s+/g, " ").slice(0, 100) || "Вложения";
+          if (text.trim()) provisionalTitle = current.title;
+        }
         current.updatedAt = Date.now();
         const sentDraft = current.draft,
           expectedDraft = (body as QueueMessageRequest & { draftUpdatedAt?: number | null })
@@ -1354,6 +1361,7 @@ export class UiService extends EventEmitter {
           await this.applyPermissions(id);
         }
         this.publish({ type: "thread.upserted", thread: this.summary(id) });
+        if (provisionalTitle) void this.refineTitle(id, provisionalTitle, text);
       }
       this.publishQueue(id);
       this.schedule(id);
@@ -1361,6 +1369,24 @@ export class UiService extends EventEmitter {
     } finally {
       if (!fresh || !durable)
         await Promise.allSettled(imageFiles.map((file) => this.attachments.remove(id, file.id)));
+    }
+  }
+  private async refineTitle(id: string, provisional: string, text: string): Promise<void> {
+    if (!this.generateTitle) return;
+    try {
+      const title = await this.generateTitle(text);
+      let changed = false;
+      await this.store.update((data) => {
+        const thread = data.threads[id];
+        if (thread && thread.title === provisional) {
+          thread.title = title;
+          changed = true;
+        }
+      });
+      if (changed && !this.closed)
+        this.publish({ type: "thread.upserted", thread: this.summary(id) });
+    } catch {
+      /* The first message stays as the title. */
     }
   }
   steer(id: string, body: QueueMessageRequest): Promise<QueuedMessage> {

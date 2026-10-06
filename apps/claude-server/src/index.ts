@@ -3,13 +3,17 @@ import { loadConfig } from "./config";
 import { SessionManager } from "./manager";
 import { UiService } from "./ui-service";
 import { ClaudeAccounts } from "./accounts";
+import { claudeTitleGenerator } from "./title";
 
 const config = await loadConfig();
 const accounts = new ClaudeAccounts(config);
 await accounts.initialize();
 const manager = new SessionManager(config, undefined, accounts);
 await manager.initialize();
-const ui = new UiService(manager);
+const ui = new UiService(
+  manager,
+  claudeTitleGenerator({ claudeBin: config.claudeBin, configDir: config.configDir }),
+);
 await ui.initialize();
 const app = await buildApp(manager, ui);
 await app.listen({ host: config.host, port: config.port });
