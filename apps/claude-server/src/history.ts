@@ -120,6 +120,16 @@ async function readTranscript(file: Transcript): Promise<SessionHistory & { titl
   return { sessionId: file.sessionId, cwd, messages, title };
 }
 
+/** Native transcript paths by lower-case session UUID, newest file first. */
+export async function transcriptPaths(configDir: string): Promise<Map<string, string>> {
+  const paths = new Map<string, string>();
+  for (const file of await transcripts(configDir)) {
+    const id = file.sessionId.toLowerCase();
+    if (!paths.has(id)) paths.set(id, file.path);
+  }
+  return paths;
+}
+
 /** Read-only native Claude history, with no index, copied history, or custom DB. */
 export async function listHistory(configDir: string, cwd?: string): Promise<HistorySummary[]> {
   const result: HistorySummary[] = [];

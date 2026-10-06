@@ -312,6 +312,74 @@ describe("Claude browser UI HTTP and global stream", () => {
     expect(dirty.json()).toMatchObject({ state: "dirty", deletions: 0 });
   });
 
+  it("searches native message history, lists occurrences, and loads a found turn", async () => {
+    const state = await fixture();
+    const first = await state.reserve(),
+      second = await state.reserve();
+    const projects = join(state.config.configDir, "projects", "test");
+    await mkdir(projects, { recursive: true });
+    const write = (id: string, entries: unknown[]) =>
+      writeFile(
+        join(projects, `${id}.jsonl`),
+        entries.map((entry) => JSON.stringify(entry)).join("\n"),
+      );
+    await write(first.id, [
+      {
+        type: "user",
+        uuid: "u1",
+        cwd: state.directory,
+        message: { content: 'Deploy the "Kafka" worker' },
+      },
+      {
+        type: "assistant",
+        uuid: "a1",
+        message: { id: "m1", content: [{ type: "text", text: "Kafka is now deployed." }] },
+      },
+    ]);
+    await write(second.id, [
+      { type: "user", uuid: "u2", cwd: state.directory, message: { content: "Unrelated" } },
+      {
+        type: "assistant",
+        uuid: "a2",
+        message: {
+          id: "m2",
+          content: [{ type: "tool_use", id: "t", name: "Bash", input: { command: "kafka" } }],
+        },
+      },
+    ]);
+    const get = (url: string) => state.app.inject({ method: "GET", url, headers: state.headers });
+    const page = (await get("/api/v1/threads/search?q=kafka&archived=false")).json();
+    expect(page.data.map((entry: { thread: { id: string } }) => entry.thread.id)).toEqual([
+      first.id,
+    ]);
+    expect(page.data[0].snippet).toBe('Deploy the "Kafka" worker');
+    const occurrences = (await get(`/api/v1/threads/${first.id}/search?q=KAFKA`)).json();
+    expect(occurrences).toEqual({
+      data: [
+        {
+          turnId: "u1",
+          itemId: "u1",
+          snippet: 'Deploy the "Kafka" worker',
+          snippetMatchRange: { start: 12, end: 17 },
+          turnCursor: "u1",
+        },
+        {
+          turnId: "u1",
+          itemId: "m1:0",
+          snippet: "Kafka is now deployed.",
+          snippetMatchRange: { start: 0, end: 5 },
+          turnCursor: "u1",
+        },
+      ],
+      nextCursor: null,
+    });
+    const turn = (await get(`/api/v1/threads/${first.id}/turns/u1?cursor=u1`)).json();
+    expect(turn).toMatchObject({ instanceId: state.ui.instanceId, turn: { id: "u1" } });
+    expect((await get(`/api/v1/threads/${first.id}/turns/missing?cursor=x`)).statusCode).toBe(409);
+    expect((await get("/api/v1/threads/search?q=%20")).statusCode).toBe(400);
+    expect((await get("/api/v1/threads/search?q=kafka&cursor=bad")).statusCode).toBe(400);
+  });
+
   it("serves the PWA shell without credentials while guarding APIs and foreign origins", async () => {
     const { app, headers } = await fixture();
     const shell = await app.inject({ url: "/" });

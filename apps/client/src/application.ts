@@ -17,7 +17,7 @@ export const application = {
     goal: !isClaude,
     forks: !isClaude,
     browserIntegration: !isClaude,
-    fullTextSearch: !isClaude,
+    fullTextSearch: true,
     sessionApprovalGrants: !isClaude,
     skills: !isClaude,
     gitChanges: true,

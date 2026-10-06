@@ -452,7 +452,7 @@ export class UiService extends EventEmitter {
         goal: false,
         forks: false,
         browserIntegration: false,
-        fullTextSearch: false,
+        fullTextSearch: true,
         sessionApprovalGrants: false,
         skills: false,
         gitChanges: true,

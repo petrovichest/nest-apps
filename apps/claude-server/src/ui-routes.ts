@@ -9,6 +9,7 @@ import type {
   AttentionResponse,
   QueueMessageRequest,
   SessionSettings,
+  ThreadSummary,
   UpdateThreadDraftRequest,
   UpdateTranscriptionSettingsRequest,
   UpdateUserInputDraftRequest,
@@ -18,6 +19,8 @@ import { mergeProjectDraft, pastedText, validPastedText } from "@codexnest/proto
 import { emptyDraft, validateDraft } from "./ui-service";
 import { AppError, record, type ClaudePermissionMode } from "./types";
 import { readGitChanges } from "./git-changes";
+import { transcriptPaths } from "./history";
+import { transcriptMatch, turnOccurrences } from "./search";
 import { ClaudeVoiceService } from "./voice";
 import { UiVoiceJobs } from "./ui-voice";
 
@@ -34,6 +37,29 @@ function string(value: unknown, name: string, limit = 200_000): string {
   if (typeof value !== "string" || !value.trim() || value.length > limit)
     throw new AppError("invalid_request", `${name} must be nonempty text`);
   return value;
+}
+const SEARCH_PAGE_SIZE = 20;
+function searchText(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.length > 500)
+    throw new AppError("invalid_request", "Search text must contain 1 to 500 characters");
+  return value.trim();
+}
+/** Decodes a search page boundary that must belong to the same query. */
+function searchCursor(value: string, expected: unknown[]): { updatedAt: number; id: string } {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === expected.length + 2 &&
+      expected.every((part, index) => parsed[index] === part) &&
+      typeof parsed.at(-2) === "number" &&
+      typeof parsed.at(-1) === "string"
+    )
+      return { updatedAt: parsed.at(-2) as number, id: parsed.at(-1) as string };
+  } catch {
+    /* Reported below. */
+  }
+  throw new AppError("invalid_request", "Invalid search cursor");
 }
 function pathContains(root: string, path: string): boolean {
   const nested = relative(root, path);
@@ -121,20 +147,72 @@ export async function registerUiRoutes(
   app.get("/api/v1/codex/rate-limits", async () => ui.refreshRateLimits());
   app.get("/api/v1/threads/search", async (request) => {
     const q = query(request),
-      needle = (q.q ?? "").toLocaleLowerCase();
-    if (q.scope && q.scope !== "titles")
-      throw new AppError("invalid_request", "Claude prototype supports title search");
+      needle = searchText(q.q),
+      archived = q.archived === "true",
+      scope = q.scope ?? "messages";
+    if (scope !== "titles" && scope !== "messages")
+      throw new AppError("invalid_request", "scope must be titles or messages");
+    const boundary = q.cursor ? searchCursor(q.cursor, [scope, needle, archived]) : null;
+    const candidates = ui.threadIds
+      .map((id) => ui.thread(id))
+      .filter(
+        (thread) =>
+          !thread.subagent &&
+          thread.archived === archived &&
+          (!boundary ||
+            thread.updatedAt < boundary.updatedAt ||
+            (thread.updatedAt === boundary.updatedAt && thread.id > boundary.id)),
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const paths = scope === "messages" ? await transcriptPaths(ui.manager.config.configDir) : null;
+    const data: Array<{ thread: ThreadSummary; snippet: string }> = [];
+    let next: { updatedAt: number; id: string } | null = null;
+    for (const thread of candidates) {
+      const path = paths?.get(thread.id);
+      const snippet = paths
+        ? path
+          ? await transcriptMatch(path, needle)
+          : null
+        : thread.title.toLocaleLowerCase().includes(needle.toLocaleLowerCase())
+          ? thread.title
+          : null;
+      if (snippet === null) continue;
+      if (data.length === SEARCH_PAGE_SIZE) {
+        const last = data.at(-1)!.thread;
+        next = { updatedAt: last.updatedAt, id: last.id };
+        break;
+      }
+      data.push({ thread: ui.summary(thread.id), snippet });
+    }
     return {
-      data: ui.threadIds
-        .map((id) => ui.summary(id))
-        .filter(
-          (thread) =>
-            thread.archived === (q.archived === "true") &&
-            thread.title.toLocaleLowerCase().includes(needle),
-        )
-        .map((thread) => ({ thread, snippet: thread.title })),
-      nextCursor: null,
+      data,
+      nextCursor: next
+        ? Buffer.from(JSON.stringify([scope, needle, archived, next.updatedAt, next.id])).toString(
+            "base64url",
+          )
+        : null,
     };
+  });
+  app.get("/api/v1/threads/:id/search", async (request) => {
+    const q = query(request),
+      offset = q.cursor === undefined ? 0 : Number(q.cursor);
+    if (!Number.isSafeInteger(offset) || offset < 0)
+      throw new AppError("invalid_request", "Invalid search cursor");
+    const occurrences = turnOccurrences(
+      (await ui.detail(params(request).id)).turns,
+      searchText(q.q),
+    );
+    return {
+      data: occurrences.slice(offset, offset + SEARCH_PAGE_SIZE),
+      nextCursor:
+        offset + SEARCH_PAGE_SIZE < occurrences.length ? String(offset + SEARCH_PAGE_SIZE) : null,
+    };
+  });
+  app.get("/api/v1/threads/:id/turns/:turnId", async (request) => {
+    const p = params(request),
+      turn = (await ui.detail(p.id)).turns.find((candidate) => candidate.id === p.turnId);
+    if (!turn) throw new AppError("conflict", "Search result changed; search again", 409);
+    return { instanceId: ui.instanceId, turn };
   });
   app.get("/api/v1/settings/permissions", async () => ui.permissionSettings());
   app.put("/api/v1/settings/permissions", async (request) => {
