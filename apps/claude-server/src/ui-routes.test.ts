@@ -292,6 +292,26 @@ describe("Claude browser UI HTTP and global stream", () => {
     expect(command).toHaveBeenCalledTimes(1);
     expect(state.ui.snapshot().permissionSettings).toMatchObject({ preset: "ask", version: "2" });
   });
+  it("summarizes uncommitted git changes in the session directory", async () => {
+    const state = await fixture();
+    const { id } = await state.reserve();
+    const clean = await state.app.inject({
+      method: "GET",
+      url: `/api/v1/threads/${id}/git-changes`,
+      headers: state.headers,
+    });
+    expect(clean.json()).toMatchObject({ state: "notRepository" });
+    const { execFileSync } = await import("node:child_process");
+    execFileSync("git", ["init", "-q"], { cwd: state.directory });
+    await writeFile(join(state.directory, "notes.txt"), "one\ntwo\n");
+    const dirty = await state.app.inject({
+      method: "GET",
+      url: `/api/v1/threads/${id}/git-changes`,
+      headers: state.headers,
+    });
+    expect(dirty.json()).toMatchObject({ state: "dirty", deletions: 0 });
+  });
+
   it("serves the PWA shell without credentials while guarding APIs and foreign origins", async () => {
     const { app, headers } = await fixture();
     const shell = await app.inject({ url: "/" });

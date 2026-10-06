@@ -276,7 +276,7 @@ export function App({
     };
     const timer = window.setTimeout(() => {
       if (!active) return;
-      if (!appUpdateCheckAttemptedRef.current && !application.isClaude) {
+      if (!appUpdateCheckAttemptedRef.current) {
         appUpdateCheckAttemptedRef.current = true;
         void api
           .checkAppUpdate()

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { AppUpdateStatus } from "@codexnest/protocol";
+import type { AppUpdateStatus, ForceRestartAccepted } from "@codexnest/protocol";
 import type { Config } from "./config";
 import { AppError } from "./types";
 
@@ -12,6 +12,7 @@ const operations = ["idle", "checking", "preparing", "building", "switching", "r
 const results = ["none", "updated", "rolled_back", "failed"];
 
 export class AppManager {
+  private forceRestartQueued = false;
   constructor(
     private readonly config: Config,
     private readonly run: (
@@ -115,5 +116,25 @@ export class AppManager {
       throw new AppError("unavailable", "Не удалось запустить обновление ClaudeNest.", 503);
     }
     return queued;
+  }
+
+  /** Stops a stuck update and restarts only the API; session services keep running. */
+  async forceRestart(): Promise<ForceRestartAccepted> {
+    if (this.config.managedInstall !== true)
+      throw new AppError("unavailable", "Установка ClaudeNest не поддерживает перезапуск.", 503);
+    if (this.forceRestartQueued) return { accepted: true };
+    this.forceRestartQueued = true;
+    await this.run("systemctl", ["--user", "stop", "--no-block", "claudenest-update.service"], {
+      timeout: 10_000,
+    }).catch(() => undefined);
+    try {
+      await this.run("systemctl", ["--user", "restart", "--no-block", "claudenest.service"], {
+        timeout: 10_000,
+      });
+    } catch {
+      this.forceRestartQueued = false;
+      throw new AppError("unavailable", "Не удалось перезапустить ClaudeNest.", 503);
+    }
+    return { accepted: true };
   }
 }

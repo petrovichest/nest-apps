@@ -455,7 +455,7 @@ export class UiService extends EventEmitter {
         fullTextSearch: false,
         sessionApprovalGrants: false,
         skills: false,
-        gitChanges: false,
+        gitChanges: true,
         artifacts: false,
         appUpdates: true,
         reasoningEffort: true,

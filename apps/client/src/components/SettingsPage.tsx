@@ -884,7 +884,7 @@ export function SettingsPage({
               />
             )}
             {application.capabilities.codexManagement && <CodexSettingsCard />}
-            {application.capabilities.codexManagement && (
+            {(application.capabilities.appUpdates || application.capabilities.codexManagement) && (
               <RecoverySettingsCard
                 appStatus={appUpdateStatus}
                 codexStatus={codexManagementStatus}

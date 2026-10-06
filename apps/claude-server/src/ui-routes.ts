@@ -17,6 +17,7 @@ import type { UiService } from "./ui-service";
 import { mergeProjectDraft, pastedText, validPastedText } from "@codexnest/protocol";
 import { emptyDraft, validateDraft } from "./ui-service";
 import { AppError, record, type ClaudePermissionMode } from "./types";
+import { readGitChanges } from "./git-changes";
 import { ClaudeVoiceService } from "./voice";
 import { UiVoiceJobs } from "./ui-voice";
 
@@ -296,6 +297,9 @@ export async function registerUiRoutes(
     return reply.code(204).send();
   });
   app.get("/api/v1/threads/:id", async (request) => ui.detail(params(request).id));
+  app.get("/api/v1/threads/:id/git-changes", async (request) =>
+    readGitChanges(ui.thread(params(request).id).cwd),
+  );
   app.post("/api/v1/threads/:id/refresh", async (request) => ({
     detail: await ui.refresh(params(request).id),
     snapshot: ui.snapshot(),

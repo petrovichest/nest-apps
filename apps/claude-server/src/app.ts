@@ -110,6 +110,9 @@ export async function buildApp(manager: SessionManager, ui?: UiService) {
   app.get("/api/v1/settings/app", () => appManager.status());
   app.post("/api/v1/settings/app/check", () => appManager.check());
   app.post("/api/v1/settings/app/update", () => appManager.update());
+  app.post("/api/v1/settings/app/force-restart", async (_request, reply) =>
+    reply.code(202).send(await appManager.forceRestart()),
+  );
   app.get<{ Querystring: { cwd?: string } }>("/api/v1/sessions", async (request) => ({
     sessions: await manager.list(request.query.cwd),
   }));

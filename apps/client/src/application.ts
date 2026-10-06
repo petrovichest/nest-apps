@@ -20,7 +20,7 @@ export const application = {
     fullTextSearch: !isClaude,
     sessionApprovalGrants: !isClaude,
     skills: !isClaude,
-    gitChanges: !isClaude,
+    gitChanges: true,
     artifacts: !isClaude,
     appUpdates: true,
     reasoningEffort: true,

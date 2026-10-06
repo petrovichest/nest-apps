@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AppUpdateStatus, CodexManagementStatus } from "@codexnest/protocol";
 
 import { ApiClientError } from "../api";
+import { application } from "../application";
 import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n } from "../i18n";
 import { AlertIcon } from "./Icons";
@@ -59,7 +60,9 @@ export function RecoverySettingsCard({
     if (
       !window.confirm(
         t(
-          "Жёстко перезапустить CodexNest? Текущее обновление будет остановлено, а незавершённые операции интерфейса могут быть прерваны. Codex daemon останется запущен.",
+          application.capabilities.codexManagement
+            ? "Жёстко перезапустить CodexNest? Текущее обновление будет остановлено, а незавершённые операции интерфейса могут быть прерваны. Codex daemon останется запущен."
+            : "Жёстко перезапустить CodexNest? Текущее обновление будет остановлено, а незавершённые операции интерфейса могут быть прерваны. Сессии Codex продолжат работу.",
         ),
       )
     ) {
@@ -114,7 +117,7 @@ export function RecoverySettingsCard({
   const disconnected = state.network !== "connected";
   const recoveryInProgress = action !== null;
   const activeTurnCount =
-    state.snapshot?.threads.filter((thread) => thread.currentTurnId !== null).length ?? 0;
+    state.snapshot?.threads?.filter((thread) => thread.currentTurnId !== null).length ?? 0;
 
   return (
     <SettingsGroup
@@ -157,18 +160,20 @@ export function RecoverySettingsCard({
             pending={action === "app"}
           />
         </button>
-        <button
-          className="danger"
-          disabled={codexStatus?.supported !== true || disconnected || recoveryInProgress}
-          type="button"
-          onClick={() => void forceRestartCodex()}
-        >
-          <ActionLabel
-            idle={t("Жёстко перезапустить Codex")}
-            busy={t("Перезапускаем Codex…")}
-            pending={action === "codex"}
-          />
-        </button>
+        {application.capabilities.codexManagement && (
+          <button
+            className="danger"
+            disabled={codexStatus?.supported !== true || disconnected || recoveryInProgress}
+            type="button"
+            onClick={() => void forceRestartCodex()}
+          >
+            <ActionLabel
+              idle={t("Жёстко перезапустить Codex")}
+              busy={t("Перезапускаем Codex…")}
+              pending={action === "codex"}
+            />
+          </button>
+        )}
       </div>
     </SettingsGroup>
   );

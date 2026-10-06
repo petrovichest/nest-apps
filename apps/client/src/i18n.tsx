@@ -473,6 +473,8 @@ const ENGLISH: Record<string, string> = {
     "A force restart may interrupt unfinished operations.",
   "Жёстко перезапустить CodexNest? Текущее обновление будет остановлено, а незавершённые операции интерфейса могут быть прерваны. Codex daemon останется запущен.":
     "Force restart CodexNest? The current update will be stopped and unfinished interface operations may be interrupted. The Codex daemon will remain running.",
+  "Жёстко перезапустить CodexNest? Текущее обновление будет остановлено, а незавершённые операции интерфейса могут быть прерваны. Сессии Codex продолжат работу.":
+    "Force restart CodexNest? The current update will be stopped and unfinished interface operations may be interrupted. Codex sessions will keep running.",
   "Жёстко перезапустить Codex daemon? Все активные ответы Codex будут прерваны.":
     "Force restart the Codex daemon? All active Codex responses will be interrupted.",
   "Жёстко перезапустить CodexNest": "Force restart CodexNest",

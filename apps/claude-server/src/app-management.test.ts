@@ -94,4 +94,21 @@ describe("ClaudeNest application updates", () => {
     await test.write({ operation: "building" });
     expect(await test.manager.status()).toMatchObject({ operation: "idle", result: "failed" });
   });
+
+  it("force-restarts only the API after stopping a stuck updater, once per process", async () => {
+    const test = await fixture();
+    await expect(test.manager.forceRestart()).resolves.toEqual({ accepted: true });
+    await expect(test.manager.forceRestart()).resolves.toEqual({ accepted: true });
+    expect(test.run.mock.calls).toEqual([
+      [
+        "systemctl",
+        ["--user", "stop", "--no-block", "claudenest-update.service"],
+        { timeout: 10_000 },
+      ],
+      ["systemctl", ["--user", "restart", "--no-block", "claudenest.service"], { timeout: 10_000 }],
+    ]);
+    const unmanaged = await fixture(false);
+    await expect(unmanaged.manager.forceRestart()).rejects.toMatchObject({ status: 503 });
+    expect(unmanaged.run).not.toHaveBeenCalled();
+  });
 });
