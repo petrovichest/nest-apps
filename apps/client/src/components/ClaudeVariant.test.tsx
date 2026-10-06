@@ -14,6 +14,7 @@ import { SettingsPicker } from "./SettingsPicker";
 import { AttentionPanel } from "./AttentionPanel";
 import { ThreadSearchDialog } from "./ThreadSearchDialog";
 import { SettingsPage } from "./SettingsPage";
+import { ApplicationSettingsCard } from "./ApplicationSettingsCard";
 import { Composer } from "./Composer";
 import { ThreadPage } from "./ThreadPage";
 import { ApiClientError } from "../api";
@@ -69,6 +70,38 @@ const models: ModelOption[] = [
 ];
 
 describe("the shared Claude interface", () => {
+  it("keeps Codex APK and extension downloads out of Claude settings", async () => {
+    const api = {
+      readAppSettings: vi.fn(async () => ({
+        supported: true,
+        currentVersion: "0.1.9",
+        latestVersion: null,
+        updateAvailable: false,
+        operation: "idle",
+        result: "none",
+        message: null,
+        checkedAt: null,
+        updatedAt: null,
+      })),
+    };
+    connection.mockReturnValue({ api, state: { network: "connected" } });
+
+    render(<ApplicationSettingsCard />);
+
+    expect(await screen.findByText("0.1.9")).toBeInTheDocument();
+    expect(screen.getByText("Обновление ClaudeNest")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Скачать свежий APK" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Скачать расширение для Chrome" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("APK на этом устройстве")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Сервер и веб-интерфейс обновляются из одной проверенной CI-сборки с автоматическим откатом.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("starts setup at the current origin, verifies Claude identity and saves only its token", async () => {
     localStorage.setItem("codexnest.token", "keep-codex");
     const fetchMock = vi

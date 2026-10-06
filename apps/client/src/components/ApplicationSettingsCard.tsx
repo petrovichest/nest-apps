@@ -10,11 +10,20 @@ import type { AppUpdateStatus } from "@codexnest/protocol";
 import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n, type Translate } from "../i18n";
 import { openDownloadUrl } from "../downloads";
-import { ArrowUpIcon, BrowserIcon, GitHubIcon, RefreshIcon, ServerIcon } from "./Icons";
+import {
+  ArrowUpIcon,
+  BrowserIcon,
+  DownloadIcon,
+  GitHubIcon,
+  RefreshIcon,
+  ServerIcon,
+} from "./Icons";
 import { SettingsGroup } from "./SettingsPresentation";
 
 type Action = "checking" | "updating" | null;
 
+const LATEST_ANDROID_APK_URL =
+  "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/CodexNest-latest.apk";
 const LATEST_CHROME_EXTENSION_URL =
   "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/codexnest-browser-latest.zip";
 const REPOSITORY_URL = "https://github.com/petrovichest/nest-apps";
@@ -146,6 +155,15 @@ export function ApplicationSettingsCard({
     }
   }
 
+  async function downloadApk() {
+    setError(null);
+    try {
+      await openDownloadUrl(api.settings.baseUrl, LATEST_ANDROID_APK_URL);
+    } catch {
+      setError(t("Не удалось открыть загрузку APK"));
+    }
+  }
+
   async function downloadChromeExtension() {
     setError(null);
     try {
@@ -174,7 +192,9 @@ export function ApplicationSettingsCard({
       loading={loading}
       className="application-settings-card"
       description={t(
-        "Сервер и веб-интерфейс обновляются из одной проверенной CI-сборки с автоматическим откатом.",
+        application.isClaude
+          ? "Сервер и веб-интерфейс обновляются из одной проверенной CI-сборки с автоматическим откатом."
+          : "Сервер, APK и расширение для Chrome обновляются из одной проверенной CI-сборки с автоматическим откатом.",
       )}
       icon={<ServerIcon />}
       title={t("Обновление CodexNest")}
@@ -194,7 +214,7 @@ export function ApplicationSettingsCard({
             <dt>{t("Актуальная версия в GitHub")}</dt>
             <dd className="settings-technical">{status?.latestVersion ?? t("Не проверялась")}</dd>
           </div>
-          {nativePlatform && !application.isClaude && (
+          {!application.isClaude && (
             <div>
               <dt>{t("APK на этом устройстве")}</dt>
               <dd className="settings-technical">{apkVersionLabel}</dd>
@@ -307,10 +327,16 @@ export function ApplicationSettingsCard({
                 <span>{t("Открыть GitHub")}</span>
               </a>
               {!application.isClaude && (
-                <button type="button" onClick={() => void downloadChromeExtension()}>
-                  <BrowserIcon />
-                  <span>{t("Скачать расширение для Chrome")}</span>
-                </button>
+                <>
+                  <button type="button" onClick={() => void downloadApk()}>
+                    <DownloadIcon />
+                    <span>{t("Скачать свежий APK")}</span>
+                  </button>
+                  <button type="button" onClick={() => void downloadChromeExtension()}>
+                    <BrowserIcon />
+                    <span>{t("Скачать расширение для Chrome")}</span>
+                  </button>
+                </>
               )}
             </div>
           </div>
