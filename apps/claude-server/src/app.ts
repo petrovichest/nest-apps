@@ -11,6 +11,11 @@ import { AppError, assertUuid, record } from "./types";
 import type { UiService } from "./ui-service";
 import { AppManager } from "./app-management";
 import { registerUiRoutes } from "./ui-routes";
+import { BrowserExtensionServer, type BrowserExtensionOptions } from "./browser-extension";
+import {
+  CLAUDE_BROWSER_EXTENSION_ORIGIN,
+  BROWSER_EXTENSION_WEBSOCKET_PATH,
+} from "@codexnest/protocol";
 import { registerAccountRoutes } from "./account-routes";
 import { VoiceServiceError } from "./voice";
 import { AttachmentTooLargeError, AttachmentValidationError } from "./attachments";
@@ -30,7 +35,11 @@ function equalToken(value: unknown, token: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export async function buildApp(manager: SessionManager, ui?: UiService) {
+export async function buildApp(
+  manager: SessionManager,
+  ui?: UiService,
+  browserTimeouts: Pick<BrowserExtensionOptions, "disconnectWaitMs" | "toolResponseMs"> = {},
+) {
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024 * 1024, forceCloseConnections: true });
   await app.register(cors, {
     origin(origin, callback) {
@@ -90,7 +99,11 @@ export async function buildApp(manager: SessionManager, ui?: UiService) {
   });
   app.addHook("onRequest", async (request, reply) => {
     const origin = request.headers.origin;
-    if (origin && !manager.config.allowedOrigins.has(origin))
+    if (
+      origin &&
+      origin !== CLAUDE_BROWSER_EXTENSION_ORIGIN &&
+      !manager.config.allowedOrigins.has(origin)
+    )
       return reply
         .code(403)
         .send({ error: { code: "unauthorized", message: "Origin not allowed" } });
@@ -99,7 +112,9 @@ export async function buildApp(manager: SessionManager, ui?: UiService) {
       request.method === "OPTIONS" ||
       !path.startsWith("/api/") ||
       path === "/api/v1/events" ||
-      path === "/api/v1/ui/events"
+      path === "/api/v1/ui/events" ||
+      path === BROWSER_EXTENSION_WEBSOCKET_PATH ||
+      path.startsWith("/api/v1/internal/browser-mcp/")
     )
       return;
     const token = /^Bearer\s+(\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
@@ -274,7 +289,15 @@ export async function buildApp(manager: SessionManager, ui?: UiService) {
   });
   let stopVoice: (() => Promise<void>) | undefined;
   if (ui) {
-    stopVoice = await registerUiRoutes(app, ui);
+    const browserExtension = new BrowserExtensionServer({
+      app,
+      ui,
+      config: manager.config,
+      ...browserTimeouts,
+    });
+    manager.setBrowserLaunch((id) => browserExtension.launchConfig(id));
+    browserExtension.registerRoutes();
+    stopVoice = await registerUiRoutes(app, ui, browserExtension);
     app.get("/api/v1/ui/events", { websocket: true }, (socket) => {
       let authenticated = false;
       const send = (frame: unknown) => {

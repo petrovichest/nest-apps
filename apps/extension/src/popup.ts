@@ -9,6 +9,7 @@ import type {
   ThreadSummary,
   UiLanguage,
 } from "./protocol";
+import { appName, defaultBaseUrl } from "./brand";
 import { browserDisplayName, webext } from "./webext";
 
 interface PopupSnapshot {
@@ -37,8 +38,8 @@ const copy = {
     themeDark: "Dark",
     browser: browserDisplayName,
     setupTitle: `Connect this ${browserDisplayName}`,
-    setupBody: "Use the address and owner token from your CodexNest instance.",
-    baseUrl: "CodexNest address",
+    setupBody: `Use the address and owner token from your ${appName} instance.`,
+    baseUrl: `${appName} address`,
     token: "Owner token",
     connect: "Connect",
     connected: "Connected",
@@ -54,10 +55,9 @@ const copy = {
     noTab: "No accessible active tab",
     attached: "Attached",
     detach: "Detach",
-    open: "Open in CodexNest",
+    open: `Open in ${appName}`,
     otherSessions: "Other browser sessions",
-    emptyCatalog:
-      "Enable Browser in a CodexNest session, or detach its tabs in another Chrome profile.",
+    emptyCatalog: `Enable Browser in a ${appName} session, or detach its tabs in another Chrome profile.`,
     editSetup: "Edit connection",
     openSidePanel: "Open side panel",
     savePending: "Saving…",
@@ -70,8 +70,8 @@ const copy = {
     themeDark: "Тёмная",
     browser: browserDisplayName,
     setupTitle: `Подключить ${browserDisplayName}`,
-    setupBody: "Введите адрес и токен владельца из вашего CodexNest.",
-    baseUrl: "Адрес CodexNest",
+    setupBody: `Введите адрес и токен владельца из вашего ${appName}.`,
+    baseUrl: `Адрес ${appName}`,
     token: "Токен владельца",
     connect: "Подключить",
     connected: "Подключено",
@@ -87,10 +87,9 @@ const copy = {
     noTab: "Нет доступной активной вкладки",
     attached: "Подключена",
     detach: "Отключить",
-    open: "Открыть в CodexNest",
+    open: `Открыть в ${appName}`,
     otherSessions: "Другие браузерные сессии",
-    emptyCatalog:
-      "Включите Browser в сессии CodexNest или отключите её вкладки в другом профиле Chrome.",
+    emptyCatalog: `Включите Browser в сессии ${appName} или отключите её вкладки в другом профиле Chrome.`,
     editSetup: "Изменить подключение",
     openSidePanel: "Открыть сбоку",
     savePending: "Сохранение…",
@@ -223,7 +222,7 @@ function render(): void {
 
   app.append(header(text));
   if (!snapshot) {
-    app.append(el("section", { className: "loading-panel", textContent: "CodexNest…" }));
+    app.append(el("section", { className: "loading-panel", textContent: `${appName}…` }));
     return;
   }
   if (!snapshot.configured || setupOverride) {
@@ -242,7 +241,7 @@ function header(text: (typeof copy)[UiLanguage]): HTMLElement {
       width: 24,
       height: 24,
     }),
-    el("span", { textContent: "CodexNest" }),
+    el("span", { textContent: appName }),
     el("span", { className: "wordmark-context", textContent: text.browser }),
   ]);
   const topbar = el("header", { className: "topbar" }, [wordmark]);
@@ -274,7 +273,7 @@ function setupView(state: PopupSnapshot, text: (typeof copy)[UiLanguage]): HTMLE
   const form = el("form", { className: "setup" });
   const title = el("h1", { textContent: text.setupTitle });
   const description = el("p", { className: "lede", textContent: text.setupBody });
-  const baseUrl = inputField("url", text.baseUrl, "http://127.0.0.1:4310", "base-url", true);
+  const baseUrl = inputField("url", text.baseUrl, defaultBaseUrl, "base-url", true);
   const token = inputField("password", text.token, "••••••••••••", "owner-token", true);
   const submit = el("button", {
     className: "primary-button",
@@ -613,7 +612,7 @@ async function request<T = void>(message: Record<string, unknown>): Promise<T> {
     ...message,
     windowId: browserWindowId,
   })) as BackgroundResponse<T>;
-  if (!response?.ok) throw new Error(response?.error ?? "CodexNest Browser did not respond");
+  if (!response?.ok) throw new Error(response?.error ?? `${appName} Browser did not respond`);
   return response.result as T;
 }
 

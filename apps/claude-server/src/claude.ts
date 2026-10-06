@@ -35,6 +35,10 @@ export interface ClaudeProcessOptions {
   effort?: string;
   permissionMode?: ClaudePermissionMode;
   noSessionPersistence?: boolean;
+  /** Private JSON file with the MCP servers this session may use. */
+  mcpConfigPath?: string;
+  /** MCP server names whose tools are allowed without a permission prompt. */
+  allowedMcpServers?: string[];
   env?: NodeJS.ProcessEnv;
   /** Undefined preserves legacy inherited connection settings; null explicitly selects direct. */
   proxy?: ParsedClaudeProxy | null;
@@ -123,6 +127,9 @@ export class ClaudeProcess extends EventEmitter {
     if (this.options.model) args.push("--model", this.options.model);
     if (this.options.effort) args.push("--effort", this.options.effort);
     if (this.options.noSessionPersistence) args.push("--no-session-persistence");
+    if (this.options.mcpConfigPath) args.push("--mcp-config", this.options.mcpConfigPath);
+    for (const server of this.options.allowedMcpServers ?? [])
+      args.push("--allowedTools", `mcp__${server}`);
     try {
       this.child = (this.options.spawnProcess ?? spawn)(this.options.claudeBin, args, {
         cwd: this.options.cwd,

@@ -225,6 +225,14 @@ CodexNest server. Unpack it, open `chrome://extensions`, enable Developer mode,
 choose **Load unpacked**, and select the unpacked directory. The checked-in
 manifest key keeps the extension ID stable across releases.
 
+ClaudeNest has its own extension, `claudenest-browser-<version>.zip` from the same
+release. It is built from the same code with its own name, icons, and extension ID, so both
+can be installed side by side. Enter the ClaudeNest address (default
+`http://127.0.0.1:4311`) and its owner token. Enable **Browser** in a ClaudeNest session,
+then attach a tab. Claude gets the tools as the `claudenest_browser` MCP server, pre-allowed
+for that session only, from the session's next message; a session that is already running is
+relaunched at its next idle message with the same native session.
+
 Open the popup and enter the CodexNest HTTP(S) address and owner token. For the
 current tab, choose an available writable root session. CodexNest keeps one
 Chrome tab group per attached session; the popup and side panel can manage
@@ -356,7 +364,7 @@ CODEXNEST_COMPACTION_SOURCE_PATH=/absolute/path/to/rollout.jsonl \
 npm run test:integration -w @codexnest/server
 ```
 
-Build the load-unpacked directory and deterministic Chrome ZIP with:
+Build the load-unpacked directories (`dist/chrome`, `dist/claude`) and deterministic Chrome ZIPs with:
 
 ```bash
 npm run package:build -w @codexnest/extension

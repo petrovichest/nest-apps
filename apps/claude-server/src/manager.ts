@@ -107,6 +107,9 @@ type CreateSession = {
 
 export class SessionManager {
   private connections = new Map<string, RunnerConnection>();
+  private browserLaunch?: (
+    id: string,
+  ) => { bindingId: string; mcpConfig: Record<string, unknown> } | undefined;
   private locks = new Map<string, Promise<unknown>>();
   private closing = false;
   private paused = false;
@@ -120,6 +123,11 @@ export class SessionManager {
   async initialize(): Promise<void> {
     await this.launcher.available();
     this.paused = this.config.startPaused ?? false;
+  }
+
+  /** Supplies the browser MCP configuration for owners launched from now on. */
+  setBrowserLaunch(provider: NonNullable<SessionManager["browserLaunch"]>): void {
+    this.browserLaunch = provider;
   }
 
   private directory(id: string): string {
@@ -237,6 +245,14 @@ export class SessionManager {
     if (!(await stat(canonicalCwd)).isDirectory())
       throw new AppError("invalid_request", "Project path must be a directory");
     const selected = account ?? (await this.accounts?.launchAccount());
+    const browser = this.browserLaunch?.(id);
+    let browserDescriptor: RunnerDescriptor["browser"];
+    if (browser) {
+      // The endpoint secret stays in a private file, not in the process arguments.
+      const configPath = join(this.directory(id), "browser-mcp.json");
+      await writeJsonAtomic(configPath, browser.mcpConfig);
+      browserDescriptor = { bindingId: browser.bindingId, configPath };
+    }
     return {
       sessionId: id,
       cwd: canonicalCwd,
@@ -259,6 +275,7 @@ export class SessionManager {
       effort,
       permissionMode,
       attachmentRoot: join(this.config.stateDir, "attachments"),
+      ...(browserDescriptor ? { browser: browserDescriptor } : {}),
       protocolVersion: RUNNER_PROTOCOL_VERSION,
     };
   }

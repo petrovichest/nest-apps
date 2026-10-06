@@ -46,6 +46,7 @@ describe("managed Claude proxy connections", () => {
         createServer,
       });
       expect(connection.env.HTTPS_PROXY).toBe(proxy.url);
+      expect(connection.env.NO_PROXY).toBe("localhost,127.0.0.1,::1");
       expect(createServer).not.toHaveBeenCalled();
       expect(proxyStatus(proxy)).toEqual({
         enabled: true,

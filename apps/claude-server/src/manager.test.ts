@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Config } from "./config.js";
@@ -130,6 +130,27 @@ describe("Claude backend manager integration", () => {
       defaultConfig: true,
     });
     expect(launcher.owners.get(input.sessionId)!.runner.descriptor.defaultConfig).toBe(true);
+  });
+  it("launches owners with a private browser MCP config only while a binding exists", async () => {
+    const { backend, launcher, input, directory } = await fixture();
+    const manager = await backend();
+    let browser: { bindingId: string; mcpConfig: Record<string, unknown> } | undefined = {
+      bindingId: "binding-1",
+      mcpConfig: { mcpServers: { claudenest_browser: { type: "http", url: "http://x/y" } } },
+    };
+    manager.setBrowserLaunch(() => browser);
+    await manager.create(input);
+    const descriptor = await manager.descriptor(input.sessionId);
+    const configPath = join(directory, "state", "sessions", input.sessionId, "browser-mcp.json");
+    expect(descriptor?.browser).toEqual({ bindingId: "binding-1", configPath });
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual(browser!.mcpConfig);
+    expect((await stat(configPath)).mode & 0o077).toBe(0);
+    expect(launcher.starts).toBe(1);
+
+    browser = undefined;
+    const second = { ...input, sessionId: randomUUID(), requestId: randomUUID() };
+    await manager.create(second);
+    expect((await manager.descriptor(second.sessionId))?.browser).toBeUndefined();
   });
   it("resumes the same UUID with the selected account proxy and a fresh continuation once", async () => {
     const { backend, launcher, input, config } = await fixture();

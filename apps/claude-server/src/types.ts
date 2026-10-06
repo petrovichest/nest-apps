@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { ParsedClaudeProxy } from "@codexnest/protocol";
 import type { NativeQuotaFailure } from "./quota-recovery";
 export const RUNNER_PROTOCOL_VERSION = 1 as const;
+/** MCP server name of the ClaudeNest browser tools; tools appear as mcp__claudenest_browser__*. */
+export const BROWSER_MCP_SERVER_NAME = "claudenest_browser";
 export const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -47,6 +49,8 @@ export interface RunnerDescriptor {
   effort?: string;
   permissionMode?: ClaudePermissionMode;
   attachmentRoot?: string;
+  /** Browser MCP the owner was launched with; its config file holds the endpoint secret. */
+  browser?: { bindingId: string; configPath: string };
   protocolVersion: 1;
 }
 

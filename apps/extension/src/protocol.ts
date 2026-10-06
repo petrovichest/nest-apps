@@ -25,6 +25,8 @@ import type {
   UiLanguage as SharedUiLanguage,
 } from "@codexnest/protocol";
 
+import { appName } from "./brand";
+
 export const BROWSER_PROTOCOL = BROWSER_EXTENSION_PROTOCOL;
 export const BROWSER_PROTOCOL_VERSION = BROWSER_EXTENSION_PROTOCOL_VERSION;
 export const BROWSER_WEBSOCKET_PATH = BROWSER_EXTENSION_WEBSOCKET_PATH;
@@ -71,7 +73,7 @@ export function normaliseBaseUrl(value: string): string {
     : `http://${candidate}`;
   const url = new URL(withProtocol);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("CodexNest URL must use HTTP or HTTPS");
+    throw new Error(`${appName} URL must use HTTP or HTTPS`);
   }
   url.username = "";
   url.password = "";

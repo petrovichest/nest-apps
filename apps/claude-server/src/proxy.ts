@@ -107,6 +107,8 @@ export async function createClaudeProxyEnvironment(
     if (url) {
       env.HTTP_PROXY = url;
       env.HTTPS_PROXY = url;
+      // Local MCP servers, such as the browser tools, must not go through the account proxy.
+      env.NO_PROXY = "localhost,127.0.0.1,::1";
     }
     return { env, close };
   } catch {

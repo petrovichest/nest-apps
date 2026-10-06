@@ -1079,6 +1079,10 @@ export const BROWSER_EXTENSION_PROTOCOL_VERSIONS = [
 export const BROWSER_EXTENSION_WEBSOCKET_PATH = "/api/v1/browser-extension/events" as const;
 export const BROWSER_EXTENSION_ID = "icdkmpldakkmodggmjaohfiflnakmpoj" as const;
 export const BROWSER_EXTENSION_ORIGIN = `chrome-extension://${BROWSER_EXTENSION_ID}` as const;
+/** The separately packaged ClaudeNest extension speaks the same protocol under its own ID. */
+export const CLAUDE_BROWSER_EXTENSION_ID = "chncmaejombdlkgeleeenghomodjfnfj" as const;
+export const CLAUDE_BROWSER_EXTENSION_ORIGIN =
+  `chrome-extension://${CLAUDE_BROWSER_EXTENSION_ID}` as const;
 export const BROWSER_MAX_PROJECT_FILE_BYTES = 100 * 1024 * 1024;
 export const BROWSER_MAX_WEBSOCKET_MESSAGE_BYTES = 64 * 1024;
 export const BROWSER_TOOL_RESULT_CHUNK_BYTES = 48 * 1024;

@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "ClaudeNest Browser",
+  "short_name": "ClaudeNest",
+  "description": "Attach Chrome tabs to ClaudeNest sessions.",
+  "version": "0.1.9",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx551m9KwA/4XgeJI04gYE1ff6MpaU23Awpi6rqujsKxtortfptxpzMrMzejsLAumdpXFm103lil1UM9lWxO4Dx4Ni1HK3WixTTCJbo7c5db8N8/Wp6xmMzLV33/1eIqrbfUMOmoEJg8F4REcRVjdx9uhGswmS7U6mwy2WgCLwUw5Q0uwXnBBpcfm9qCMYMGHsVz2iFhKxDZ0bh1MD7cAtjOrKcLr/kyBAwu4N/M/NJB52F6GgtT3mNjyApwBc0m2u2shKiQ7YtMHpejIOll9vI/FD/tKB2SRh0PntqZLolifeSi3O/NVuSjFxj8CD96Gm8zrwyCQWtmXWmOSPfwn/QIDAQAB",
+  "icons": {
+    "16": "icons/claudenest-16.png",
+    "32": "icons/claudenest-32.png",
+    "48": "icons/claudenest-48.png",
+    "128": "icons/claudenest-128.png"
+  },
+  "action": {
+    "default_title": "ClaudeNest Browser",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/claudenest-16.png",
+      "32": "icons/claudenest-32.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "permissions": [
+    "debugger",
+    "tabs",
+    "tabGroups",
+    "windows",
+    "scripting",
+    "storage",
+    "alarms",
+    "sidePanel"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'"
+  }
+}

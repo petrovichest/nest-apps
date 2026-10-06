@@ -15,6 +15,7 @@ import type {
   UpdateUserInputDraftRequest,
 } from "@codexnest/protocol";
 import type { UiService } from "./ui-service";
+import { BrowserExtensionError, type BrowserExtensionServer } from "./browser-extension";
 import { mergeProjectDraft, pastedText, validPastedText } from "@codexnest/protocol";
 import { emptyDraft, validateDraft } from "./ui-service";
 import { AppError, record, type ClaudePermissionMode } from "./types";
@@ -37,6 +38,17 @@ function string(value: unknown, name: string, limit = 200_000): string {
   if (typeof value !== "string" || !value.trim() || value.length > limit)
     throw new AppError("invalid_request", `${name} must be nonempty text`);
   return value;
+}
+/** Reports extension failures through the shared HTTP error shape. */
+async function browserOperation<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!(error instanceof BrowserExtensionError)) throw error;
+    if (error.code === "not_found") throw new AppError("not_found", error.message, 404);
+    if (error.code === "unavailable") throw new AppError("unavailable", error.message, 503);
+    throw new AppError("conflict", error.message, 409);
+  }
 }
 const SEARCH_PAGE_SIZE = 20;
 function searchText(value: unknown): string {
@@ -113,6 +125,7 @@ function throwDownloadFilesystemError(error: unknown): never {
 export async function registerUiRoutes(
   app: FastifyInstance,
   ui: UiService,
+  browser?: BrowserExtensionServer,
 ): Promise<() => Promise<void>> {
   const voice = new ClaudeVoiceService({
     claudeBin: ui.manager.config.claudeBin,
@@ -413,6 +426,14 @@ export async function registerUiRoutes(
     const id = params(request).id;
     ui.thread(id);
     const body = record(request.body);
+    if (body.browserEnabled !== undefined) {
+      if (typeof body.browserEnabled !== "boolean")
+        throw new AppError("invalid_request", "browserEnabled must be boolean");
+      if (!browser) throw new AppError("unavailable", "Browser extension is unavailable", 503);
+      await browserOperation(() =>
+        body.browserEnabled ? browser.enableThread(id) : browser.disableThread(id),
+      );
+    }
     await ui.store.update((data) => {
       const thread = data.threads[id]!;
       if (body.name !== undefined) thread.title = string(body.name, "name", 200);
@@ -424,6 +445,11 @@ export async function registerUiRoutes(
     });
     ui.publish({ type: "thread.upserted", thread: ui.summary(id) });
     return ui.summary(id);
+  });
+  app.delete("/api/v1/threads/:id/browser-binding", async (request, reply) => {
+    if (!browser) throw new AppError("unavailable", "Browser extension is unavailable", 503);
+    await browserOperation(() => browser.detachThread(params(request).id));
+    return reply.code(204).send();
   });
   app.patch("/api/v1/threads/:id/settings", async (request) =>
     ui.settings(params(request).id, record(request.body) as Partial<SessionSettings>),

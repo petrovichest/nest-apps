@@ -14,6 +14,13 @@ import type {
 import { readJson, writeJsonAtomic } from "./io";
 import { AppError, type ClaudePermissionMode, type ClaudeModel } from "./types";
 
+export interface BrowserBindingState {
+  bindingId: string;
+  instanceId: string;
+  attachedAt: number;
+  detachedAt?: number;
+}
+
 export interface UiThread {
   id: string;
   cwd: string;
@@ -29,6 +36,9 @@ export interface UiThread {
   draft: ThreadDraft | null;
   queue: QueuedMessage[];
   nativeHistory?: boolean;
+  /** Browser tools are offered to the session; the extension binding is attached separately. */
+  browserEnabled?: true;
+  browserBinding?: BrowserBindingState;
   /** A plan from ExitPlanMode is shown to the user and awaits approval or revision. */
   awaitingPlanResponse?: boolean;
   dismissedPlanTurnId?: string;

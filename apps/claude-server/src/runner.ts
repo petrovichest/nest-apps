@@ -5,7 +5,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { ClaudeControlRejectedError, ClaudeProcess, MAX_NATIVE_LINE_BYTES } from "./claude.js";
 import { writeJsonAtomic } from "./io.js";
-import { nativeResultInterrupted } from "./types.js";
+import { BROWSER_MCP_SERVER_NAME, nativeResultInterrupted } from "./types.js";
 import {
   isMainNativeEvent,
   nativeQuotaFailure,
@@ -147,6 +147,12 @@ export class SessionRunner {
           ...(descriptor.model ? { model: descriptor.model } : {}),
           ...(descriptor.effort ? { effort: descriptor.effort } : {}),
           ...(descriptor.permissionMode ? { permissionMode: descriptor.permissionMode } : {}),
+          ...(descriptor.browser
+            ? {
+                mcpConfigPath: descriptor.browser.configPath,
+                allowedMcpServers: [BROWSER_MCP_SERVER_NAME],
+              }
+            : {}),
         });
     this.transport.on("event", (event: unknown) => this.onNativeEvent(event));
     this.transport.on("request", (event: unknown) => this.onRequest(event));

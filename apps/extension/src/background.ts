@@ -20,6 +20,7 @@ import {
   type ThreadSummary,
   type UiLanguage,
 } from "./protocol";
+import { appName } from "./brand";
 import { ExtensionStore, type ExtensionSettings, type PersistedState } from "./storage";
 import { BrowserToolDispatcher, BrowserToolError } from "./tools";
 import { browserDisplayName, webext } from "./webext";
@@ -194,14 +195,17 @@ function connect(settings: ExtensionSettings): void {
     dispatcher.transfers.clear();
     if (intentionalClose) return;
     if (event.code === 1008 || event.code === 1002) {
-      void setConnectionState("error", event.reason || "CodexNest rejected the browser connection");
+      void setConnectionState(
+        "error",
+        event.reason || `${appName} rejected the browser connection`,
+      );
       return;
     }
     void scheduleReconnect(generation, event.reason || "Connection closed");
   });
   candidate.addEventListener("error", () => {
     if (generation === socketGeneration && socket === candidate)
-      connectionError = "Unable to reach CodexNest";
+      connectionError = `Unable to reach ${appName}`;
   });
 }
 
@@ -331,7 +335,7 @@ function routeServerFrame(frame: ServerFrame): void {
 }
 
 async function createOrAttach(tabId: number, target: SessionTarget): Promise<void> {
-  if (connectionStatus !== "connected") throw new Error("CodexNest is not connected yet");
+  if (connectionStatus !== "connected") throw new Error(`${appName} is not connected yet`);
   if (target.kind === "new" && !projects.some((project) => project.id === target.projectId)) {
     throw new Error("Select an available project");
   }
@@ -401,7 +405,7 @@ function requestSession(
     (resolve, reject) => {
       const timeout = globalThis.setTimeout(() => {
         pendingSessions.delete(requestId);
-        reject(new Error("CodexNest did not create or attach the browser session in time"));
+        reject(new Error(`${appName} did not create or attach the browser session in time`));
       }, SESSION_REQUEST_TIMEOUT_MS);
       pendingSessions.set(requestId, { resolve, reject, timeout });
     },
@@ -431,7 +435,7 @@ async function detachBinding(threadId: string, notifyServer = true): Promise<voi
 
 async function openInCodexNest(threadId: string): Promise<void> {
   const current = await store.load();
-  if (!current.settings) throw new Error("CodexNest setup is incomplete");
+  if (!current.settings) throw new Error(`${appName} setup is incomplete`);
   const url = new URL(
     `/threads/${encodeURIComponent(threadId)}`,
     `${current.settings.baseUrl}/`,
@@ -607,7 +611,7 @@ async function setConnectionState(status: ConnectionStatus, error: string | null
   await Promise.all([
     webext.action.setBadgeText({ text: badge.text }),
     webext.action.setBadgeBackgroundColor({ color: badge.color }),
-    webext.action.setTitle({ title: `CodexNest Browser — ${status}` }),
+    webext.action.setTitle({ title: `${appName} Browser — ${status}` }),
   ]).catch(() => undefined);
   await broadcastState();
 }
@@ -677,14 +681,14 @@ function closeSocket(intentional: boolean): void {
 
 function sendPendingFrame(frame: ClientFrame): void {
   if (!socket || socket.readyState !== WebSocket.OPEN || !helloAccepted) {
-    throw new Error("CodexNest browser connection is not open");
+    throw new Error(`${appName} browser connection is not open`);
   }
   socket.send(JSON.stringify(frame));
 }
 
 function send(frame: ClientFrame): void {
   if (!socket || socket.readyState !== WebSocket.OPEN)
-    throw new Error("CodexNest browser connection is not open");
+    throw new Error(`${appName} browser connection is not open`);
   socket.send(JSON.stringify(frame));
 }
 
@@ -739,7 +743,7 @@ async function firstLiveTab(tabIds: number[]): Promise<ChromeTab | null> {
 
 async function decorateGroup(groupId: number, title: string): Promise<void> {
   await webext.tabGroups.update(groupId, {
-    title: `CodexNest · ${title || "Browser session"}`.slice(0, 80),
+    title: `${appName} · ${title || "Browser session"}`.slice(0, 80),
     color: "purple",
     collapsed: false,
   });

@@ -1,11 +1,19 @@
 import { readFileSync } from "node:fs";
 import type { Plugin } from "vite";
 
+const brands = { chrome: "CodexNest", claude: "ClaudeNest" } as const;
+
 export default ({ mode }: { mode: string }) => {
-  if (mode !== "chrome") throw new Error("Build with --mode chrome");
+  if (!(mode in brands)) throw new Error("Build with --mode chrome or --mode claude");
+  const appName = brands[mode as keyof typeof brands];
   return {
-    publicDir: "public/chrome",
+    publicDir: `public/${mode}`,
+    define: { __APP_NAME__: JSON.stringify(appName) },
     plugins: [
+      {
+        name: "app-name",
+        transformIndexHtml: (html: string) => html.replaceAll("CodexNest", appName),
+      } satisfies Plugin,
       {
         name: "onest-license",
         generateBundle() {
@@ -22,7 +30,7 @@ export default ({ mode }: { mode: string }) => {
     ],
     build: {
       emptyOutDir: true,
-      outDir: "dist/chrome",
+      outDir: `dist/${mode}`,
       rollupOptions: {
         input: {
           popup: "popup.html",

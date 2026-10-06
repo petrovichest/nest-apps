@@ -28,6 +28,7 @@ import type {
   ThreadDetail,
   ThreadDraft,
   ThreadFileAttachment,
+  BrowserThreadStatus,
   ThreadSummary,
   UpdateThreadDraftRequest,
   UpdateUserInputDraftRequest,
@@ -308,6 +309,10 @@ export class UiService extends EventEmitter {
   private pollRateLimits(): void {
     if (!this.closed) void this.refreshRateLimits().catch(() => undefined);
   }
+  private browserStatus?: (threadId: string) => BrowserThreadStatus;
+  setBrowserStatusProvider(provider: (threadId: string) => BrowserThreadStatus): void {
+    this.browserStatus = provider;
+  }
   publish(event: ServerEvent): void {
     if (this.closed) return;
     const sequence = ++this.sequence;
@@ -393,7 +398,7 @@ export class UiService extends EventEmitter {
       updatedAt: thread.updatedAt,
       currentTurnId: view?.currentTurnId ?? null,
       queuedMessageCount: thread.queue.filter((message) => message.deliveryMode !== "steer").length,
-      browserStatus: "disabled",
+      browserStatus: this.browserStatus?.(id) ?? "disabled",
       settings: thread.settings,
       ...(thread.awaitingPlanResponse ? { awaitingPlanResponse: true } : {}),
       ...(thread.dismissedPlanTurnId ? { dismissedPlanTurnId: thread.dismissedPlanTurnId } : {}),
@@ -536,7 +541,7 @@ export class UiService extends EventEmitter {
         team: false,
         goal: false,
         forks: false,
-        browserIntegration: false,
+        browserIntegration: Boolean(this.browserStatus),
         fullTextSearch: true,
         sessionApprovalGrants: true,
         skills: false,
@@ -1488,6 +1493,10 @@ export class UiService extends EventEmitter {
         (descriptor.proxy === undefined) !== (selectedAccount.proxy === undefined) ||
         descriptor.proxy?.protocol !== selectedAccount.proxy?.protocol ||
         descriptor.proxy?.url !== selectedAccount.proxy?.url);
+    // Browser tools are fixed at launch; attaching or detaching takes effect at the next idle admission.
+    const browserChanged =
+      (descriptor?.browser?.bindingId ?? undefined) !==
+      (this.thread(id).browserEnabled ? this.thread(id).browserBinding?.bindingId : undefined);
     if (
       owner &&
       !idle &&
@@ -1507,6 +1516,7 @@ export class UiService extends EventEmitter {
       (owner.state === "failed" ||
         owner.releasePath !== this.manager.config.releasePath ||
         !owner.capabilities?.steer ||
+        browserChanged ||
         accountConnectionChanged ||
         (currentAccountId && ownerAccountId && currentAccountId !== ownerAccountId))
     ) {

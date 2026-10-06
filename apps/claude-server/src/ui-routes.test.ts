@@ -67,6 +67,7 @@ async function fixture() {
     snapshot: async () => unexpected("snapshot"),
     command: async () => unexpected("command"),
     close: async () => {},
+    setBrowserLaunch: () => {},
   } as unknown as SessionManager;
   const ui = new UiService(manager);
   await ui.initialize({ probeModels: false });

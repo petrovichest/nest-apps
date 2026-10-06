@@ -412,6 +412,33 @@ describe("Claude UI durable session facade", () => {
       expect(manager.sends.map((delivery) => delivery.prompt)).toEqual(["Second task"]);
     },
   );
+  it("relaunches an idle owner at the next message after its browser binding changes", async () => {
+    const { manager, start, reserve } = await fixture();
+    manager.accepting = true;
+    const service = await start(),
+      id = await reserve(service);
+    await service.enqueue(id, { clientMessageId: randomUUID(), input: "First task", images: [] });
+    await waitForQueue(service, id, 0);
+    manager.emit(id, "native", { type: "result", is_error: false });
+    manager.emit(id, "state", { state: "idle", awaitingResult: false });
+    await expect.poll(() => service.summary(id).state).toBe("completed");
+    expect(service.snapshot().capabilities.browserIntegration).toBe(false);
+    service.setBrowserStatusProvider(() => "connected");
+    expect(service.snapshot().capabilities.browserIntegration).toBe(true);
+    expect(service.summary(id).browserStatus).toBe("connected");
+    await service.store.update((data) => {
+      data.threads[id]!.browserEnabled = true;
+      data.threads[id]!.browserBinding = {
+        bindingId: "binding-1",
+        instanceId: "extension",
+        attachedAt: 1,
+      };
+    });
+    await service.enqueue(id, { clientMessageId: randomUUID(), input: "Second task", images: [] });
+    await waitForQueue(service, id, 0);
+    expect(manager.commands.filter((command) => command.method === "release")).toHaveLength(1);
+    expect(manager.sends.map((delivery) => delivery.prompt)).toEqual(["Second task"]);
+  });
   it("recovers a confirmed quota once and blocks later queued input until continuation", async () => {
     const { manager, start, reserve } = await fixture();
     manager.accounts = new FakeAccounts();

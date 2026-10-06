@@ -31,9 +31,40 @@ describe("browser packaging", () => {
     expect(panel).toContain('<script type="module" src="/src/popup.ts"></script>');
   });
 
-  it("declares the Chrome ZIP package name", async () => {
+  it("declares the Chrome ZIP package names", async () => {
     const script = await readFile(resolve(extensionRoot, "scripts/package.mjs"), "utf8");
-    expect(script).toContain("codexnest-browser-${manifest.version}.zip");
+    expect(script).toContain("${artifactPrefixes[variant]}-browser-${manifest.version}.zip");
+    expect(script).toContain('chrome: "codexnest", claude: "claudenest"');
+  });
+
+  it("gives the ClaudeNest build its own identity and icons", async () => {
+    const [codex, claude] = await Promise.all([
+      readJson("public/chrome/manifest.json"),
+      readJson("public/claude/manifest.json"),
+    ]);
+    expect(claude).toMatchObject({ name: "ClaudeNest Browser", version: codex.version });
+    expect(claude.key).toMatch(/^MIIB/);
+    expect(claude.key).not.toBe(codex.key);
+    expect(Object.values(claude.icons)).toEqual(
+      expect.arrayContaining(["icons/claudenest-16.png", "icons/claudenest-128.png"]),
+    );
+    expect({
+      ...claude,
+      name: "",
+      short_name: "",
+      description: "",
+      key: "",
+      icons: {},
+      action: {},
+    }).toEqual({
+      ...codex,
+      name: "",
+      short_name: "",
+      description: "",
+      key: "",
+      icons: {},
+      action: {},
+    });
   });
 });
 

@@ -179,6 +179,29 @@ describe("Claude model metadata and controls", () => {
     expect(process.permissionMode).toBe("manual");
     await process.stop();
   });
+  it("offers a private MCP config and pre-allows only its server's tools", async () => {
+    const { process, spawnProcess } = setup({
+      mcpConfigPath: "/state/session/browser-mcp.json",
+      allowedMcpServers: ["claudenest_browser"],
+    });
+    await process.start();
+    const args = spawnProcess.mock.calls[0]![1] as string[];
+    expect(args.slice(args.indexOf("--mcp-config"), args.indexOf("--mcp-config") + 2)).toEqual([
+      "--mcp-config",
+      "/state/session/browser-mcp.json",
+    ]);
+    expect(args.slice(args.indexOf("--allowedTools"), args.indexOf("--allowedTools") + 2)).toEqual([
+      "--allowedTools",
+      "mcp__claudenest_browser",
+    ]);
+    await process.stop();
+    const plain = setup();
+    await plain.process.start();
+    const plainArgs = plain.spawnProcess.mock.calls[0]![1] as string[];
+    expect(plainArgs).not.toContain("--mcp-config");
+    expect(plainArgs).not.toContain("--allowedTools");
+    await plain.process.stop();
+  });
   it("starts directly in bypass only when explicitly selected", async () => {
     const { process, spawnProcess } = setup({ permissionMode: "bypassPermissions" });
     await process.start();

@@ -23,8 +23,7 @@ import { SettingsGroup } from "./SettingsPresentation";
 type Action = "checking" | "updating" | null;
 
 const LATEST_ANDROID_APK_URL = `https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/${application.name}-latest.apk`;
-const LATEST_CHROME_EXTENSION_URL =
-  "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/codexnest-browser-latest.zip";
+const LATEST_CHROME_EXTENSION_URL = `https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/${application.name.toLowerCase()}-browser-latest.zip`;
 const REPOSITORY_URL = "https://github.com/petrovichest/nest-apps";
 
 export function ApplicationSettingsCard({
@@ -326,12 +325,10 @@ export function ApplicationSettingsCard({
                 <DownloadIcon />
                 <span>{t("Скачать свежий APK")}</span>
               </button>
-              {!application.isClaude && (
-                <button type="button" onClick={() => void downloadChromeExtension()}>
-                  <BrowserIcon />
-                  <span>{t("Скачать расширение для Chrome")}</span>
-                </button>
-              )}
+              <button type="button" onClick={() => void downloadChromeExtension()}>
+                <BrowserIcon />
+                <span>{t("Скачать расширение для Chrome")}</span>
+              </button>
             </div>
           </div>
         </div>

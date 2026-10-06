@@ -3,16 +3,19 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { deflateRawSync } from "node:zlib";
 
 const packageRoot = resolve(import.meta.dirname, "..");
+const variant = process.argv[2] ?? "chrome";
+const artifactPrefixes = { chrome: "codexnest", claude: "claudenest" };
+if (!(variant in artifactPrefixes)) throw new Error(`Unknown extension variant ${variant}`);
 process.stdout.write(`${await packageChrome()}\n`);
 
 async function packageChrome() {
-  const distRoot = join(packageRoot, "dist", "chrome");
+  const distRoot = join(packageRoot, "dist", variant);
   const manifest = JSON.parse(await readFile(join(distRoot, "manifest.json"), "utf8"));
-  const artifactName = `codexnest-browser-${manifest.version}.zip`;
+  const artifactName = `${artifactPrefixes[variant]}-browser-${manifest.version}.zip`;
   const output = join(packageRoot, "artifacts", artifactName);
   const files = (await walk(distRoot)).sort((left, right) => left.localeCompare(right));
   if (!files.some((file) => relative(distRoot, file) === "manifest.json")) {
-    throw new Error("dist/chrome/manifest.json is required at the archive root");
+    throw new Error("dist/${variant}/manifest.json is required at the archive root");
   }
 
   const localParts = [];

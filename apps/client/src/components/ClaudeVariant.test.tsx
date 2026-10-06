@@ -98,9 +98,7 @@ describe("the shared Claude interface", () => {
     expect(screen.getByText("Обновление ClaudeNest")).toBeInTheDocument();
     const download = screen.getByRole("button", { name: "Скачать свежий APK" });
     expect(download).toBeEnabled();
-    expect(
-      screen.queryByRole("button", { name: "Скачать расширение для Chrome" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Скачать расширение для Chrome" })).toBeEnabled();
     expect(screen.getByText("APK на этом устройстве")).toBeInTheDocument();
     expect(screen.getByText("Только в Android")).toBeInTheDocument();
     expect(getAppInfo).not.toHaveBeenCalled();
@@ -114,6 +112,13 @@ describe("the shared Claude interface", () => {
       expect(openDownloadUrl).toHaveBeenCalledWith(
         "https://claude.home.arpa",
         "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/ClaudeNest-latest.apk",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Скачать расширение для Chrome" }));
+    await waitFor(() =>
+      expect(openDownloadUrl).toHaveBeenCalledWith(
+        "https://claude.home.arpa",
+        "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/claudenest-browser-latest.zip",
       ),
     );
     expect(api.readAppSettings).toHaveBeenCalledOnce();
