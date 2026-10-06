@@ -32,9 +32,9 @@ import type {
 } from "@codexnest/protocol";
 import { AttachmentStore } from "./attachments";
 import { ClaudeProcess } from "./claude";
-import { readHistory } from "./history";
+import { readHistory, readSubagentHistory } from "./history";
 import type { SessionManager } from "./manager";
-import { NativeView } from "./native-view";
+import { NativeView, type SubagentLaunch } from "./native-view";
 import { parseClaudeUsage } from "./rate-limits";
 import type { RunnerConnection } from "./rpc";
 import { UiStore, type UiThread } from "./ui-store";
@@ -49,6 +49,8 @@ import {
   type RunnerEvent,
   type RunnerSnapshot,
   type ClaudePermissionMode,
+  stableUuid,
+  subagentThreadId,
 } from "./types";
 
 const RATE_LIMITS_POLL_MS = 300_000;
@@ -60,8 +62,7 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 export function commandId(value: string): string {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
     return value.toLowerCase();
-  const hex = hash(value);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+  return stableUuid(value);
 }
 export function emptyDraft(): ThreadDraft {
   return { input: "", images: [], goalMode: false, annotations: [], updatedAt: Date.now() };
@@ -293,6 +294,7 @@ export class UiService extends EventEmitter {
     const thread = this.thread(id),
       owner = this.owners.get(id),
       view = this.views.get(id);
+    if (thread.subagent) return this.subagentSummary(thread);
     const last = view?.turns().at(-1);
     const state = owner?.pendingRequests.length
       ? "needsAttention"
@@ -344,6 +346,100 @@ export class UiService extends EventEmitter {
         reasoningEffort: thread.settings.reasoningEffort ?? null,
       },
     };
+  }
+  private subagentLaunch(thread: UiThread): SubagentLaunch | undefined {
+    const subagent = thread.subagent;
+    return subagent
+      ? this.views
+          .get(subagent.parentId)
+          ?.subagents()
+          .find((launch) => launch.toolUseId === subagent.toolUseId)
+      : undefined;
+  }
+  private subagentStatus(thread: UiThread): SubagentLaunch["status"] {
+    const status = this.subagentLaunch(thread)?.status ?? thread.subagent!.status;
+    // A subagent runs inside its parent's CLI; without that owner it can no longer run.
+    return status === "running" && !this.owners.has(thread.subagent!.parentId)
+      ? "interrupted"
+      : status;
+  }
+  private subagentSummary(thread: UiThread): ThreadSummary {
+    const subagent = thread.subagent!,
+      view = this.views.get(thread.id);
+    return {
+      id: thread.id,
+      projectId: thread.projectId,
+      title: thread.title,
+      preview: "",
+      cwd: thread.cwd,
+      state: this.subagentStatus(thread),
+      unread: false,
+      unseen: false,
+      pinned: false,
+      archived: thread.archived,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+      currentTurnId: view?.currentTurnId ?? null,
+      queuedMessageCount: 0,
+      browserStatus: "disabled",
+      settings: thread.settings,
+      relation: {
+        kind: "subagent",
+        sessionId: thread.id,
+        parentThreadId: subagent.parentId,
+        nickname: null,
+        role: subagent.agentType,
+      },
+      canAcceptDirectInput: false,
+      codexSettings: { model: view?.model ?? null, reasoningEffort: null },
+    };
+  }
+  /** Registers native subagents launched by a session as read-only child threads. */
+  private async syncSubagents(parentId: string): Promise<void> {
+    const parent = this.store.data.threads[parentId],
+      view = this.views.get(parentId);
+    if (!parent || parent.subagent || !view) return;
+    const changed = view.subagents().filter((launch) => {
+      const saved = this.store.data.threads[launch.threadId];
+      return saved?.subagent?.status !== launch.status || saved.title !== launch.title;
+    });
+    if (!changed.length) return;
+    await this.store.update((data) => {
+      for (const launch of changed) {
+        const thread =
+          data.threads[launch.threadId] ??
+          blankThread(
+            launch.threadId,
+            parent.cwd,
+            parent.projectId,
+            launch.title,
+            launch.startedAt ?? Date.now(),
+          );
+        thread.title = launch.title;
+        thread.subagent = {
+          parentId,
+          toolUseId: launch.toolUseId,
+          agentType: launch.agentType,
+          status: launch.status,
+        };
+        data.threads[launch.threadId] = thread;
+      }
+    });
+    for (const launch of changed) {
+      if (launch.status !== "running")
+        for (const event of this.views.get(launch.threadId)?.settle(launch.status) ?? [])
+          this.publish(event);
+      this.publish({ type: "thread.upserted", thread: this.summary(launch.threadId) });
+    }
+  }
+  /** Rebuilds open subagent views after their parent owner replayed its events. */
+  private async reloadSubagentViews(parentId: string): Promise<void> {
+    for (const [id, thread] of Object.entries(this.store.data.threads)) {
+      if (thread.subagent?.parentId !== parentId || !this.views.has(id)) continue;
+      this.views.delete(id);
+      for (const turn of (await this.view(id)).turns())
+        this.publish({ type: "turn.replaced", threadId: id, turn });
+    }
   }
   snapshot(): AppSnapshot {
     return {
@@ -547,8 +643,26 @@ export class UiService extends EventEmitter {
   private async view(id: string): Promise<NativeView> {
     const saved = this.views.get(id);
     if (saved) return saved;
-    const thread = this.thread(id),
-      view = new NativeView(id, thread.cwd);
+    const thread = this.thread(id);
+    if (thread.subagent) {
+      const { parentId, toolUseId } = thread.subagent;
+      const view = new NativeView(id, thread.cwd, toolUseId);
+      const history = await readSubagentHistory(
+        this.manager.config.configDir,
+        parentId,
+        toolUseId,
+      ).catch((error) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      const live = (this.owners.get(parentId)?.currentEvents ?? []).filter(
+        (event) => event.parent_tool_use_id === toolUseId,
+      );
+      view.reset([...history, ...live], { live: this.subagentStatus(thread) === "running" });
+      this.views.set(id, view);
+      return view;
+    }
+    const view = new NativeView(id, thread.cwd);
     for (const [toolUseId, text] of Object.entries(thread.planTexts ?? {}))
       view.rememberPlanText(toolUseId, text);
     const history = await readHistory(this.manager.config.configDir, id).catch((error) => {
@@ -557,6 +671,7 @@ export class UiService extends EventEmitter {
     });
     view.reset(history?.messages ?? []);
     this.views.set(id, view);
+    await this.syncSubagents(id);
     return view;
   }
   async detail(id: string): Promise<ThreadDetail> {
@@ -617,6 +732,8 @@ export class UiService extends EventEmitter {
             this.publish({ type: "models.changed", models: this.modelOptions() });
             for (const turn of view.turns())
               this.publish({ type: "turn.replaced", threadId: id, turn });
+            await this.syncSubagents(id);
+            await this.reloadSubagentViews(id);
             for (const attention of this.attention().filter((item) => item.threadId === id))
               this.publish({ type: "attention.upserted", attention });
             this.publish({ type: "thread.upserted", thread: this.summary(id) });
@@ -646,7 +763,14 @@ export class UiService extends EventEmitter {
         !(typeof native.timestamp === "string" && Number.isFinite(Date.parse(native.timestamp)))
       )
         native = { ...native, timestamp: Date.now() };
+      const childToolUseId =
+        typeof native.parent_tool_use_id === "string" ? native.parent_tool_use_id : "";
+      if (childToolUseId)
+        for (const update of this.views.get(subagentThreadId(id, childToolUseId))?.apply(native) ??
+          [])
+          this.publish(update);
       for (const update of view.apply(native)) this.publish(update);
+      if (native.type !== "stream_event") await this.syncSubagents(id);
       if (native.type === "result") {
         if (owner.state === "interrupted") owner.awaitingResult = false;
         await this.touch(id);
@@ -824,6 +948,8 @@ export class UiService extends EventEmitter {
   async enqueue(id: string, body: QueueMessageRequest): Promise<QueuedMessage> {
     const thread = this.thread(id),
       text = typeof body.input === "string" ? body.input : "";
+    if (thread.subagent)
+      throw new AppError("conflict", "A subagent is controlled by its parent session", 409);
     if (!validPastedText(body, text))
       throw new AppError("invalid_request", "Invalid pasted text metadata");
     if (!text.trim() && !body.pasteBlocks?.length && !body.images?.length && !body.files?.length)
@@ -1240,6 +1366,8 @@ export class UiService extends EventEmitter {
     if (patch.model === null) patch.model = "default";
     if (patch.reasoningEffort === null) patch.reasoningEffort = undefined;
     const thread = this.thread(id);
+    if (thread.subagent)
+      throw new AppError("conflict", "A subagent is controlled by its parent session", 409);
     if (patch.collaborationMode && !["default", "plan"].includes(patch.collaborationMode))
       throw new AppError("invalid_request", "Claude supports standard and plan sessions");
     const planChanged =

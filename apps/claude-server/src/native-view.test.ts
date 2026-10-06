@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NativeView, normalizeNativeEvents } from "./native-view.js";
+import { subagentThreadId } from "./types.js";
 
 const user = {
   type: "user",
@@ -1306,5 +1307,186 @@ describe("native Claude view", () => {
         { type: "error", id: "user-1:error", status: "failed", message: "Tool failed" },
       ],
     });
+  });
+
+  it("renders native task tools as one checklist that moves to the latest update", () => {
+    const tool = (id: string, name: string, input: Record<string, unknown>) => ({
+      type: "assistant",
+      timestamp: "2026-10-05T12:00:01.000Z",
+      message: { id: `m-${id}`, content: [{ type: "tool_use", id, name, input }] },
+    });
+    const result = (id: string, content: string, native: Record<string, unknown>) => ({
+      type: "user",
+      timestamp: "2026-10-05T12:00:02.000Z",
+      tool_use_result: native,
+      message: { content: [{ type: "tool_result", tool_use_id: id, content }] },
+    });
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply(tool("t1", "TaskCreate", { subject: "Say hi", description: "Greet" }));
+    view.apply(result("t1", "Task #1 created successfully: Say hi", { task: { id: "1" } }));
+    view.apply(tool("t2", "TaskCreate", { subject: "Count" }));
+    // Older CLIs report the created ID only in the tool result text.
+    view.apply(result("t2", "Task #2 created successfully: Count", {}));
+    view.apply({ ...assistant, timestamp: "2026-10-05T12:00:03.000Z" });
+    view.apply(tool("t3", "TaskUpdate", { taskId: "1", status: "in_progress" }));
+    const events = view.apply(result("t3", "Updated task #1 status", { success: true }));
+    expect(events).toEqual([expect.objectContaining({ type: "turn.replaced" })]);
+    const items = view.turns()[0]!.items;
+    expect(items.map((item) => item.type)).toEqual([
+      "userMessage",
+      "agentMessage",
+      "planChecklist",
+    ]);
+    expect(items[2]).toMatchObject({
+      id: "user-1:tasks",
+      status: "inProgress",
+      afterItemId: "message-1:0",
+      steps: [
+        { step: "Say hi", status: "inProgress" },
+        { step: "Count", status: "pending" },
+      ],
+    });
+    view.apply({ type: "result", subtype: "success" });
+    expect(view.turns()[0]!.items[2]).toMatchObject({ type: "planChecklist", status: "completed" });
+
+    const legacy = new NativeView("session", "/project");
+    legacy.apply(user);
+    legacy.apply(
+      tool("todo", "TodoWrite", {
+        todos: [
+          { content: "Read", status: "completed", activeForm: "Reading" },
+          { content: "Write", status: "in_progress", activeForm: "Writing" },
+        ],
+      }),
+    );
+    legacy.apply(result("todo", "Todos have been modified", {}));
+    expect(legacy.turns()[0]!.items.at(-1)).toMatchObject({
+      type: "planChecklist",
+      steps: [
+        { step: "Read", status: "completed" },
+        { step: "Write", status: "inProgress" },
+      ],
+    });
+  });
+
+  it("shows answered questions instead of the AskUserQuestion tool call", () => {
+    const questions = [
+      {
+        question: "Which color?",
+        header: "Color",
+        options: [{ label: "Red" }],
+        multiSelect: false,
+      },
+      { question: "Which size?", header: "Size", options: [{ label: "M" }], multiSelect: false },
+    ];
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply({
+      type: "assistant",
+      message: {
+        id: "ask",
+        content: [{ type: "tool_use", id: "q1", name: "AskUserQuestion", input: { questions } }],
+      },
+    });
+    expect(view.turns()[0]!.items.map((item) => item.type)).toEqual(["userMessage"]);
+    view.apply({
+      type: "user",
+      timestamp: "2026-10-05T12:00:05.000Z",
+      // Native transcripts spell the structured result in camel case.
+      toolUseResult: { questions, answers: { "Which color?": "Red", "Which size?": "M" } },
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "q1", content: "Your questions have been answered" },
+        ],
+      },
+    });
+    expect(view.turns()[0]!.items[1]).toEqual({
+      type: "userInputResponse",
+      id: "q1:response",
+      status: "completed",
+      entries: [
+        { header: "Color", question: "Which color?", answers: ["Red"] },
+        { header: "Size", question: "Which size?", answers: ["M"] },
+      ],
+      timestamp: Date.parse("2026-10-05T12:00:05.000Z"),
+      afterItemId: "user-1",
+    });
+  });
+
+  it("links native subagent launches to their own read-only transcript view", () => {
+    const launch = {
+      type: "assistant",
+      timestamp: "2026-10-05T12:00:01.000Z",
+      message: {
+        id: "launch",
+        content: [
+          {
+            type: "tool_use",
+            id: "agent-tool",
+            name: "Agent",
+            input: { description: "Inspect repo", subagent_type: "Explore", prompt: "Look" },
+          },
+        ],
+      },
+    };
+    const child = {
+      type: "assistant",
+      parent_tool_use_id: "agent-tool",
+      message: { id: "child-message", content: [{ type: "text", text: "Found it" }] },
+    };
+    const parent = new NativeView("session", "/project");
+    parent.apply(user);
+    parent.apply(launch);
+    expect(parent.apply(child)).toEqual([]);
+    const threadId = subagentThreadId("session", "agent-tool");
+    expect(parent.turns()[0]!.items[1]).toMatchObject({
+      type: "subagentLaunch",
+      status: "inProgress",
+      title: "Inspect repo",
+      threadId,
+      source: "claude",
+    });
+    expect(parent.subagents()).toEqual([
+      {
+        toolUseId: "agent-tool",
+        threadId,
+        title: "Inspect repo",
+        agentType: "Explore",
+        status: "running",
+        startedAt: Date.parse("2026-10-05T12:00:01.000Z"),
+      },
+    ]);
+    // Background agents report their lifecycle through native system task events.
+    parent.apply({
+      type: "system",
+      subtype: "task_started",
+      task_id: "a1",
+      tool_use_id: "agent-tool",
+    });
+    parent.apply({
+      type: "system",
+      subtype: "task_updated",
+      task_id: "a1",
+      patch: { status: "killed" },
+    });
+    expect(parent.subagents()[0]!.status).toBe("interrupted");
+
+    const view = new NativeView(threadId, "/project", "agent-tool");
+    view.reset(
+      [{ type: "user", uuid: "prompt", isSidechain: true, message: { content: "Look" } }],
+      {
+        live: true,
+      },
+    );
+    view.apply(child);
+    expect(view.apply({ ...child, parent_tool_use_id: "nested-tool" })).toEqual([]);
+    expect(view.turns()[0]!.items.map((item) => item.id)).toEqual(["prompt", "child-message:0"]);
+    expect(view.settle("completed")).toEqual([
+      expect.objectContaining({
+        type: "turn.replaced",
+        turn: expect.objectContaining({ status: "completed" }),
+      }),
+    ]);
   });
 });

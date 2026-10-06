@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -143,6 +143,59 @@ export async function listHistory(configDir: string, cwd?: string): Promise<Hist
     });
   }
   return result;
+}
+
+/** Reads one native subagent transcript, located by the parent tool call that launched it. */
+export async function readSubagentHistory(
+  configDir: string,
+  sessionId: string,
+  toolUseId: string,
+): Promise<JsonObject[]> {
+  validateSessionId(sessionId);
+  for (const file of await transcripts(configDir)) {
+    if (file.sessionId.toLowerCase() !== sessionId.toLowerCase()) continue;
+    const directory = join(file.path.slice(0, -".jsonl".length), "subagents");
+    let names: string[];
+    try {
+      names = await readdir(directory);
+    } catch (error) {
+      if (missing(error)) continue;
+      throw error;
+    }
+    for (const name of names) {
+      if (!/^agent-[\w-]+\.meta\.json$/.test(name)) continue;
+      let meta: unknown;
+      try {
+        meta = JSON.parse(await readFile(join(directory, name), "utf8"));
+      } catch {
+        continue;
+      }
+      if (!object(meta) || meta.toolUseId !== toolUseId) continue;
+      const events: JsonObject[] = [];
+      const stream = createReadStream(join(directory, name.replace(/\.meta\.json$/, ".jsonl")), {
+        encoding: "utf8",
+      });
+      const lines = createInterface({ input: stream, crlfDelay: Infinity });
+      try {
+        for await (const line of lines) {
+          try {
+            const entry: unknown = JSON.parse(line);
+            if (object(entry) && ["user", "assistant", "system"].includes(String(entry.type)))
+              events.push(entry);
+          } catch {
+            /* A concurrently written last line can be incomplete. */
+          }
+        }
+      } finally {
+        lines.close();
+        stream.destroy();
+      }
+      return events;
+    }
+  }
+  const error = new Error("Claude subagent history not found") as NodeJS.ErrnoException;
+  error.code = "ENOENT";
+  throw error;
 }
 
 export async function readHistory(configDir: string, sessionId: string): Promise<SessionHistory> {

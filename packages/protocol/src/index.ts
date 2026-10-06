@@ -539,8 +539,8 @@ export type ActivityItem =
       status: "inProgress" | "completed" | "failed";
       title: string;
       threadId: string | null;
-      /** Native Codex launches are distinct from managed Team tasks. */
-      source?: "codex";
+      /** Native agent launches are distinct from managed Team tasks. */
+      source?: "codex" | "claude";
       agentPath?: string;
       timestamp?: number | null;
     }

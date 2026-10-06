@@ -32,6 +32,13 @@ export interface UiThread {
   /** A plan from ExitPlanMode is shown to the user and awaits approval or revision. */
   awaitingPlanResponse?: boolean;
   dismissedPlanTurnId?: string;
+  /** A read-only native subagent launched by a tool call of the parent session. */
+  subagent?: {
+    parentId: string;
+    toolUseId: string;
+    agentType: string | null;
+    status: "running" | "completed" | "failed" | "interrupted";
+  };
   /** ExitPlanMode plans by tool use ID; Claude's transcript does not include their text. */
   planTexts?: Record<string, string>;
   deliveries: Record<

@@ -4,9 +4,10 @@ import {
   type ActivityItem,
   type QueuedMessage,
   type ServerEvent,
+  type TurnPlanStep,
   type TurnView,
 } from "@codexnest/protocol";
-import { nativeResultInterrupted } from "./types.js";
+import { nativeResultInterrupted, subagentThreadId } from "./types.js";
 
 type Json = Record<string, unknown>;
 type StreamMessage = {
@@ -90,6 +91,23 @@ function userContent(content: unknown): {
 
 /** Pure incremental rendering of native history and live events; never does I/O. */
 const PLAN_FILE = /[\\/]\.claude[\\/]plans[\\/][^\\/]+\.md$/;
+/** Tools whose native results are rendered as dedicated timeline items instead of tool rows. */
+const STRUCTURED_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite", "AskUserQuestion"]);
+const SUBAGENT_TOOLS = new Set(["Agent", "Task"]);
+
+export type SubagentStatus = "running" | "completed" | "failed" | "interrupted";
+export interface SubagentLaunch {
+  toolUseId: string;
+  threadId: string;
+  title: string;
+  agentType: string | null;
+  status: SubagentStatus;
+  startedAt: number | null;
+}
+
+function stepStatus(value: unknown): TurnPlanStep["status"] {
+  return value === "completed" ? "completed" : value === "in_progress" ? "inProgress" : "pending";
+}
 
 export class NativeView {
   private readonly values: TurnView[] = [];
@@ -100,8 +118,20 @@ export class NativeView {
   private readonly continuingTurns = new Set<string>();
   private readonly tools = new Map<
     string,
-    { turn: TurnView; item: ActivityItem; imagePath?: string }
+    {
+      turn: TurnView;
+      item: ActivityItem;
+      imagePath?: string;
+      /** Structured tools render through their native result instead of a tool row. */
+      structured?: { name: string; input: Json };
+      agentType?: string;
+    }
   >();
+  /** Native task list (TaskCreate/TaskUpdate or legacy TodoWrite), shared by all turns. */
+  private readonly tasks = new Map<string, TurnPlanStep>();
+  /** Native background task status by Agent tool use ID, from system task events. */
+  private readonly agentStatus = new Map<string, SubagentStatus>();
+  private readonly agentTasks = new Map<string, string>();
   private readonly streams = new Map<string, StreamMessage>();
   /** Claude omits the plan from ExitPlanMode's transcript input; ClaudeNest keeps it here. */
   private readonly planTexts = new Map<string, string>();
@@ -113,7 +143,52 @@ export class NativeView {
   constructor(
     readonly sessionId: string,
     readonly cwd: string,
+    /** Renders one native subagent: its sidechain transcript and live events for this tool use. */
+    readonly subagentToolUseId?: string,
   ) {}
+
+  /** Events that belong to another conversation than the one this view renders. */
+  private foreign(event: Json): boolean {
+    if (this.subagentToolUseId === undefined)
+      return event.isSidechain === true || Boolean(event.parent_tool_use_id);
+    return Boolean(event.parent_tool_use_id) && event.parent_tool_use_id !== this.subagentToolUseId;
+  }
+
+  /** Native subagents launched by this conversation, in launch order. */
+  subagents(): SubagentLaunch[] {
+    const launches: SubagentLaunch[] = [];
+    for (const [toolUseId, { turn, item, agentType }] of this.tools) {
+      if (item.type !== "subagentLaunch") continue;
+      const native = this.agentStatus.get(toolUseId);
+      launches.push({
+        toolUseId,
+        threadId: item.threadId!,
+        title: item.title,
+        agentType: agentType ?? null,
+        status:
+          native ??
+          (item.status === "failed"
+            ? "failed"
+            : item.status === "completed"
+              ? "completed"
+              : turn.status === "inProgress"
+                ? "running"
+                : turn.status === "interrupted"
+                  ? "interrupted"
+                  : "completed"),
+        startedAt: item.timestamp ?? turn.startedAt,
+      });
+    }
+    return launches;
+  }
+
+  /** Finishes an in-progress subagent turn once its parent tool call has ended. */
+  settle(status: "completed" | "failed" | "interrupted"): ServerEvent[] {
+    const turn = this.active;
+    if (turn?.status !== "inProgress") return [];
+    this.complete(turn, status, null);
+    return [{ type: "turn.replaced", threadId: this.sessionId, turn: structuredClone(turn) }];
+  }
 
   get model(): string | undefined {
     return this.effectiveModel;
@@ -211,7 +286,7 @@ export class NativeView {
     let sourceTurn: TurnView | undefined;
     if (retained.length)
       events.forEach((event, index) => {
-        if (event.isSidechain === true || event.parent_tool_use_id) return;
+        if (this.foreign(event)) return;
         let ids: string[] = [];
         if (event.type === "attachment" && object(event.attachment)) {
           const id = string(event.attachment.source_uuid) || string(event.uuid);
@@ -292,6 +367,9 @@ export class NativeView {
     this.messageTurns.clear();
     this.continuingTurns.clear();
     this.tools.clear();
+    this.tasks.clear();
+    this.agentStatus.clear();
+    this.agentTasks.clear();
     this.streams.clear();
     this.latestPlanFile = "";
     this.active = undefined;
@@ -322,7 +400,7 @@ export class NativeView {
 
   apply(event: Json): ServerEvent[] {
     event = this.withSourceMetadata(event);
-    if (event.isSidechain === true || event.parent_tool_use_id) return [];
+    if (this.foreign(event)) return [];
     if (
       event.type === "attachment" &&
       object(event.attachment) &&
@@ -342,6 +420,10 @@ export class NativeView {
       if (typeof event.model === "string") this.effectiveModel = event.model;
       return [];
     }
+    if (event.type === "system" && typeof event.subtype === "string") {
+      this.taskEvent(event);
+      return [];
+    }
     if (event.type === "stream_event" && object(event.event))
       return this.stream(event.event, event);
     if (event.type === "user" && object(event.message)) {
@@ -353,6 +435,10 @@ export class NativeView {
       for (const result of results) {
         const match = this.tools.get(string(result.tool_use_id));
         if (!match) continue;
+        if (match.structured) {
+          changes.push(...this.structuredResult(match.turn, match.structured, result, event));
+          continue;
+        }
         if (match.item.type === "plan") {
           match.item.status = "completed";
           changes.push(this.upsert(match.turn, match.item));
@@ -531,6 +617,113 @@ export class NativeView {
     return [];
   }
 
+  /** Tracks native background agent lifecycles reported by system task events. */
+  private taskEvent(event: Json): void {
+    const taskId = string(event.task_id);
+    const toolUseId = string(event.tool_use_id) || this.agentTasks.get(taskId) || "";
+    if (taskId && toolUseId) this.agentTasks.set(taskId, toolUseId);
+    if (!toolUseId) return;
+    const status =
+      event.subtype === "task_started"
+        ? "running"
+        : event.subtype === "task_notification"
+          ? event.status
+          : event.subtype === "task_updated" && object(event.patch)
+            ? event.patch.status
+            : undefined;
+    if (status === "running" || status === "completed" || status === "failed")
+      this.agentStatus.set(toolUseId, status);
+    else if (status === "killed" || status === "stopped" || status === "cancelled")
+      this.agentStatus.set(toolUseId, "interrupted");
+  }
+
+  /** Renders task-list updates and answered questions from their native tool results. */
+  private structuredResult(
+    turn: TurnView,
+    tool: { name: string; input: Json },
+    result: Json,
+    event: Json,
+  ): ServerEvent[] {
+    if (result.is_error === true) return [];
+    const native = object(event.tool_use_result)
+      ? event.tool_use_result
+      : object(event.toolUseResult)
+        ? event.toolUseResult
+        : {};
+    const at = timestamp(event.timestamp);
+    if (tool.name === "AskUserQuestion") {
+      const answers = object(native.answers) ? native.answers : {};
+      const questions = Array.isArray(native.questions) ? native.questions : tool.input.questions;
+      if (!Array.isArray(questions) || !Object.keys(answers).length) return [];
+      const item: ActivityItem = {
+        type: "userInputResponse",
+        id: `${string(result.tool_use_id)}:response`,
+        status: "completed",
+        entries: questions.filter(object).map((question) => {
+          const answer = answers[string(question.question)];
+          return {
+            header: string(question.header),
+            question: string(question.question),
+            answers: typeof answer === "string" && answer ? [answer] : [],
+          };
+        }),
+        timestamp: at ?? turn.startedAt ?? 0,
+        afterItemId: turn.items.at(-1)?.id ?? null,
+      };
+      return [this.upsert(turn, item)];
+    }
+    if (tool.name === "TodoWrite") {
+      if (!Array.isArray(tool.input.todos)) return [];
+      this.tasks.clear();
+      tool.input.todos.filter(object).forEach((todo, index) => {
+        this.tasks.set(String(index), {
+          step: string(todo.content),
+          status: stepStatus(todo.status),
+        });
+      });
+    } else if (tool.name === "TaskCreate") {
+      const created = object(native.task) ? string(native.task.id) : "";
+      const id = created || /#(\S+)/.exec(textContent(result.content))?.[1] || "";
+      if (!id) return [];
+      this.tasks.set(id, {
+        step:
+          string(tool.input.subject) || (object(native.task) ? string(native.task.subject) : ""),
+        status: "pending",
+      });
+    } else {
+      const id = string(tool.input.taskId) || string(native.taskId);
+      const task = this.tasks.get(id);
+      if (!task) return [];
+      if (tool.input.status === "deleted") this.tasks.delete(id);
+      else
+        this.tasks.set(id, {
+          step: string(tool.input.subject) || task.step,
+          status: tool.input.status === undefined ? task.status : stepStatus(tool.input.status),
+        });
+    }
+    return this.publishTasks(turn, at);
+  }
+
+  /** Keeps one checklist per turn at the latest task-list update, like a plan update. */
+  private publishTasks(turn: TurnView, at: number | null): ServerEvent[] {
+    const id = `${turn.id}:tasks`;
+    const index = turn.items.findIndex((item) => item.id === id);
+    if (index >= 0) turn.items.splice(index, 1);
+    const steps = [...this.tasks.values()].map((step) => ({ ...step }));
+    turn.progress = { ...turn.progress, steps };
+    if (steps.length)
+      turn.items.push({
+        type: "planChecklist",
+        id,
+        status: turn.status === "inProgress" ? "inProgress" : "completed",
+        explanation: null,
+        steps,
+        timestamp: at ?? turn.startedAt ?? 0,
+        afterItemId: turn.items.at(-1)?.id ?? null,
+      });
+    return [{ type: "turn.replaced", threadId: this.sessionId, turn: structuredClone(turn) }];
+  }
+
   private makeTurn(id: string, startedAt: number | null): TurnView {
     const turn: TurnView = {
       id,
@@ -556,7 +749,7 @@ export class NativeView {
   }
   private rememberSourceMetadata(event: Json): void {
     const id = sourceKey(event);
-    if (!id || event.isSidechain === true || event.parent_tool_use_id) return;
+    if (!id || this.foreign(event)) return;
     const metadata: Json = {};
     if (
       typeof event.apiBlockIndex === "number" &&
@@ -713,6 +906,14 @@ export class NativeView {
     const existing = this.tools.get(toolId);
     if (name === "Read" && existing?.item.type === "tool" && existing.item.images?.length)
       return existing.item;
+    if (STRUCTURED_TOOLS.has(name)) {
+      this.tools.set(toolId, {
+        turn,
+        item: existing?.item ?? { type: "tool", id: toolId, status, title: name, detail: "" },
+        structured: { name, input },
+      });
+      return undefined;
+    }
     let item: ActivityItem;
     if (name === "Write" && PLAN_FILE.test(string(input.file_path)))
       this.latestPlanFile = string(input.content);
@@ -726,6 +927,16 @@ export class NativeView {
         images: [],
         timestamp: at,
         phase: null,
+      };
+    } else if (SUBAGENT_TOOLS.has(name) && (input.subagent_type || input.prompt)) {
+      item = {
+        type: "subagentLaunch",
+        id: toolId,
+        status: existing?.item.status ?? "inProgress",
+        title: string(input.description) || string(input.subagent_type) || name,
+        threadId: subagentThreadId(this.sessionId, toolId),
+        source: "claude",
+        timestamp: existing?.item.type === "subagentLaunch" ? existing.item.timestamp : at,
       };
     } else if (name === "Bash" || name === "Read" || name === "Grep" || name === "Glob") {
       item = {
@@ -772,6 +983,9 @@ export class NativeView {
     this.tools.set(toolId, {
       turn,
       item,
+      ...(item.type === "subagentLaunch" && input.subagent_type
+        ? { agentType: string(input.subagent_type) }
+        : {}),
       ...(name === "Read" && typeof input.file_path === "string"
         ? { imagePath: input.file_path }
         : {}),

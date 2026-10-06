@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 export const RUNNER_PROTOCOL_VERSION = 1 as const;
 export const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -116,6 +117,17 @@ export function nativeResultInterrupted(event: Record<string, unknown>): boolean
     /\[ede_diagnostic\]|request interrupted by user/i.test(details) &&
     /interrupt|cancel(?:led|ed) by user|aborterror/i.test(details)
   );
+}
+
+/** Deterministic UUID for IDs derived from other stable identifiers. */
+export function stableUuid(value: string): string {
+  const hex = createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** UI thread ID of a native subagent launched by a parent session's tool call. */
+export function subagentThreadId(parentId: string, toolUseId: string): string {
+  return stableUuid(`subagent:${parentId}:${toolUseId}`);
 }
 
 export class AppError extends Error {

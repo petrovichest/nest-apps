@@ -19,6 +19,7 @@ import {
   type RunnerSnapshot,
 } from "./types";
 import { UiService, commandId } from "./ui-service";
+import { subagentThreadId } from "./types";
 import { parseClaudeUsage } from "./rate-limits";
 import type { UiData } from "./ui-store";
 
@@ -1553,6 +1554,95 @@ describe("Claude UI durable session facade", () => {
     expect(manager.creates).toEqual([]);
     expect(manager.sends[0]?.sessionId).toBe(id);
     expect(await readFile(path, "utf8")).toBe(contents);
+  });
+
+  it("projects native subagents as read-only child threads with history and live events", async () => {
+    const { manager, config, directory, start } = await fixture();
+    const id = randomUUID(),
+      projectRoot = join(config.configDir, "projects", "test-project"),
+      subagents = join(projectRoot, id, "subagents");
+    await mkdir(subagents, { recursive: true });
+    const user = { type: "user", uuid: randomUUID(), cwd: directory, message: { content: "Go" } };
+    const launch = {
+      type: "assistant",
+      uuid: randomUUID(),
+      timestamp: 20,
+      message: {
+        id: "launch",
+        content: [
+          {
+            type: "tool_use",
+            id: "agent-tool",
+            name: "Agent",
+            input: { description: "Inspect repo", subagent_type: "Explore", prompt: "Look" },
+          },
+        ],
+      },
+    };
+    await writeFile(
+      join(projectRoot, `${id}.jsonl`),
+      [user, launch].map((e) => JSON.stringify(e)).join("\n"),
+    );
+    await writeFile(
+      join(subagents, "agent-a1.meta.json"),
+      JSON.stringify({ agentType: "Explore", toolUseId: "agent-tool" }),
+    );
+    await writeFile(
+      join(subagents, "agent-a1.jsonl"),
+      JSON.stringify({
+        type: "user",
+        uuid: "prompt",
+        isSidechain: true,
+        message: { content: "Look" },
+      }),
+    );
+    const owner = snapshot(id, directory);
+    owner.state = "running";
+    owner.currentEvents = [user, launch];
+    manager.owners.set(id, owner);
+    const service = await start();
+    const childId = subagentThreadId(id, "agent-tool");
+    await expect
+      .poll(() => service.snapshot().threads.find((thread) => thread.id === childId))
+      .toMatchObject({
+        title: "Inspect repo",
+        state: "running",
+        canAcceptDirectInput: false,
+        relation: { kind: "subagent", parentThreadId: id, role: "Explore" },
+      });
+    expect((await service.detail(childId)).turns[0]!.items.map((item) => item.id)).toEqual([
+      "prompt",
+    ]);
+    const frames: ServerFrame[] = [];
+    service.on("frame", (frame: ServerFrame) => frames.push(frame));
+    manager.emit(id, "native", {
+      type: "assistant",
+      parent_tool_use_id: "agent-tool",
+      message: { id: "child-reply", content: [{ type: "text", text: "Found it" }] },
+    });
+    await expect
+      .poll(async () => (await service.detail(childId)).turns[0]!.items.map((item) => item.id))
+      .toEqual(["prompt", "child-reply:0"]);
+    expect((await service.detail(id)).turns[0]!.items.map((item) => item.id)).not.toContain(
+      "child-reply:0",
+    );
+    manager.emit(id, "native", {
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "agent-tool", content: "Done" }] },
+    });
+    await expect.poll(() => service.summary(childId).state).toBe("completed");
+    await expect
+      .poll(async () => (await service.detail(childId)).turns[0]!.status)
+      .toBe("completed");
+    expect(
+      frames.some(
+        (frame) =>
+          frame.type === "event" &&
+          frame.event.type === "thread.upserted" &&
+          frame.event.thread.id === childId,
+      ),
+    ).toBe(true);
+    await expect(service.enqueue(childId, { input: "Hi" })).rejects.toMatchObject({ status: 409 });
   });
 
   it("maps pending CLI questions and tool approvals, persists drafts, and sends native responses", async () => {

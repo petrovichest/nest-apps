@@ -28,8 +28,8 @@ export function subagentMetadata(thread: ThreadSummary | undefined, models: Mode
 
 export function isNativeSubagentLaunch(
   item: ActivityItem,
-): item is SubagentLaunch & { source: "codex" } {
-  return item.type === "subagentLaunch" && item.source === "codex";
+): item is SubagentLaunch & { source: "codex" | "claude" } {
+  return item.type === "subagentLaunch" && item.source !== undefined;
 }
 
 export function NativeSubagentLaunchCard({
