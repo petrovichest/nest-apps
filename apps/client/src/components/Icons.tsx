@@ -100,6 +100,14 @@ export const CopyIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const EyeIcon = ({ crossed = false, ...props }: IconProps & { crossed?: boolean }) => (
+  <Icon {...props}>
+    <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
+    <circle cx="12" cy="12" r="2.5" />
+    {crossed && <path d="m4 4 16 16" />}
+  </Icon>
+);
+
 export const CheckIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="m5 12 3.6 3.6a1.3 1.3 0 0 0 1.8 0L19 7" />

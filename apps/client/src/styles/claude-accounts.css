@@ -29,7 +29,7 @@
   margin: 0 0 var(--space-1);
   font-size: var(--text-section);
   font-weight: var(--weight-medium);
-  line-height: var(--leading-copy);
+  line-height: 24px;
 }
 
 .claude-account-meta {
@@ -66,16 +66,9 @@
 }
 
 .claude-account-primary {
-  background: var(--color-lapis);
-  color: var(--color-lapis-contrast);
+  color: var(--color-ink-strong);
   font-weight: var(--weight-action);
   border-radius: 999px;
-}
-
-.claude-account-primary:is(:hover, :focus-visible):not(:disabled) {
-  background: var(--color-lapis);
-  color: var(--color-lapis-contrast);
-  box-shadow: var(--sidebar-surface-shadow);
 }
 
 .claude-account-surface {
@@ -116,32 +109,63 @@
   position: relative;
   flex: 0 0 42px;
   width: 42px;
-  height: 25px;
+  height: var(--control-height);
+  min-height: var(--control-height);
   margin: 0;
+  padding: 0;
   border: 0;
   border-radius: 999px;
-  background: var(--color-line-strong);
+  background: transparent;
   cursor: pointer;
+}
+
+.claude-account-switch::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 25px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--color-floating);
+  box-shadow: var(--chat-inner-shadow);
 }
 
 .claude-account-switch::after {
   content: "";
   position: absolute;
-  top: 3px;
+  top: 50%;
   left: 3px;
   width: 19px;
   height: 19px;
+  transform: translateY(-50%);
   border-radius: 50%;
-  background: var(--color-floating);
+  background: var(--color-muted);
 }
 
-.claude-account-switch:checked {
-  background: var(--color-lapis);
+.claude-account-switch:checked::before {
+  box-shadow: var(--sidebar-surface-shadow);
 }
 
 .claude-account-switch:checked::after {
-  transform: translateX(17px);
-  background: var(--color-lapis-contrast);
+  transform: translate(17px, -50%);
+  background: var(--color-ink-strong);
+}
+
+@media (hover: hover) {
+  .claude-account-switch:hover:enabled::before {
+    box-shadow: var(--sidebar-surface-shadow);
+  }
+}
+
+.claude-account-switch:focus-visible:enabled::before {
+  box-shadow: var(--sidebar-surface-shadow);
+}
+
+.claude-account-switch:active:enabled::before {
+  background: var(--sidebar-control-active);
+  box-shadow: var(--sidebar-pressed-shadow);
 }
 
 .claude-account-switch:disabled {
@@ -171,10 +195,17 @@
   flex: 1;
 }
 
-.claude-account-identity h3,
-.claude-account-empty h3 {
+.claude-account-identity h3 {
   margin: 0 0 var(--space-1);
-  font-size: var(--text-ui);
+  font-size: var(--text-section);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.claude-account-empty h3 {
+  margin: 0;
+  font-size: var(--text-dialog);
+  line-height: 28px;
   font-weight: var(--weight-semibold);
   overflow-wrap: anywhere;
 }
@@ -205,7 +236,7 @@
   background: var(--color-success);
 }
 
-.claude-account-state {
+.claude-account-identity-meta .claude-account-state {
   flex: 0 1 auto;
   font-size: var(--text-caption);
   line-height: var(--leading-copy);
@@ -250,6 +281,23 @@
 
 .claude-account-menu summary::-webkit-details-marker {
   display: none;
+}
+
+@media (hover: hover) {
+  .claude-account-menu summary:hover {
+    background: var(--color-floating);
+    box-shadow: var(--sidebar-surface-shadow);
+  }
+}
+
+.claude-account-menu summary:focus-visible {
+  background: var(--color-floating);
+  box-shadow: var(--sidebar-surface-shadow);
+}
+
+.claude-account-menu summary:active {
+  background: var(--sidebar-control-active);
+  box-shadow: var(--sidebar-pressed-shadow);
 }
 
 .claude-account-menu > div {
@@ -341,6 +389,9 @@
   overflow-wrap: anywhere;
 }
 
+.claude-accounts button > svg,
+.claude-account-dialog button > svg,
+.claude-login-open > svg,
 .claude-account-footer svg,
 .claude-account-updated svg,
 .claude-login-connection svg,
@@ -348,6 +399,12 @@
 .claude-account-success svg,
 .claude-login-note svg {
   flex: 0 0 18px;
+}
+
+.claude-account-connection-value,
+.claude-proxy-preview dd {
+  min-width: 0;
+  font-size: var(--text-code);
 }
 
 .claude-account-updated,
@@ -437,7 +494,8 @@
   gap: var(--space-1);
   padding: var(--space-1);
   border-radius: var(--chat-radius-surface);
-  background: var(--color-canvas);
+  background: var(--color-floating);
+  box-shadow: var(--chat-inner-shadow);
 }
 
 .claude-connection-options label {
@@ -461,9 +519,26 @@
   box-shadow: var(--sidebar-surface-shadow);
 }
 
+@media (hover: hover) {
+  .claude-connection-options label:hover:not(:has(input:disabled)) {
+    background: var(--color-floating);
+    box-shadow: var(--sidebar-surface-shadow);
+  }
+}
+
 .claude-connection-options label:has(input:focus-visible) {
+  box-shadow: var(--sidebar-surface-shadow);
   outline: 2px solid var(--color-lapis);
   outline-offset: 2px;
+}
+
+.claude-connection-options label:active:not(:has(input:disabled)) {
+  background: var(--sidebar-control-active);
+  box-shadow: var(--sidebar-pressed-shadow);
+}
+
+.claude-connection-options label:has(input:disabled) {
+  cursor: default;
 }
 
 .claude-connection-options input {
@@ -506,7 +581,8 @@
 .claude-login-connection {
   padding: var(--space-4);
   border-radius: var(--chat-radius-card);
-  background: color-mix(in srgb, var(--color-ink) 4%, transparent);
+  background: var(--color-floating);
+  box-shadow: var(--sidebar-surface-shadow);
   min-width: 0;
 }
 
@@ -621,10 +697,11 @@
     gap: var(--space-3);
   }
 
-  .claude-add-account,
-  .claude-configure-account {
+  .claude-accounts .claude-add-account,
+  .claude-accounts .claude-configure-account {
     flex: 0 0 var(--control-height);
     width: var(--control-height);
+    height: var(--control-height);
     padding: 0;
   }
 
@@ -680,6 +757,7 @@
   .claude-account-switch {
     appearance: auto;
   }
+  .claude-account-switch::before,
   .claude-account-switch::after {
     display: none;
   }

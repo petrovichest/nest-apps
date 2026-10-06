@@ -23,6 +23,7 @@ import {
   BrowserIcon,
   CheckIcon,
   CopyIcon,
+  EyeIcon,
   MoreIcon,
   PlusIcon,
   RefreshIcon,
@@ -366,7 +367,9 @@ function AccountCard({
       <footer className="claude-account-footer">
         <p>
           <BrowserIcon />
-          {proxyDescription(account.proxy, t)}
+          <span className={account.proxy.enabled ? "claude-account-connection-value" : undefined}>
+            {proxyDescription(account.proxy, t)}
+          </span>
         </p>
         {!account.authenticated && (
           <button type="button" disabled={busy} onClick={onLogin} aria-label={t("Войти в Claude")}>
@@ -790,21 +793,7 @@ function AccountWizard({
                   disabled={busy}
                   onClick={() => setShowProxy(!showProxy)}
                 >
-                  <svg
-                    aria-hidden="true"
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
-                    <circle cx="12" cy="12" r="2.5" />
-                    {showProxy && <path d="m4 4 16 16" />}
-                  </svg>
+                  <EyeIcon crossed={showProxy} />
                 </button>
               </div>
               <p className="claude-account-hint">
@@ -847,7 +836,7 @@ function AccountWizard({
                           setTest(null);
                         }}
                       />
-                      <span>
+                      <span className="claude-account-connection-value">
                         {candidate.protocol.toUpperCase()} ·{" "}
                         {endpoint(candidate.host, candidate.port)}
                         {candidate.username && (
@@ -932,13 +921,15 @@ function AccountWizard({
             <span className="claude-account-hint">{t("Подключение")}</span>
             <p>
               <BrowserIcon />
-              {connection}
+              <span className={enabled ? "claude-account-connection-value" : undefined}>
+                {connection}
+              </span>
             </p>
           </div>
           {login?.url && (
             <>
               <a
-                className="claude-login-open claude-account-primary"
+                className="settings-action-link claude-login-open claude-account-primary"
                 href={login.url}
                 target="_blank"
                 rel="noopener noreferrer"

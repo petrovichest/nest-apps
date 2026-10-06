@@ -1633,6 +1633,7 @@
 }
 
 .permission-presets {
+  min-width: 0;
   display: grid;
   gap: var(--space-2);
   margin: 0;
@@ -1698,6 +1699,7 @@
 
 .permission-preset > span {
   min-width: 0;
+  overflow-wrap: anywhere;
   display: grid;
   gap: var(--space-1);
 }
@@ -6537,6 +6539,7 @@ button.message-file:hover:not(:disabled) {
   }
 
   .settings-section-shelf {
+    display: flow-root;
     background: var(--color-canvas);
     box-shadow: none;
     padding: 0;

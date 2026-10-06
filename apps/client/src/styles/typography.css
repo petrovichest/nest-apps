@@ -58,11 +58,13 @@
   }
 
   .settings-group-heading h2,
+  .claude-accounts-heading h2,
   .workspace-title h1 {
     line-height: 1.333333;
   }
 
-  .dialog-heading h2 {
+  .dialog-heading h2,
+  .claude-account-empty h3 {
     line-height: 1.4;
   }
 
