@@ -12,6 +12,28 @@ const assistant = {
   uuid: "assistant-uuid",
   message: { id: "message-1", model: "sonnet", content: [{ type: "text", text: "Hello back" }] },
 };
+const taskPrompt =
+  '<task-notification>\n<task-id>background-1</task-id>\n<summary>Background command "Wait for CI run to finish" completed (exit code 0)</summary>\n</task-notification>';
+const taskNotification = {
+  type: "attachment",
+  uuid: "task-attachment",
+  timestamp: "2026-10-05T12:01:00.000Z",
+  renderedRole: "system",
+  attachment: {
+    type: "queued_command",
+    source_uuid: "task-input",
+    commandMode: "task-notification",
+    origin: { kind: "task-notification", producer: "session-task" },
+    prompt: taskPrompt,
+  },
+};
+const taskEcho = {
+  type: "user",
+  uuid: "task-input",
+  isReplay: true,
+  origin: taskNotification.attachment.origin,
+  message: { role: "user", content: taskPrompt },
+};
 function stream(event: Record<string, unknown>) {
   return { type: "stream_event", event };
 }
@@ -925,6 +947,127 @@ describe("native Claude view", () => {
     );
     expect(view.turns()).toHaveLength(1);
     expect(view.turns()[0]!.items.map((item) => item.id)).toEqual(["user-1", "message-1:0"]);
+  });
+
+  it.each([
+    {
+      ...taskNotification,
+      attachment: { ...taskNotification.attachment, origin: undefined },
+    },
+    {
+      ...taskNotification,
+      attachment: { ...taskNotification.attachment, commandMode: undefined },
+    },
+    taskEcho,
+  ])(
+    "keeps background task notifications out of user input without changing the active turn ($type)",
+    (event) => {
+      const view = new NativeView("session", "/project");
+      view.apply(user);
+      view.apply(assistant);
+      const before = view.turns();
+      expect(view.apply(event)).toEqual([]);
+      expect(view.turns()).toEqual(before);
+      expect(view.currentTurnId).toBe("user-1");
+      view.apply({ ...assistant, message: { id: "after-task", content: "Continuing" } });
+      expect(view.turns()).toHaveLength(1);
+      expect(view.turns()[0]!.items.at(-1)).toMatchObject({
+        id: "after-task:0",
+        type: "agentMessage",
+        text: "Continuing",
+      });
+    },
+  );
+
+  it.each([false, true])(
+    "uses canonical notification source UUIDs for origin-stripped replay (preserveInputs=%s)",
+    (preserveInputs) => {
+      const view = new NativeView("session", "/project");
+      view.apply(user);
+      view.apply(assistant);
+      view.reset(
+        [user, assistant, { ...taskEcho, origin: undefined }, taskNotification, taskEcho],
+        { live: true, preserveInputs },
+      );
+      expect(view.turns()).toHaveLength(1);
+      expect(view.currentTurnId).toBe("user-1");
+      expect(view.turns()[0]!.items.map((item) => item.id)).toEqual(["user-1", "message-1:0"]);
+    },
+  );
+
+  it("removes a formerly rendered notification while retaining genuine steering on recovery", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply(assistant);
+    view.apply({
+      ...user,
+      uuid: "steer-1",
+      claudenest_delivery: "steer",
+      message: { content: "Keep investigating" },
+    });
+    view.apply({ ...taskEcho, origin: undefined });
+    expect(view.turns()).toHaveLength(2);
+    view.reset([user, assistant, taskNotification, { ...taskEcho, origin: undefined }], {
+      live: true,
+      preserveInputs: true,
+    });
+    expect(view.turns()).toHaveLength(1);
+    expect(view.turns()[0]!.items.filter((item) => item.type === "userMessage")).toMatchObject([
+      { id: "user-1", text: "Hello" },
+      { id: "steer-1", text: "Keep investigating" },
+    ]);
+    expect(view.currentTurnId).toBe("user-1");
+  });
+
+  it("shows genuine queued prompts and user input containing task notification XML", () => {
+    const queued = {
+      ...taskNotification,
+      attachment: {
+        ...taskNotification.attachment,
+        source_uuid: "steer-1",
+        commandMode: "prompt",
+        origin: undefined,
+      },
+    };
+    const view = normalizeNativeEvents(
+      [user, queued, { ...taskEcho, uuid: "human-xml", origin: undefined }],
+      { sessionId: "session", cwd: "/project" },
+    );
+    expect(
+      view.turns.flatMap((turn) => turn.items).filter((item) => item.type === "userMessage"),
+    ).toMatchObject([
+      { id: "user-1", text: "Hello" },
+      { id: "steer-1", text: taskPrompt },
+      { id: "human-xml", text: taskPrompt },
+    ]);
+  });
+
+  it("processes tool results from a notification without creating user input", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply({
+      type: "assistant",
+      message: {
+        id: "command-message",
+        content: [{ type: "tool_use", id: "command-1", name: "Bash", input: { command: "pwd" } }],
+      },
+    });
+    const updates = view.apply({
+      ...taskEcho,
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "command-1", content: "/project" },
+          { type: "text", text: taskPrompt },
+        ],
+      },
+    });
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      type: "activity.upserted",
+      item: { id: "command-1", type: "command", status: "completed", output: "/project" },
+    });
+    expect(view.turns()).toHaveLength(1);
+    expect(view.turns()[0]!.items.filter((item) => item.type === "userMessage")).toHaveLength(1);
   });
 
   it("suppresses only the standalone SDK coordinate note after a completed image Read", () => {

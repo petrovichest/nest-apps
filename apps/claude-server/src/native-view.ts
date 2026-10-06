@@ -185,7 +185,7 @@ export class NativeView {
   reset(events: readonly Json[], options: { live?: boolean; preserveInputs?: boolean } = {}): void {
     if (!options.preserveInputs) this.sourceMetadata.clear();
     // SDK events omit transcript metadata, but retain the transcript entry UUID.
-    // Index it before replay so canonical block indices and companion flags win.
+    // Index it before replay so canonical block indices and internal input flags win.
     for (const event of events) this.rememberSourceMetadata(event);
     events = events.map((event) => this.withSourceMetadata(event));
     const previous = options.preserveInputs
@@ -216,6 +216,7 @@ export class NativeView {
         if (event.type === "attachment" && object(event.attachment)) {
           const id = string(event.attachment.source_uuid) || string(event.uuid);
           if (event.attachment.type === "queued_command") {
+            if (event.isMeta === true || event.turnCompanion === true) return;
             ids = [id];
             sourceTurn = this.userTurns.get(id);
           }
@@ -327,6 +328,7 @@ export class NativeView {
       object(event.attachment) &&
       event.attachment.type === "queued_command"
     ) {
+      if (event.isMeta === true || event.turnCompanion === true) return [];
       const command = event.attachment;
       return this.apply({
         type: "user",
@@ -562,10 +564,28 @@ export class NativeView {
       event.apiBlockIndex >= 0
     )
       metadata.apiBlockIndex = event.apiBlockIndex;
-    if (event.isMeta === true) metadata.isMeta = true;
+    const command =
+      event.type === "attachment" &&
+      object(event.attachment) &&
+      event.attachment.type === "queued_command"
+        ? event.attachment
+        : undefined;
+    const input = event.type === "user" ? event : command;
+    const notification =
+      command?.commandMode === "task-notification" ||
+      (input && object(input.origin) && input.origin.kind === "task-notification");
+    if (event.isMeta === true || notification) metadata.isMeta = true;
     if (event.turnCompanion === true) metadata.turnCompanion = true;
-    if (Object.keys(metadata).length)
+    if (Object.keys(metadata).length) {
       this.sourceMetadata.set(id, { ...this.sourceMetadata.get(id), ...metadata });
+      // Queued attachments and their SDK input echoes use different entry UUIDs.
+      const sourceId = notification && command ? string(command.source_uuid) : "";
+      if (sourceId)
+        this.sourceMetadata.set(sourceId, {
+          ...this.sourceMetadata.get(sourceId),
+          isMeta: true,
+        });
+    }
   }
   private withSourceMetadata(event: Json): Json {
     this.rememberSourceMetadata(event);

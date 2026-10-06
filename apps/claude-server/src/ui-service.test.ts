@@ -1381,6 +1381,125 @@ describe("Claude UI durable session facade", () => {
     expect(manager.creates).toEqual([]);
   });
 
+  it("suppresses background notifications across native history, live echo and recovery", async () => {
+    const { manager, config, directory, start } = await fixture();
+    const id = randomUUID();
+    const user = {
+      type: "user",
+      uuid: "original-input",
+      cwd: directory,
+      timestamp: 10,
+      message: { content: "Check the CI run" },
+    };
+    const comment = {
+      type: "assistant",
+      uuid: "comment-record",
+      timestamp: 20,
+      message: {
+        id: "comment",
+        content: [{ type: "text", text: "Waiting for CI" }],
+        stop_reason: "tool_use",
+      },
+    };
+    const steer = {
+      type: "attachment",
+      uuid: "steer-record",
+      renderedRole: "system",
+      attachment: {
+        type: "queued_command",
+        source_uuid: "genuine-steer",
+        commandMode: "prompt",
+        origin: null,
+        timestamp: 30,
+        prompt: "Also check the repository contributors",
+      },
+    };
+    const origin = { kind: "task-notification", producer: "session-task" };
+    const notification = {
+      type: "attachment",
+      uuid: "notification-record",
+      renderedRole: "system",
+      attachment: {
+        type: "queued_command",
+        source_uuid: "notification-input",
+        commandMode: "task-notification",
+        origin,
+        timestamp: 40,
+        prompt:
+          '<task-notification><summary>Background command "Wait for CI run to finish" completed (exit code 0)</summary></task-notification>',
+      },
+    };
+    const echo = {
+      type: "user",
+      uuid: notification.attachment.source_uuid,
+      timestamp: 40,
+      origin,
+      isReplay: true,
+      message: { content: [{ type: "text", text: notification.attachment.prompt }] },
+    };
+    const history = [user, comment, steer, notification];
+    const transcript = join(config.configDir, "projects", "background-notification");
+    await mkdir(transcript, { recursive: true });
+    await writeFile(
+      join(transcript, `${id}.jsonl`),
+      history.map((event) => JSON.stringify(event)).join("\n") + "\n",
+    );
+    const owner = snapshot(id, directory);
+    owner.state = "running";
+    owner.awaitingResult = true;
+    owner.currentEvents = [user, comment, echo];
+    manager.owners.set(id, owner);
+    const service = await start();
+    const expectedItems = [
+      ["original-input", "userMessage"],
+      ["comment:0", "agentMessage"],
+      ["genuine-steer", "userMessage"],
+    ];
+    await expect.poll(async () => (await service.detail(id)).turns[0]?.status).toBe("inProgress");
+    const initial = (await service.detail(id)).turns;
+    expect(initial).toHaveLength(1);
+    expect(initial[0]?.id).toBe(user.uuid);
+    expect(initial[0]?.items.map((item) => [item.id, item.type])).toEqual(expectedItems);
+
+    const reply = {
+      type: "assistant",
+      uuid: "reply-record",
+      timestamp: 50,
+      message: {
+        id: "reply",
+        content: [{ type: "text", text: "CI completed; checking contributors" }],
+        stop_reason: "end_turn",
+      },
+    };
+    manager.emit(id, "native", reply);
+    expectedItems.push(["reply:0", "agentMessage"]);
+    await expect
+      .poll(async () =>
+        (await service.detail(id)).turns[0]?.items.map((item) => [item.id, item.type]),
+      )
+      .toEqual(expectedItems);
+    expect((await service.detail(id)).turns).toMatchObject([
+      { id: user.uuid, status: "inProgress" },
+    ]);
+
+    await service.close();
+    const strippedEcho = { ...echo } as Record<string, unknown>;
+    delete strippedEcho.origin;
+    owner.currentEvents = [user, comment, strippedEcho, reply];
+    const recovered = await start();
+    await expect
+      .poll(async () =>
+        (await recovered.detail(id)).turns[0]?.items.map((item) => [item.id, item.type]),
+      )
+      .toEqual(expectedItems);
+    expect((await recovered.detail(id)).turns).toMatchObject([
+      { id: user.uuid, status: "inProgress" },
+    ]);
+    expect(manager.creates).toEqual([]);
+    expect(manager.sends).toEqual([]);
+    expect(manager.steers).toEqual([]);
+  });
+
   it("projects external native history read-only and resumes its existing session UUID", async () => {
     const { manager, config, directory, start } = await fixture();
     const id = randomUUID(),
