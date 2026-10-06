@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { constants, createReadStream, type Stats } from "node:fs";
+import { access, mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { Readable } from "node:stream";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type {
@@ -33,6 +33,55 @@ function string(value: unknown, name: string, limit = 200_000): string {
   if (typeof value !== "string" || !value.trim() || value.length > limit)
     throw new AppError("invalid_request", `${name} must be nonempty text`);
   return value;
+}
+function pathContains(root: string, path: string): boolean {
+  const nested = relative(root, path);
+  return (
+    nested === "" || (!nested.startsWith(`..${sep}`) && nested !== ".." && !isAbsolute(nested))
+  );
+}
+async function resolveDownloadFile(
+  input: string,
+  cwd: string,
+  attachmentRoot: string,
+  toolImage: () => Promise<boolean>,
+): Promise<{ root: string; path: string; fileName: string; size: number }> {
+  if (!isAbsolute(input) || input.includes("\0"))
+    throw new AppError("invalid_request", "File path must be absolute");
+  let root: string, path: string;
+  try {
+    [root, path] = await Promise.all([realpath(cwd), realpath(input)]);
+  } catch (error) {
+    throwDownloadFilesystemError(error);
+  }
+  const privateRoot = await realpath(attachmentRoot).catch(() => attachmentRoot);
+  // AttachmentStore alone authorizes private files, including when state is in cwd.
+  if (pathContains(privateRoot, path) || pathContains(attachmentRoot, input))
+    throw new AppError("not_found", "Attachment not found", 404);
+  if (!pathContains(root, path)) {
+    if (path !== input || !/\.(avif|gif|jpe?g|png|webp)$/i.test(path) || !(await toolImage()))
+      throw new AppError("forbidden", "File must stay inside the task directory", 403);
+    // External images are authorized by exact path, never by their containing directory.
+    root = path;
+  }
+  let info: Stats;
+  try {
+    [info] = await Promise.all([stat(path), access(path, constants.R_OK)]);
+  } catch (error) {
+    throwDownloadFilesystemError(error);
+  }
+  if (!info.isFile()) throw new AppError("invalid_request", "Path must point to a regular file");
+  return { root, path, fileName: basename(input), size: info.size };
+}
+function throwDownloadFilesystemError(error: unknown): never {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "ENOENT" || code === "ENOTDIR")
+    throw new AppError("not_found", "File does not exist", 404);
+  if (code === "EACCES" || code === "EPERM")
+    throw new AppError("forbidden", "File is not accessible", 403);
+  if (code === "EINVAL" || code === "ENAMETOOLONG")
+    throw new AppError("invalid_request", "Invalid file path");
+  throw new Error("File could not be opened", { cause: error });
 }
 export async function registerUiRoutes(
   app: FastifyInstance,
@@ -476,18 +525,24 @@ export async function registerUiRoutes(
     await jobs.retry(params(request).id, params(request).jobId!);
     return reply.code(204).send();
   });
-  const tickets = new Map<string, { path: string; fileName: string; expiresAt: number }>();
+  const tickets = new Map<
+    string,
+    { root: string; path: string; fileName: string; expiresAt: number }
+  >();
   app.post("/api/v1/threads/:id/downloads", async (request) => {
-    const id = params(request).id;
-    ui.thread(id);
-    const download = await ui.attachments.resolveDownload(
-      id,
-      string(record(request.body).path, "path", 4096),
-    );
-    if (!download) throw new AppError("not_found", "Attachment not found", 404);
-    for (const [key, value] of tickets) if (value.expiresAt <= Date.now()) tickets.delete(key);
+    const id = params(request).id,
+      thread = ui.thread(id),
+      path = string(record(request.body).path, "path", 4096);
+    const download =
+      (await ui.attachments.resolveDownload(id, path)) ??
+      (await resolveDownloadFile(path, thread.cwd, ui.attachments.root, () =>
+        ui.hasToolImagePath(id, path),
+      ));
+    const now = Date.now();
+    for (const [key, value] of tickets) if (value.expiresAt <= now) tickets.delete(key);
+    while (tickets.size >= 128) tickets.delete(tickets.keys().next().value!);
     const ticket = randomUUID(),
-      expiresAt = Date.now() + 60_000;
+      expiresAt = now + 60_000;
     tickets.set(ticket, { ...download, expiresAt });
     return {
       downloadUrl: `/downloads/${ticket}`,
@@ -498,14 +553,23 @@ export async function registerUiRoutes(
   });
   app.get("/downloads/:id", async (request, reply) => {
     const ticket = tickets.get(params(request).id);
-    if (!ticket || ticket.expiresAt < Date.now())
+    if (ticket) tickets.delete(params(request).id);
+    if (!ticket || ticket.expiresAt <= Date.now())
       throw new AppError("not_found", "Download link expired", 404);
+    const path = await realpath(ticket.path).catch(() => null);
+    if (!path || path !== ticket.path || !pathContains(ticket.root, path))
+      throw new AppError("not_found", "Download not found", 404);
+    const info = await Promise.all([stat(path), access(path, constants.R_OK)])
+      .then(([value]) => value)
+      .catch(() => null);
+    if (!info?.isFile()) throw new AppError("not_found", "Download not found", 404);
     reply.header("Cache-Control", "private, no-store");
     reply.header(
       "Content-Disposition",
       `attachment; filename*=UTF-8''${encodeURIComponent(ticket.fileName)}`,
     );
-    return reply.send(createReadStream(ticket.path));
+    reply.header("Content-Length", info.size);
+    return reply.type("application/octet-stream").send(createReadStream(path));
   });
   return async () => {
     syncTranscriptions.abort(new Error("ClaudeNest is restarting"));

@@ -593,6 +593,12 @@ export class SessionRunner {
   private onNativeEvent(rawEvent: unknown): void {
     if (!rawEvent || typeof rawEvent !== "object" || Array.isArray(rawEvent)) return;
     let event = rawEvent as Record<string, unknown>;
+    const nativeTimestamp = event.timestamp;
+    if (
+      !(typeof nativeTimestamp === "number" && Number.isFinite(nativeTimestamp)) &&
+      !(typeof nativeTimestamp === "string" && Number.isFinite(Date.parse(nativeTimestamp)))
+    )
+      event = { ...event, timestamp: Date.now() };
     const inputId = event.type === "user" ? (event.uuid ?? event.request_id) : undefined;
     const inputReceipt = typeof inputId === "string" ? this.receipts.get(inputId) : undefined;
     if (inputReceipt?.kind === "steer" && this.steeredInputs.has(inputReceipt.requestId))

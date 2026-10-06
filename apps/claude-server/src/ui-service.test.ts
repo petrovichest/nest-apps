@@ -649,6 +649,53 @@ describe("Claude UI durable session facade", () => {
     expect(manager.sends.map((delivery) => delivery.prompt)).toEqual(["Later"]);
   });
 
+  it("keeps acknowledged steering in the timeline before later replies and preserves its send time", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    owner.state = "running";
+    owner.currentEvents = [
+      {
+        type: "user",
+        uuid: "original",
+        timestamp: Date.now() - 5000,
+        message: { content: "Original task" },
+      },
+    ];
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    manager.accepting = true;
+    const input = await service.steer(id, {
+      input: "Show the variants",
+      clientMessageId: randomUUID(),
+    });
+    await waitForQueue(service, id, 0);
+    manager.emit(id, "native", {
+      type: "assistant",
+      timestamp: input.createdAt + 2000,
+      message: { id: "later", content: [{ type: "text", text: "Checking screenshots" }] },
+    });
+    await expect.poll(async () => (await service.detail(id)).turns[0]?.items.length).toBe(3);
+    manager.emit(id, "native", {
+      type: "user",
+      uuid: input.id,
+      timestamp: input.createdAt + 3000,
+      claudenest_delivery: "steer",
+      message: { content: input.text },
+    });
+    await service.store.flush();
+    const detail = await service.detail(id);
+    expect(detail.turns).toHaveLength(1);
+    expect(detail.turns[0]!.items.map((item) => item.id)).toEqual([
+      "original",
+      input.id,
+      "later:0",
+    ]);
+    expect(detail.turns[0]!.items[1]).toMatchObject({ timestamp: input.createdAt });
+    expect(detail.queuedMessages).toEqual([]);
+  });
+
   it("preserves attachments, pasted context, and a newer draft during steering admission", async () => {
     const { manager, start, reserve, directory } = await fixture();
     const service = await start(),
@@ -689,6 +736,52 @@ describe("Claude UI durable session facade", () => {
     expect(manager.steers[0]?.prompt).toContain("Exact supplied context");
     expect(service.thread(id).draft).toEqual(draft);
     expect(await service.attachments.validate(id, [file])).toEqual([file]);
+  });
+
+  it("retains accepted input and its attachments when the owner snapshot precedes its native echo", async () => {
+    const { manager, start, reserve } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    manager.accepting = true;
+    manager.outcome = "accepted";
+    const input = await service.enqueue(id, {
+      input: "Inspect the image",
+      clientMessageId: randomUUID(),
+      images: ["data:image/png;base64,aW1hZ2U="],
+    });
+    await waitForQueue(service, id, 0);
+    await service.attach(id);
+    const first = await service.detail(id);
+    expect(first.turns).toHaveLength(1);
+    expect(first.turns[0]!.items[0]).toMatchObject({
+      id: input.id,
+      timestamp: input.createdAt,
+      images: ["data:image/png;base64,aW1hZ2U="],
+    });
+    const connection = manager.connections.get(id)!.at(-1)!;
+    await connection.request("subscribe", {});
+    manager.emit(id, "native", {
+      type: "assistant",
+      message: {
+        id: "response",
+        content: [{ type: "text", text: "Image received" }],
+      },
+    });
+    await expect.poll(async () => (await service.detail(id)).turns[0]?.items.length).toBe(2);
+    manager.emit(id, "native", {
+      type: "user",
+      uuid: input.id,
+      message: { content: "Inspect the image" },
+    });
+    await service.store.flush();
+    const after = await service.detail(id);
+    expect(after.turns).toHaveLength(1);
+    expect(after.turns[0]!.items.map((item) => item.id)).toEqual([input.id, "response:0"]);
+    expect(after.turns[0]!.items[0]).toMatchObject({
+      timestamp: input.createdAt,
+      images: ["data:image/png;base64,aW1hZ2U="],
+    });
+    expect(after.turns[0]!.items[1]).toMatchObject({ timestamp: expect.any(Number) });
   });
 
   it("deduplicates steering after a lost acknowledgement and after backend recovery", async () => {
@@ -1525,4 +1618,50 @@ describe("Claude plan rate limits", () => {
       [false, true],
     ]);
   });
+});
+
+describe("Claude owner release upgrades", () => {
+  it.each(["running", "waiting"] as const)(
+    "keeps a steer-capable prior-release %s owner alive and resumes its UUID at the next idle admission",
+    async (state) => {
+      const { manager, start, reserve, directory, config } = await fixture();
+      const service = await start(),
+        id = await reserve(service);
+      const owner = snapshot(id, directory);
+      owner.releasePath = "/test/previous-release";
+      owner.state = state;
+      manager.owners.set(id, owner);
+      await service.attach(id);
+      manager.accepting = true;
+      const first = await service.enqueue(id, {
+        input: "Next turn with current delivery guidance",
+        clientMessageId: randomUUID(),
+      });
+      await service.store.flush();
+      expect(manager.commands).toEqual([]);
+      expect(manager.sends).toEqual([]);
+      expect(manager.owners.get(id)).toBe(owner);
+      expect(service.thread(id).queue[0]).toMatchObject({ id: first.id, status: "queued" });
+
+      manager.emit(id, "state", { state: "idle" });
+      await waitForQueue(service, id, 0);
+      expect(manager.commands.map((command) => command.method)).toEqual(["release"]);
+      expect(manager.creates).toEqual([]);
+      expect(manager.sends).toMatchObject([{ sessionId: id, requestId: first.id }]);
+      expect(manager.owners.get(id)?.releasePath).toBe(config.releasePath);
+      expect(manager.owners.get(id)?.runnerInstanceId).not.toBe(owner.runnerInstanceId);
+
+      manager.emit(id, "state", { state: "idle" });
+      const next = await service.enqueue(id, {
+        input: "Another turn on the upgraded owner",
+        clientMessageId: randomUUID(),
+      });
+      await waitForQueue(service, id, 0);
+      expect(manager.commands.map((command) => command.method)).toEqual(["release"]);
+      expect(manager.sends.map((delivery) => [delivery.sessionId, delivery.requestId])).toEqual([
+        [id, first.id],
+        [id, next.id],
+      ]);
+    },
+  );
 });

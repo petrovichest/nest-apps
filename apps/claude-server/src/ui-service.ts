@@ -488,6 +488,9 @@ export class UiService extends EventEmitter {
       draft: this.thread(id).draft,
     };
   }
+  async hasToolImagePath(id: string, path: string): Promise<boolean> {
+    return (await this.view(id)).hasToolImagePath(path);
+  }
   async refresh(id: string): Promise<ThreadDetail> {
     if (!this.subscriptions.has(id)) {
       this.views.delete(id);
@@ -523,6 +526,7 @@ export class UiService extends EventEmitter {
             const history = await readHistory(this.manager.config.configDir, id).catch(() => null);
             view.reset([...(history?.messages ?? []), ...owner.currentEvents], {
               live: ["running", "waiting"].includes(owner.state),
+              preserveInputs: true,
             });
             if (owner.supportedModels?.length)
               await this.store.update((data) => {
@@ -552,7 +556,14 @@ export class UiService extends EventEmitter {
     if (!owner) return;
     owner.sequence = event.sequence;
     if (event.kind === "native") {
-      const native = record(event.data);
+      let native = record(event.data);
+      // Older live owners omit timestamps. Stamp only newly received events,
+      // never historical/currentEvents replay during subscription recovery.
+      if (
+        !(typeof native.timestamp === "number" && Number.isFinite(native.timestamp)) &&
+        !(typeof native.timestamp === "string" && Number.isFinite(Date.parse(native.timestamp)))
+      )
+        native = { ...native, timestamp: Date.now() };
       for (const update of view.apply(native)) this.publish(update);
       if (native.type === "result") {
         if (owner.state === "interrupted") owner.awaitingResult = false;
@@ -958,7 +969,12 @@ export class UiService extends EventEmitter {
       return;
     // A backend update never replaces active session owners. Upgrade older owners
     // at their next idle admission, preserving their native session history.
-    if (owner && idle && owner.state !== "closed" && !owner.capabilities?.steer) {
+    if (
+      owner &&
+      idle &&
+      owner.state !== "closed" &&
+      (owner.releasePath !== this.manager.config.releasePath || !owner.capabilities?.steer)
+    ) {
       try {
         await this.manager.command(id, "release", { requestId: randomUUID() });
         const deadline = Date.now() + 10_000;
@@ -1092,6 +1108,11 @@ export class UiService extends EventEmitter {
     }
   }
   private async accepted(id: string, messageId: string): Promise<void> {
+    const message = this.thread(id).queue.find((item) => item.id === messageId);
+    if (message) {
+      const view = await this.view(id);
+      for (const update of view.recordUserMessage(message)) this.publish(update);
+    }
     await this.store.update((data) => {
       const thread = data.threads[id]!;
       thread.nativeHistory = true;

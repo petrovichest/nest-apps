@@ -209,6 +209,19 @@ afterEach(() => {
 });
 
 describe("ClaudeProcess stream-json transport", () => {
+  it.each([false, true])("adds explicit image delivery guidance when resume=%s", async (resume) => {
+    const { process, spawnProcess } = setup({ resume });
+    await process.start();
+    const args = spawnProcess.mock.calls[0]![1] as string[];
+    const prompt = args[args.indexOf("--append-system-prompt") + 1];
+    expect(args).toContain(resume ? "--resume" : "--session-id");
+    expect(prompt).toContain("In ClaudeNest");
+    expect(prompt).toContain("a Markdown image or a labeled image-file link");
+    expect(prompt).toContain("open it with Read in this thread, then link its exact path");
+    expect(prompt).toContain("a tool output does not attach it to your message");
+    await process.stop();
+  });
+
   it("writes active-turn steering without interrupting, replaying or auto-answering questions", async () => {
     const { child, process } = setup({ permissionMode: "bypassPermissions" });
     const requests: ObjectMessage[] = [];

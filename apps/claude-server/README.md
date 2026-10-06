@@ -192,8 +192,8 @@ Do not edit, rebuild, remove, or prune releases used by live runners. Active own
 keep the old code; future owners use the new release. Protocol v1 compatibility is
 required for updates and rollback. Incompatible updates are rejected.
 
-Older owners without steering support are released and resumed with the current
-release on their next idle message admission. Active owners keep running; pending
+Owners from an older release or without steering support are released and resumed
+with the current release on their next idle message admission. Active owners keep running; pending
 steering waits for that first upgrade. Release is allowed only when no work or
 permission is pending. Owner/host crashes do not
 replay commands automatically: continue native history explicitly with a new

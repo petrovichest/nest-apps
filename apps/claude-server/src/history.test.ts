@@ -102,6 +102,33 @@ describe("native Claude history", () => {
     expect((await listHistory(configDir))[0]?.title).toBe("Chosen title");
   });
 
+  it("retains mid-turn queued commands and ignores image companions when choosing the title", async () => {
+    const companion = {
+      ...nativeUser(FIRST, "[Image: original 2880x1800]"),
+      isMeta: true,
+      turnCompanion: true,
+    };
+    const user = nativeUser(FIRST, "Actual task");
+    const queued = {
+      type: "attachment",
+      attachment: {
+        type: "queued_command",
+        source_uuid: "steer-1",
+        prompt: "Show the screenshots",
+        timestamp: "2026-10-05T10:02:00.000Z",
+      },
+    };
+    const original = lines(companion, user, queued, {
+      type: "attachment",
+      attachment: { type: "environment" },
+    });
+    const path = join(project, `${FIRST}.jsonl`);
+    await writeFile(path, original);
+    expect((await listHistory(configDir))[0]?.title).toBe("Actual task");
+    expect((await readHistory(configDir, FIRST)).messages).toEqual([companion, user, queued]);
+    expect(await readFile(path, "utf8")).toBe(original);
+  });
+
   it("returns empty history lists for a fresh installation and rejects traversal/non-UUID IDs", async () => {
     expect(await listHistory(join(configDir, "absent"))).toEqual([]);
     await expect(readHistory(configDir, "../projects")).rejects.toThrow(

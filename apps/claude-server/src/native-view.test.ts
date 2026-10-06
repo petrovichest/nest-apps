@@ -323,6 +323,404 @@ describe("native Claude view", () => {
     expect(view.turns()[0]!.items).toHaveLength(2);
     expect(view.currentTurnId).toBe("user-1");
   });
+
+  it("recovers the 01:45 steering before the 01:47 replies without synthetic user turns", () => {
+    const view = new NativeView("session", "/project");
+    const first = { ...user, timestamp: "2026-10-05T22:43:06.493Z" };
+    const queued = {
+      type: "attachment",
+      uuid: "attachment-1",
+      timestamp: "2026-10-05T22:45:36.334Z",
+      attachment: {
+        type: "queued_command",
+        source_uuid: "steer-1",
+        timestamp: "2026-10-05T22:45:36.334Z",
+        prompt: "Show the variants",
+      },
+    };
+    const comment = {
+      ...assistant,
+      apiBlockIndex: 1,
+      timestamp: "2026-10-05T22:47:11.144Z",
+      message: {
+        id: "comment",
+        stop_reason: "tool_use",
+        content: [{ type: "text", text: "Checking the screenshots" }],
+      },
+    };
+    const companion = {
+      ...user,
+      uuid: "image-companion",
+      isMeta: true,
+      turnCompanion: true,
+      message: { content: "[Image: original 2880x1800]" },
+    };
+    const final = {
+      ...assistant,
+      timestamp: "2026-10-05T22:47:28.511Z",
+      message: {
+        id: "final",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Here are the variants" }],
+      },
+    };
+    const history = [first, queued, comment, companion, final];
+    view.reset(history);
+    const expected = view.turns();
+    expect(expected).toHaveLength(1);
+    expect(expected[0]!.items.map((item) => item.id)).toEqual([
+      "user-1",
+      "steer-1",
+      "comment:1",
+      "final:0",
+    ]);
+    expect(expected[0]!.items.map((item) => "timestamp" in item && item.timestamp)).toEqual([
+      Date.parse(first.timestamp),
+      Date.parse(queued.timestamp),
+      Date.parse(comment.timestamp),
+      Date.parse(final.timestamp),
+    ]);
+    view.reset([...history, first, queued, comment, final]);
+    expect(view.turns()).toEqual(expected);
+  });
+
+  it("keeps historical block IDs, completed text and time when live blocks are replayed", () => {
+    const view = new NativeView("session", "/project");
+    const history = [
+      { ...user, timestamp: 10 },
+      {
+        ...assistant,
+        apiBlockIndex: 0,
+        timestamp: 100,
+        message: {
+          id: "message-1",
+          content: [{ type: "thinking", thinking: "Thought" }],
+        },
+      },
+      {
+        ...assistant,
+        apiBlockIndex: 1,
+        timestamp: 200,
+        message: {
+          id: "message-1",
+          content: [{ type: "text", text: "Complete answer" }],
+        },
+      },
+    ];
+    view.reset(history, { live: true });
+    view.apply(stream({ type: "message_start", message: { id: "message-1" } }));
+    for (const [index, content_block] of [
+      [0, { type: "thinking", thinking: "" }],
+      [1, { type: "text", text: "" }],
+    ] as const) {
+      expect(view.apply(stream({ type: "content_block_start", index, content_block }))).toEqual([]);
+      expect(
+        view.apply(
+          stream({
+            type: "content_block_delta",
+            index,
+            delta: {
+              type: index === 0 ? "thinking_delta" : "text_delta",
+              text: "Partial",
+              thinking: "Partial",
+            },
+          }),
+        ),
+      ).toEqual([]);
+      expect(view.apply(stream({ type: "content_block_stop", index }))).toEqual([]);
+    }
+    view.apply({
+      ...assistant,
+      message: {
+        ...assistant.message,
+        content: [
+          { type: "thinking", thinking: "Thought" },
+          { type: "text", text: "Complete answer" },
+        ],
+      },
+    });
+    expect(view.turns()[0]!.items).toMatchObject([
+      { id: "user-1" },
+      {
+        id: "message-1:0",
+        type: "reasoning",
+        text: "Thought",
+        timestamp: 100,
+        status: "completed",
+      },
+      {
+        id: "message-1:1",
+        type: "agentMessage",
+        text: "Complete answer",
+        timestamp: 200,
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("uses block completion time and keeps a repeated assistant attached to its original turn", () => {
+    const view = new NativeView("session", "/project");
+    view.apply({ ...user, timestamp: 10 });
+    view.apply(stream({ type: "message_start", message: { id: "message-1" } }));
+    view.apply({
+      ...stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "text",
+          text: "Hello back",
+        },
+      }),
+      timestamp: 20,
+    });
+    view.apply({ ...stream({ type: "content_block_stop", index: 0 }), timestamp: 30 });
+    view.apply(assistant);
+    view.apply({ type: "result", timestamp: 40 });
+    view.apply({ ...user, uuid: "next-user", timestamp: 50 });
+    view.apply(assistant);
+    expect(view.turns()[0]!.items[1]).toMatchObject({ timestamp: 30, phase: "final_answer" });
+    expect(view.turns()[1]!.items.map((item) => item.id)).toEqual(["next-user"]);
+    expect(view.currentTurnId).toBe("next-user");
+  });
+
+  it("records accepted steering by send time and deduplicates a later native echo", () => {
+    const view = new NativeView("session", "/project");
+    view.apply({ ...user, timestamp: 10 });
+    view.apply({ ...assistant, timestamp: 30 });
+    view.recordUserMessage({
+      id: "steer-1",
+      threadId: "session",
+      text: "Refine",
+      createdAt: 20,
+      status: "dispatching",
+      deliveryMode: "steer",
+    });
+    view.apply({ ...user, uuid: "steer-1", timestamp: 40, message: { content: "Refine" } });
+    expect(view.turns()).toHaveLength(1);
+    expect(view.turns()[0]!.items.map((item) => item.id)).toEqual([
+      "user-1",
+      "steer-1",
+      "message-1:0",
+    ]);
+    expect(view.turns()[0]!.items[1]).toMatchObject({ timestamp: 20 });
+  });
+
+  it("retains accepted input through an empty snapshot before the native echo", () => {
+    const view = new NativeView("session", "/project");
+    view.recordUserMessage({
+      id: "initial",
+      threadId: "session",
+      text: "Inspect",
+      createdAt: 10,
+      status: "dispatching",
+      deliveryMode: "queue",
+      images: ["data:image/png;base64,aW1hZ2U="],
+      files: [{ name: "note.txt", path: "/project/note.txt" }],
+    });
+    const expected = view.turns()[0]!.items[0];
+    view.reset([], { live: true, preserveInputs: true });
+    view.apply(stream({ type: "message_start", message: { id: "reply" } }));
+    view.apply({ ...assistant, timestamp: 20, message: { ...assistant.message, id: "reply" } });
+    view.apply({ ...user, uuid: "initial", timestamp: 30, message: { content: "Inspect" } });
+    expect(view.turns()).toHaveLength(1);
+    expect(view.turns()[0]!.id).toBe("initial");
+    expect(view.turns()[0]!.items[0]).toEqual(expected);
+    expect(view.turns()[0]!.items[1]).toMatchObject({ id: "reply:0" });
+  });
+
+  it("retains the initial input ahead of an assistant-only recovery snapshot", () => {
+    const view = new NativeView("session", "/project");
+    view.recordUserMessage({
+      id: "initial",
+      threadId: "session",
+      text: "Inspect",
+      createdAt: 10,
+      status: "dispatching",
+      deliveryMode: "queue",
+    });
+    view.reset(
+      [
+        stream({ type: "message_start", message: { id: "reply" } }),
+        { ...assistant, timestamp: 20, message: { ...assistant.message, id: "reply" } },
+        { type: "result", timestamp: 30 },
+      ],
+      { preserveInputs: true },
+    );
+    expect(view.turns()).toHaveLength(1);
+    expect(view.turns()[0]).toMatchObject({ id: "initial", status: "completed", completedAt: 30 });
+    expect(view.turns()[0]!.items.map((item) => item.id)).toEqual(["initial", "reply:0"]);
+  });
+
+  it("preserves missing steering between its known responses across snapshot replay", () => {
+    const view = new NativeView("session", "/project");
+    const first = { ...user, timestamp: 10 };
+    const comment = { ...assistant, timestamp: 20 };
+    const final = { ...assistant, timestamp: 40, message: { ...assistant.message, id: "final" } };
+    view.apply(first);
+    view.apply(comment);
+    view.recordUserMessage({
+      id: "steer",
+      threadId: "session",
+      text: "Refine",
+      createdAt: 30,
+      status: "dispatching",
+      deliveryMode: "steer",
+    });
+    view.apply(final);
+    const snapshot = [first, comment, final, first, comment, final];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      view.reset(snapshot, { live: true, preserveInputs: true });
+      expect(view.turns()).toHaveLength(1);
+      expect(view.turns()[0]!.items.map((item) => item.id)).toEqual([
+        "user-1",
+        "message-1:0",
+        "steer",
+        "final:0",
+      ]);
+      expect(view.turns()[0]!.items[2]).toMatchObject({ timestamp: 30 });
+    }
+  });
+
+  it("preserves an ordinary input after the previous result and before a new response", () => {
+    const view = new NativeView("session", "/project");
+    const history = [
+      { ...user, timestamp: 10 },
+      { ...assistant, timestamp: 20 },
+      { type: "result", timestamp: 30 },
+    ];
+    view.reset(history);
+    view.recordUserMessage({
+      id: "next",
+      threadId: "session",
+      text: "Next",
+      createdAt: 40,
+      status: "dispatching",
+      deliveryMode: "queue",
+    });
+    view.reset(
+      [
+        ...history,
+        stream({ type: "message_start", message: { id: "next-reply" } }),
+        { ...assistant, timestamp: 50, message: { ...assistant.message, id: "next-reply" } },
+        { type: "result", timestamp: 60 },
+      ],
+      { preserveInputs: true },
+    );
+    expect(view.turns().map((turn) => turn.items.map((item) => item.id))).toEqual([
+      ["user-1", "message-1:0"],
+      ["next", "next-reply:0"],
+    ]);
+    expect(view.turns().map((turn) => turn.completedAt)).toEqual([30, 60]);
+  });
+
+  it("retains steering before its original result even when there is no later response", () => {
+    const view = new NativeView("session", "/project");
+    const history = [
+      { ...user, timestamp: 10 },
+      { ...assistant, timestamp: 20 },
+    ];
+    view.reset(history, { live: true });
+    view.recordUserMessage({
+      id: "steer",
+      threadId: "session",
+      text: "Refine",
+      createdAt: 30,
+      status: "dispatching",
+      deliveryMode: "steer",
+    });
+    view.apply({ type: "result", timestamp: 40 });
+    view.reset([...history, { type: "result", timestamp: 40 }], { preserveInputs: true });
+    expect(view.turns()).toHaveLength(1);
+    expect(view.turns()[0]).toMatchObject({ id: "user-1", completedAt: 40 });
+    expect(view.turns()[0]!.items.map((item) => item.id)).toEqual([
+      "user-1",
+      "message-1:0",
+      "steer",
+    ]);
+  });
+
+  it("moves a late native echo back to its send position when its receipt is acknowledged", () => {
+    const view = new NativeView("session", "/project");
+    view.apply({ ...user, timestamp: 10 });
+    view.apply({ ...assistant, timestamp: 30 });
+    view.apply({
+      ...user,
+      uuid: "steer-1",
+      timestamp: 40,
+      claudenest_delivery: "steer",
+      message: { content: "Refine" },
+    });
+    view.recordUserMessage({
+      id: "steer-1",
+      threadId: "session",
+      text: "Refine",
+      createdAt: 20,
+      status: "dispatching",
+      deliveryMode: "steer",
+    });
+    expect(view.turns()[0]!.items.map((item) => item.id)).toEqual([
+      "user-1",
+      "steer-1",
+      "message-1:0",
+    ]);
+    expect(view.turns()[0]!.items[1]).toMatchObject({ timestamp: 20 });
+  });
+
+  it("keeps Read images in tool details and ignores flagged companions without dropping real uploads", () => {
+    const view = new NativeView("session", "/project");
+    const image = {
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" },
+    };
+    const read = {
+      type: "assistant",
+      message: {
+        id: "read",
+        content: [
+          {
+            type: "tool_use",
+            id: "read-image",
+            name: "Read",
+            input: { file_path: "/tmp/shot.png" },
+          },
+        ],
+      },
+    };
+    const result = {
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "read-image", content: [image] }] },
+    };
+    const events = [
+      { ...user, message: { content: [{ type: "text", text: "Inspect" }, image] } },
+      read,
+      result,
+      {
+        ...user,
+        uuid: "companion",
+        isMeta: true,
+        turnCompanion: true,
+        message: { content: "[Image: original 2880x1800]" },
+      },
+      assistant,
+    ];
+    for (const replay of [false, true]) {
+      if (replay) view.reset(events);
+      else for (const event of events) view.apply(event);
+      expect(view.turns()).toHaveLength(1);
+      expect(view.turns()[0]!.items.filter((item) => item.type === "userMessage")).toMatchObject([
+        { id: "user-1", images: ["data:image/png;base64,aW1hZ2U="] },
+      ]);
+      expect(view.turns()[0]!.items.find((item) => item.id === "read-image")).toMatchObject({
+        type: "tool",
+        status: "completed",
+        images: ["/tmp/shot.png"],
+      });
+      expect(view.hasToolImagePath("/tmp/shot.png")).toBe(true);
+    }
+    view.apply(read);
+    expect(view.hasToolImagePath("/tmp/shot.png")).toBe(true);
+    expect(JSON.stringify(view.turns())).not.toContain("[Image: original");
+  });
   it("keeps partial thinking separate and never displays signature deltas", () => {
     const view = new NativeView("session", "/project");
     view.apply(user);

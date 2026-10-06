@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter, once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import type {
@@ -633,18 +633,18 @@ describe("Claude browser UI HTTP and global stream", () => {
         })
       ).statusCode,
     ).toBe(404);
-    const outside = join(directory, "outside.txt");
-    await writeFile(outside, "outside");
+    const workspace = join(directory, "workspace.txt");
+    await writeFile(workspace, "workspace file");
+    const workspaceTicket = await app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/downloads`,
+      headers,
+      payload: { path: workspace },
+    });
+    expect(workspaceTicket.statusCode).toBe(200);
     expect(
-      (
-        await app.inject({
-          method: "POST",
-          url: `/api/v1/threads/${id}/downloads`,
-          headers,
-          payload: { path: outside },
-        })
-      ).statusCode,
-    ).toBe(404);
+      (await app.inject({ url: workspaceTicket.json<{ downloadUrl: string }>().downloadUrl })).body,
+    ).toBe("workspace file");
     expect(
       (
         await app.inject({
@@ -668,6 +668,7 @@ describe("Claude browser UI HTTP and global stream", () => {
     expect(download.rawPayload).toEqual(contents);
     expect(download.headers["cache-control"]).toBe("private, no-store");
     expect(download.headers["content-disposition"]).toContain("notes.txt");
+    expect((await app.inject({ url })).statusCode).toBe(404);
     expect(
       (
         await app.inject({
@@ -698,5 +699,142 @@ describe("Claude browser UI HTTP and global stream", () => {
       ).statusCode,
     ).toBe(409);
     expect(operations).toEqual([]);
+  });
+
+  it("downloads an exact external image only after a successful tool read in that session", async () => {
+    const state = await fixture(),
+      { id } = await state.reserve(),
+      { id: otherId } = await state.reserve();
+    const outside = await mkdtemp("/tmp/claude-ui-images-");
+    cleanup.push(() => rm(outside, { recursive: true, force: true }));
+    const viewed = join(outside, "viewed.png"),
+      unseen = join(outside, "unseen.png"),
+      failed = join(outside, "failed.png"),
+      text = join(outside, "notes.txt"),
+      alias = join(outside, "alias.png"),
+      workspaceAlias = join(state.directory, "alias.png");
+    const contents = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j8T8AAAAASUVORK5CYII=",
+      "base64",
+    );
+    await Promise.all([
+      writeFile(viewed, contents),
+      writeFile(unseen, contents),
+      writeFile(failed, contents),
+      writeFile(text, "private external text"),
+      symlink(viewed, alias),
+      symlink(viewed, workspaceAlias),
+    ]);
+    const download = (sessionId: string, path: string) =>
+      state.app.inject({
+        method: "POST",
+        url: `/api/v1/threads/${sessionId}/downloads`,
+        headers: state.headers,
+        payload: { path },
+      });
+    expect((await download(id, viewed)).statusCode).toBe(403);
+    const historyDirectory = join(state.config.configDir, "projects", "test");
+    await mkdir(historyDirectory, { recursive: true });
+    const events = [viewed, failed, text, alias, workspaceAlias].flatMap((path, index) => [
+      {
+        type: "assistant",
+        uuid: `read-${index}`,
+        cwd: state.directory,
+        message: {
+          id: `message-${index}`,
+          stop_reason: "tool_use",
+          content: [
+            { type: "tool_use", id: `tool-${index}`, name: "Read", input: { file_path: path } },
+          ],
+        },
+      },
+      {
+        type: "user",
+        uuid: `result-${index}`,
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: `tool-${index}`,
+              ...(path === failed ? { is_error: true } : {}),
+              content: [
+                {
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: "image/png",
+                    data: contents.toString("base64"),
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    await writeFile(
+      join(historyDirectory, `${id}.jsonl`),
+      events.map((event) => JSON.stringify(event)).join("\n") + "\n",
+    );
+    await state.ui.refresh(id);
+    const ticket = await download(id, viewed);
+    expect(ticket.statusCode).toBe(200);
+    const response = await state.app.inject({
+      url: ticket.json<{ downloadUrl: string }>().downloadUrl,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.rawPayload).toEqual(contents);
+    expect(response.headers["content-length"]).toBe(String(contents.length));
+    expect(response.headers["content-type"]).toBe("application/octet-stream");
+    for (const path of [unseen, failed, text, alias, workspaceAlias])
+      expect((await download(id, path)).statusCode).toBe(403);
+    expect((await download(otherId, viewed)).statusCode).toBe(403);
+  });
+
+  it("rejects private attachment aliases and revalidates ticket paths before serving files", async () => {
+    const { app, headers, reserve, directory } = await fixture();
+    const { id } = await reserve(),
+      { id: otherId } = await reserve();
+    const upload = await app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${otherId}/attachments?name=private.png&mediaType=image%2Fpng`,
+      headers: { ...headers, "content-type": "application/octet-stream" },
+      payload: Buffer.from("private attachment"),
+    });
+    expect(upload.statusCode).toBe(200);
+    const attachment = upload.json<ThreadFileAttachment>(),
+      privateAlias = join(directory, "private-alias.png"),
+      workspace = join(directory, "report.txt");
+    await symlink(attachment.path, privateAlias);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/v1/threads/${id}/downloads`,
+          headers,
+          payload: { path: privateAlias },
+        })
+      ).statusCode,
+    ).toBe(404);
+    await writeFile(workspace, "original workspace file");
+    for (const [path, ownerId] of [
+      [workspace, id],
+      [attachment.path, otherId],
+    ] as const) {
+      const ticket = await app.inject({
+        method: "POST",
+        url: `/api/v1/threads/${ownerId}/downloads`,
+        headers,
+        payload: { path },
+      });
+      expect(ticket.statusCode).toBe(200);
+      await rm(path);
+      await symlink(workspace === path ? attachment.path : workspace, path);
+      const url = ticket.json<{ downloadUrl: string }>().downloadUrl;
+      expect((await app.inject({ url })).statusCode).toBe(404);
+      expect((await app.inject({ url })).statusCode).toBe(404);
+      await rm(path);
+      await writeFile(path, "restored file");
+    }
   });
 });

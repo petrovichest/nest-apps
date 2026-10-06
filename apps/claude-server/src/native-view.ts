@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import type { ActivityItem, ServerEvent, TurnView } from "@codexnest/protocol";
+import {
+  pastedText,
+  type ActivityItem,
+  type QueuedMessage,
+  type ServerEvent,
+  type TurnView,
+} from "@codexnest/protocol";
 import { nativeResultInterrupted } from "./types.js";
 
 type Json = Record<string, unknown>;
@@ -80,8 +86,12 @@ export class NativeView {
   private readonly values: TurnView[] = [];
   private readonly byId = new Map<string, TurnView>();
   private readonly userTurns = new Map<string, TurnView>();
+  private readonly messageTurns = new Map<string, TurnView>();
   private readonly continuingTurns = new Set<string>();
-  private readonly tools = new Map<string, { turn: TurnView; item: ActivityItem }>();
+  private readonly tools = new Map<
+    string,
+    { turn: TurnView; item: ActivityItem; imagePath?: string }
+  >();
   private readonly streams = new Map<string, StreamMessage>();
   private active?: TurnView;
   private latestStream?: StreamMessage;
@@ -102,17 +112,162 @@ export class NativeView {
     return structuredClone(this.values);
   }
 
-  reset(events: readonly Json[], options: { live?: boolean } = {}): void {
+  hasToolImagePath(path: string): boolean {
+    return this.values.some((turn) =>
+      turn.items.some(
+        (item) =>
+          item.type === "tool" && item.status === "completed" && item.images?.includes(path),
+      ),
+    );
+  }
+
+  recordUserMessage(message: QueuedMessage): ServerEvent[] {
+    this.apply({
+      type: "user",
+      uuid: message.id,
+      timestamp: message.createdAt,
+      claudenest_delivery: message.deliveryMode,
+      message: { content: message.text },
+    });
+    const turn = this.userTurns.get(message.id)!;
+    this.put(turn, {
+      type: "userMessage",
+      id: message.id,
+      status: "completed",
+      text: message.text,
+      ...pastedText(message),
+      images: message.images ?? [],
+      ...(message.files?.length ? { files: message.files } : {}),
+      timestamp: message.createdAt,
+      phase: null,
+    });
+    return [{ type: "turn.replaced", threadId: this.sessionId, turn: structuredClone(turn) }];
+  }
+
+  reset(events: readonly Json[], options: { live?: boolean; preserveInputs?: boolean } = {}): void {
+    const previous = options.preserveInputs
+      ? this.values.flatMap((turn) => turn.items.map((item) => ({ turn, item })))
+      : [];
+    const retained = previous.filter(
+      (entry): entry is { turn: TurnView; item: ActivityItem & { type: "userMessage" } } =>
+        entry.item.type === "userMessage",
+    );
+    // Owner snapshots can precede a native input echo. Replay the existing
+    // inputs at their stable neighboring activities, then retain their UI data.
+    const positions = new Map<string, { first: number; last: number }>();
+    const results = new Map<string, { first: number; last: number }>();
+    const note = (map: Map<string, { first: number; last: number }>, id: string, index: number) => {
+      const position = map.get(id);
+      if (position) position.last = index;
+      else map.set(id, { first: index, last: index });
+    };
+    let streamId = "";
+    const streamBlocks = new Map<number, string>();
+    let sourceTurn: TurnView | undefined;
+    if (retained.length)
+      events.forEach((event, index) => {
+        if (event.isSidechain === true || event.parent_tool_use_id) return;
+        let ids: string[] = [];
+        if (event.type === "attachment" && object(event.attachment)) {
+          const id = string(event.attachment.source_uuid) || string(event.uuid);
+          if (event.attachment.type === "queued_command") {
+            ids = [id];
+            sourceTurn = this.userTurns.get(id);
+          }
+        } else if (event.type === "user" && object(event.message)) {
+          if (event.isMeta === true || event.turnCompanion === true) return;
+          const id = string(event.uuid);
+          const content = event.message.content;
+          const tools = Array.isArray(content)
+            ? content.filter(object).filter((part) => part.type === "tool_result")
+            : [];
+          if (tools.length) ids = tools.map((part) => string(part.tool_use_id));
+          else {
+            ids = [id];
+            sourceTurn = this.userTurns.get(id);
+          }
+        } else if (event.type === "assistant" && object(event.message)) {
+          const id = string(event.message.id);
+          sourceTurn = this.messageTurns.get(id);
+          const offset = typeof event.apiBlockIndex === "number" ? event.apiBlockIndex : 0;
+          const content = Array.isArray(event.message.content) ? event.message.content : [];
+          ids = content
+            .filter(object)
+            .map((part, block) =>
+              part.type === "tool_use" ? string(part.id) : `${id}:${offset + block}`,
+            );
+        } else if (event.type === "stream_event" && object(event.event)) {
+          const native = event.event;
+          if (native.type === "message_start" && object(native.message)) {
+            streamId = string(native.message.id);
+            streamBlocks.clear();
+            sourceTurn = this.messageTurns.get(streamId);
+            const first = this.streams.get(streamId)?.blocks.get(0);
+            ids = [first?.type === "tool_use" ? string(first.id) : `${streamId}:0`];
+          } else if (typeof native.index === "number") {
+            const part = object(native.content_block) ? native.content_block : undefined;
+            const id =
+              part?.type === "tool_use"
+                ? string(part.id)
+                : streamBlocks.get(native.index) || `${streamId}:${native.index}`;
+            streamBlocks.set(native.index, id);
+            ids = [id];
+          }
+        } else if (event.type === "result" && sourceTurn) note(results, sourceTurn.id, index);
+        for (const id of ids) if (id) note(positions, id, index);
+      });
+    const inputs = new Map<number, typeof retained>();
+    for (const entry of retained) {
+      const index = previous.indexOf(entry);
+      const next = previous.slice(index + 1).find((value) => positions.has(value.item.id));
+      const before = previous
+        .slice(0, index)
+        .reverse()
+        .find((value) => positions.has(value.item.id));
+      const own = positions.get(entry.item.id)?.first;
+      let position = next ? positions.get(next.item.id)!.first : 0;
+      if (!next && before) {
+        const last = positions.get(before.item.id)!.last;
+        position =
+          before.turn.id === entry.turn.id
+            ? last + 1
+            : Math.max(last, results.get(before.turn.id)?.last ?? last) + 1;
+      }
+      if (!next && results.has(entry.turn.id))
+        position = Math.min(position, results.get(entry.turn.id)!.first);
+      if (own !== undefined) position = Math.min(position, own);
+      const entries = inputs.get(position) ?? [];
+      entries.push(entry);
+      inputs.set(position, entries);
+    }
     this.values.length = 0;
     this.byId.clear();
     this.userTurns.clear();
+    this.messageTurns.clear();
     this.continuingTurns.clear();
     this.tools.clear();
     this.streams.clear();
     this.active = undefined;
     this.latestStream = undefined;
     this.effectiveModel = undefined;
-    for (const event of events) this.apply(event);
+    for (let index = 0; index <= events.length; index++) {
+      for (const { turn, item } of inputs.get(index) ?? [])
+        this.apply({
+          type: "user",
+          uuid: item.id,
+          timestamp: item.timestamp,
+          claudenest_delivery:
+            turn.items.find((value) => value.type === "userMessage")?.id === item.id
+              ? "queue"
+              : "steer",
+          message: { content: item.text },
+        });
+      if (index < events.length) this.apply(events[index]!);
+    }
+    for (const { item } of retained) {
+      const turn = this.userTurns.get(item.id);
+      if (turn) this.put(turn, item);
+    }
     if (!options.live)
       for (const turn of this.values)
         if (turn.status === "inProgress") this.complete(turn, "completed", null);
@@ -120,6 +275,20 @@ export class NativeView {
 
   apply(event: Json): ServerEvent[] {
     if (event.isSidechain === true || event.parent_tool_use_id) return [];
+    if (
+      event.type === "attachment" &&
+      object(event.attachment) &&
+      event.attachment.type === "queued_command"
+    ) {
+      const command = event.attachment;
+      return this.apply({
+        type: "user",
+        uuid: string(command.source_uuid) || string(event.uuid),
+        timestamp: command.timestamp ?? event.timestamp,
+        claudenest_delivery: "steer",
+        message: { content: command.prompt },
+      });
+    }
     if (event.type === "system" && event.subtype === "init") {
       if (typeof event.model === "string") this.effectiveModel = event.model;
       return [];
@@ -135,19 +304,38 @@ export class NativeView {
       for (const result of results) {
         const match = this.tools.get(string(result.tool_use_id));
         if (!match) continue;
+        const images = userContent(result.content).images;
         const output =
           textContent(result.content) ||
-          (typeof result.content === "string"
-            ? result.content
-            : JSON.stringify(result.content ?? ""));
+          (images.length
+            ? ""
+            : typeof result.content === "string"
+              ? result.content
+              : JSON.stringify(result.content ?? ""));
         const interrupted =
           /request interrupted by user/i.test(output) ||
           nativeResultInterrupted({ errors: [output] });
         match.item.status = result.is_error === true && !interrupted ? "failed" : "completed";
+        if (images.length && match.item.status === "completed" && !interrupted) {
+          if (match.imagePath) {
+            match.item = {
+              type: "tool",
+              id: match.item.id,
+              status: "completed",
+              title: "Read",
+              detail: output || match.imagePath,
+              images: [match.imagePath],
+            };
+          } else if (match.item.type === "tool") match.item.images = images;
+        }
         if (match.item.type === "command") match.item.output = interrupted ? "" : output;
-        else if (match.item.type === "tool") match.item.detail = interrupted ? "" : output;
+        else if (match.item.type === "tool")
+          match.item.detail = interrupted
+            ? ""
+            : output || (images.length ? (match.imagePath ?? "") : "");
         changes.push(this.upsert(match.turn, match.item));
       }
+      if (event.isMeta === true || event.turnCompanion === true) return changes;
       const user = userContent(content);
       if (!user.text && !user.images.length && !user.files.length && results.length) return changes;
       if (/^\[Request interrupted by user(?: for tool use)?\]$/i.test(user.text.trim())) {
@@ -175,7 +363,6 @@ export class NativeView {
         }
         this.userTurns.set(id, turn);
       }
-      this.active = turn;
       const item: ActivityItem = {
         type: "userMessage",
         id,
@@ -196,10 +383,7 @@ export class NativeView {
       const message = event.message;
       if (typeof message.model === "string") this.effectiveModel = message.model;
       const messageId = string(message.id) || string(event.uuid) || `assistant:${stable(event)}`;
-      const streamed = this.streams.get(messageId);
-      const turn = streamed
-        ? this.byId.get(streamed.turnId)!
-        : this.ensureTurn(messageId, timestamp(event.timestamp));
+      const turn = this.ensureTurn(messageId, timestamp(event.timestamp));
       const parts = Array.isArray(message.content)
         ? message.content.filter(object)
         : typeof message.content === "string"
@@ -209,11 +393,17 @@ export class NativeView {
         this.continuingTurns.add(turn.id);
       else this.continuingTurns.delete(turn.id);
       const changes: ServerEvent[] = [];
+      const blockOffset =
+        typeof event.apiBlockIndex === "number" &&
+        Number.isInteger(event.apiBlockIndex) &&
+        event.apiBlockIndex >= 0
+          ? event.apiBlockIndex
+          : 0;
       parts.forEach((part, index) => {
         const item = this.block(
           turn,
           messageId,
-          index,
+          blockOffset + index,
           part,
           "completed",
           timestamp(event.timestamp),
@@ -280,7 +470,11 @@ export class NativeView {
     return turn;
   }
   private ensureTurn(id: string, at: number | null): TurnView {
-    return this.active ?? this.makeTurn(`native:${id}`, at);
+    const saved = this.messageTurns.get(id);
+    if (saved) return saved;
+    const turn = this.active ?? this.makeTurn(`native:${id}`, at);
+    this.messageTurns.set(id, turn);
+    return turn;
   }
   private complete(
     turn: TurnView,
@@ -288,7 +482,7 @@ export class NativeView {
     at: number | null,
   ): void {
     turn.status = status;
-    turn.completedAt = at;
+    turn.completedAt = at ?? turn.completedAt;
     if (at !== null && turn.startedAt !== null) turn.durationMs = Math.max(0, at - turn.startedAt);
     for (const item of turn.items)
       if (item.status === "inProgress") item.status = status === "failed" ? "failed" : "completed";
@@ -301,13 +495,54 @@ export class NativeView {
         >
       ).phase = "final_answer";
   }
-  private put(turn: TurnView, item: ActivityItem): void {
+  private put(turn: TurnView, item: ActivityItem): ActivityItem {
     const index = turn.items.findIndex((value) => value.id === item.id);
-    if (index < 0) turn.items.push(item);
-    else turn.items[index] = item;
+    if (index < 0) {
+      // A delayed input admission can arrive after its reply. Assistant/tool
+      // blocks retain native sequence order, including blocks without a clock.
+      const at = item.type === "userMessage" ? item.timestamp : null;
+      const before =
+        at != null
+          ? turn.items.findIndex(
+              (value) => "timestamp" in value && value.timestamp != null && value.timestamp > at,
+            )
+          : -1;
+      turn.items.splice(before < 0 ? turn.items.length : before, 0, item);
+    } else {
+      const previous = turn.items[index]!;
+      if (previous.status === "completed" && item.status === "inProgress") return previous;
+      if ("timestamp" in previous && "timestamp" in item && item.timestamp == null)
+        item = { ...item, timestamp: previous.timestamp } as ActivityItem;
+      if (
+        previous.type === "userMessage" &&
+        item.type === "userMessage" &&
+        previous.timestamp !== null &&
+        item.timestamp !== null
+      ) {
+        item = {
+          ...item,
+          ...pastedText(previous),
+          images: item.images.length ? item.images : previous.images,
+          ...(!item.files?.length && previous.files?.length ? { files: previous.files } : {}),
+          timestamp: Math.min(previous.timestamp, item.timestamp),
+        };
+        if (item.timestamp! < previous.timestamp) {
+          turn.items.splice(index, 1);
+          return this.put(turn, item);
+        }
+      }
+      if (
+        previous.type === "agentMessage" &&
+        item.type === "agentMessage" &&
+        previous.phase === "final_answer"
+      )
+        item = { ...item, phase: previous.phase };
+      turn.items[index] = item;
+    }
+    return item;
   }
   private upsert(turn: TurnView, item: ActivityItem): ServerEvent {
-    this.put(turn, item);
+    item = this.put(turn, item);
     return {
       type: "activity.upserted",
       threadId: this.sessionId,
@@ -340,6 +575,8 @@ export class NativeView {
     const input = object(part.input) ? part.input : {};
     const name = string(part.name) || "Claude tool";
     const existing = this.tools.get(toolId);
+    if (name === "Read" && existing?.item.type === "tool" && existing.item.images?.length)
+      return existing.item;
     let item: ActivityItem;
     if (name === "Bash" || name === "Read" || name === "Grep" || name === "Glob") {
       item = {
@@ -383,7 +620,13 @@ export class NativeView {
             ? existing.item.detail
             : JSON.stringify(input, null, 2),
       };
-    this.tools.set(toolId, { turn, item });
+    this.tools.set(toolId, {
+      turn,
+      item,
+      ...(name === "Read" && typeof input.file_path === "string"
+        ? { imagePath: input.file_path }
+        : {}),
+    });
     return item;
   }
 
@@ -405,6 +648,8 @@ export class NativeView {
     if (!message) return [];
     const turn = this.byId.get(message.turnId)!;
     const index = typeof event.index === "number" ? event.index : 0;
+    const existing = turn.items.find((item) => item.id === `${message.id}:${index}`);
+    if (existing?.status === "completed") return [];
     if (event.type === "content_block_start" && object(event.content_block))
       message.blocks.set(index, { ...event.content_block });
     else if (event.type === "content_block_delta" && object(event.delta)) {

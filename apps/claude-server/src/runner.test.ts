@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunnerConnection } from "./rpc.js";
 import { ClaudeControlRejectedError } from "./claude.js";
 import { SessionRunner, type RunnerOptions, type RunnerTransport } from "./runner.js";
@@ -73,6 +73,7 @@ class FakeClaude extends EventEmitter implements RunnerTransport {
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
 });
 
@@ -233,6 +234,60 @@ describe("isolated Claude session runner", () => {
         runnerInstanceId: "old-instance",
       }),
     ).toMatchObject({ resync: true });
+  });
+
+  it("records receipt times once and preserves them in live events, replay and snapshots", async () => {
+    const { fake, runner, client } = await fixture();
+    const first = await client();
+    const live: RpcMessage[] = [];
+    first.on("message", (message: RpcMessage) => live.push(message));
+    await first.request("subscribe");
+    const cursor = runner.snapshot().sequence;
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const start = { type: "stream_event", event: { type: "message_start" } };
+    fake.emit("event", start);
+    now.mockReturnValue(2_000);
+    fake.emit("event", { type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+    now.mockReturnValue(3_000);
+    fake.emit("event", { type: "assistant", message: { content: "Done" } });
+    now.mockReturnValue(4_000);
+    fake.emit("event", { type: "result", subtype: "success", result: "Done" });
+    const expected = runner.snapshot().currentEvents;
+    expect(expected.map((event) => event.timestamp)).toEqual([1_000, 2_000, 3_000, 4_000]);
+    expect(start).not.toHaveProperty("timestamp");
+    now.mockReturnValue(99_000);
+    const second = await client();
+    const replay: RpcMessage[] = [];
+    second.on("message", (message: RpcMessage) => replay.push(message));
+    await second.request("subscribe", {
+      afterSequence: cursor,
+      runnerInstanceId: runner.runnerInstanceId,
+    });
+    const nativeData = (messages: RpcMessage[]) =>
+      messages.flatMap((message) =>
+        message.type === "event" && message.event.kind === "native" ? [message.event.data] : [],
+      );
+    expect(nativeData(live)).toEqual(expected);
+    expect(nativeData(replay)).toEqual(expected);
+    expect((await second.request<RunnerSnapshot>("snapshot")).currentEvents).toEqual(expected);
+    expect(now).toHaveBeenCalledTimes(4);
+  });
+
+  it("preserves valid native timestamps and replaces invalid ones on receipt", async () => {
+    const { fake, runner } = await fixture();
+    const now = vi.spyOn(Date, "now").mockReturnValue(8_000);
+    for (const timestamp of [0, 1_000, "2026-10-06T00:47:00.000Z", null, "invalid", NaN, Infinity])
+      fake.emit("event", { type: "assistant", timestamp, message: { content: "Text" } });
+    expect(runner.snapshot().currentEvents.map((event) => event.timestamp)).toEqual([
+      0,
+      1_000,
+      "2026-10-06T00:47:00.000Z",
+      8_000,
+      8_000,
+      8_000,
+      8_000,
+    ]);
+    expect(now).toHaveBeenCalledTimes(4);
   });
 
   it("retains completed output when the task finishes while disconnected", async () => {

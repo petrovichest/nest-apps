@@ -10,6 +10,12 @@ const CONTROL_TIMEOUT_MS = 30_000;
 const INITIALIZE_TIMEOUT_MS = 120_000;
 const STOP_GRACE_MS = 5_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const IMAGE_DELIVERY_CONTEXT = [
+  "In ClaudeNest, images returned by tools (including image viewing and generation) appear only in expandable technical details, not in the main conversation.",
+  "To show an image to the user, explicitly include a Markdown image or a labeled image-file link in your commentary, plan, or final message, using an absolute local path or an HTTPS image URL.",
+  "Prefer files in the thread's working directory. Before linking a local image outside that directory, open it with Read in this thread, then link its exact path. If a tool returns only image data, save the chosen image in the working directory before linking it.",
+  "Viewing, generating, or forwarding an image through a tool output does not attach it to your message. Do not claim to have shown an image unless you have included it in a user-facing message.",
+].join(" ");
 
 type JsonObject = Record<string, unknown>;
 type PendingControl = {
@@ -89,6 +95,8 @@ export class ClaudeProcess extends EventEmitter {
       "--allow-dangerously-skip-permissions",
       "--permission-prompt-tool",
       "stdio",
+      "--append-system-prompt",
+      IMAGE_DELIVERY_CONTEXT,
       this.options.resume ? "--resume" : "--session-id",
       this.options.sessionId,
     ];

@@ -86,9 +86,19 @@ async function readTranscript(file: Transcript): Promise<SessionHistory & { titl
       if (entry.type === "custom-title" && typeof entry.customTitle === "string")
         customTitle = entry.customTitle;
       if (entry.type === "summary" && typeof entry.summary === "string") summary = entry.summary;
-      if (!["user", "assistant", "system"].includes(String(entry.type))) continue;
+      const queuedCommand =
+        entry.type === "attachment" &&
+        object(entry.attachment) &&
+        entry.attachment.type === "queued_command";
+      if (!queuedCommand && !["user", "assistant", "system"].includes(String(entry.type))) continue;
       messages.push(entry);
-      if (!firstUser && entry.type === "user" && object(entry.message)) {
+      if (
+        !firstUser &&
+        entry.type === "user" &&
+        entry.isMeta !== true &&
+        entry.turnCompanion !== true &&
+        object(entry.message)
+      ) {
         const content = entry.message.content;
         if (typeof content === "string") firstUser = content;
         else if (Array.isArray(content)) {
