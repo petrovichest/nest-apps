@@ -12,6 +12,7 @@ import {
   MAX_TRANSCRIPTION_BYTES,
   VoiceServiceError,
   type VoiceServiceOptions,
+  plausibleRefinement,
 } from "./voice";
 
 const directories: string[] = [];
@@ -137,14 +138,14 @@ describe("Claude local voice", () => {
   });
 
   it("refines with the requested model and keeps overrides scoped to that recording", async () => {
-    const refine = vi.fn(async () => "Исправленный текст.");
+    const refine = vi.fn(async () => "Исходный текст.");
     const voice = service({ refine });
     await expect(
       voice.transcribe(Buffer.from("audio"), "audio/webm", undefined, {
         refinementModel: "sonnet",
         language: "en",
       }),
-    ).resolves.toBe("Исправленный текст.");
+    ).resolves.toBe("Исходный текст.");
     expect(refine).toHaveBeenCalledWith("исходный текст", { model: "sonnet", signal: undefined });
     expect((await voice.readSettings()).refinementModel).toBe("haiku");
     expect((await voice.readSettings()).language).toBe("ru");
@@ -168,6 +169,25 @@ describe("Claude local voice", () => {
     await expect(service().transcribe(Buffer.from("audio"), "audio/webm")).resolves.toBe(
       "исходный текст",
     );
+  });
+
+  it("keeps the raw transcript when the refiner answers it instead of correcting it", async () => {
+    const raw = "можешь продолжить проверь что уже готово из твоего плана";
+    const onRefinementError = vi.fn();
+    const reply =
+      "Привет! Я готов помочь улучшить транскрипцию, но мне не видно, какой текст ты имеешь в виду. Пожалуйста, пришли текст.";
+    await expect(
+      service({
+        fetch: async () => Response.json({ text: raw }),
+        refine: async () => reply,
+        onRefinementError,
+      }).transcribe(Buffer.from("audio"), "audio/webm"),
+    ).resolves.toBe(raw);
+    expect(onRefinementError).toHaveBeenCalledTimes(1);
+    expect(
+      plausibleRefinement(raw, "Можешь продолжить? Проверь, что уже готово из твоего плана."),
+    ).toBe(true);
+    expect(plausibleRefinement("закомить на гит хаб", "Закоммить на GitHub.")).toBe(true);
   });
 
   it("does not truncate long raw transcripts to make refinement fit", async () => {
@@ -195,7 +215,7 @@ describe("Claude local voice", () => {
         JSON.stringify({
           type: "result",
           is_error: false,
-          structured_output: { text: "Исправленный текст." },
+          structured_output: { text: '{"text": "Исходный текст."}' },
         }),
       );
       child.emit("close", 0, null);
@@ -218,9 +238,9 @@ describe("Claude local voice", () => {
       }),
     });
     await expect(voice.transcribe(Buffer.from("audio"), "audio/mp4")).resolves.toBe(
-      "Исправленный текст.",
+      "Исходный текст.",
     );
-    expect(input).toBe("исходный текст");
+    expect(input).toBe("<transcript>\nисходный текст\n</transcript>");
     expect(args).toContain("--no-session-persistence");
     expect(args).toContain("--strict-mcp-config");
     expect(args[args.indexOf("--tools") + 1]).toBe("");
