@@ -47,6 +47,7 @@ describe("application variants", () => {
     const settings = { baseUrl: "https://claude.home.arpa", token: "claude-secret" };
     const api = new ApiClient(settings);
     expect(application.name).toBe("ClaudeNest");
+    expect(application.capabilities.browserIntegration).toBe(true);
     expect(application.capabilities.team).toBe(false);
     expect(application.capabilities.reasoningEffort).toBe(true);
     expect(api.webSocketUrl()).toBe("wss://claude.home.arpa/api/v1/ui/events");

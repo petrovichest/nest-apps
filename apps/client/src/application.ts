@@ -16,7 +16,7 @@ export const application = {
     team: !isClaude,
     goal: !isClaude,
     forks: !isClaude,
-    browserIntegration: !isClaude,
+    browserIntegration: true,
     fullTextSearch: true,
     sessionApprovalGrants: true,
     skills: !isClaude,
