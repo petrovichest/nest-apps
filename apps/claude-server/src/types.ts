@@ -64,6 +64,8 @@ export interface PendingRequest {
   input: Record<string, unknown>;
   kind?: "toolApproval" | "userQuestion" | "other";
   toolUseId?: string;
+  /** Native permission updates the CLI offers with this request (rules, directories, mode). */
+  suggestions?: Record<string, unknown>[];
 }
 
 export interface RunnerSnapshot {

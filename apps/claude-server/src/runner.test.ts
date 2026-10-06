@@ -174,6 +174,7 @@ describe("isolated Claude session runner", () => {
         tool_name: "Bash",
         input: { command: "touch example" },
         tool_use_id: "tool-1",
+        permission_suggestions: [{ type: "addDirectories", directories: ["/w"] }, "invalid"],
       },
     });
     fake.emit("event", {
@@ -195,6 +196,7 @@ describe("isolated Claude session runner", () => {
         input: { command: "touch example" },
         kind: "toolApproval",
         toolUseId: "tool-1",
+        suggestions: [{ type: "addDirectories", directories: ["/w"] }],
       },
     ]);
     await second.request("respond", {

@@ -534,7 +534,7 @@ export class UiService extends EventEmitter {
         forks: false,
         browserIntegration: false,
         fullTextSearch: true,
-        sessionApprovalGrants: false,
+        sessionApprovalGrants: true,
         skills: false,
         gitChanges: true,
         artifacts: false,
@@ -1703,6 +1703,18 @@ export class UiService extends EventEmitter {
       owner.pendingRequests.map((request) => this.toAttention(id, request)),
     );
   }
+  /** Native rules and directories offered by the CLI, scoped to this session only. */
+  private sessionGrants(request: PendingRequest): Record<string, unknown>[] {
+    return (request.suggestions ?? [])
+      .filter((value) => value.type === "addRules" || value.type === "addDirectories")
+      .map((value) => ({ ...value, destination: "session" }));
+  }
+  /** Native rules the CLI offers to keep in the project's local settings. */
+  private persistentRules(request: PendingRequest): Array<Record<string, unknown>> {
+    return (request.suggestions ?? []).filter(
+      (value) => value.type === "addRules" && value.destination !== "session",
+    );
+  }
   private toAttention(id: string, request: PendingRequest): AttentionRequest {
     const key = `${id}:${request.requestId}`,
       base = {
@@ -1747,7 +1759,7 @@ export class UiService extends EventEmitter {
         kind: "fileChangeApproval",
         reason: `${request.toolName}: ${String(request.input.file_path ?? request.input.notebook_path ?? "")}`,
         grantRoot: null,
-        canAcceptForSession: false,
+        canAcceptForSession: this.sessionGrants(request).length > 0,
       };
     return {
       ...base,
@@ -1759,8 +1771,21 @@ export class UiService extends EventEmitter {
       cwd: this.thread(id).cwd,
       reason: `Claude requests ${request.toolName}`,
       networkHost: null,
-      canAcceptForSession: false,
-      proposedPolicyChanges: [],
+      canAcceptForSession: this.sessionGrants(request).length > 0,
+      proposedPolicyChanges: this.persistentRules(request).map((suggestion, index) => ({
+        id: String(index),
+        type: "exec" as const,
+        label: `Всегда разрешать в проекте: ${(Array.isArray(suggestion.rules)
+          ? suggestion.rules
+          : []
+        )
+          .map((rule: { toolName?: unknown; ruleContent?: unknown }) =>
+            typeof rule.ruleContent === "string"
+              ? `${String(rule.toolName)}(${rule.ruleContent})`
+              : String(rule.toolName),
+          )
+          .join(", ")}`,
+      })),
     };
   }
   async respond(attentionId: string, answer: AttentionResponse): Promise<void> {
@@ -1781,9 +1806,15 @@ export class UiService extends EventEmitter {
         answers[question.question] = selected.join(", ");
       }
       response = { behavior: "allow", updatedInput: { ...request.input, answers } };
+    } else if (answer.kind === "approvalAmendment") {
+      const rule = this.persistentRules(request)[Number(answer.amendmentId)];
+      if (!rule || !/^\d+$/.test(answer.amendmentId))
+        throw new AppError("invalid_request", "Unknown permission rule");
+      response = { behavior: "allow", updatedInput: request.input, updatedPermissions: [rule] };
     } else if (answer.kind === "approval") {
-      if (answer.decision === "acceptForSession")
-        throw new AppError("invalid_request", "Session-wide grants are unavailable");
+      const grants = this.sessionGrants(request);
+      if (answer.decision === "acceptForSession" && !grants.length)
+        throw new AppError("invalid_request", "Claude offered no session-wide grant");
       if (answer.decision === "cancel") {
         await this.manager.command(id, "interrupt", { requestId: randomUUID() });
         return;
@@ -1791,7 +1822,9 @@ export class UiService extends EventEmitter {
       response =
         answer.decision === "accept"
           ? { behavior: "allow", updatedInput: request.input }
-          : { behavior: "deny", message: "User declined this tool request" };
+          : answer.decision === "acceptForSession"
+            ? { behavior: "allow", updatedInput: request.input, updatedPermissions: grants }
+            : { behavior: "deny", message: "User declined this tool request" };
     } else throw new AppError("invalid_request", "Unsupported attention response");
     await this.manager.command(id, "respond", {
       requestId: randomUUID(),

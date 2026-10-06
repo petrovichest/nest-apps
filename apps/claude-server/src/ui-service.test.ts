@@ -2203,6 +2203,56 @@ describe("Claude UI durable session facade", () => {
     await service.respond(`${id}:tool`, { kind: "approval", decision: "cancel" });
     expect(manager.commands.at(-1)).toMatchObject({ id, method: "interrupt" });
   });
+  it("offers native session grants and project rules from the CLI's permission suggestions", async () => {
+    const { manager, start, directory } = await fixture();
+    const id = randomUUID();
+    const rule = {
+      type: "addRules",
+      rules: [{ toolName: "Bash", ruleContent: "mkdir -p /work/dir" }],
+      behavior: "allow",
+      destination: "localSettings",
+    };
+    const suggestions = [
+      rule,
+      { type: "addDirectories", directories: ["/work"], destination: "session" },
+      { type: "setMode", mode: "acceptEdits", destination: "session" },
+    ];
+    const input = { command: "mkdir -p /work/dir" };
+    manager.owners.set(
+      id,
+      snapshot(id, directory, [
+        { requestId: "session", toolName: "Bash", input, kind: "toolApproval", suggestions },
+        { requestId: "rule", toolName: "Bash", input, kind: "toolApproval", suggestions },
+      ]),
+    );
+    const service = await start("manual");
+    expect(service.attention().find((item) => item.id === `${id}:session`)).toMatchObject({
+      kind: "commandApproval",
+      canAcceptForSession: true,
+      proposedPolicyChanges: [
+        { id: "0", type: "exec", label: "Всегда разрешать в проекте: Bash(mkdir -p /work/dir)" },
+      ],
+    });
+    await service.respond(`${id}:session`, { kind: "approval", decision: "acceptForSession" });
+    expect(manager.commands.at(-1)?.params.response).toEqual({
+      behavior: "allow",
+      updatedInput: input,
+      // Mode changes stay with ClaudeNest's own permission settings.
+      updatedPermissions: [
+        { ...rule, destination: "session" },
+        { type: "addDirectories", directories: ["/work"], destination: "session" },
+      ],
+    });
+    await expect(
+      service.respond(`${id}:rule`, { kind: "approvalAmendment", amendmentId: "1" }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    await service.respond(`${id}:rule`, { kind: "approvalAmendment", amendmentId: "0" });
+    expect(manager.commands.at(-1)?.params.response).toEqual({
+      behavior: "allow",
+      updatedInput: input,
+      updatedPermissions: [rule],
+    });
+  });
 });
 
 describe("Claude plan rate limits", () => {

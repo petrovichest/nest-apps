@@ -729,6 +729,14 @@ export class SessionRunner {
               ? ("toolApproval" as const)
               : ("other" as const),
         ...(typeof request.tool_use_id === "string" ? { toolUseId: request.tool_use_id } : {}),
+        ...(Array.isArray(request.permission_suggestions)
+          ? {
+              suggestions: request.permission_suggestions.filter(
+                (value): value is Record<string, unknown> =>
+                  Boolean(value) && typeof value === "object" && !Array.isArray(value),
+              ),
+            }
+          : {}),
       };
       this.pending.set(requestId, pending);
       if (
