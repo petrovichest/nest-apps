@@ -2007,7 +2007,7 @@ export function ThreadPage({
   }
 
   async function cancelVoiceTranscription(): Promise<void> {
-    if (!activeVoiceJob || voiceCancellationPending) return;
+    if (!voiceJob || voiceCancellationPending) return;
     setVoiceCancellationPending(true);
     setError(null);
     try {
@@ -4676,6 +4676,7 @@ export function ThreadPage({
             }
             preserveRecordingOnSessionChange={backgroundVoiceContext !== null}
             transcriptionStatus={draftVoiceProgress}
+            onDismissTranscriptionError={() => void cancelVoiceTranscription()}
             transcriptionError={
               voiceJob?.status === "failed"
                 ? (localizeKnownServerText(language, voiceJob.error) ?? voiceJob.error)

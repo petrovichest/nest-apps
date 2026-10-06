@@ -146,6 +146,7 @@ export function Composer({
   voiceCancellationPending = false,
   transcriptionStatus = null,
   transcriptionError = null,
+  onDismissTranscriptionError,
   error,
   autoFocus = false,
   initialSelection,
@@ -203,6 +204,7 @@ export function Composer({
   voiceCancellationPending?: boolean;
   transcriptionStatus?: ComposerTranscriptionStatus | null;
   transcriptionError?: string | null;
+  onDismissTranscriptionError?(): void;
   error: string | null;
   autoFocus?: boolean;
   initialSelection?: { start: number; end: number } | null;
@@ -1324,6 +1326,16 @@ export function Composer({
         >
           {voiceTranscriptionErrorVisible && <MicrophoneIcon />}
           <span>{composerError}</span>
+          {voiceTranscriptionErrorVisible && onDismissTranscriptionError && (
+            <button
+              type="button"
+              className="voice-transcription-error-dismiss"
+              aria-label={t("Закрыть")}
+              onClick={onDismissTranscriptionError}
+            >
+              ×
+            </button>
+          )}
         </div>
       )}
       {creating && projects.length === 0 && (

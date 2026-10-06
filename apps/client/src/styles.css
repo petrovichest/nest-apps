@@ -4707,6 +4707,17 @@ button.message-file:hover:not(:disabled) {
   line-height: 1.4;
 }
 
+.voice-transcription-error-dismiss {
+  margin-left: auto;
+  padding: 0 var(--space-1);
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
 .voice-transcription-error svg {
   width: 16px;
   height: 16px;
