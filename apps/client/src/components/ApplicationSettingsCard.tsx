@@ -279,7 +279,6 @@ export function ApplicationSettingsCard({
                 />
               </button>
               <button
-                className="primary"
                 disabled={
                   !status?.supported ||
                   busy ||

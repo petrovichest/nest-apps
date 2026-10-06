@@ -1924,28 +1924,13 @@
   flex: 0 0 18px;
 }
 
-.application-update-actions button {
-  min-height: 42px;
-  padding: var(--space-2) 15px;
-  border-color: var(--color-line-strong);
-  background: var(--color-canvas);
-}
-
-.application-update-actions button.primary {
-  padding-inline: var(--space-4);
-  border-color: transparent;
-  background: var(--color-hover);
-}
-
-.application-update-actions button:active:not(:disabled) {
-  background: var(--sidebar-control-active);
-}
-
+.application-settings-card .application-update-actions,
 .application-settings-card .application-download-actions {
   gap: 14px;
   margin-left: calc(-1 * var(--space-2));
 }
 
+.application-update-actions button,
 .application-download-actions :is(button, a) {
   min-height: 40px;
   gap: var(--space-2);
@@ -1953,6 +1938,7 @@
   text-align: left;
 }
 
+.application-update-actions svg,
 .application-download-actions svg {
   color: var(--color-muted-strong);
 }
@@ -1963,15 +1949,13 @@
     align-items: stretch;
   }
 
-  .application-update-actions button {
-    min-height: 44px;
-  }
-
+  .application-settings-card .application-update-actions,
   .application-settings-card .application-download-actions {
     gap: var(--space-1);
     margin-left: 0;
   }
 
+  .application-update-actions button,
   .application-download-actions :is(button, a) {
     min-height: 44px;
     justify-content: flex-start;
