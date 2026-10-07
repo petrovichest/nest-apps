@@ -114,6 +114,107 @@ beforeEach(() => {
 });
 
 describe("Composer", () => {
+  it("collapses all card types together above two and keeps notices visible", () => {
+    const onSubmit = vi.fn();
+    const onOpenAnnotation = vi.fn();
+    const view = render(
+      <Harness
+        initialInput="Черновик"
+        initialImages={[
+          { id: "one", name: "one.png", url: "data:image/png;base64,b25l" },
+          { id: "two", name: "two.png", url: "data:image/png;base64,dHdv" },
+        ]}
+        files={[draftFile]}
+        annotations={[draftAnnotation]}
+        onOpenAnnotation={onOpenAnnotation}
+        pastes={{ pasteBlocks: [{ id: "paste", text: "Контекст" }] }}
+        onSubmit={onSubmit}
+      >
+        <div role="status">Сообщение в очереди</div>
+        <button type="button">Дочернее действие</button>
+      </Harness>,
+    );
+    const toggle = screen.getByRole("button", { name: /^Развернуть вложения \(5\)/ });
+    expect(toggle).toHaveAccessibleName(
+      "Развернуть вложения (5): 1 аннотация · 2 изображения · 1 файл · 1 вставка",
+    );
+    expect(screen.getByRole("status")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Дочернее действие" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Перейти к аннотации 1" })).toBeNull();
+    expect(view.container.querySelectorAll(".composer-card-type")).toHaveLength(4);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(document.getElementById(toggle.getAttribute("aria-controls")!)).not.toBeVisible();
+
+    const textarea = screen.getByRole("textbox", { name: "Сообщение для Codex" });
+    textarea.focus();
+    expect(fireEvent.pointerDown(toggle)).toBe(false);
+    fireEvent.click(toggle);
+    expect(textarea).toHaveFocus();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Открыть изображение two.png" })).toBeVisible();
+    expect(screen.getByText("context.txt")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Перейти к аннотации 1" }));
+    expect(onOpenAnnotation).toHaveBeenCalledWith("annotation");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("preserves manual expansion until the draft is cleared or the session changes", () => {
+    const notes = [draftAnnotation, { ...draftAnnotation, id: "second" }];
+    const props = { annotations: notes, files: [draftFile], sessionIdentity: "one" };
+    const view = render(<Harness {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /^Развернуть вложения \(3\)/ }));
+    view.rerender(
+      <Harness {...props} annotations={[...notes, { ...draftAnnotation, id: "third" }]} />,
+    );
+    expect(screen.getByRole("button", { name: /^Свернуть вложения \(4\)/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    view.rerender(<Harness annotations={notes} sessionIdentity="one" />);
+    expect(screen.queryByRole("button", { name: /вложения \(/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Перейти к аннотации 2" })).toBeVisible();
+    view.rerender(<Harness {...props} />);
+    expect(screen.getByRole("button", { name: /^Свернуть вложения \(3\)/ })).toBeVisible();
+    view.rerender(<Harness sessionIdentity="one" />);
+    view.rerender(<Harness {...props} />);
+    expect(screen.getByRole("button", { name: /^Развернуть вложения \(3\)/ })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /^Развернуть вложения \(3\)/ }));
+    view.rerender(<Harness {...props} sessionIdentity="two" />);
+    expect(screen.getByRole("button", { name: /^Развернуть вложения \(3\)/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
+  });
+
+  it("keeps unsaved pasted text when adding a third card and returns focus to the composer", () => {
+    const onInput = vi.fn();
+    const props = {
+      annotations: [draftAnnotation],
+      pastes: { pasteBlocks: [{ id: "paste", text: "Исходный контекст" }] },
+      onInput,
+    };
+    const view = render(<Harness {...props} />);
+    expect(screen.queryByRole("button", { name: /вложения \(/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Вставленный текст/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Редактировать вставленный текст" }));
+    const source = screen.getByRole("textbox", { name: "Исходный вставленный текст" });
+    source.focus();
+    fireEvent.change(source, { target: { value: "Несохранённый контекст" } });
+    view.rerender(<Harness {...props} files={[draftFile]} />);
+    expect(screen.getByRole("textbox", { name: "Сообщение для Codex" })).toHaveFocus();
+    expect(source).not.toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /^Развернуть вложения \(3\)/ }));
+    expect(source).toBeVisible();
+    expect(source).toHaveValue("Несохранённый контекст");
+    fireEvent.click(screen.getByRole("button", { name: /^Свернуть вложения \(3\)/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Развернуть вложения \(3\)/ }));
+    expect(source).toHaveValue("Несохранённый контекст");
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+    expect(onInput).toHaveBeenLastCalledWith("", {
+      pasteBlocks: [{ id: "paste", text: "Несохранённый контекст" }],
+    });
+  });
+
   it("places the caret at the end on opening and after a delayed draft or session change", () => {
     const view = render(<Harness autoFocus input="Черновик" sessionIdentity="one" />);
     const textarea = screen.getByRole("textbox", {
@@ -1242,6 +1343,24 @@ const transcriptionConfig: TranscriptionConfigResponse = {
   },
 };
 
+const draftAnnotation = {
+  id: "annotation",
+  messageId: "message",
+  source: "agentMessage" as const,
+  quote: "Цитата",
+  comment: "Комментарий",
+  startOffset: 0,
+  endOffset: 6,
+  createdAt: 1,
+};
+const draftFile = {
+  id: "file",
+  name: "context.txt",
+  path: "/work/context.txt",
+  size: 10,
+  mediaType: "text/plain",
+};
+
 function Harness({
   autoFocus = false,
   initialSelection,
@@ -1253,6 +1372,10 @@ function Harness({
   goalMode = false,
   hasSupplementalContent = false,
   initialImages = [],
+  files,
+  annotations,
+  onOpenAnnotation,
+  pastes,
   initialInput = "",
   input: controlledInput,
   inputSyncRevision,
@@ -1283,6 +1406,10 @@ function Harness({
   goalMode?: boolean;
   hasSupplementalContent?: boolean;
   initialImages?: ComposerImage[];
+  files?: Parameters<typeof Composer>[0]["files"];
+  annotations?: Parameters<typeof Composer>[0]["annotations"];
+  onOpenAnnotation?: Parameters<typeof Composer>[0]["onOpenAnnotation"];
+  pastes?: Parameters<typeof Composer>[0]["pastes"];
   initialInput?: string;
   input?: string;
   inputSyncRevision?: number;
@@ -1290,7 +1417,7 @@ function Harness({
   initialSettings?: SessionSettings;
   onDraftFlush?(): void;
   onGoalModeChange?(value: boolean): void;
-  onInput?(value: string): void;
+  onInput?: Parameters<typeof Composer>[0]["onInput"];
   onSettingsChange?(patch: UpdateThreadSettingsRequest): void;
   onSubmit?(intent: ComposerSubmitIntent): void;
   onSendQueuedNow?(): void;
@@ -1312,13 +1439,18 @@ function Harness({
       autoFocus={autoFocus}
       initialSelection={initialSelection}
       input={controlledInput ?? input}
-      onInput={(value) => {
-        onInput?.(value);
+      pastes={pastes}
+      onInput={(value, nextPastes) => {
+        if (nextPastes) onInput?.(value, nextPastes);
+        else onInput?.(value);
         if (controlledInput === undefined) setInput(value);
       }}
       onDraftFlush={onDraftFlush}
       inputSyncRevision={inputSyncRevision}
       images={images}
+      files={files}
+      annotations={annotations}
+      onOpenAnnotation={onOpenAnnotation}
       onImagesChange={setImages}
       onSubmit={onSubmit}
       onSendQueuedNow={onSendQueuedNow}

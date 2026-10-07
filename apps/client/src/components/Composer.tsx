@@ -1,7 +1,9 @@
 import { onBeforeAppReload } from "../app-reload";
 import { application } from "../application";
 import { useTypography } from "../typography";
+import type { PendingAnnotation } from "../annotations";
 import { pastedText, samePastedText, type PastedText } from "@codexnest/protocol";
+import { AnnotationBubbles } from "./AnnotationBubbles";
 import { PasteBlocks } from "./PasteBlocks";
 import { PasteTextarea, usePasteEditor } from "./PasteEditor";
 import {
@@ -10,6 +12,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -32,7 +35,18 @@ import type {
 
 import { localizeKnownServerText, type Translate, useI18n } from "../i18n";
 import { useSkillsCatalog } from "../useSkillsCatalog";
-import { FileIcon, MicrophoneIcon, PlusIcon, SendIcon, StopIcon, XIcon } from "./Icons";
+import {
+  ChevronDownIcon,
+  ClipboardIcon,
+  FileIcon,
+  ImageIcon,
+  MicrophoneIcon,
+  PencilIcon,
+  PlusIcon,
+  SendIcon,
+  StopIcon,
+  XIcon,
+} from "./Icons";
 import { ImageViewer } from "./ImageViewer";
 import { SettingsPicker } from "./SettingsPicker";
 import {
@@ -108,6 +122,9 @@ export function Composer({
   onFilesChange,
   onUploadFiles,
   onDeleteFile,
+  annotations = [],
+  onOpenAnnotation,
+  onDeleteAnnotation,
   attachmentScope = 0,
   onPendingAttachmentsChange,
   onSubmit,
@@ -166,6 +183,9 @@ export function Composer({
   onFilesChange?(value: ThreadFileAttachment[], attachmentScope?: number): void;
   onUploadFiles?(files: readonly File[], attachmentScope?: number): Promise<ThreadFileAttachment[]>;
   onDeleteFile?(file: ThreadFileAttachment): Promise<void>;
+  annotations?: PendingAnnotation[];
+  onOpenAnnotation?(annotationId: string): void;
+  onDeleteAnnotation?(annotationId: string): void;
   attachmentScope?: number;
   onPendingAttachmentsChange?(pending: boolean, attachmentScope?: number): void;
   onSubmit(intent: ComposerSubmitIntent): void;
@@ -222,6 +242,58 @@ export function Composer({
   const draftInputRef = useRef(input);
   const [draftPastes, setDraftPastes] = useState<PastedText>(() => pastedText(pastes));
   const draftPastesRef = useRef(draftPastes);
+  const cardsId = useId();
+  const cardsRef = useRef<HTMLDivElement>(null);
+  const [cardsExpanded, setCardsExpanded] = useState(false);
+  const cardCount =
+    images.length + files.length + annotations.length + (draftPastes.pasteBlocks?.length ?? 0);
+  const cardsHidden = cardCount > 2 && !cardsExpanded;
+  const pluralRules = useMemo(() => new Intl.PluralRules(language), [language]);
+  const cardCounts: [number, string, string, string, typeof FileIcon][] = [
+    [
+      annotations.length,
+      "{{count}} аннотация",
+      "{{count}} аннотации",
+      "{{count}} аннотаций",
+      PencilIcon,
+    ],
+    [
+      images.length,
+      "{{count}} изображение",
+      "{{count}} изображения",
+      "{{count}} изображений",
+      ImageIcon,
+    ],
+    [files.length, "{{count}} файл", "{{count}} файла", "{{count}} файлов", FileIcon],
+    [
+      draftPastes.pasteBlocks?.length ?? 0,
+      "{{count}} вставка",
+      "{{count}} вставки",
+      "{{count}} вставок",
+      ClipboardIcon,
+    ],
+  ];
+  const cardTypes = cardCounts
+    .filter(([count]) => count > 0)
+    .map(([count, one, few, many, Icon]) => {
+      const plural = pluralRules.select(count);
+      return {
+        count,
+        Icon,
+        label: t(plural === "one" ? one : plural === "few" ? few : many, { count }),
+      };
+    });
+  const cardSummary = cardTypes.map(({ label }) => label).join(" · ");
+
+  useEffect(() => {
+    if (cardCount === 0) setCardsExpanded(false);
+  }, [cardCount]);
+
+  useLayoutEffect(() => {
+    if (cardsHidden && cardsRef.current?.contains(document.activeElement)) {
+      textareaRef.current?.focus({ preventScroll: true });
+    }
+  }, [cardsHidden]);
   const pasteEditor = usePasteEditor(
     { input: draftInput, ...draftPastes },
     (next) => commitDraft(next.input, pastedText(next)),
@@ -381,6 +453,7 @@ export function Composer({
     Boolean(draftInput.trim()) ||
     images.length > 0 ||
     files.length > 0 ||
+    annotations.length > 0 ||
     hasSupplementalContent;
   const activeSkillToken =
     !goalMode && !busy && !speechBusy && composerFocused
@@ -674,6 +747,7 @@ export function Composer({
     attachmentImagesRef.current.clear();
     attachmentFilesRef.current.clear();
     setViewer(null);
+    setCardsExpanded(false);
     setAttachmentError(null);
     setSpeechError(null);
     setSpeechState("idle");
@@ -1346,70 +1420,118 @@ export function Composer({
           </button>
         </div>
       )}
-      {(images.length > 0 || files.length > 0) && (
+      {children}
+      <div className="composer-cards">
+        {cardCount > 2 && (
+          <button
+            type="button"
+            className={`composer-cards-toggle${cardsHidden ? " stacked" : ""}`}
+            aria-expanded={cardsExpanded}
+            aria-controls={cardsId}
+            aria-label={`${t(
+              cardsExpanded ? "Свернуть вложения ({{count}})" : "Развернуть вложения ({{count}})",
+              { count: cardCount },
+            )}: ${cardSummary}`}
+            title={cardSummary}
+            onPointerDownCapture={preserveTextareaFocus}
+            onClick={() => setCardsExpanded(!cardsExpanded)}
+          >
+            <span className="composer-cards-toggle-surface">
+              <span className="composer-cards-types" aria-hidden="true">
+                {cardTypes.map(({ count, Icon, label }) => (
+                  <span className="composer-card-type" key={label} title={label}>
+                    <Icon />
+                    <span>{count}</span>
+                  </span>
+                ))}
+              </span>
+              <ChevronDownIcon className={cardsExpanded ? "expanded" : undefined} />
+            </span>
+          </button>
+        )}
         <div
-          className="composer-attachments"
-          aria-label={t("Вложения")}
-          onPointerDownCapture={preserveTextareaFocus}
+          id={cardsId}
+          ref={cardsRef}
+          className={`composer-cards-content${cardCount > 2 ? " limited" : ""}`}
+          hidden={cardsHidden}
         >
-          {images.map((image, index) => (
-            <div className="composer-attachment" key={image.id}>
-              <button
-                type="button"
-                className="composer-attachment-preview"
-                aria-label={t("Открыть изображение {{name}}", { name: image.name })}
-                onClick={(event) => {
-                  const activeElement = event.currentTarget.ownerDocument.activeElement;
-                  setViewer({
-                    index,
-                    opener:
-                      activeElement instanceof HTMLElement &&
-                      activeElement !== event.currentTarget.ownerDocument.body
-                        ? activeElement
-                        : event.currentTarget,
-                  });
-                }}
-              >
-                <img src={image.url} alt={image.name} />
-              </button>
-              <button
-                type="button"
-                className="composer-attachment-remove"
-                aria-label={t("Удалить изображение {{name}}", { name: image.name })}
-                onClick={() => {
-                  const next = images.filter((item) => item.id !== image.id);
-                  attachmentImagesRef.current.set(attachmentScope, next);
-                  latestPropsRef.current.onImagesChange(next, attachmentScope);
-                }}
-              >
-                <XIcon />
-              </button>
+          {(images.length > 0 || files.length > 0) && (
+            <div
+              className="composer-attachments"
+              aria-label={t("Вложения")}
+              onPointerDownCapture={preserveTextareaFocus}
+            >
+              {images.map((image, index) => (
+                <div className="composer-attachment" key={image.id}>
+                  <button
+                    type="button"
+                    className="composer-attachment-preview"
+                    aria-label={t("Открыть изображение {{name}}", { name: image.name })}
+                    onClick={(event) => {
+                      const activeElement = event.currentTarget.ownerDocument.activeElement;
+                      setViewer({
+                        index,
+                        opener:
+                          activeElement instanceof HTMLElement &&
+                          activeElement !== event.currentTarget.ownerDocument.body
+                            ? activeElement
+                            : event.currentTarget,
+                      });
+                    }}
+                  >
+                    <img src={image.url} alt={image.name} />
+                  </button>
+                  <button
+                    type="button"
+                    className="composer-attachment-remove"
+                    aria-label={t("Удалить изображение {{name}}", { name: image.name })}
+                    onClick={() => {
+                      const next = images.filter((item) => item.id !== image.id);
+                      attachmentImagesRef.current.set(attachmentScope, next);
+                      latestPropsRef.current.onImagesChange(next, attachmentScope);
+                    }}
+                  >
+                    <XIcon />
+                  </button>
+                </div>
+              ))}
+              {files.map((file) => (
+                <div className="composer-attachment composer-file-attachment" key={file.id}>
+                  <div className="composer-file-summary" title={file.name}>
+                    <FileIcon />
+                    <span>{file.name}</span>
+                    <small>{formatFileSize(file.size, language)}</small>
+                  </div>
+                  <button
+                    type="button"
+                    className="composer-attachment-remove"
+                    aria-label={t("Удалить файл {{name}}", { name: file.name })}
+                    onClick={() => {
+                      const next = files.filter((item) => item.id !== file.id);
+                      attachmentFilesRef.current.set(attachmentScope, next);
+                      latestPropsRef.current.onFilesChange?.(next, attachmentScope);
+                      void onDeleteFile?.(file).catch(() => undefined);
+                    }}
+                  >
+                    <XIcon />
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
-          {files.map((file) => (
-            <div className="composer-attachment composer-file-attachment" key={file.id}>
-              <div className="composer-file-summary" title={file.name}>
-                <FileIcon />
-                <span>{file.name}</span>
-                <small>{formatFileSize(file.size, language)}</small>
-              </div>
-              <button
-                type="button"
-                className="composer-attachment-remove"
-                aria-label={t("Удалить файл {{name}}", { name: file.name })}
-                onClick={() => {
-                  const next = files.filter((item) => item.id !== file.id);
-                  attachmentFilesRef.current.set(attachmentScope, next);
-                  latestPropsRef.current.onFilesChange?.(next, attachmentScope);
-                  void onDeleteFile?.(file).catch(() => undefined);
-                }}
-              >
-                <XIcon />
-              </button>
-            </div>
-          ))}
+          )}
+          <AnnotationBubbles
+            annotations={annotations}
+            disabled={busy}
+            onOpen={(id) => onOpenAnnotation?.(id)}
+            onDelete={(id) => onDeleteAnnotation?.(id)}
+          />
+          <PasteBlocks
+            blocks={draftPastes.pasteBlocks}
+            onChange={pasteEditor.blocks}
+            disabled={speechBusy || inputUnavailable}
+          />
         </div>
-      )}
+      </div>
       {viewer && (
         <ImageViewer
           images={images.map((image) => ({ src: image.url, alt: image.name }))}
@@ -1419,12 +1541,6 @@ export function Composer({
           onClose={() => setViewer(null)}
         />
       )}
-      {children}
-      <PasteBlocks
-        blocks={draftPastes.pasteBlocks}
-        onChange={pasteEditor.blocks}
-        disabled={speechBusy || inputUnavailable}
-      />
       <div className="composer-box">
         {skillMenuOpen && (
           <SkillAutocomplete

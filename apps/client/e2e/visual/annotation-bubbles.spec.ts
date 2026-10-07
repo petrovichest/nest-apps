@@ -2,7 +2,12 @@ import { expect, test, type Page } from "@playwright/test";
 import type { ThreadDetail } from "@codexnest/protocol";
 import { installVisualFixture, snapshot, waitForVisualReady } from "./fixtures";
 
-async function openAnnotations(page: Page, theme: "light" | "dark", count: number) {
+async function openAnnotations(
+  page: Page,
+  theme: "light" | "dark",
+  count: number,
+  attachments: "mixed" | "paste" | "none" = count === 2 ? "mixed" : "none",
+) {
   const seed = structuredClone(snapshot);
   seed.attention = [];
   const summary = seed.threads.find((thread) => thread.id === "session-main")!;
@@ -16,9 +21,18 @@ async function openAnnotations(page: Page, theme: "light" | "dark", count: numbe
     queuedMessages: [],
     draft: {
       input: "Учти эти замечания",
-      images: [],
+      images:
+        attachments === "mixed"
+          ? [
+              {
+                id: "image",
+                name: "preview.png",
+                url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aI9sAAAAASUVORK5CYII=",
+              },
+            ]
+          : [],
       files:
-        count === 2
+        attachments === "mixed"
           ? [
               {
                 id: "file",
@@ -29,7 +43,8 @@ async function openAnnotations(page: Page, theme: "light" | "dark", count: numbe
               },
             ]
           : [],
-      pasteBlocks: count === 2 ? [{ id: "context", text: "Контекст для проверки интерфейса" }] : [],
+      pasteBlocks:
+        attachments !== "none" ? [{ id: "context", text: "Контекст для проверки интерфейса" }] : [],
       goalMode: false,
       annotations: Array.from({ length: count }, (_, index) => ({
         id: `note-${index}`,
@@ -91,6 +106,22 @@ for (const theme of ["light", "dark"] as const) {
       await page.setViewportSize({ width, height: 844 });
       await openAnnotations(page, theme, 2);
       const composer = page.locator(".composer");
+      const toggle = composer.getByRole("button", { name: /^Развернуть вложения \(5\)/ });
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await expect(composer.locator(".composer-card-type")).toHaveCount(4);
+      await expect(composer.locator(".composer-cards-content")).toBeHidden();
+      const chipRows = await composer
+        .locator(".composer-card-type")
+        .evaluateAll((elements) =>
+          elements.map((el) => Math.round(el.getBoundingClientRect().top)),
+        );
+      expect(new Set(chipRows).size).toBe(1);
+      await composer.screenshot({ path: testInfo.outputPath("annotation-cards-collapsed.png") });
+      await toggle.click();
+      await expect(composer.locator(".composer-cards-toggle")).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
       const bubbles = composer.getByRole("group", { name: "Аннотации" });
       const cards = bubbles.locator(".annotation-bubble");
       await expect(cards).toHaveCount(2);
@@ -147,7 +178,11 @@ for (const theme of ["light", "dark"] as const) {
         if (count === 0) {
           await expect(bubbles).toHaveCount(0);
         } else {
-          const list = bubbles.locator(".annotation-bubble-list");
+          const toggle = page.getByRole("button", { name: /^Развернуть вложения \(8\)/ });
+          await expect(toggle).toHaveAttribute("aria-expanded", "false");
+          await expect(bubbles).toBeHidden();
+          await toggle.click();
+          const list = page.locator(".composer-cards-content");
           await expect(bubbles.locator(".annotation-bubble")).toHaveCount(count);
           expect((await list.boundingBox())!.height).toBeLessThanOrEqual(240);
           expect(
@@ -168,3 +203,31 @@ for (const theme of ["light", "dark"] as const) {
     }
   }
 }
+
+test("auto-collapse preserves an unfinished paste edit and keyboard focus", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openAnnotations(page, "light", 1, "paste");
+  const composer = page.locator(".composer");
+  await expect(composer.locator(".composer-cards-toggle")).toHaveCount(0);
+  await composer.getByRole("button", { name: /Вставленный текст/ }).click();
+  await composer.getByRole("button", { name: "Редактировать вставленный текст" }).click();
+  const source = composer.getByRole("textbox", { name: "Исходный вставленный текст" });
+  await source.fill("Несохранённый контекст");
+  await expect(source).toBeFocused();
+  await composer.locator('input[type="file"]').setInputFiles({
+    name: "extra.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aI9sAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  });
+  const toggle = composer.getByRole("button", { name: /^Развернуть вложения \(3\)/ });
+  await expect(toggle).toBeVisible();
+  await expect(source).toBeHidden();
+  await expect(composer.getByRole("textbox", { name: "Сообщение для Codex" })).toBeFocused();
+  await toggle.click();
+  await expect(source).toHaveValue("Несохранённый контекст");
+  await composer.getByRole("button", { name: "Сохранить", exact: true }).click();
+  await expect(composer.locator(".paste-card-snippet")).toHaveText("Несохранённый контекст");
+});

@@ -4,11 +4,11 @@
   min-width: 0;
   width: 100%;
 }
-.composer > .paste-blocks {
+.composer-cards-content > .paste-blocks {
   width: min(100%, 440px);
   margin-bottom: 12px;
 }
-.composer > .paste-blocks:has(.paste-card-expanded) {
+.composer-cards-content > .paste-blocks:has(.paste-card-expanded) {
   width: min(100%, 620px);
 }
 .paste-card {

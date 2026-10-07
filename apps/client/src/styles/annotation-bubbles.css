@@ -1,4 +1,4 @@
-.composer > .annotation-bubbles {
+.composer-cards-content > .annotation-bubbles {
   width: min(100%, 440px);
   margin-bottom: 12px;
 }
@@ -12,6 +12,11 @@
   scrollbar-width: thin;
   margin: -12px;
   padding: 12px;
+}
+
+.composer-cards-content.limited .annotation-bubble-list {
+  max-height: none;
+  overflow: visible;
 }
 
 .annotation-bubble-number {
