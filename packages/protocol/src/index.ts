@@ -847,6 +847,8 @@ export type AttentionRequest =
       /** Present on server snapshots/events; optional for backward-compatible fixtures/clients. */
       draft?: UserInputDraft | null;
       draftKey?: string;
+      /** Stable reply identity supplied by the server, including on HTTP clients. */
+      clientMessageId?: string;
     })
   | (AttentionBase & {
       kind: "elicitation";

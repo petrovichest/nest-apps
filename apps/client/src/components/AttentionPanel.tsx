@@ -102,13 +102,16 @@ function AttentionCard({
         request.turnId &&
         request.itemId
       ) {
-        const digest = await crypto.subtle.digest(
-          "SHA-256",
-          new TextEncoder().encode(
-            JSON.stringify([request.threadId, request.turnId, request.itemId]),
-          ),
-        );
-        const clientMessageId = `user-input:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+        let clientMessageId = request.clientMessageId;
+        if (!clientMessageId) {
+          const digest = await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(
+              JSON.stringify([request.threadId, request.turnId, request.itemId]),
+            ),
+          );
+          clientMessageId = `user-input:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+        }
         await connection.sendReliable(
           request.threadId,
           {
@@ -772,7 +775,7 @@ function UserInputForm({
       return;
     }
     if (voiceTarget && request.threadId) {
-      const id = crypto.randomUUID();
+      const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
       const durationMs =
         recordingDurationMsRef.current || Math.max(1, Date.now() - recordingStartedAtRef.current);
       recordingOrdersRef.current.set(voiceTarget.questionId, voiceTarget.order);
@@ -869,13 +872,16 @@ function UserInputForm({
       answers: answeredUserInputValues(viewDraft.answers, request.questions),
     };
     try {
-      const digest = await crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(
-          JSON.stringify([request.threadId, request.turnId, request.itemId]),
-        ),
-      );
-      const clientMessageId = `user-input:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+      let clientMessageId = request.clientMessageId;
+      if (!clientMessageId) {
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(
+            JSON.stringify([request.threadId, request.turnId, request.itemId]),
+          ),
+        );
+        clientMessageId = `user-input:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+      }
       await connection.sendReliable(request.threadId!, {
         input: "",
         clientMessageId,

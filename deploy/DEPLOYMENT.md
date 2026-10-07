@@ -388,6 +388,7 @@ accept-all certificate handler). Android-клиент доверяет сист�
 | `CODEXNEST_EMBED_ORIGINS`        | Сайты, которым разрешено встраивать окно          | встраивание запрещено                         |
 | `CODEXNEST_STATE_PATH`           | Rollback JSON и внешний verifier токена           | `~/.local/state/codexnest/state.json`         |
 | `CODEXNEST_DATABASE_PATH`        | Основная SQLite-база состояния                    | `state.sqlite` рядом с `CODEXNEST_STATE_PATH` |
+| `CODEXNEST_PROJECT_ROOT`         | Корень выбора и создания каталогов проектов       | домашняя папка пользователя сервиса           |
 | `CODEXNEST_CODEX_BIN`            | Полный путь к Codex CLI                           | `codex` из `PATH`                             |
 | `CODEXNEST_CODEX_MANAGEMENT_BIN` | Путь к fail-closed wrapper для doctor/update      | `~/bin/codex`                                 |
 | `CODEXNEST_CODEX_PROXY_ENV_FILE` | Приватный env-файл proxy для wrapper              | `~/.config/codex/app-server.env`              |

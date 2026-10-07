@@ -398,7 +398,8 @@ export class ApiClient {
 
   createProjectThread(
     projectId: string,
-    clientCreationId: string = crypto.randomUUID(),
+    clientCreationId: string = globalThis.crypto?.randomUUID?.() ??
+      `${Date.now()}-${Math.random()}`,
     draft?: UpdateThreadDraftRequest,
   ): Promise<CreateProjectThreadResponse> {
     return this.request(`/api/v1/projects/${encodeURIComponent(projectId)}/threads`, {

@@ -101,7 +101,11 @@ export async function buildApp(config: AppConfig, services: ApiServices): Promis
     port: config.port,
     authTimeoutMs: config.websocketAuthTimeoutMs,
   });
-  registerApi(app, { ...services, browserExtension });
+  registerApi(app, {
+    ...services,
+    projectRoot: services.projectRoot ?? config.projectRoot,
+    browserExtension,
+  });
   browserExtension.registerRoutes();
   registerEventsWebSocket(
     app,

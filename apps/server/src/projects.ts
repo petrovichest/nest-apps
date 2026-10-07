@@ -125,7 +125,7 @@ async function resolveDirectory(input: string, root: string): Promise<ResolvedDi
   if (!isAbsolute(input)) throw new ProjectValidationError("Directory path must be absolute");
   const path = resolve(input);
   if (!pathContains(rootPath, path)) {
-    throw new ProjectValidationError("Directory path must stay inside the home directory");
+    throw new ProjectValidationError("Directory path must stay inside the project root");
   }
 
   let rootCanonicalPath: string;
@@ -142,7 +142,7 @@ async function resolveDirectory(input: string, root: string): Promise<ResolvedDi
   }
   if (!info.isDirectory()) throw new ProjectValidationError("Path must be a directory");
   if (!pathContains(rootCanonicalPath, canonicalPath)) {
-    throw new ProjectValidationError("Directory path must stay inside the home directory");
+    throw new ProjectValidationError("Directory path must stay inside the project root");
   }
   return { rootPath, rootCanonicalPath, path, canonicalPath };
 }

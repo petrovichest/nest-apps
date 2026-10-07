@@ -3946,7 +3946,20 @@ export class AppProjection extends EventEmitter {
               .map(publicVoiceTranscription),
           }
         : null;
-    return { ...request, draft, ...(identity ? { draftKey: identity.key } : {}) };
+    return {
+      ...request,
+      draft,
+      ...(identity
+        ? {
+            draftKey: identity.key,
+            clientMessageId: userInputReplyMessageId(
+              identity.threadId,
+              identity.turnId,
+              identity.itemId,
+            ),
+          }
+        : {}),
+    };
   }
 
   private async clearReplacedUserInputDrafts(
@@ -4106,6 +4119,12 @@ export class AppProjection extends EventEmitter {
     this.sequence += 1;
     this.emit("event", this.sequence, event);
   }
+}
+
+export function userInputReplyMessageId(threadId: string, turnId: string, itemId: string): string {
+  return `user-input:${createHash("sha256")
+    .update(JSON.stringify([threadId, turnId, itemId]))
+    .digest("hex")}`;
 }
 
 export function userInputDraftIdentity(request: Extract<AttentionRequest, { kind: "userInput" }>): {

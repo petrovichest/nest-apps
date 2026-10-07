@@ -399,7 +399,7 @@ export function App({
       ref={frameRef}
       style={{ "--sidebar-preferred-width": `${sidebarWidth}px` } as CSSProperties}
     >
-      {settings.baseUrl.startsWith("http://") && (
+      {settings.baseUrl.startsWith("http://") && window.self === window.top && (
         <div className="http-warning">
           {t("Небезопасное HTTP-подключение: данные доступны перехватчику в LAN.")}
         </div>

@@ -438,26 +438,34 @@ describe("ApiClient", () => {
     );
   });
 
-  it("retries project thread creation after an ambiguous connection failure", async () => {
-    vi.useFakeTimers();
-    const fetchMock = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("connection lost"))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ thread: { id: "thread" } }), {
-          headers: { "Content-Type": "application/json" },
-          status: 201,
-        }),
-      );
-    vi.stubGlobal("fetch", fetchMock);
-    const api = new ApiClient({ baseUrl: "https://codexnest.example", token: "token" });
+  it.each([false, true])(
+    "retries project thread creation with the same ID (without randomUUID: %s)",
+    async (withoutRandomUUID) => {
+      if (withoutRandomUUID) vi.stubGlobal("crypto", {});
+      vi.useFakeTimers();
+      const fetchMock = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("connection lost"))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ thread: { id: "thread" } }), {
+            headers: { "Content-Type": "application/json" },
+            status: 201,
+          }),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      const api = new ApiClient({ baseUrl: "https://codexnest.example", token: "token" });
 
-    const creation = api.createProjectThread("project");
-    await vi.advanceTimersByTimeAsync(1_000);
+      const creation = api.createProjectThread("project");
+      await vi.advanceTimersByTimeAsync(1_000);
 
-    await expect(creation).resolves.toMatchObject({ thread: { id: "thread" } });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
+      await expect(creation).resolves.toMatchObject({ thread: { id: "thread" } });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const firstBody = JSON.parse(fetchMock.mock.calls[0]?.[1].body);
+      expect(firstBody.clientCreationId).toEqual(expect.any(String));
+      expect(firstBody.clientCreationId).not.toBe("");
+      expect(JSON.parse(fetchMock.mock.calls[1]?.[1].body)).toEqual(firstBody);
+    },
+  );
 
   it("marks only an explicit queued-message retry as an unconfirmed resend", async () => {
     const fetchMock = vi.fn().mockImplementation(async () => new Response(null, { status: 204 }));

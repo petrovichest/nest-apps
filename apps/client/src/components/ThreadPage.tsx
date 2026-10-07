@@ -600,7 +600,7 @@ export function ThreadPage({
   const preparationRef = useRef<NewSessionPreparation>({
     active: initialNewSessionRef.current.active,
     projectId: initialNewSessionRef.current.projectId,
-    clientCreationId: crypto.randomUUID(),
+    clientCreationId: createClientMessageId(),
     value: emptyComposerDraft(),
     settings: pendingSettings,
     phase: "creating",

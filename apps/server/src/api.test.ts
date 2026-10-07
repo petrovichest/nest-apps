@@ -2726,6 +2726,7 @@ describe("audio transcriptions", () => {
       );
       const clientMessageId =
         store.view().threadMeta.thread!.userInputDrafts![draftKey]!.submission!.clientMessageId;
+      expect(request.clientMessageId).toBe(clientMessageId);
       const lateEdit = await app.inject({
         method: "PUT",
         url: `/api/v1/attention/${pending.id}/draft`,

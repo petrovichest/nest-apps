@@ -4,7 +4,7 @@ import {
   pastedText,
   trimPastedMessage,
 } from "@codexnest/protocol";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
@@ -18,7 +18,7 @@ import type {
 } from "@codexnest/protocol";
 
 import type { MessageQueue } from "./message-queue";
-import type { AppProjection } from "./projection";
+import { userInputReplyMessageId, type AppProjection } from "./projection";
 import type { StateStore, VoiceTranscriptionState } from "./state/store";
 import { appendTranscriptionTimingSample, TranscriptionError } from "./transcription";
 
@@ -410,9 +410,7 @@ export class VoiceTranscriptionManager {
       Object.assign(draft, appendUserInputRecordings(input, recordings));
       draft.submission = {
         recordingIds,
-        clientMessageId: `user-input:${createHash("sha256")
-          .update(JSON.stringify([threadId, draft.turnId, draft.itemId]))
-          .digest("hex")}`,
+        clientMessageId: userInputReplyMessageId(threadId, draft.turnId, draft.itemId),
         status: "waiting",
       };
       draft.revision += 1;

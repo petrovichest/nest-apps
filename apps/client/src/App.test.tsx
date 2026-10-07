@@ -156,6 +156,56 @@ afterEach(() => {
 });
 
 describe("App routing and navigation", () => {
+  it.each([false, true])(
+    "shows the HTTP warning only outside an iframe (embedded: %s)",
+    (embedded) => {
+      vi.stubGlobal("self", embedded ? {} : window);
+      mockConnection(snapshot([baseThread]));
+
+      renderApp("/threads/newer", () => undefined, "http://pi.local");
+
+      const warning = screen.queryByText(
+        "Небезопасное HTTP-подключение: данные доступны перехватчику в LAN.",
+      );
+      if (embedded) expect(warning).not.toBeInTheDocument();
+      else expect(warning).toBeInTheDocument();
+    },
+  );
+
+  it("opens history and creates a project session with a stable retry ID without randomUUID", async () => {
+    vi.stubGlobal("crypto", {});
+    const api = mockConnection(snapshot([baseThread]));
+    api.createProjectThread
+      .mockRejectedValueOnce(new Error("Создание недоступно"))
+      .mockResolvedValueOnce({ thread: { ...baseThread, id: "created", title: "Новая задача" } });
+
+    renderApp("/threads/newer", () => undefined, "http://pi.local");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Новая задача в истории" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Сообщение для Codex" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Создать новую сессию в проекте Проект" }));
+    const textbox = await screen.findByRole("textbox", { name: "Сообщение для Codex" });
+    fireEvent.change(textbox, { target: { value: "hostname" } });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+    expect(await screen.findByText("Создание недоступно")).toBeInTheDocument();
+    const creationId = api.createProjectThread.mock.calls[0]?.[1];
+    expect(creationId).toEqual(expect.any(String));
+    expect(creationId).not.toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: "Повторить отправку" }));
+    await waitFor(() =>
+      expect(api.sendReliable).toHaveBeenCalledWith(
+        "created",
+        expect.objectContaining({ input: "hostname", clientMessageId: expect.any(String) }),
+      ),
+    );
+    expect(api.createProjectThread).toHaveBeenCalledTimes(2);
+    expect(api.createProjectThread.mock.calls[1]?.[1]).toBe(creationId);
+    expect(api.sendReliable).toHaveBeenCalledOnce();
+  });
+
   it("offers browser notifications and requests native permission from the action", async () => {
     const requestPermission = vi.fn().mockResolvedValue("granted");
     vi.stubGlobal("Notification", { permission: "default", requestPermission });

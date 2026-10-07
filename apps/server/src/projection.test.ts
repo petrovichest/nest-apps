@@ -5433,8 +5433,14 @@ describe("AppProjection", () => {
       respondError: vi.fn(),
     } as unknown as JsonlTransport);
     if (request.kind !== "userInput") throw new Error("Expected user input");
+    const initial = projection
+      .snapshot()
+      .attention.find((candidate) => candidate.id === request.id);
+    if (initial?.kind !== "userInput") throw new Error("Expected enriched user input");
+    const clientMessageId = initial.clientMessageId;
+    expect(clientMessageId).toMatch(/^user-input:[a-f0-9]{64}$/);
     expect(events.findLast((event) => event.type === "attention.upserted")).toMatchObject({
-      attention: { id: request.id, draft: null },
+      attention: { id: request.id, draft: null, clientMessageId },
     });
 
     await expect(
@@ -5453,7 +5459,7 @@ describe("AppProjection", () => {
       revision: 2,
     });
     expect(projection.snapshot().attention).toMatchObject([
-      { id: request.id, draft: { answers: { choice: ["Second"] }, revision: 2 } },
+      { id: request.id, draft: { answers: { choice: ["Second"] }, revision: 2 }, clientMessageId },
     ]);
     expect(events.findLast((event) => event.type === "attention.upserted")).toMatchObject({
       attention: { id: request.id, draft: { revision: 2 } },
@@ -5483,7 +5489,7 @@ describe("AppProjection", () => {
     } as unknown as JsonlTransport);
     if (replayed.kind !== "userInput") throw new Error("Expected user input");
     expect(replayProjection.snapshot().attention).toMatchObject([
-      { id: replayed.id, draft: { answers: { choice: ["Second"] }, revision: 2 } },
+      { id: replayed.id, draft: { answers: { choice: ["Second"] }, revision: 2 }, clientMessageId },
     ]);
 
     const mismatchAttention = new AttentionManager();

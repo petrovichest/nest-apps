@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 const releaseDirectory = basename(process.cwd());
 export const SERVER_VERSION = /^v\d+\.\d+\.\d+$/.test(releaseDirectory)
@@ -11,6 +11,7 @@ export interface AppConfig {
   port: number;
   statePath: string;
   databasePath: string;
+  projectRoot: string;
   codexBin: string;
   codexManagementBin: string;
   codexProxyEnvFile: string;
@@ -42,6 +43,10 @@ function env(name: string): string | undefined {
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+  const projectRoot = overrides.projectRoot ?? env("CODEXNEST_PROJECT_ROOT") ?? homedir();
+  if (!isAbsolute(projectRoot)) {
+    throw new Error("CODEXNEST_PROJECT_ROOT must be an absolute directory path");
+  }
   const stateRoot = env("XDG_STATE_HOME") ?? resolve(homedir(), ".local/state");
   const statePath =
     overrides.statePath ??
@@ -127,6 +132,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     managementCli: env("CODEXNEST_MANAGEMENT_CLI") ?? resolve(homedir(), ".local/bin/codexnest"),
     sessionLimit,
     ...overrides,
+    projectRoot,
   };
 }
 

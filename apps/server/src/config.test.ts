@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { childProcessEnvironment, loadConfig } from "./config";
@@ -5,6 +7,24 @@ import { childProcessEnvironment, loadConfig } from "./config";
 afterEach(() => vi.unstubAllEnvs());
 
 describe("loadConfig", () => {
+  it("defaults the project root to the user's home directory", () => {
+    vi.stubEnv("CODEXNEST_PROJECT_ROOT", "");
+    expect(loadConfig().projectRoot).toBe(homedir());
+  });
+
+  it("loads a project root outside the service user's home and supports explicit overrides", () => {
+    vi.stubEnv("CODEXNEST_PROJECT_ROOT", "/home/copy_trade");
+    expect(loadConfig().projectRoot).toBe("/home/copy_trade");
+    expect(loadConfig({ projectRoot: "/srv/work" }).projectRoot).toBe("/srv/work");
+  });
+
+  it("rejects relative project roots from the environment and explicit overrides", () => {
+    vi.stubEnv("CODEXNEST_PROJECT_ROOT", "copy_trade");
+    expect(() => loadConfig()).toThrow("CODEXNEST_PROJECT_ROOT must be an absolute directory path");
+    vi.stubEnv("CODEXNEST_PROJECT_ROOT", "/home/copy_trade");
+    expect(() => loadConfig({ projectRoot: "../work" })).toThrow("CODEXNEST_PROJECT_ROOT");
+  });
+
   it("keeps direct stdio as the default transport", () => {
     vi.stubEnv("CODEXNEST_CODEX_TRANSPORT", "");
     expect(loadConfig().codexTransport).toBe("stdio");
