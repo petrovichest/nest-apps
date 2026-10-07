@@ -1,4 +1,4 @@
-.composer > .annotation-bubbles {
+.composer-card-panel > .annotation-bubbles {
   width: min(100%, 440px);
   margin-bottom: 12px;
 }

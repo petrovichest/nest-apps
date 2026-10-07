@@ -1,8 +1,10 @@
 import { onBeforeAppReload } from "../app-reload";
 import { application } from "../application";
+import type { PendingAnnotation } from "../annotations";
 import { useTypography } from "../typography";
 import { pastedText, samePastedText, type PastedText } from "@codexnest/protocol";
 import { PasteBlocks } from "./PasteBlocks";
+import { AnnotationBubbles } from "./AnnotationBubbles";
 import { PasteTextarea, usePasteEditor } from "./PasteEditor";
 import {
   type ClipboardEvent,
@@ -10,6 +12,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -32,7 +35,17 @@ import type {
 
 import { localizeKnownServerText, type Translate, useI18n } from "../i18n";
 import { useSkillsCatalog } from "../useSkillsCatalog";
-import { FileIcon, MicrophoneIcon, PlusIcon, SendIcon, StopIcon, XIcon } from "./Icons";
+import {
+  ClipboardIcon,
+  FileIcon,
+  ImageIcon,
+  MicrophoneIcon,
+  PencilIcon,
+  PlusIcon,
+  SendIcon,
+  StopIcon,
+  XIcon,
+} from "./Icons";
 import { ImageViewer } from "./ImageViewer";
 import { SettingsPicker } from "./SettingsPicker";
 import {
@@ -71,6 +84,7 @@ const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_MESSAGE_ATTACHMENT_BYTES = 250 * 1024 * 1024;
 
 type SpeechState = "idle" | "requesting" | "recording" | "uploading" | "transcribing";
+type ComposerCardType = "annotations" | "images" | "files" | "text";
 
 type RecordingCapture = {
   id: string;
@@ -153,6 +167,9 @@ export function Composer({
   sessionIdentity,
   inputSyncRevision = 0,
   hasSupplementalContent = false,
+  annotations = [],
+  onOpenAnnotation,
+  onDeleteAnnotation,
   children,
 }: {
   input: string;
@@ -211,6 +228,9 @@ export function Composer({
   sessionIdentity?: string;
   inputSyncRevision?: number;
   hasSupplementalContent?: boolean;
+  annotations?: PendingAnnotation[];
+  onOpenAnnotation?(id: string): void;
+  onDeleteAnnotation?(id: string): void;
   children?: ReactNode;
 }) {
   const { language, t } = useI18n();
@@ -218,10 +238,51 @@ export function Composer({
   const creating = projects !== undefined;
   const formRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const cardsId = useId();
+  const [activeCardType, setActiveCardType] = useState<ComposerCardType | null>(null);
+  const cardSessionRef = useRef(sessionIdentity);
   const [draftInput, setDraftInput] = useState(input);
   const draftInputRef = useRef(input);
   const [draftPastes, setDraftPastes] = useState<PastedText>(() => pastedText(pastes));
   const draftPastesRef = useRef(draftPastes);
+  const cardCounts = {
+    annotations: annotations.length,
+    images: images.length,
+    files: files.length,
+    text: draftPastes.pasteBlocks?.length ?? 0,
+  };
+  const compactCards = Object.values(cardCounts).reduce((sum, count) => sum + count, 0) > 2;
+  const activeCardCount = activeCardType ? cardCounts[activeCardType] : 0;
+  const cardTypes = [
+    {
+      kind: "annotations",
+      Icon: PencilIcon,
+      label: t("Аннотации ({{count}})", { count: cardCounts.annotations }),
+    },
+    {
+      kind: "images",
+      Icon: ImageIcon,
+      label: t("Изображения ({{count}})", { count: cardCounts.images }),
+    },
+    { kind: "files", Icon: FileIcon, label: t("Файлы ({{count}})", { count: cardCounts.files }) },
+    {
+      kind: "text",
+      Icon: ClipboardIcon,
+      label: t("Вставки текста ({{count}})", { count: cardCounts.text }),
+    },
+  ] as const;
+  useLayoutEffect(() => {
+    if (cardSessionRef.current !== sessionIdentity || !compactCards || activeCardCount === 0) {
+      cardSessionRef.current = sessionIdentity;
+      setActiveCardType(null);
+    }
+  }, [sessionIdentity, compactCards, activeCardCount]);
+  useLayoutEffect(() => {
+    const panel = document.activeElement?.closest<HTMLElement>(".composer-card-panel");
+    if (panel?.hidden && formRef.current?.contains(panel)) {
+      textareaRef.current?.focus({ preventScroll: true });
+    }
+  }, [compactCards, activeCardType]);
   const pasteEditor = usePasteEditor(
     { input: draftInput, ...draftPastes },
     (next) => commitDraft(next.input, pastedText(next)),
@@ -381,6 +442,7 @@ export function Composer({
     Boolean(draftInput.trim()) ||
     images.length > 0 ||
     files.length > 0 ||
+    annotations.length > 0 ||
     hasSupplementalContent;
   const activeSkillToken =
     !goalMode && !busy && !speechBusy && composerFocused
@@ -1346,70 +1408,151 @@ export function Composer({
           </button>
         </div>
       )}
-      {(images.length > 0 || files.length > 0) && (
+      {children}
+      <div className={`composer-cards${compactCards ? " compact" : ""}`}>
         <div
-          className="composer-attachments"
-          aria-label={t("Вложения")}
-          onPointerDownCapture={preserveTextareaFocus}
+          id={`${cardsId}-annotations`}
+          className="composer-card-panel"
+          data-kind="annotations"
+          hidden={compactCards && activeCardType !== "annotations"}
         >
-          {images.map((image, index) => (
-            <div className="composer-attachment" key={image.id}>
-              <button
-                type="button"
-                className="composer-attachment-preview"
-                aria-label={t("Открыть изображение {{name}}", { name: image.name })}
-                onClick={(event) => {
-                  const activeElement = event.currentTarget.ownerDocument.activeElement;
-                  setViewer({
-                    index,
-                    opener:
-                      activeElement instanceof HTMLElement &&
-                      activeElement !== event.currentTarget.ownerDocument.body
-                        ? activeElement
-                        : event.currentTarget,
-                  });
-                }}
-              >
-                <img src={image.url} alt={image.name} />
-              </button>
-              <button
-                type="button"
-                className="composer-attachment-remove"
-                aria-label={t("Удалить изображение {{name}}", { name: image.name })}
-                onClick={() => {
-                  const next = images.filter((item) => item.id !== image.id);
-                  attachmentImagesRef.current.set(attachmentScope, next);
-                  latestPropsRef.current.onImagesChange(next, attachmentScope);
-                }}
-              >
-                <XIcon />
-              </button>
-            </div>
-          ))}
-          {files.map((file) => (
-            <div className="composer-attachment composer-file-attachment" key={file.id}>
-              <div className="composer-file-summary" title={file.name}>
-                <FileIcon />
-                <span>{file.name}</span>
-                <small>{formatFileSize(file.size, language)}</small>
-              </div>
-              <button
-                type="button"
-                className="composer-attachment-remove"
-                aria-label={t("Удалить файл {{name}}", { name: file.name })}
-                onClick={() => {
-                  const next = files.filter((item) => item.id !== file.id);
-                  attachmentFilesRef.current.set(attachmentScope, next);
-                  latestPropsRef.current.onFilesChange?.(next, attachmentScope);
-                  void onDeleteFile?.(file).catch(() => undefined);
-                }}
-              >
-                <XIcon />
-              </button>
-            </div>
-          ))}
+          <AnnotationBubbles
+            annotations={annotations}
+            disabled={busy}
+            onOpen={(id) => onOpenAnnotation?.(id)}
+            onDelete={(id) => onDeleteAnnotation?.(id)}
+          />
         </div>
-      )}
+        <div
+          id={`${cardsId}-images`}
+          className="composer-card-panel"
+          data-kind="images"
+          hidden={compactCards && activeCardType !== "images"}
+        >
+          {images.length > 0 && (
+            <div
+              className="composer-attachments"
+              role="group"
+              aria-label={t("Изображения")}
+              onPointerDownCapture={preserveTextareaFocus}
+            >
+              {images.map((image, index) => (
+                <div className="composer-attachment" key={image.id}>
+                  <button
+                    type="button"
+                    className="composer-attachment-preview"
+                    aria-label={t("Открыть изображение {{name}}", { name: image.name })}
+                    onClick={(event) => {
+                      const activeElement = event.currentTarget.ownerDocument.activeElement;
+                      setViewer({
+                        index,
+                        opener:
+                          activeElement instanceof HTMLElement &&
+                          activeElement !== event.currentTarget.ownerDocument.body
+                            ? activeElement
+                            : event.currentTarget,
+                      });
+                    }}
+                  >
+                    <img src={image.url} alt={image.name} />
+                  </button>
+                  <button
+                    type="button"
+                    className="composer-attachment-remove"
+                    aria-label={t("Удалить изображение {{name}}", { name: image.name })}
+                    onClick={() => {
+                      const next = images.filter((item) => item.id !== image.id);
+                      attachmentImagesRef.current.set(attachmentScope, next);
+                      latestPropsRef.current.onImagesChange(next, attachmentScope);
+                    }}
+                  >
+                    <XIcon />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div
+          id={`${cardsId}-files`}
+          className="composer-card-panel"
+          data-kind="files"
+          hidden={compactCards && activeCardType !== "files"}
+        >
+          {files.length > 0 && (
+            <div
+              className="composer-attachments"
+              role="group"
+              aria-label={t("Файлы")}
+              onPointerDownCapture={preserveTextareaFocus}
+            >
+              {files.map((file) => (
+                <div className="composer-attachment composer-file-attachment" key={file.id}>
+                  <div className="composer-file-summary" title={file.name}>
+                    <FileIcon />
+                    <span>{file.name}</span>
+                    <small>{formatFileSize(file.size, language)}</small>
+                  </div>
+                  <button
+                    type="button"
+                    className="composer-attachment-remove"
+                    aria-label={t("Удалить файл {{name}}", { name: file.name })}
+                    onClick={() => {
+                      const next = files.filter((item) => item.id !== file.id);
+                      attachmentFilesRef.current.set(attachmentScope, next);
+                      latestPropsRef.current.onFilesChange?.(next, attachmentScope);
+                      void onDeleteFile?.(file).catch(() => undefined);
+                    }}
+                  >
+                    <XIcon />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div
+          id={`${cardsId}-text`}
+          className="composer-card-panel"
+          data-kind="text"
+          hidden={compactCards && activeCardType !== "text"}
+        >
+          <PasteBlocks
+            blocks={draftPastes.pasteBlocks}
+            onChange={pasteEditor.blocks}
+            disabled={speechBusy || inputUnavailable}
+          />
+        </div>
+        {compactCards && (
+          <div
+            className="composer-card-filters"
+            role="group"
+            aria-label={t("Вложения")}
+            onPointerDownCapture={preserveTextareaFocus}
+          >
+            {cardTypes
+              .filter(({ kind }) => cardCounts[kind] > 0)
+              .map(({ kind, Icon, label }) => (
+                <button
+                  key={kind}
+                  type="button"
+                  className="composer-card-filter"
+                  data-kind={kind}
+                  aria-label={label}
+                  title={label}
+                  aria-expanded={activeCardType === kind}
+                  aria-controls={`${cardsId}-${kind}`}
+                  onClick={() => setActiveCardType(activeCardType === kind ? null : kind)}
+                >
+                  <Icon />
+                  <span className="composer-card-count" aria-hidden="true">
+                    {cardCounts[kind]}
+                  </span>
+                </button>
+              ))}
+          </div>
+        )}
+      </div>
       {viewer && (
         <ImageViewer
           images={images.map((image) => ({ src: image.url, alt: image.name }))}
@@ -1419,12 +1562,6 @@ export function Composer({
           onClose={() => setViewer(null)}
         />
       )}
-      {children}
-      <PasteBlocks
-        blocks={draftPastes.pasteBlocks}
-        onChange={pasteEditor.blocks}
-        disabled={speechBusy || inputUnavailable}
-      />
       <div className="composer-box">
         {skillMenuOpen && (
           <SkillAutocomplete

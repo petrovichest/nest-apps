@@ -316,7 +316,7 @@ describe("Activity", () => {
     });
     context.sendReliable.mockRejectedValueOnce(new Error("Rejected pasted message"));
     renderThread();
-    expect(document.querySelectorAll(".composer > .paste-blocks .paste-card")).toHaveLength(1);
+    expect(document.querySelectorAll(".composer .paste-blocks .paste-card")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
     await waitFor(() => expect(context.sendReliable).toHaveBeenCalledOnce());
     const body = context.sendReliable.mock.calls[0]![1];
@@ -324,7 +324,7 @@ describe("Activity", () => {
     expect(body.input).toContain(annotation.comment);
     await screen.findByText("Rejected pasted message");
     expect(screen.getByRole("textbox", { name: "Сообщение для Codex" })).toHaveValue("  pasted  ");
-    expect(document.querySelectorAll(".composer > .paste-blocks .paste-card")).toHaveLength(1);
+    expect(document.querySelectorAll(".composer .paste-blocks .paste-card")).toHaveLength(1);
     expect(document.querySelector(".composer mark")?.textContent).toBe("paste");
   });
 

@@ -2,7 +2,6 @@ import { onBeforeAppReload } from "../app-reload";
 import { application } from "../application";
 import { useTypography } from "../typography";
 import { PasteBlocks } from "./PasteBlocks";
-import { AnnotationBubbles } from "./AnnotationBubbles";
 import { isNativeSubagentLaunch, NativeSubagentLaunchCard } from "./NativeSubagentLaunchCard";
 import { SubagentActivityBar } from "./SubagentActivityBar";
 import { PasteMessageEditor } from "./PasteEditor";
@@ -4728,7 +4727,9 @@ export function ThreadPage({
                 : null
             }
             error={error ?? pendingVoiceRecordingError}
-            hasSupplementalContent={annotations.length > 0}
+            annotations={annotations}
+            onOpenAnnotation={openAnnotation}
+            onDeleteAnnotation={deleteAnnotation}
           >
             {workspaceSummary.quotaRecovery && (
               <div className="input-availability-notice" role="status">
@@ -4826,12 +4827,6 @@ export function ThreadPage({
               threads={childSubagents}
               models={state.snapshot?.models ?? []}
               turns={detail?.turns}
-            />
-            <AnnotationBubbles
-              annotations={annotations}
-              disabled={busy}
-              onOpen={openAnnotation}
-              onDelete={deleteAnnotation}
             />
           </Composer>
         )}

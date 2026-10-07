@@ -15,6 +15,7 @@ import {
   type ComposerSubmitIntent,
   type ComposerTranscriptionStatus,
 } from "./Composer";
+import type { PendingAnnotation } from "../annotations";
 
 const connection = vi.hoisted(() => vi.fn());
 
@@ -846,6 +847,191 @@ describe("Composer", () => {
     expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
   });
 
+  describe("attachment category filters", () => {
+    it.each([0, 1, 2, 3])(
+      "collapses cards only when their total exceeds two (%s cards)",
+      (count) => {
+        const annotations = Array.from({ length: count }, (_, index) => cardAnnotation(index));
+        const view = render(<Composer {...composerCards({ annotations })} />);
+
+        expect(view.container.querySelectorAll(".annotation-bubble")).toHaveLength(count);
+        if (count > 2) {
+          const filter = screen.getByRole("button", { name: `Аннотации (${count})` });
+          expect(filter).toHaveAttribute("aria-expanded", "false");
+          expect(screen.queryByRole("group", { name: "Аннотации" })).toBeNull();
+          expect(view.container.querySelector(".annotation-bubbles")).not.toBeVisible();
+        } else {
+          expect(view.container.querySelector(".composer-card-filters")).toBeNull();
+          if (count) expect(screen.getByRole("group", { name: "Аннотации" })).toBeVisible();
+        }
+      },
+    );
+
+    it("shows only the selected category and closes it on a repeated click", () => {
+      const props = composerCards({
+        annotations: [cardAnnotation(0)],
+        images: [cardImage(0)],
+        files: [cardFile(0)],
+        pastes: { pasteBlocks: [{ id: "context", text: "Содержимое вставки" }] },
+      });
+      const view = render(<Composer {...props} />);
+      const filters = ["Аннотации (1)", "Изображения (1)", "Файлы (1)", "Вставки текста (1)"].map(
+        (name) => screen.getByRole("button", { name }),
+      );
+      expect(filters).toHaveLength(4);
+      for (const filter of filters) expect(filter).toHaveAttribute("aria-expanded", "false");
+
+      for (const [index, kind] of ["annotations", "images", "files", "text"].entries()) {
+        fireEvent.click(filters[index]!);
+        for (const [otherIndex, filter] of filters.entries()) {
+          expect(filter).toHaveAttribute("aria-expanded", String(otherIndex === index));
+        }
+        const panels = view.container.querySelectorAll<HTMLElement>(".composer-card-panel");
+        for (const panel of panels) {
+          if (panel.dataset.kind === kind) expect(panel).toBeVisible();
+          else expect(panel).not.toBeVisible();
+        }
+        const panel = view.container.querySelector(`[data-kind="${kind}"].composer-card-panel`)!;
+        expect(panel.id).toBe(filters[index]!.getAttribute("aria-controls"));
+      }
+
+      expect(screen.getByRole("button", { name: /^Вставленный текст/ })).toBeVisible();
+      expect(screen.queryByRole("button", { name: "Перейти к аннотации 1" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Открыть изображение image-0.png" })).toBeNull();
+      fireEvent.click(filters[3]!);
+      expect(filters[3]).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByRole("button", { name: /^Вставленный текст/ })).toBeNull();
+      expect(props.onInput).not.toHaveBeenCalled();
+    });
+
+    it("closes the selected category when its last item is removed without opening another", () => {
+      const annotation = cardAnnotation(0);
+      const props = composerCards({
+        annotations: [annotation],
+        images: [cardImage(0), cardImage(1), cardImage(2)],
+      });
+      const view = render(<Composer {...props} />);
+      fireEvent.click(screen.getByRole("button", { name: "Аннотации (1)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Удалить аннотацию 1" }));
+      expect(props.onDeleteAnnotation).toHaveBeenCalledWith(annotation.id);
+
+      view.rerender(<Composer {...props} annotations={[]} />);
+
+      expect(screen.queryByRole("button", { name: "Аннотации (1)" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Изображения (3)" })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      expect(screen.queryByRole("button", { name: "Открыть изображение image-0.png" })).toBeNull();
+      expect(props.onInput).not.toHaveBeenCalled();
+    });
+
+    it("reveals the remaining cards at two items and starts collapsed when a third returns", () => {
+      const file = cardFile(0);
+      const props = composerCards({
+        annotations: [cardAnnotation(0)],
+        images: [cardImage(0)],
+        files: [file],
+      });
+      const view = render(<Composer {...props} />);
+      fireEvent.click(screen.getByRole("button", { name: "Файлы (1)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Удалить файл file-0.txt" }));
+      expect(props.onFilesChange).toHaveBeenCalledWith([], 0);
+
+      view.rerender(<Composer {...props} files={[]} />);
+
+      expect(view.container.querySelector(".composer-card-filters")).toBeNull();
+      expect(screen.getByRole("button", { name: "Перейти к аннотации 1" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Открыть изображение image-0.png" })).toBeVisible();
+
+      view.rerender(<Composer {...props} />);
+
+      for (const filter of view.container.querySelectorAll(".composer-card-filter")) {
+        expect(filter).toHaveAttribute("aria-expanded", "false");
+      }
+      expect(screen.queryByRole("button", { name: "Перейти к аннотации 1" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Удалить файл file-0.txt" })).toBeNull();
+    });
+
+    it("keeps message typing and synchronized annotation comments across filtering", () => {
+      const annotation = cardAnnotation(0);
+      const props = composerCards({
+        annotations: [annotation],
+        images: [cardImage(0), cardImage(1)],
+      });
+      const view = render(<Composer {...props} />);
+      const input = view.container.querySelector(".composer-box textarea")!;
+      fireEvent.change(input, { target: { value: "Локальный черновик" } });
+      fireEvent.click(screen.getByRole("button", { name: "Аннотации (1)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Перейти к аннотации 1" }));
+      expect(props.onOpenAnnotation).toHaveBeenCalledWith(annotation.id);
+      fireEvent.click(screen.getByRole("button", { name: "Изображения (2)" }));
+
+      const updated = { ...annotation, comment: "Комментарий из редактора у цитаты" };
+      view.rerender(<Composer {...props} annotations={[updated]} />);
+      fireEvent.click(screen.getByRole("button", { name: "Аннотации (1)" }));
+
+      expect(screen.getByText(updated.comment)).toBeVisible();
+      expect(input).toHaveValue("Локальный черновик");
+      expect(props.onInput).toHaveBeenCalledExactlyOnceWith("Локальный черновик");
+      expect(props.onDeleteAnnotation).not.toHaveBeenCalled();
+    });
+
+    it("preserves an unsaved pasted-text edit when switching and collapsing categories", () => {
+      const props = composerCards({
+        images: [cardImage(0), cardImage(1)],
+        pastes: { pasteBlocks: [{ id: "context", text: "Исходный контекст" }] },
+      });
+      render(<Composer {...props} />);
+      fireEvent.click(screen.getByRole("button", { name: "Вставки текста (1)" }));
+      fireEvent.click(screen.getByRole("button", { name: /^Вставленный текст/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Редактировать вставленный текст" }));
+      const source = screen.getByRole("textbox", { name: "Исходный вставленный текст" });
+      fireEvent.change(source, { target: { value: "Несохранённое уточнение" } });
+      fireEvent.click(screen.getByRole("button", { name: "Изображения (2)" }));
+      expect(source).not.toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "Вставки текста (1)" }));
+      expect(source).toBeVisible();
+      expect(source).toHaveValue("Несохранённое уточнение");
+      fireEvent.click(screen.getByRole("button", { name: "Вставки текста (1)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Вставки текста (1)" }));
+      expect(source).toHaveValue("Несохранённое уточнение");
+      expect(props.onInput).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+
+      expect(props.onInput).toHaveBeenCalledWith("Черновик", {
+        pasteBlocks: [{ id: "context", text: "Несохранённое уточнение" }],
+      });
+      expect(screen.getByRole("region", { name: "Содержимое вставки" })).toHaveTextContent(
+        "Несохранённое уточнение",
+      );
+    });
+
+    it("resets category expansion when the active session changes", () => {
+      const props = composerCards({
+        annotations: [cardAnnotation(0)],
+        images: [cardImage(0), cardImage(1)],
+        sessionIdentity: "first-thread",
+      });
+      const view = render(<Composer {...props} />);
+      fireEvent.click(screen.getByRole("button", { name: "Аннотации (1)" }));
+      expect(screen.getByRole("group", { name: "Аннотации" })).toBeVisible();
+
+      view.rerender(
+        <Composer {...props} sessionIdentity="second-thread" input="Другой черновик" />,
+      );
+
+      expect(screen.getByRole("button", { name: "Аннотации (1)" })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      expect(screen.queryByRole("group", { name: "Аннотации" })).toBeNull();
+      expect(view.container.querySelector(".composer-box textarea")).toHaveValue("Другой черновик");
+      expect(props.onInput).not.toHaveBeenCalled();
+    });
+  });
+
   it("keeps textarea focus for buttons across the page while the mobile keyboard is open", () => {
     const initialHeight = window.innerHeight;
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
@@ -1241,6 +1427,56 @@ const transcriptionConfig: TranscriptionConfigResponse = {
     estimatedProcessingMsPerAudioSecond: null,
   },
 };
+
+function cardAnnotation(index: number): PendingAnnotation {
+  return {
+    id: `annotation-${index}`,
+    messageId: "answer",
+    source: "agentMessage",
+    quote: "Фрагмент ответа",
+    startOffset: 0,
+    endOffset: 15,
+    comment: `Комментарий ${index + 1}`,
+    createdAt: index + 1,
+  };
+}
+
+function cardImage(index: number): ComposerImage {
+  return { id: `image-${index}`, name: `image-${index}.png`, url: "data:image/png;base64,b25l" };
+}
+
+function cardFile(index: number): NonNullable<Parameters<typeof Composer>[0]["files"]>[number] {
+  return {
+    id: `file-${index}`,
+    name: `file-${index}.txt`,
+    path: `/work/file-${index}.txt`,
+    size: 123,
+    mediaType: "text/plain",
+  };
+}
+
+function composerCards(
+  overrides: Partial<Parameters<typeof Composer>[0]> = {},
+): Parameters<typeof Composer>[0] {
+  return {
+    input: "Черновик",
+    onInput: vi.fn(),
+    images: [],
+    onImagesChange: vi.fn(),
+    files: [],
+    onFilesChange: vi.fn(),
+    annotations: [],
+    onOpenAnnotation: vi.fn(),
+    onDeleteAnnotation: vi.fn(),
+    onSubmit: vi.fn(),
+    busy: false,
+    settings: { collaborationMode: "default" },
+    onSettingsChange: vi.fn(),
+    models,
+    error: null,
+    ...overrides,
+  };
+}
 
 function Harness({
   autoFocus = false,

@@ -23,6 +23,10 @@ const LEGACY_INSTALLATION_KEYS = [
 ];
 
 const ENGLISH: Record<string, string> = {
+  "Аннотации ({{count}})": "Annotations ({{count}})",
+  "Изображения ({{count}})": "Images ({{count}})",
+  "Файлы ({{count}})": "Files ({{count}})",
+  "Вставки текста ({{count}})": "Pasted text ({{count}})",
   "Аккаунтов: {{count}}": "Accounts: {{count}}",
   Автопереключение: "Auto-switch accounts",
   "При лимите — другой доступный аккаунт.":

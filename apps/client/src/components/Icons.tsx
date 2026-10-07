@@ -326,6 +326,14 @@ export const ImageIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const ClipboardIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M9 4H7a3 3 0 0 0-3 3v11a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3h-2" />
+    <rect x="9" y="2" width="6" height="5" rx="2" />
+    <path d="M8 12h8M8 16h5" />
+  </Icon>
+);
+
 export const ToolIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M20 8.5a5.3 5.3 0 0 1-6.7 5.1L7 20a2.1 2.1 0 0 1-3-3l6.4-6.3A5.3 5.3 0 0 1 15.5 4l-2.4 2.4a1.4 1.4 0 0 0 0 2l2.5 2.5a1.4 1.4 0 0 0 2 0Z" />
