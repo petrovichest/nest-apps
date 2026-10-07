@@ -1436,6 +1436,12 @@
   background-color: var(--color-surface);
 }
 
+.settings-row-control input[type="checkbox"] {
+  width: var(--space-4);
+  height: var(--space-4);
+  min-height: 0;
+}
+
 .settings-workspace select {
   color: var(--color-ink-strong);
   background-color: var(--color-surface);
