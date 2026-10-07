@@ -12,6 +12,16 @@ export const MAX_TRANSCRIPTION_BYTES = 24 * 1024 * 1024;
 export const MAX_RECORDING_SECONDS = 300;
 const MAX_REFINEMENT_CHARACTERS = 50_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MAX_TIMING_SAMPLES = 20;
+const MIN_TIMING_SAMPLES = 5;
+const MIN_TIMING_DURATION_SPAN_MS = 5_000;
+const MIN_TIMING_DURATION_BUCKETS = 3;
+const MIN_TIMING_PAIR_DISTANCE_MS = 1_000;
+
+export interface VoiceTimingSample {
+  audioDurationMs: number;
+  processingMs: number;
+}
 
 export interface VoiceSettings {
   provider: "local" | null;
@@ -42,6 +52,8 @@ export interface VoiceServiceOptions {
   timeoutMs?: number;
   refinementTimeoutMs?: number;
   onRefinementError?: (error: unknown) => void;
+  loadTimings?: (profile: string) => readonly VoiceTimingSample[] | undefined;
+  saveTimings?: (profile: string, samples: VoiceTimingSample[]) => Promise<void>;
 }
 
 export class VoiceServiceError extends Error {
@@ -110,11 +122,7 @@ export class ClaudeVoiceService {
       openAiModel: "gpt-4o-transcribe",
       maxRecordingSeconds: MAX_RECORDING_SECONDS,
       maxUploadBytes: MAX_TRANSCRIPTION_BYTES,
-      timingEstimate: {
-        sampleCount: 0,
-        estimatedFixedProcessingMs: null,
-        estimatedProcessingMsPerAudioSecond: null,
-      },
+      timingEstimate: timingEstimate(this.options.loadTimings?.(timingProfile(this.settings))),
     };
   }
 
@@ -142,6 +150,31 @@ export class ClaudeVoiceService {
     contentType: string,
     signal?: AbortSignal,
     overrides: VoiceTranscriptionOptions = {},
+  ): Promise<string> {
+    const startedAt = Date.now();
+    const text = await this.recognize(audio, contentType, signal, overrides);
+    const { audioDurationMs } = overrides;
+    if (audioDurationMs !== undefined && this.options.saveTimings) {
+      const profile = timingProfile({
+        ...this.settings,
+        refineLocal: overrides.refineLocal ?? this.settings.refineLocal,
+        refinementModel: overrides.refinementModel ?? this.settings.refinementModel,
+      });
+      const samples = [
+        ...(this.options.loadTimings?.(profile) ?? []),
+        { audioDurationMs, processingMs: Math.max(1, Date.now() - startedAt) },
+      ].slice(-MAX_TIMING_SAMPLES);
+      // A timing sample is advisory and must not fail a finished transcription.
+      await this.options.saveTimings(profile, samples).catch(() => undefined);
+    }
+    return text;
+  }
+
+  private async recognize(
+    audio: Buffer,
+    contentType: string,
+    signal: AbortSignal | undefined,
+    overrides: VoiceTranscriptionOptions,
   ): Promise<string> {
     signal?.throwIfAborted();
     const settings = await this.readSettings();
@@ -495,4 +528,62 @@ function parseRefinement(output: string): string {
       /* A transcript can legitimately start with a brace. */
     }
   return text;
+}
+
+function timingProfile(settings: VoiceSettings): string {
+  return settings.refineLocal
+    ? `local:${settings.localUrl}:refined:${settings.refinementModel}`
+    : `local:${settings.localUrl}:raw`;
+}
+
+function median(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+}
+
+/** Fits processing time as a fixed cost plus a per-audio-second cost, like CodexNest. */
+export function timingEstimate(
+  samples: readonly VoiceTimingSample[] | undefined,
+): TranscriptionConfigResponse["timingEstimate"] {
+  const unavailable = {
+    sampleCount: samples?.length ?? 0,
+    estimatedFixedProcessingMs: null,
+    estimatedProcessingMsPerAudioSecond: null,
+  };
+  if (!samples || samples.length < MIN_TIMING_SAMPLES) return unavailable;
+  const durations = samples.map(({ audioDurationMs }) => audioDurationMs);
+  if (
+    Math.max(...durations) - Math.min(...durations) < MIN_TIMING_DURATION_SPAN_MS ||
+    new Set(durations.map((ms) => Math.floor(ms / 1_000))).size < MIN_TIMING_DURATION_BUCKETS
+  )
+    return unavailable;
+  const slopes: number[] = [];
+  for (let left = 0; left < samples.length; left += 1)
+    for (let right = left + 1; right < samples.length; right += 1) {
+      const deltaMs = samples[right]!.audioDurationMs - samples[left]!.audioDurationMs;
+      if (Math.abs(deltaMs) < MIN_TIMING_PAIR_DISTANCE_MS) continue;
+      slopes.push((samples[right]!.processingMs - samples[left]!.processingMs) / (deltaMs / 1_000));
+    }
+  if (!slopes.length) return unavailable;
+  const perSecond = Math.max(0, median(slopes));
+  const fixed = Math.max(
+    0,
+    median(samples.map((s) => s.processingMs - perSecond * (s.audioDurationMs / 1_000))),
+  );
+  return {
+    sampleCount: samples.length,
+    estimatedFixedProcessingMs: Math.round(fixed),
+    estimatedProcessingMsPerAudioSecond: Math.round(perSecond),
+  };
+}
+
+export function estimatedTotalSeconds(
+  estimate: TranscriptionConfigResponse["timingEstimate"],
+  audioDurationMs: number,
+): number | null {
+  const { estimatedFixedProcessingMs: fixed, estimatedProcessingMsPerAudioSecond: perSecond } =
+    estimate;
+  if (fixed === null || perSecond === null) return null;
+  return Math.max(1, Math.ceil((fixed + (audioDurationMs / 1_000) * perSecond) / 1_000));
 }

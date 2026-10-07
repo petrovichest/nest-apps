@@ -13,6 +13,8 @@ import {
   VoiceServiceError,
   type VoiceServiceOptions,
   plausibleRefinement,
+  estimatedTotalSeconds,
+  timingEstimate,
 } from "./voice";
 
 const directories: string[] = [];
@@ -50,6 +52,32 @@ function fakeSpawn(
 }
 
 describe("Claude local voice", () => {
+  it("records timing samples and estimates processing time from them", async () => {
+    const saved: Record<string, { audioDurationMs: number; processingMs: number }[]> = {};
+    const voice = service({
+      settings: { refineLocal: false },
+      loadTimings: (profile) => saved[profile],
+      saveTimings: async (profile, samples) => {
+        saved[profile] = samples;
+      },
+    });
+    expect(voice.configuration().timingEstimate.estimatedFixedProcessingMs).toBeNull();
+    await voice.transcribe(Buffer.from("a"), "audio/webm", undefined, { audioDurationMs: 3000 });
+    const [profile] = Object.keys(saved);
+    expect(saved[profile!]).toHaveLength(1);
+    const samples = [1000, 3000, 6000, 9000, 12000].map((audioDurationMs) => ({
+      audioDurationMs,
+      processingMs: 500 + audioDurationMs / 2,
+    }));
+    const estimate = timingEstimate(samples);
+    expect(estimate).toMatchObject({
+      estimatedFixedProcessingMs: 500,
+      estimatedProcessingMsPerAudioSecond: 500,
+    });
+    expect(estimatedTotalSeconds(estimate, 4000)).toBe(3);
+    expect(timingEstimate(samples.slice(0, 4)).estimatedFixedProcessingMs).toBeNull();
+  });
+
   it("reports local-only defaults without introducing an OpenAI account or client", async () => {
     const voice = service();
     expect(await voice.readSettings()).toEqual({

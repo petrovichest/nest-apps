@@ -103,6 +103,7 @@ export interface UiData {
   permissionMode: ClaudePermissionMode;
   permissionVersion: number;
   voiceSettings?: Record<string, unknown>;
+  voiceTimings?: Record<string, { audioDurationMs: number; processingMs: number }[]>;
 }
 const initial = (): UiData => ({
   version: 1,

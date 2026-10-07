@@ -12,6 +12,7 @@ import {
   MAX_RECORDING_SECONDS,
   MAX_TRANSCRIPTION_BYTES,
   VoiceServiceError,
+  estimatedTotalSeconds,
   type ClaudeVoiceService,
 } from "./voice";
 
@@ -45,7 +46,7 @@ export class UiVoiceJobs {
 
   constructor(
     private readonly ui: UiService,
-    private readonly voice: Pick<ClaudeVoiceService, "transcribe">,
+    private readonly voice: Pick<ClaudeVoiceService, "transcribe" | "configuration">,
   ) {
     this.directory = join(ui.manager.config.stateDir, "voice");
   }
@@ -168,7 +169,10 @@ export class UiVoiceJobs {
             createdAt: Date.now(),
             startedAt: null,
             audioDurationMs,
-            estimatedTotalSeconds: null,
+            estimatedTotalSeconds: estimatedTotalSeconds(
+              this.voice.configuration().timingEstimate,
+              audioDurationMs,
+            ),
             error: null,
           },
           audioPath,

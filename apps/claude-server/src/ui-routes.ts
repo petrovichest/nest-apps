@@ -136,6 +136,12 @@ export async function registerUiRoutes(
         data.voiceSettings = { ...settings };
       });
     },
+    loadTimings: (profile) => ui.store.data.voiceTimings?.[profile],
+    saveTimings: async (profile, samples) => {
+      await ui.store.update((data) => {
+        (data.voiceTimings ??= {})[profile] = samples;
+      });
+    },
   });
   await voice.readSettings();
   const jobs = new UiVoiceJobs(ui, voice);

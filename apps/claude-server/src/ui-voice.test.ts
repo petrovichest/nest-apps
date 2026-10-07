@@ -108,7 +108,16 @@ async function fixture(transcribe = vi.fn(async () => "voice")) {
     publish: (event: ServerEvent) => events.push(event),
     enqueue,
   } as unknown as UiService;
-  const voice = { transcribe };
+  const voice = {
+    transcribe,
+    configuration: () => ({
+      timingEstimate: {
+        sampleCount: 5,
+        estimatedFixedProcessingMs: 1000,
+        estimatedProcessingMsPerAudioSecond: 500,
+      },
+    }),
+  } as unknown as ClaudeVoiceService;
   const jobs = new UiVoiceJobs(ui, voice);
   fixtures.push({ directory, jobs });
   return {
@@ -143,6 +152,7 @@ describe("durable Claude UI voice jobs", () => {
       1200,
     );
     const record = state.store.data.voice[job!.id]!;
+    expect(job!.estimatedTotalSeconds).toBe(2);
     expect(await readFile(record.audioPath, "utf8")).toBe("recording");
     expect((await stat(record.audioPath)).mode & 0o777).toBe(0o600);
     expect((await stat(join(state.directory, "voice"))).mode & 0o777).toBe(0o700);
@@ -255,7 +265,7 @@ describe("durable Claude UI voice jobs", () => {
         store: restartedStore,
         thread: (id: string) => restartedStore.data.threads[id]!,
       } as UiService,
-      { transcribe: async () => "recovered" },
+      { ...state.voice, transcribe: async () => "recovered" },
     );
     fixtures.push({ directory: state.directory, jobs: restarted });
     await restarted.initialize();
