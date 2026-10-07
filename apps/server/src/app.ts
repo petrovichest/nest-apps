@@ -78,13 +78,17 @@ export async function buildApp(config: AppConfig, services: ApiServices): Promis
     }
   });
 
+  // Framing stays forbidden unless the owner lists the sites that embed the floating window.
+  const frameAncestors = config.embedOrigins.length
+    ? `'self' ${config.embedOrigins.join(" ")}`
+    : "'none'";
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     // Sandboxed srcDoc previews inherit this policy and need the report's inline CSS.
     reply.header(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' http: https: ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' http: https: ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors ${frameAncestors}`,
     );
     return payload;
   });

@@ -17,6 +17,8 @@ export interface AppConfig {
   serverEnvFile: string;
   codexTransport: "stdio" | "daemon";
   allowedOrigins: Set<string>;
+  /** Sites allowed to show CodexNest inside an iframe (the floating embed window). */
+  embedOrigins: string[];
   clientDist: string;
   websocketAuthTimeoutMs: number;
   sttLocalUrl?: string;
@@ -106,6 +108,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         .map((origin) => origin.trim())
         .filter(Boolean),
     ]),
+    embedOrigins: parseEmbedOrigins(env("CODEXNEST_EMBED_ORIGINS")),
     clientDist: env("CODEXNEST_CLIENT_DIST") ?? resolve(process.cwd(), "apps/client/dist"),
     websocketAuthTimeoutMs: 5_000,
     sttLocalUrl,
@@ -125,6 +128,31 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     sessionLimit,
     ...overrides,
   };
+}
+
+function parseEmbedOrigins(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .map((origin) => {
+      let url: URL;
+      try {
+        url = new URL(origin);
+      } catch {
+        throw new Error("CODEXNEST_EMBED_ORIGINS must list http(s) origins");
+      }
+      if (
+        (url.protocol !== "http:" && url.protocol !== "https:") ||
+        url.username ||
+        url.password ||
+        url.origin !== origin.replace(/\/$/u, "")
+      ) {
+        throw new Error("CODEXNEST_EMBED_ORIGINS must list http(s) origins without paths");
+      }
+      return url.origin;
+    });
 }
 
 function envBoolean(name: string, fallback: boolean): boolean {

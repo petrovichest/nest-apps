@@ -385,6 +385,7 @@ accept-all certificate handler). Android-клиент доверяет сист�
 | `CODEXNEST_HOST`                 | Адрес прослушивания                               | `127.0.0.1`                                   |
 | `CODEXNEST_PORT`                 | HTTP/API порт                                     | `4310`                                        |
 | `CODEXNEST_ALLOWED_ORIGINS`      | Разрешённые browser/Android origins через запятую | локальные origins для разработки              |
+| `CODEXNEST_EMBED_ORIGINS`        | Сайты, которым разрешено встраивать окно          | встраивание запрещено                         |
 | `CODEXNEST_STATE_PATH`           | Rollback JSON и внешний verifier токена           | `~/.local/state/codexnest/state.json`         |
 | `CODEXNEST_DATABASE_PATH`        | Основная SQLite-база состояния                    | `state.sqlite` рядом с `CODEXNEST_STATE_PATH` |
 | `CODEXNEST_CODEX_BIN`            | Полный путь к Codex CLI                           | `codex` из `PATH`                             |
@@ -403,6 +404,32 @@ accept-all certificate handler). Android-клиент доверяет сист�
 | `CODEXNEST_STT_REFINE_LOCAL`     | Улучшать локальный текст через Codex              | `true`                                        |
 | `CODEXNEST_STT_REFINEMENT_MODEL` | Модель улучшения локального текста                | `gpt-5.6-luna`                                |
 | `CODEXNEST_STT_TIMEOUT_MS`       | Timeout одного распознавания                      | `600000`                                      |
+
+### Встраивание плавающим окном
+
+CodexNest можно открыть поверх своего сайта (например, дашборда) отдельным
+окном: его можно перетаскивать за заголовок, менять размер за края и углы,
+свернуть, развернуть на весь экран и закрыть; положение запоминается. Окно
+загружает полный интерфейс CodexNest во frame, поэтому функциональность та же.
+
+1. Укажите origin страницы-хозяина без пути:
+   `CODEXNEST_EMBED_ORIGINS=https://dashboard.example`. Без этой переменной
+   сервер запрещает показ во frame (`frame-ancestors 'none'`).
+2. Подключите загрузчик и откройте окно:
+
+   ```html
+   <script src="https://codexnest.example/embed.js"></script>
+   <script>
+     CodexNestEmbed.open({ src: "https://codexnest.example/", title: "Агент" });
+   </script>
+   ```
+
+   Также доступны `CodexNestEmbed.close()`, `minimize()`, `isOpen()` и
+   `setTheme("light" | "dark" | "system")` для рамки окна.
+
+Встраивание не ослабляет границу безопасности: адрес CodexNest по-прежнему
+должен быть доступен только из приватной сети или через шлюз страницы-хозяина,
+который сам проверяет владельца. Не встраивайте CodexNest в публичный сайт.
 
 ### Speech-to-text
 
