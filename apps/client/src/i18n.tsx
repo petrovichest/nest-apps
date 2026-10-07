@@ -959,6 +959,11 @@ const ENGLISH: Record<string, string> = {
   "Ждёт вашего ответа": "Waiting for your answer",
   Аннотация: "Annotate",
   "Аннотация {{number}}": "Annotation {{number}}",
+  Аннотации: "Annotations",
+  "Перейти к аннотации {{number}}": "Go to annotation {{number}}",
+  "Удалить аннотацию {{number}}": "Delete annotation {{number}}",
+  "Исходная цитата не найдена в загруженной истории.":
+    "The original quote was not found in the loaded history.",
   "В очереди": "Queued",
   Вложения: "Attachments",
   "Выполнен поиск": "Search completed",

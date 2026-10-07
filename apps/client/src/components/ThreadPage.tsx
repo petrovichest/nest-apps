@@ -2,6 +2,7 @@ import { onBeforeAppReload } from "../app-reload";
 import { application } from "../application";
 import { useTypography } from "../typography";
 import { PasteBlocks } from "./PasteBlocks";
+import { AnnotationBubbles } from "./AnnotationBubbles";
 import { isNativeSubagentLaunch, NativeSubagentLaunchCard } from "./NativeSubagentLaunchCard";
 import { SubagentActivityBar } from "./SubagentActivityBar";
 import { PasteMessageEditor } from "./PasteEditor";
@@ -24,6 +25,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { type Components as MarkdownComponents } from "react-markdown";
 import { Link, matchPath, Navigate, useLocation, useNavigate, useParams } from "react-router";
 
@@ -2746,6 +2748,31 @@ export function ThreadPage({
     return persistAnnotations(annotations.filter((annotation) => annotation.id !== annotationId));
   }
 
+  function openAnnotation(annotationId: string) {
+    if (busy) return;
+    const marker = Array.from(
+      scrollRef.current?.querySelectorAll<HTMLButtonElement>(
+        ".annotation-marker[data-annotation-id]",
+      ) ?? [],
+    ).find((candidate) => candidate.dataset.annotationId === annotationId);
+    if (!marker) {
+      setError(t("Исходная цитата не найдена в загруженной истории."));
+      return;
+    }
+    const editors = scrollRef.current?.querySelectorAll<HTMLFormElement>(".annotation-editor");
+    if (editors?.length) {
+      // Keyboard activation does not trigger the editor's outside-pointer save.
+      for (const editor of editors) {
+        flushSync(() => editor.requestSubmit());
+        if (editor.isConnected) return;
+      }
+    }
+    setError(null);
+    pauseTailFollowing();
+    marker.scrollIntoView({ block: "center", behavior: "instant" });
+    marker.click();
+  }
+
   function clearLegacyAnnotations(targetThreadId = threadId) {
     try {
       savePendingAnnotations(targetThreadId, []);
@@ -4800,6 +4827,12 @@ export function ThreadPage({
               models={state.snapshot?.models ?? []}
               turns={detail?.turns}
             />
+            <AnnotationBubbles
+              annotations={annotations}
+              disabled={busy}
+              onOpen={openAnnotation}
+              onDelete={deleteAnnotation}
+            />
           </Composer>
         )}
       </div>
@@ -6193,8 +6226,14 @@ function AnnotatableMarkdownContent({
   }, [positionMarkers]);
 
   useEffect(() => {
-    if (readOnly) setEditor(null);
-  }, [readOnly]);
+    if (
+      readOnly ||
+      (editor?.mode === "existing" &&
+        !annotations.some(({ annotation }) => annotation.id === editor.annotationId))
+    ) {
+      setEditor(null);
+    }
+  }, [annotations, editor, readOnly]);
 
   const positionEditor = useCallback(() => {
     const form = editorRef.current;
@@ -6323,6 +6362,7 @@ function AnnotatableMarkdownContent({
           <button
             type="button"
             className="annotation-marker"
+            data-annotation-id={item.annotation.id}
             style={{ left: position.left, top: position.top }}
             aria-label={t("Аннотация {{number}}", { number: item.number })}
             disabled={readOnly}

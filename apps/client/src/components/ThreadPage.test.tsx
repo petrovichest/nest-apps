@@ -316,7 +316,7 @@ describe("Activity", () => {
     });
     context.sendReliable.mockRejectedValueOnce(new Error("Rejected pasted message"));
     renderThread();
-    expect(document.querySelectorAll(".composer .paste-card")).toHaveLength(1);
+    expect(document.querySelectorAll(".composer > .paste-blocks .paste-card")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
     await waitFor(() => expect(context.sendReliable).toHaveBeenCalledOnce());
     const body = context.sendReliable.mock.calls[0]![1];
@@ -324,7 +324,7 @@ describe("Activity", () => {
     expect(body.input).toContain(annotation.comment);
     await screen.findByText("Rejected pasted message");
     expect(screen.getByRole("textbox", { name: "Сообщение для Codex" })).toHaveValue("  pasted  ");
-    expect(document.querySelectorAll(".composer .paste-card")).toHaveLength(1);
+    expect(document.querySelectorAll(".composer > .paste-blocks .paste-card")).toHaveLength(1);
     expect(document.querySelector(".composer mark")?.textContent).toBe("paste");
   });
 
@@ -2632,6 +2632,216 @@ describe("Activity", () => {
     expect(releaseActiveThread).toHaveBeenCalledWith("thread");
   });
 
+  it.each(["agentMessage", "plan"] as const)(
+    "opens a %s annotation from its bubble and synchronizes edits and deletion",
+    async (source) => {
+      const api = threadApi();
+      const annotation = pendingAnnotation({ source });
+      const turn = completedAgentTurn();
+      mockThreadConnection(api, summary, {
+        turns: [{ ...turn, items: [{ ...turn.items[0]!, type: source }] }],
+        draft: {
+          input: "Сохрани ввод",
+          images: [],
+          goalMode: false,
+          annotations: [annotation],
+          updatedAt: 2,
+        },
+      });
+      renderThread();
+
+      const bubbles = await screen.findByRole("group", { name: "Аннотации" });
+      expect(within(bubbles).getByText("«фрагмент ответа»")).toBeVisible();
+      expect(within(bubbles).getByText(annotation.comment)).toBeVisible();
+      const marker = await screen.findByRole("button", { name: "Аннотация 1" });
+      const scrollIntoView = vi.fn();
+      marker.scrollIntoView = scrollIntoView;
+      fireEvent.click(within(bubbles).getByRole("button", { name: "Перейти к аннотации 1" }));
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "instant" });
+      const editor = screen.getByRole("textbox", { name: "Комментарий к выделенному тексту" });
+      expect(editor).toHaveValue(annotation.comment);
+      expect(editor).toHaveFocus();
+      fireEvent.change(editor, { target: { value: "Обновлённый комментарий" } });
+      fireEvent.click(screen.getByRole("button", { name: "Сохранить аннотацию" }));
+      expect(within(bubbles).getByText("Обновлённый комментарий")).toBeVisible();
+      await waitFor(() =>
+        expect(api.updateThreadDraft).toHaveBeenCalledWith(
+          "thread",
+          expect.objectContaining({
+            annotations: [{ ...annotation, comment: "Обновлённый комментарий" }],
+          }),
+          { keepalive: false },
+        ),
+      );
+
+      fireEvent.click(within(bubbles).getByRole("button", { name: "Перейти к аннотации 1" }));
+      // Keyboard activation has no outside pointerdown to close the source editor.
+      fireEvent.click(within(bubbles).getByRole("button", { name: "Удалить аннотацию 1" }));
+      expect(screen.queryByRole("group", { name: "Аннотации" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Аннотация 1" })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("textbox", { name: "Комментарий к выделенному тексту" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "Сообщение для Codex" })).toHaveValue(
+        "Сохрани ввод",
+      );
+      await waitFor(() =>
+        expect(api.updateThreadDraft).toHaveBeenCalledWith(
+          "thread",
+          expect.objectContaining({ annotations: [], input: "Сохрани ввод" }),
+          { keepalive: false },
+        ),
+      );
+    },
+  );
+
+  it.each(["same", "another", "multiple"] as const)(
+    "saves and closes the current editor before keyboard navigation to the %s source",
+    async (target) => {
+      const annotation = pendingAnnotation();
+      const second = pendingAnnotation({
+        id: "second-note",
+        messageId: "second-answer",
+        comment: "Второй комментарий",
+      });
+      const turn = completedAgentTurn();
+      const api = threadApi();
+      mockThreadConnection(api, summary, {
+        turns: [
+          turn,
+          {
+            ...turn,
+            id: "second-turn",
+            items: [{ ...turn.items[0]!, id: second.messageId }],
+          },
+        ],
+        draft: {
+          input: "",
+          images: [],
+          goalMode: false,
+          annotations: [annotation, second],
+          updatedAt: 2,
+        },
+      });
+      renderThread();
+      const firstMarker = await screen.findByRole("button", { name: "Аннотация 1" });
+      const secondMarker = screen.getByRole("button", { name: "Аннотация 2" });
+      firstMarker.scrollIntoView = vi.fn();
+      secondMarker.scrollIntoView = vi.fn();
+      fireEvent.click(firstMarker);
+      fireEvent.change(screen.getByRole("textbox", { name: "Комментарий к выделенному тексту" }), {
+        target: { value: "Сохранить перед переходом" },
+      });
+      if (target === "multiple") {
+        fireEvent.click(secondMarker);
+        fireEvent.change(
+          within(secondMarker.closest("article")!).getByRole("textbox", {
+            name: "Комментарий к выделенному тексту",
+          }),
+          { target: { value: "Сохранить второй комментарий" } },
+        );
+      }
+      const bubbles = screen.getByRole("group", { name: "Аннотации" });
+
+      fireEvent.click(
+        within(bubbles).getByRole("button", {
+          name: `Перейти к аннотации ${target === "another" ? 2 : 1}`,
+        }),
+      );
+
+      expect(
+        screen.getAllByRole("textbox", { name: "Комментарий к выделенному тексту" }),
+      ).toHaveLength(1);
+      expect(screen.getByRole("textbox", { name: "Комментарий к выделенному тексту" })).toHaveValue(
+        target === "another" ? second.comment : "Сохранить перед переходом",
+      );
+      expect(within(bubbles).getByText("Сохранить перед переходом")).toBeVisible();
+      await waitFor(() =>
+        expect(api.updateThreadDraft).toHaveBeenCalledWith(
+          "thread",
+          expect.objectContaining({
+            annotations: [
+              { ...annotation, comment: "Сохранить перед переходом" },
+              target === "multiple"
+                ? { ...second, comment: "Сохранить второй комментарий" }
+                : second,
+            ],
+          }),
+          { keepalive: false },
+        ),
+      );
+    },
+  );
+
+  it("keeps bubble numbers aligned with markers across answers and plans after deletion", async () => {
+    const answer = pendingAnnotation();
+    const plan = pendingAnnotation({
+      id: "plan-note",
+      messageId: "plan-answer",
+      source: "plan",
+      comment: "Уточни план",
+      createdAt: 2,
+    });
+    const turn = completedAgentTurn();
+    mockThreadConnection(threadApi(), summary, {
+      turns: [
+        turn,
+        {
+          ...turn,
+          id: "plan-turn",
+          items: [{ ...turn.items[0]!, id: "plan-answer", type: "plan" }],
+        },
+      ],
+      draft: {
+        input: "",
+        images: [],
+        goalMode: false,
+        annotations: [answer, plan],
+        updatedAt: 2,
+      },
+    });
+    const view = renderThread();
+    const bubbles = await screen.findByRole("group", { name: "Аннотации" });
+    expect(within(bubbles).getByRole("button", { name: "Перейти к аннотации 2" })).toBeVisible();
+    expect(view.container.querySelector(".message.plan .annotation-marker")).toHaveTextContent("2");
+
+    fireEvent.click(within(bubbles).getByRole("button", { name: "Удалить аннотацию 1" }));
+
+    expect(
+      within(bubbles).getByRole("button", { name: "Перейти к аннотации 1" }),
+    ).toHaveTextContent("Уточни план");
+    expect(view.container.querySelector(".message.plan .annotation-marker")).toHaveTextContent("1");
+    expect(within(bubbles).queryByRole("button", { name: "Перейти к аннотации 2" })).toBeNull();
+  });
+
+  it("preserves an annotation with an unavailable source without loading more history", async () => {
+    const annotation = pendingAnnotation({ messageId: "unloaded-answer" });
+    const api = threadApi();
+    const context = mockThreadConnection(api, summary, {
+      turns: [completedAgentTurn()],
+      olderTurnsCursor: "older-history",
+      draft: {
+        input: "",
+        images: [],
+        goalMode: false,
+        annotations: [annotation],
+        updatedAt: 2,
+      },
+    });
+    renderThread();
+    const bubbles = await screen.findByRole("group", { name: "Аннотации" });
+
+    fireEvent.click(within(bubbles).getByRole("button", { name: "Перейти к аннотации 1" }));
+
+    expect(screen.getByText("Исходная цитата не найдена в загруженной истории.")).toBeVisible();
+    expect(within(bubbles).getByText(annotation.comment)).toBeVisible();
+    expect(context.loadOlderDetail).not.toHaveBeenCalled();
+    expect(context.loadTurnItems).not.toHaveBeenCalled();
+    expect(api.updateThreadDraft).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
+  });
+
   it("sends annotation-only drafts as a visible user message and clears them on success", async () => {
     const api = threadApi();
     const annotation = pendingAnnotation();
@@ -2641,6 +2851,7 @@ describe("Activity", () => {
     });
     renderThread();
 
+    expect(await screen.findByRole("group", { name: "Аннотации" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
 
     await waitFor(() =>
@@ -2659,6 +2870,7 @@ describe("Activity", () => {
         .text,
     ).toContain("### Аннотация 1");
     await waitFor(() => expect(localStorage.getItem(annotationStorageKey("thread"))).toBeNull());
+    expect(screen.queryByRole("group", { name: "Аннотации" })).not.toBeInTheDocument();
   });
 
   it("persists a comment on the server and restores it from the numbered marker", async () => {
@@ -2676,6 +2888,9 @@ describe("Activity", () => {
     fireEvent.pointerDown(document.body);
 
     const marker = await screen.findByRole("button", { name: "Аннотация 1" });
+    expect(
+      within(screen.getByRole("group", { name: "Аннотации" })).getByText("Локальный комментарий"),
+    ).toBeVisible();
     await waitFor(() =>
       expect(api.updateThreadDraft).toHaveBeenCalledWith(
         "thread",
@@ -2708,6 +2923,9 @@ describe("Activity", () => {
       { keepalive: false },
     );
     expect(screen.getByRole("button", { name: "Аннотация 1" })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("group", { name: "Аннотации" })).getByText(annotation.comment),
+    ).toBeVisible();
     expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
   });
 
