@@ -20,7 +20,7 @@
   place-items: center;
   width: 28px;
   height: 28px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--color-hover);
   font-size: var(--text-caption);
 }
