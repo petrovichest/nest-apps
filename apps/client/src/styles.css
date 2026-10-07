@@ -4695,7 +4695,7 @@ button.message-file:hover:not(:disabled) {
   border: 0;
   background: none;
   color: inherit;
-  font-size: 18px;
+  font-size: var(--text-section);
   line-height: 1;
   cursor: pointer;
 }
