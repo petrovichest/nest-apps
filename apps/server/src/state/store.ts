@@ -1,4 +1,4 @@
-import { validPastedText, type MessagePresentation } from "@codexnest/protocol";
+import { isFastServiceTier, validPastedText, type MessagePresentation } from "@codexnest/protocol";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { constants as fsConstants } from "node:fs";
@@ -1150,7 +1150,7 @@ function validateState(value: unknown): CodexNestState {
   ) {
     throw new Error("Corrupt default reasoning effort in CodexNest state");
   }
-  if (isRecord(value.taskDefaults)) delete value.taskDefaults.serviceTier;
+  if (isRecord(value.taskDefaults)) normalizeServiceTier(value.taskDefaults);
   if (value.taskDefaults !== undefined && !isTaskDefaults(value.taskDefaults)) {
     throw new Error("Corrupt task defaults in CodexNest state");
   }
@@ -1164,7 +1164,7 @@ function validateState(value: unknown): CodexNestState {
     if (!isProject(project)) throw new Error("Corrupt project in CodexNest state");
   }
   for (const meta of Object.values(value.threadMeta)) {
-    if (isRecord(meta) && isRecord(meta.settings)) delete meta.settings.serviceTier;
+    if (isRecord(meta) && isRecord(meta.settings)) normalizeServiceTier(meta.settings);
     if (isRecord(meta) && isLegacyTeamOrchestrationState(meta.teamOrchestration)) {
       delete meta.teamOrchestration;
     }
@@ -2302,6 +2302,11 @@ function isThreadDraftAnnotation(value: unknown): boolean {
     typeof value.createdAt === "number" &&
     Number.isFinite(value.createdAt)
   );
+}
+
+function normalizeServiceTier(value: Record<string, unknown>): void {
+  if (isFastServiceTier(value.serviceTier)) value.serviceTier = "fast";
+  else delete value.serviceTier;
 }
 
 function isSessionSettings(value: unknown): value is SessionSettings {

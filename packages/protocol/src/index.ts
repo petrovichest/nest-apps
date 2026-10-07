@@ -729,6 +729,18 @@ export type ModelOption = {
   supportsPersonality: boolean;
 };
 
+export function isFastServiceTier(value: unknown): boolean {
+  return value === "fast" || value === "priority";
+}
+
+export function fastServiceTier(
+  model: Pick<ModelOption, "serviceTiers"> | undefined,
+): "priority" | "fast" | null {
+  if (model?.serviceTiers.some((tier) => tier.id === "priority")) return "priority";
+  if (model?.serviceTiers.some((tier) => tier.id === "fast")) return "fast";
+  return null;
+}
+
 export type CollaborationMode = "default" | "plan" | "team";
 
 export type PermissionPreset = "ask" | "auto" | "full-access";
@@ -749,7 +761,7 @@ export type SessionSettings = {
   collaborationMode: CollaborationMode;
   model?: string;
   reasoningEffort?: string;
-  /** @deprecated CodexNest always uses the standard service tier. */
+  /** Fast mode is stored as "fast"; an absent value uses the standard service tier. */
   serviceTier?: string;
   personality?: string;
 };
@@ -757,7 +769,7 @@ export type SessionSettings = {
 export type TaskDefaults = {
   model?: string;
   titleModel?: string;
-  /** @deprecated CodexNest ignores this value and always uses the standard service tier. */
+  /** Fast mode default for new sessions, stored as "fast" when enabled. */
   serviceTier?: string;
   personality?: string;
 };
@@ -765,7 +777,7 @@ export type TaskDefaults = {
 export type UpdateTaskDefaultsRequest = {
   model?: string | null;
   titleModel?: string | null;
-  /** @deprecated Accepted for compatibility and ignored. */
+  /** "fast" enables Fast mode; null clears the saved default. */
   serviceTier?: string | null;
   personality?: string | null;
 };
@@ -1478,7 +1490,7 @@ export type UpdateThreadSettingsRequest = {
   collaborationMode?: CollaborationMode;
   model?: string | null;
   reasoningEffort?: string | null;
-  /** @deprecated Accepted for compatibility and ignored. */
+  /** "fast" enables Fast mode; null clears the session setting. */
   serviceTier?: string | null;
   personality?: string | null;
 };

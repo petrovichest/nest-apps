@@ -27,7 +27,7 @@ import {
 import { type Components as MarkdownComponents } from "react-markdown";
 import { Link, matchPath, Navigate, useLocation, useNavigate, useParams } from "react-router";
 
-import { DEFAULT_SESSION_SETTINGS } from "@codexnest/protocol";
+import { DEFAULT_SESSION_SETTINGS, fastServiceTier, isFastServiceTier } from "@codexnest/protocol";
 import type {
   ActivityItem,
   GitChangesSummary,
@@ -196,8 +196,8 @@ type EarlySubmission = {
   staged?: boolean;
 };
 
-type PendingSettingsField = Exclude<keyof UpdateThreadSettingsRequest, "serviceTier">;
-type ClientSessionSettings = Omit<SessionSettings, "serviceTier">;
+type PendingSettingsField = keyof UpdateThreadSettingsRequest;
+type ClientSessionSettings = SessionSettings;
 
 export type QueueAction = {
   messageId: string;
@@ -291,6 +291,11 @@ export function initialSessionSettings(
   const settings = {
     ...DEFAULT_SESSION_SETTINGS,
     ...(explicitModel ? { model: explicitModel.id } : {}),
+    ...(!application.isClaude &&
+    isFastServiceTier(taskDefaults?.serviceTier) &&
+    fastServiceTier(model)
+      ? { serviceTier: "fast" }
+      : {}),
     ...(taskDefaults?.personality && (!model || model.supportsPersonality)
       ? { personality: taskDefaults.personality }
       : {}),
@@ -306,7 +311,8 @@ export function initialSessionSettings(
 
 function clientSessionSettings(value: SessionSettings): ClientSessionSettings {
   const next = { ...value };
-  delete next.serviceTier;
+  if (!application.isClaude && isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
+  else delete next.serviceTier;
   return next;
 }
 
@@ -314,7 +320,9 @@ function clientSessionSettingsPatch(
   value: UpdateThreadSettingsRequest,
 ): UpdateThreadSettingsRequest {
   const next = { ...value };
-  delete next.serviceTier;
+  if (application.isClaude) delete next.serviceTier;
+  else if (isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
+  else if (next.serviceTier !== null) delete next.serviceTier;
   return next;
 }
 
@@ -326,7 +334,7 @@ function applySessionSettingsPatch(
   if (patch.collaborationMode !== undefined) {
     next.collaborationMode = patch.collaborationMode;
   }
-  for (const key of ["model", "reasoningEffort", "personality"] as const) {
+  for (const key of ["model", "reasoningEffort", "serviceTier", "personality"] as const) {
     const value = patch[key];
     if (value === undefined) continue;
     if (value === null) delete next[key];
@@ -340,11 +348,12 @@ function settingsPatchBetween(
   target: ClientSessionSettings,
   touched: ReadonlySet<PendingSettingsField>,
 ): UpdateThreadSettingsRequest {
+  current = clientSessionSettings(current);
   const patch: UpdateThreadSettingsRequest = {};
   if (touched.has("collaborationMode") && current.collaborationMode !== target.collaborationMode) {
     patch.collaborationMode = target.collaborationMode;
   }
-  for (const key of ["model", "reasoningEffort", "personality"] as const) {
+  for (const key of ["model", "reasoningEffort", "serviceTier", "personality"] as const) {
     if (!touched.has(key) || current[key] === target[key]) continue;
     patch[key] = target[key] ?? null;
   }
@@ -2080,12 +2089,15 @@ export function ThreadPage({
           "collaborationMode",
           "model",
           "reasoningEffort",
+          "serviceTier",
           "personality",
         ] as const) {
           if (pendingSettingsRef.current[key] !== settings[key]) {
             pendingSettingsTouchedRef.current.add(key);
           }
         }
+        // A recovered preparation keeps Fast off even if the global default changed.
+        if (!application.isClaude) pendingSettingsTouchedRef.current.add("serviceTier");
         pendingSettingsRef.current = settings;
         pendingSettingsRevisionRef.current += 1;
         setPendingSettings(settings);
@@ -3576,7 +3588,13 @@ export function ThreadPage({
     if (Object.keys(patch).length === 0) return;
     if (preparationRef.current.active) {
       const next = applySessionSettingsPatch(pendingSettingsRef.current, patch);
-      for (const key of ["collaborationMode", "model", "reasoningEffort", "personality"] as const) {
+      for (const key of [
+        "collaborationMode",
+        "model",
+        "reasoningEffort",
+        "serviceTier",
+        "personality",
+      ] as const) {
         if (patch[key] !== undefined) pendingSettingsTouchedRef.current.add(key);
       }
       pendingSettingsRef.current = next;

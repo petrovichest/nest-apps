@@ -65,6 +65,16 @@ describe("interface localization", () => {
     );
   });
 
+  it("localizes Fast mode availability and usage", () => {
+    expect(translate("en", "Fast mode по умолчанию")).toBe("Fast mode by default");
+    expect(translate("en", "Ускоряет ответы Codex и увеличивает расход лимитов.")).toBe(
+      "Speeds up Codex responses and increases quota usage.",
+    );
+    expect(localizeKnownServerText("ru", "Fast mode is not supported by the selected model")).toBe(
+      "Fast mode недоступен для этой модели.",
+    );
+  });
+
   it("localizes reliable fork choices and pending states", () => {
     expect(translate("en", "Создать ветку")).toBe("Create a fork");
     expect(translate("en", "Компактная")).toBe("Compact");

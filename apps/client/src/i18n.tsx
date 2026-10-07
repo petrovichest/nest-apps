@@ -484,6 +484,10 @@ const ENGLISH: Record<string, string> = {
   "Доступные скиллы": "Available skills",
   "Нет подходящих скиллов": "No matching skills",
   "Новые задачи": "New tasks",
+  "Fast mode по умолчанию": "Fast mode by default",
+  "Ускоряет ответы Codex и увеличивает расход лимитов.":
+    "Speeds up Codex responses and increases quota usage.",
+  "Fast mode недоступен для этой модели.": "Fast mode is unavailable for this model.",
   "Эти значения применяются к новым сессиям и задачам на всех подключённых устройствах.":
     "These values apply to new sessions and tasks on every connected device.",
   "Модель, которая будет выбрана для новых сессий.": "Model selected for new sessions.",
@@ -1209,6 +1213,9 @@ export function localizeKnownServerText(
   value: string | null | undefined,
 ): string | null {
   if (!value) return null;
+  if (value === "Fast mode is not supported by the selected model") {
+    return translate(language, "Fast mode недоступен для этой модели.");
+  }
   if (value === "No speech was detected in the recording") {
     return language === "ru"
       ? "В записи не обнаружена речь. Проверьте микрофон и запишите ещё раз."

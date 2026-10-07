@@ -221,6 +221,7 @@ describe("the shared Claude interface", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Включить режим цели" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Модель и уровень рассуждений" }));
+    expect(screen.queryByRole("switch", { name: /Fast mode/ })).not.toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "high" })).toBeDisabled();
     fireEvent.click(screen.getByRole("radio", { name: "Haiku" }));
     expect(onChange).toHaveBeenCalledWith({ model: "haiku" });
@@ -292,6 +293,7 @@ describe("the shared Claude interface", () => {
       settings: { baseUrl: "https://claude.home.arpa" },
       readPermissionSettings: vi.fn(),
       readCodexSettings: vi.fn(),
+      readClaudeAccounts: vi.fn().mockResolvedValue(null),
       readSkills: vi.fn(),
       updateTranscriptionSettings: vi.fn().mockResolvedValue(transcriptionConfig),
     };
@@ -328,6 +330,9 @@ describe("the shared Claude interface", () => {
       </MemoryRouter>,
     );
     expect(screen.getByRole("tab", { name: "Claude" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Claude" }));
+    expect(screen.queryByRole("switch", { name: /Fast mode/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Приложение" }));
     expect(screen.queryByRole("tab", { name: "Скиллы" })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Обслуживание" })).toBeInTheDocument();
     const provider = screen.getByLabelText("Провайдер распознавания речи");

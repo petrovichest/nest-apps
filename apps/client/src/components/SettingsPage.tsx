@@ -25,6 +25,7 @@ import type {
   UpdateTaskDefaultsRequest,
   UpdateTranscriptionSettingsRequest,
 } from "@codexnest/protocol";
+import { isFastServiceTier } from "@codexnest/protocol";
 
 import { ApiClientError } from "../api";
 import {
@@ -108,7 +109,7 @@ const VISIBLE_SETTINGS_SECTIONS = SETTINGS_SECTIONS.filter(
 );
 
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
-type EditableTaskDefaults = Omit<TaskDefaults, "serviceTier">;
+type EditableTaskDefaults = TaskDefaults;
 const EMPTY_MODELS: ModelOption[] = [];
 const VERTICAL_SECTIONS_QUERY = "(min-width: 1280px)";
 const MOBILE_SECTIONS_QUERY = "(max-width: 820px)";
@@ -697,6 +698,27 @@ export function SettingsPage({
               </SettingsRow>
               {!application.isClaude && (
                 <SettingsRow
+                  description={t("Ускоряет ответы Codex и увеличивает расход лимитов.")}
+                  label={t("Fast mode по умолчанию")}
+                  labelFor="settings-fast-mode"
+                >
+                  <input
+                    id="settings-fast-mode"
+                    type="checkbox"
+                    role="switch"
+                    checked={isFastServiceTier(taskDefaults.serviceTier)}
+                    disabled={taskDefaultsSaving}
+                    onChange={(event) =>
+                      setTaskDefaults((current) => ({
+                        ...current,
+                        serviceTier: event.target.checked ? "fast" : undefined,
+                      }))
+                    }
+                  />
+                </SettingsRow>
+              )}
+              {!application.isClaude && (
+                <SettingsRow
                   description={t("Стиль ответов для новых задач.")}
                   label="Personality"
                   labelFor="settings-personality"
@@ -899,7 +921,8 @@ export function SettingsPage({
 
 function editableTaskDefaults(value: TaskDefaults): EditableTaskDefaults {
   const next = { ...value };
-  delete next.serviceTier;
+  if (!application.isClaude && isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
+  else delete next.serviceTier;
   return next;
 }
 
@@ -923,6 +946,9 @@ function taskDefaultsPatch(
   return {
     ...(saved.model !== current.model ? { model: current.model ?? null } : {}),
     ...(saved.titleModel !== current.titleModel ? { titleModel: current.titleModel ?? null } : {}),
+    ...(saved.serviceTier !== current.serviceTier
+      ? { serviceTier: current.serviceTier ?? null }
+      : {}),
     ...(saved.personality !== current.personality
       ? { personality: current.personality ?? null }
       : {}),

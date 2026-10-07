@@ -577,7 +577,7 @@ describe("Composer", () => {
     expect(toggle).toHaveFocus();
   });
 
-  it("does not send a legacy service tier when the model changes", () => {
+  it("clears Fast mode when changing to an unsupported model", () => {
     const onSettingsChange = vi.fn();
     render(
       <Harness
@@ -593,7 +593,7 @@ describe("Composer", () => {
     );
     fireEvent.click(within(modelOptions).getByRole("radio", { name: "GPT-5.6-Terra" }));
 
-    expect(onSettingsChange).toHaveBeenCalledWith({ model: "gpt-terra" });
+    expect(onSettingsChange).toHaveBeenCalledWith({ model: "gpt-terra", serviceTier: null });
   });
 
   it("keeps pointer focus in the textarea for direct toolbar and attachment controls", () => {

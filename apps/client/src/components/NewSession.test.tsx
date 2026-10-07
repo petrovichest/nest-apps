@@ -748,7 +748,122 @@ describe("NewSession", () => {
     expect(createProjectThread).not.toHaveBeenCalled();
   });
 
-  it("restores an abandoned early submission without carrying a legacy service tier", async () => {
+  it.each([
+    { defaultTier: undefined, expectedTier: "fast" },
+    { defaultTier: "fast", expectedTier: null },
+  ])(
+    "applies a pending Fast change to $expectedTier before the first message",
+    async ({ defaultTier, expectedTier }) => {
+      const creation = deferred<{ thread: ThreadSummary }>();
+      const createProjectThread = vi.fn().mockReturnValue(creation.promise);
+      const updateThreadSettings = vi.fn().mockResolvedValue({
+        ...thread,
+        settings: {
+          collaborationMode: "plan",
+          ...(expectedTier ? { serviceTier: expectedTier } : {}),
+        },
+      });
+      const context = mockConnection({
+        createProjectThread,
+        updateThreadSettings,
+        models: [{ ...model, serviceTiers: [{ id: "priority", displayName: "Fast" }] }],
+        taskDefaults: { serviceTier: defaultTier },
+      });
+      connection.mockReturnValue(context);
+      renderNewSession();
+      const textbox = await screen.findByRole("textbox", { name: "Сообщение для Codex" });
+      fireEvent.click(screen.getByRole("button", { name: "Модель и уровень рассуждений" }));
+      fireEvent.click(screen.getByRole("switch", { name: /^Fast mode/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
+      expect(updateThreadSettings).not.toHaveBeenCalled();
+      fireEvent.change(textbox, { target: { value: "Первое сообщение" } });
+      fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+      await waitFor(() => expect(createProjectThread).toHaveBeenCalledOnce());
+      creation.resolve({
+        thread: {
+          ...thread,
+          settings: {
+            collaborationMode: "plan",
+            ...(defaultTier ? { serviceTier: defaultTier } : {}),
+          },
+        },
+      });
+      await waitFor(() => expect(context.sendReliable).toHaveBeenCalledOnce());
+      expect(updateThreadSettings).toHaveBeenCalledWith(thread.id, { serviceTier: expectedTier });
+      expect(updateThreadSettings.mock.invocationCallOrder[0]).toBeLessThan(
+        context.sendReliable.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it.each([
+    { restoredTier: undefined, defaultTier: "fast", createdTier: "fast", expectedTier: null },
+    {
+      restoredTier: "priority",
+      defaultTier: undefined,
+      createdTier: undefined,
+      expectedTier: "fast",
+    },
+  ])(
+    "restores saved Fast $restoredTier against a newer default $defaultTier",
+    async ({ restoredTier, defaultTier, createdTier, expectedTier }) => {
+      drafts.load.mockResolvedValue({
+        value: { input: "Сохранённое сообщение", images: [], annotations: [], goalMode: false },
+        settings: {
+          collaborationMode: "plan",
+          ...(restoredTier ? { serviceTier: restoredTier } : {}),
+        },
+        submission: {
+          id: "saved-message",
+          input: "Сохранённое сообщение",
+          intent: "queue",
+          draft: { input: "Сохранённое сообщение", images: [], annotations: [], goalMode: false },
+        },
+        phase: "creating",
+        threadId: null,
+        thread: null,
+        revision: 1,
+      });
+      const created = {
+        ...thread,
+        settings: {
+          collaborationMode: "plan" as const,
+          ...(createdTier ? { serviceTier: createdTier } : {}),
+        },
+      };
+      const updateThreadSettings = vi.fn().mockResolvedValue({
+        ...thread,
+        settings: {
+          collaborationMode: "plan",
+          ...(expectedTier ? { serviceTier: expectedTier } : {}),
+        },
+      });
+      const creation = deferred<{ thread: ThreadSummary }>();
+      const createProjectThread = vi.fn().mockReturnValue(creation.promise);
+      const context = mockConnection({
+        models: [{ ...model, serviceTiers: [{ id: "priority", displayName: "Fast" }] }],
+        taskDefaults: { serviceTier: defaultTier },
+        createProjectThread,
+        updateThreadSettings,
+      });
+      connection.mockReturnValue(context);
+      renderNewSession();
+      await waitFor(() => expect(createProjectThread).toHaveBeenCalledOnce());
+      const opener = screen.getByRole("button", { name: "Модель и уровень рассуждений" });
+      if (restoredTier) expect(opener).toHaveTextContent("Fast");
+      else expect(opener).not.toHaveTextContent("Fast");
+      creation.resolve({ thread: created });
+      await waitFor(() =>
+        expect(updateThreadSettings).toHaveBeenCalledWith(thread.id, { serviceTier: expectedTier }),
+      );
+      await waitFor(() => expect(context.sendReliable).toHaveBeenCalledOnce());
+      expect(updateThreadSettings.mock.invocationCallOrder[0]).toBeLessThan(
+        context.sendReliable.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it("restores an abandoned early submission with Fast off on an unsupported model", async () => {
     let stored: {
       projectId: string;
       value: ThreadDraft;
@@ -952,6 +1067,7 @@ function mockConnection({
   sendQueuedNow = vi.fn(),
   sendReliable = vi.fn(),
   taskDefaults,
+  updateThreadSettings = vi.fn(),
   updateThreadDraft = vi.fn(),
   dispatch = vi.fn(),
   queueVoiceRecording = vi.fn(),
@@ -971,6 +1087,7 @@ function mockConnection({
     serviceTier?: string;
     personality?: string;
   };
+  updateThreadSettings?: ReturnType<typeof vi.fn>;
   updateThreadDraft?: ReturnType<typeof vi.fn>;
   dispatch?: ReturnType<typeof vi.fn>;
   queueVoiceRecording?: ReturnType<typeof vi.fn>;
@@ -987,6 +1104,7 @@ function mockConnection({
       settings: connectionSettings,
       transcribe: vi.fn(),
       updateThreadDraft,
+      updateThreadSettings,
     },
     dispatch,
     sendReliable,

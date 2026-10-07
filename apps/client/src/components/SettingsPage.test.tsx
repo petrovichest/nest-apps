@@ -502,10 +502,11 @@ describe("SettingsPage", () => {
     expect(onSwitchServer).toHaveBeenCalledOnce();
   });
 
-  it("stores model, title model and personality as server defaults", async () => {
+  it("stores Fast independently of model support alongside other defaults", async () => {
     const updateTaskDefaults = vi.fn().mockResolvedValue({
       model: "gpt",
       titleModel: "gpt",
+      serviceTier: "fast",
       personality: "friendly",
     });
     connection.mockReturnValue({
@@ -546,6 +547,10 @@ describe("SettingsPage", () => {
       target: { value: "gpt" },
     });
     expect(screen.queryByRole("combobox", { name: "Service tier" })).not.toBeInTheDocument();
+    const fastToggle = screen.getByRole("switch", { name: "Fast mode по умолчанию" });
+    expect(fastToggle).toBeEnabled();
+    expect(fastToggle).not.toBeChecked();
+    fireEvent.click(fastToggle);
     fireEvent.change(screen.getByRole("combobox", { name: "Personality" }), {
       target: { value: "friendly" },
     });
@@ -555,9 +560,45 @@ describe("SettingsPage", () => {
       expect(updateTaskDefaults).toHaveBeenCalledWith({
         model: "gpt",
         titleModel: "gpt",
+        serviceTier: "fast",
         personality: "friendly",
       }),
     );
+  });
+
+  it("restores a priority default and saves explicit Fast off", async () => {
+    const updateTaskDefaults = vi.fn().mockResolvedValue({});
+    const api = {
+      readPermissionSettings: vi.fn().mockResolvedValue({
+        preset: "auto",
+        version: "version-1",
+        overridden: false,
+        message: null,
+      }),
+      updateTaskDefaults,
+    };
+    connection.mockReturnValue({
+      api,
+      state: { snapshot: { taskDefaults: { serviceTier: "priority" }, models: [] } },
+    });
+    renderPage();
+    openSection("Codex");
+    const fastToggle = screen.getByRole("switch", { name: "Fast mode по умолчанию" });
+    expect(fastToggle).toBeChecked();
+    expect(fastToggle).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Сохранить настройки новых задач" })).toBeDisabled();
+    fireEvent.click(fastToggle);
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить настройки новых задач" }));
+    await waitFor(() => expect(updateTaskDefaults).toHaveBeenCalledWith({ serviceTier: null }));
+    expect(fastToggle).not.toBeChecked();
+
+    connection.mockReturnValue({
+      api,
+      state: { snapshot: { taskDefaults: { serviceTier: "fast" }, models: [] } },
+    });
+    openSection("Приложение");
+    openSection("Codex");
+    expect(fastToggle).toBeChecked();
   });
 
   it("ignores a legacy service-tier default while preserving other stale and unsaved values", async () => {

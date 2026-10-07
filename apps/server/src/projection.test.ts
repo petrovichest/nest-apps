@@ -28,6 +28,7 @@ class FakeBridge extends EventEmitter {
     private readonly active = false,
     private readonly activeGoal = false,
     private readonly resumedUpdatedAt = 5,
+    private readonly serviceTiers: string[] = [],
   ) {
     super();
   }
@@ -70,7 +71,7 @@ class FakeBridge extends EventEmitter {
             inputModalities: ["text"],
             supportsPersonality: true,
             additionalSpeedTiers: [],
-            serviceTiers: [],
+            serviceTiers: this.serviceTiers.map((id) => ({ id, name: id, description: "" })),
             defaultServiceTier: null,
             isDefault: true,
           },
@@ -113,6 +114,145 @@ afterEach(async () =>
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   ),
 );
+
+describe("Fast settings", () => {
+  it.each([
+    { tiers: ["priority"], expected: "fast" },
+    { tiers: ["fast"], expected: "fast" },
+    { tiers: [], expected: undefined },
+  ])("copies defaults only for supported models: $tiers", async ({ tiers, expected }) => {
+    const { bridge, projection, store } = await fastSettingsHarness(tiers);
+    await projection.sync();
+    bridge.request.mockClear();
+    await projection.setSettings("one", { collaborationMode: "default" });
+    await projection.setSettings("two", { collaborationMode: "plan", serviceTier: "fast" });
+
+    await projection.setTaskDefaults({ serviceTier: "priority" });
+    expect(projection.snapshot().taskDefaults).toEqual({ serviceTier: "fast" });
+    expect(projection.newSessionSettings.serviceTier).toBe(expected);
+    expect(projection.summary("one")?.settings.serviceTier).toBeUndefined();
+    expect(projection.summary("two")?.settings.serviceTier).toBe("fast");
+
+    await projection.setTaskDefaults({});
+    expect(projection.newSessionSettings.serviceTier).toBeUndefined();
+    expect(projection.summary("two")?.settings.serviceTier).toBe("fast");
+    expect(store.view().taskDefaults).toBeUndefined();
+    expect(bridge.request).not.toHaveBeenCalled();
+  });
+
+  it("normalizes session choices, publishes changes and restores them after reload", async () => {
+    const { bridge, projection, store } = await fastSettingsHarness(["priority"]);
+    projection.upsertThread(thread("one", "/work", 5));
+    const events: ServerEvent[] = [];
+    projection.on("event", (_sequence, event) => events.push(event));
+
+    const enabled = await projection.setSettings("one", {
+      collaborationMode: "plan",
+      serviceTier: "priority",
+    });
+    expect(enabled.settings).toEqual({ collaborationMode: "plan", serviceTier: "fast" });
+    expect(events).toContainEqual({ type: "thread.upserted", thread: enabled });
+    await store.flushed();
+    const reloaded = new StateStore(store.path);
+    await reloaded.load();
+    const restored = new AppProjection(
+      bridge as unknown as CodexBridge,
+      reloaded,
+      new AttentionManager(),
+    );
+    restored.upsertThread(thread("one", "/work", 5));
+    expect(restored.summary("one")?.settings.serviceTier).toBe("fast");
+    await restored.setSettings("one", {
+      collaborationMode: "plan",
+      serviceTier: "legacy-unknown",
+    });
+    expect(restored.summary("one")?.settings.serviceTier).toBeUndefined();
+    expect(bridge.request).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { tiers: ["fast", "priority"], savedTier: "fast", expected: "priority" },
+    { tiers: ["fast"], savedTier: "priority", expected: "fast" },
+    { tiers: [], savedTier: "fast", expected: null },
+    { tiers: ["priority"], savedTier: undefined, expected: null },
+  ])(
+    "rejoins using saved $savedTier and advertised $tiers as $expected",
+    async ({ tiers, savedTier, expected }) => {
+      const { bridge, projection, store } = await fastSettingsHarness(tiers, true);
+      await store.update((state) => {
+        state.taskDefaults = { serviceTier: "fast" };
+        state.threadMeta.one = {
+          pinned: false,
+          lastReadUpdatedAt: 0,
+          settings: {
+            collaborationMode: "default",
+            ...(savedTier ? { serviceTier: savedTier } : {}),
+          },
+        };
+      });
+      projection.setThreadResumeConfigProvider(() => ({ config: { example: true } }));
+
+      await projection.sync();
+
+      expect(bridge.request).toHaveBeenCalledWith(
+        "thread/resume",
+        { threadId: "one", config: { example: true }, serviceTier: expected },
+        30_000,
+      );
+      expect(bridge.request.mock.calls.filter(([method]) => method === "model/list")).toHaveLength(
+        1,
+      );
+      expect(projection.summary("one")?.settings.serviceTier).toBe(savedTier ? "fast" : undefined);
+    },
+  );
+
+  it.each([
+    { resolvedServiceTier: "fast", resolvedModel: "gpt", expected: "priority" },
+    { resolvedServiceTier: null, resolvedModel: "gpt", expected: null },
+    { resolvedServiceTier: "fast", resolvedModel: "unavailable", expected: null },
+  ])(
+    "rejoins managed tasks with saved $resolvedServiceTier on $resolvedModel",
+    async ({ resolvedServiceTier, resolvedModel, expected }) => {
+      const { bridge, projection, store } = await fastSettingsHarness(["priority"], true);
+      await store.update((state) => {
+        state.threadMeta.two = {
+          pinned: false,
+          lastReadUpdatedAt: 0,
+          settings: { collaborationMode: "team", serviceTier: "fast" },
+          managedTeamToolsAvailable: true,
+          teamOrchestration: {
+            tasks: {
+              task: {
+                id: "task",
+                childThreadId: "one",
+                title: "Task",
+                prompt: "Finish task",
+                status: "running",
+                resolvedModel,
+                resolvedServiceTier,
+                createdAt: 1,
+                lastActivityAt: 1,
+              },
+            },
+          },
+        };
+        state.threadMeta.one = {
+          pinned: false,
+          lastReadUpdatedAt: 0,
+          managedParent: { parentThreadId: "two", taskId: "task" },
+        };
+      });
+
+      await projection.sync();
+
+      expect(bridge.request).toHaveBeenCalledWith(
+        "thread/resume",
+        { threadId: "one", serviceTier: expected },
+        30_000,
+      );
+    },
+  );
+});
 
 describe("session result viewing", () => {
   const result: Thread["turns"][number] = {
@@ -7621,6 +7761,25 @@ async function searchHarness() {
   const store = new StateStore(join(directory, "state.json"));
   await store.load();
   const bridge = new FakeBridge();
+  const projection = new AppProjection(
+    bridge as unknown as CodexBridge,
+    store,
+    new AttentionManager(),
+  );
+  return { store, bridge, projection };
+}
+
+async function fastSettingsHarness(tiers: string[], active = false) {
+  const directory = await mkdtemp(join(tmpdir(), "codexnest-fast-settings-test-"));
+  directories.push(directory);
+  const store = new StateStore(join(directory, "state.json"));
+  await store.load();
+  const bridge = new FakeBridge(active, false, 5, tiers);
+  const request = bridge.request.getMockImplementation()!;
+  bridge.request.mockImplementation(async (method, params) => {
+    if (method === "thread/loaded/list") return { data: [], nextCursor: null };
+    return request(method, params);
+  });
   const projection = new AppProjection(
     bridge as unknown as CodexBridge,
     store,

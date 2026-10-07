@@ -20,6 +20,8 @@ import {
   BROWSER_TOOL_RESULT_CHUNK_BYTES,
   BROWSER_TOOL_NAMES,
   bearerHeader,
+  fastServiceTier,
+  isFastServiceTier,
   mergeProjectDraft,
   isActiveFeedEligible,
   isBrowserExtensionClientFrame,
@@ -27,6 +29,31 @@ import {
   isClientFrame,
   isServerFrame,
 } from "./index.js";
+
+describe("Fast service tiers", () => {
+  it.each(["fast", "priority"])("recognizes the %s alias", (tier) => {
+    expect(isFastServiceTier(tier)).toBe(true);
+  });
+
+  it.each([undefined, null, "", "auto", "standard", 1])("does not enable Fast for %j", (tier) => {
+    expect(isFastServiceTier(tier)).toBe(false);
+  });
+
+  it.each([
+    { tiers: ["fast", "priority"], expected: "priority" },
+    { tiers: ["fast"], expected: "fast" },
+    { tiers: ["standard"], expected: null },
+    { tiers: [], expected: null },
+  ])("resolves advertised tiers $tiers to $expected", ({ tiers, expected }) => {
+    expect(fastServiceTier({ serviceTiers: tiers.map((id) => ({ id, displayName: id })) })).toBe(
+      expected,
+    );
+  });
+
+  it("treats an absent model as unsupported", () => {
+    expect(fastServiceTier(undefined)).toBeNull();
+  });
+});
 
 const activeFeedThread: ThreadSummary = {
   id: "thread",

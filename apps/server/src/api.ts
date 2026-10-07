@@ -1,4 +1,6 @@
 import {
+  fastServiceTier,
+  isFastServiceTier,
   mergeProjectDraft,
   copyPastedMessage,
   pastedText,
@@ -612,7 +614,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         threadId,
         cwd: summary.cwd,
         excludeTurns: true,
-        ...threadSettings(settings),
+        ...threadSettings(settings, projection.availableModels),
         ...(store.view().threadMeta[threadId]?.sessionArtifactsVersion === 1
           ? { developerInstructions: SESSION_ARTIFACT_INSTRUCTIONS }
           : {}),
@@ -763,7 +765,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
             threadId,
             cwd: currentSummary.cwd,
             excludeTurns: true,
-            ...threadSettings(currentSummary.settings),
+            ...threadSettings(currentSummary.settings, projection.availableModels),
             ...(store.view().threadMeta[threadId]?.sessionArtifactsVersion === 1
               ? { developerInstructions: SESSION_ARTIFACT_INSTRUCTIONS }
               : {}),
@@ -962,7 +964,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         const params = {
           clientCreationId,
           cwd: project.path,
-          ...threadSettings(settings),
+          ...threadSettings(settings, projection.availableModels),
           developerInstructions: SESSION_ARTIFACT_INSTRUCTIONS,
           dynamicTools: ROOT_DYNAMIC_TOOLS,
           ...(settings.collaborationMode === "team" ? { config: teamRuntimeConfig() } : {}),
@@ -1023,7 +1025,10 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     const pending = cloneView<QueuedMessage[]>(store.view().messageQueues![source.id]!);
     const draft = cloneView<ThreadDraft | null>(store.view().threadMeta[source.id]?.draft ?? null);
     const thread = await getOrCreateProjectThread(source.projectId, `recover-first:${source.id}`);
-    const target = await updateThreadSettings(thread.id, source.settings);
+    const target = await updateThreadSettings(thread.id, {
+      ...source.settings,
+      serviceTier: source.settings.serviceTier ?? null,
+    });
     const copiedFiles = new Map<string, ThreadFileAttachment>();
     for (const file of [
       ...pending.flatMap((message) => message.files ?? []),
@@ -1107,10 +1112,11 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         await coldResumeThread(
           bridge,
           threadId,
-          browserResumeParams(store, summary, baseConfig),
+          browserResumeParams(store, summary, projection.availableModels, baseConfig),
           browserResumeParams(
             store,
             summary,
+            projection.availableModels,
             browserExtension.mcpConfig(staleBinding.bindingId, baseConfig),
           ),
           persist,
@@ -1145,8 +1151,18 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           ? browserExtension.mcpConfig(existing.bindingId, baseConfig)
           : baseConfig;
         const browserConfig = browserExtension.mcpConfig(effectiveBindingId, baseConfig);
-        const baseParams = browserResumeParams(store, summary, baselineConfig);
-        const browserParams = browserResumeParams(store, summary, browserConfig);
+        const baseParams = browserResumeParams(
+          store,
+          summary,
+          projection.availableModels,
+          baselineConfig,
+        );
+        const browserParams = browserResumeParams(
+          store,
+          summary,
+          projection.availableModels,
+          browserConfig,
+        );
         await coldResumeThread(bridge, threadId, browserParams, baseParams, async () => {
           await store.update((state) => {
             const meta = state.threadMeta[threadId];
@@ -1206,9 +1222,15 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         const browserParams = browserResumeParams(
           store,
           summary,
+          projection.availableModels,
           browserExtension.mcpConfig(binding.bindingId, baseConfig),
         );
-        const baseParams = browserResumeParams(store, summary, baseConfig);
+        const baseParams = browserResumeParams(
+          store,
+          summary,
+          projection.availableModels,
+          baseConfig,
+        );
         await coldResumeThread(bridge, threadId, baseParams, browserParams, async () => {
           await store.update((state) => {
             const meta = state.threadMeta[threadId];
@@ -1906,7 +1928,10 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
                 threadId: operation.sourceThreadId,
                 lastTurnId: operation.lastTurnId,
                 excludeTurns: true,
-                serviceTier: null,
+                serviceTier: sessionServiceTier(
+                  operation.sourceSettings,
+                  projection.availableModels,
+                ),
                 threadSource: temporarySource,
               },
               FORK_RPC_TIMEOUT_MS,
@@ -2127,7 +2152,10 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
                   threadId: operation.sourceThreadId,
                   lastTurnId: operation.lastTurnId,
                   excludeTurns: true,
-                  serviceTier: null,
+                  serviceTier: sessionServiceTier(
+                    operation.sourceSettings,
+                    projection.availableModels,
+                  ),
                   threadSource: sourceName,
                 },
                 FORK_RPC_TIMEOUT_MS,
@@ -2228,7 +2256,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
               "thread/start",
               {
                 cwd: operation.sourceCwd,
-                ...threadSettings(operation.sourceSettings),
+                ...threadSettings(operation.sourceSettings, projection.availableModels),
                 threadSource: sourceName,
                 developerInstructions: SESSION_ARTIFACT_INSTRUCTIONS,
                 dynamicTools: ROOT_DYNAMIC_TOOLS,
@@ -2441,7 +2469,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
             threadId,
             cwd: summary.cwd,
             excludeTurns: true,
-            ...threadSettings(summary.settings),
+            ...threadSettings(summary.settings, projection.availableModels),
             ...runtimeConfigOverride(browserExtension, threadId, {}),
           },
           30_000,
@@ -2500,7 +2528,11 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
             excludeTurns: true,
             ...(managed
               ? {
-                  ...managedChildResumeSettings(parent.settings, projection.availableModels),
+                  ...managedChildResumeSettings(
+                    parent.settings,
+                    projection.availableModels,
+                    managed.task,
+                  ),
                   ...(runtime?.runtimeWorkspaceRoots
                     ? { runtimeWorkspaceRoots: runtime.runtimeWorkspaceRoots }
                     : {}),
@@ -2508,7 +2540,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
                   config: teamRuntimeConfig(),
                 }
               : {
-                  ...threadSettings(summary.settings),
+                  ...threadSettings(summary.settings, projection.availableModels),
                   ...runtimeConfigOverride(
                     browserExtension,
                     threadId,
@@ -4845,7 +4877,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
             threadId: source.id,
             lastTurnId: point.turn.id,
             excludeTurns: true,
-            serviceTier: null,
+            serviceTier: sessionServiceTier(source.settings, projection.availableModels),
           },
           FORK_RPC_TIMEOUT_MS,
         ),
@@ -5750,7 +5782,10 @@ async function handleManagedTeamToolCall(
       access: options.access,
       resolvedModel: options.model,
       resolvedReasoningEffort: options.reasoningEffort,
-      resolvedServiceTier: null,
+      resolvedServiceTier: sessionServiceTier(
+        { ...parent.settings, model: options.model },
+        projection.availableModels,
+      ),
       ...(reusesWorkspace && task.workspace
         ? { workspace: cloneView<NonNullable<ManagedTeamTaskState["workspace"]>>(task.workspace) }
         : {}),
@@ -6057,6 +6092,10 @@ async function createManagedTeamTask(
     throw new ProjectConflictError("This Team session does not have managed tools");
   }
   const creationId = `team-child:${parent.id}:${taskId}`;
+  const serviceTier = sessionServiceTier(
+    { ...parent.settings, model: options.model },
+    projection.availableModels,
+  );
   let child = recoveredThread;
   if (!child) {
     await store.update((state) => {
@@ -6068,7 +6107,7 @@ async function createManagedTeamTask(
           clientCreationId: creationId,
           cwd: parent.cwd,
           model: options.model,
-          serviceTier: null,
+          serviceTier,
           ...(parent.settings.personality ? { personality: parent.settings.personality } : {}),
           config: teamRuntimeConfig(),
           developerInstructions: TEAM_CHILD_INSTRUCTIONS,
@@ -6105,7 +6144,7 @@ async function createManagedTeamTask(
     access: options.access,
     resolvedModel: options.model,
     resolvedReasoningEffort: options.reasoningEffort,
-    resolvedServiceTier: null,
+    resolvedServiceTier: serviceTier,
     createdAt: now,
     lastActivityAt: now,
   };
@@ -6361,7 +6400,13 @@ async function startQueuedTeamTasks(
           queued.resolvedReasoningEffort,
           parent.settings.reasoningEffort,
         ]),
-        resolvedServiceTier: null,
+        resolvedServiceTier: isFastServiceTier(
+          queued.resolvedServiceTier === undefined
+            ? parent.settings.serviceTier
+            : queued.resolvedServiceTier,
+        )
+          ? fastServiceTier(model)
+          : null,
       };
       await store.update((state) => {
         const task = state.threadMeta[parentThreadId]?.teamOrchestration?.tasks[queued.id];
@@ -6387,7 +6432,7 @@ async function startQueuedTeamTasks(
             : {}),
           approvalPolicy: "never" as const,
           excludeTurns: true,
-          ...managedChildResumeSettings(parent.settings, projection.availableModels),
+          ...managedChildResumeSettings(parent.settings, projection.availableModels, launchTask),
           config: teamRuntimeConfig(),
           developerInstructions: TEAM_CHILD_INSTRUCTIONS,
         },
@@ -8187,9 +8232,11 @@ function managedChildTurnSettings(
     task?.resolvedReasoningEffort,
     settings.reasoningEffort,
   ]);
+  const serviceTier =
+    task?.resolvedServiceTier === undefined ? settings.serviceTier : task.resolvedServiceTier;
   return compact({
     model: model.id,
-    serviceTier: null,
+    serviceTier: isFastServiceTier(serviceTier) ? fastServiceTier(model) : null,
     effort,
     personality: settings.personality,
     additionalContext: {
@@ -8217,11 +8264,14 @@ function managedChildTurnSettings(
 function managedChildResumeSettings(
   settings: SessionSettings,
   models: ModelOption[],
+  task?: ManagedTeamTaskView,
 ): Record<string, unknown> {
   const model = managedChildModel(models);
+  const serviceTier =
+    task?.resolvedServiceTier === undefined ? settings.serviceTier : task.resolvedServiceTier;
   return compact({
     model: model.id,
-    serviceTier: null,
+    serviceTier: isFastServiceTier(serviceTier) ? fastServiceTier(model) : null,
     personality: settings.personality,
   });
 }
@@ -8381,11 +8431,20 @@ function requireAppManager(manager: AppManager | undefined): AppManager {
   return manager;
 }
 
-function threadSettings(settings?: SessionSettings): Record<string, unknown> {
+function sessionServiceTier(settings: SessionSettings, models: ModelOption[]): string | null {
+  return isFastServiceTier(settings.serviceTier)
+    ? fastServiceTier(effectiveModel(settings, models))
+    : null;
+}
+
+function threadSettings(
+  settings: SessionSettings | undefined,
+  models: ModelOption[],
+): Record<string, unknown> {
   if (!settings) return { serviceTier: null };
   return compact({
     model: settings.model,
-    serviceTier: null,
+    serviceTier: sessionServiceTier(settings, models),
     personality: settings.personality,
   });
 }
@@ -8402,13 +8461,14 @@ function runtimeConfigOverride(
 function browserResumeParams(
   store: StateStore,
   summary: ThreadSummary,
+  models: ModelOption[],
   config: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
     threadId: summary.id,
     cwd: summary.cwd,
     excludeTurns: true,
-    ...threadSettings(summary.settings),
+    ...threadSettings(summary.settings, models),
     ...(store.view().threadMeta[summary.id]?.sessionArtifactsVersion === 1
       ? { developerInstructions: SESSION_ARTIFACT_INSTRUCTIONS }
       : {}),
@@ -8481,7 +8541,7 @@ function turnSettings(
     null;
   return compact({
     model: settings.model,
-    serviceTier: null,
+    serviceTier: sessionServiceTier(settings, models),
     effort: settings.reasoningEffort,
     personality: settings.personality,
     collaborationMode: {
@@ -9266,9 +9326,17 @@ function mergeSettings(
   models: ModelOption[],
 ): SessionSettings {
   const next = applySettingsPatch(current, patch);
-  delete next.serviceTier;
+  if (isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
+  else delete next.serviceTier;
   const model = effectiveModel(next, models);
   if (!model) throw new ProjectValidationError("Unknown model");
+
+  if (next.serviceTier && !fastServiceTier(model)) {
+    if (isFastServiceTier(patch.serviceTier)) {
+      throw new ProjectValidationError("Fast mode is not supported by the selected model");
+    }
+    delete next.serviceTier;
+  }
 
   if (
     next.reasoningEffort &&
@@ -9301,7 +9369,7 @@ function applySettingsPatch(
       UpdateThreadSettingsRequest[keyof UpdateThreadSettingsRequest],
     ]
   >) {
-    if (key === "serviceTier") continue;
+    if (key === "serviceTier" && value !== null && !isFastServiceTier(value)) continue;
     if (value === null) delete next[key as keyof SessionSettings];
     else if (value !== undefined) Object.assign(next, { [key]: value });
   }
@@ -9343,7 +9411,10 @@ function mergeTaskDefaults(
   models: ModelOption[],
 ): TaskDefaults {
   const next = { ...current };
-  delete next.serviceTier;
+  if (isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
+  else delete next.serviceTier;
+  if (patch.serviceTier === null) delete next.serviceTier;
+  else if (isFastServiceTier(patch.serviceTier)) next.serviceTier = "fast";
   if (patch.model !== undefined) {
     const model = validateTaskDefaultModel(patch.model, models);
     if (model) next.model = model;

@@ -221,6 +221,12 @@ describe("model capacity recovery", () => {
     async (mode) => {
       const context = await harness(mode);
       try {
+        await context.projection.setSettings("thread", {
+          collaborationMode: mode,
+          model: "gpt-a",
+          reasoningEffort: "high",
+          serviceTier: "fast",
+        });
         await fail(context);
         expect(context.projection.summary("thread")).toMatchObject({
           state: "running",
@@ -239,6 +245,7 @@ describe("model capacity recovery", () => {
           expect(starts.at(-1)?.[1]).toMatchObject({
             model: "gpt-a",
             effort: "high",
+            serviceTier: "fast",
             collaborationMode: { mode },
             clientUserMessageId: expect.stringContaining(CAPACITY_RETRY_MESSAGE_PREFIX),
           });
@@ -248,6 +255,9 @@ describe("model capacity recovery", () => {
           ).toEqual([]);
           if (attempt < 2) await fail(context, turnId);
         }
+        expect(context.bridge.request.mock.calls.some(([method]) => method === "model/list")).toBe(
+          false,
+        );
         const successful = testTurn(
           context.projection.summary("thread")!.currentTurnId!,
           "completed",
@@ -3397,6 +3407,11 @@ describe("session forks", () => {
 
   it("persists an idempotent 202 operation, reloads pending detail, and transfers composer state", async () => {
     const harness = await createForkHarness();
+    await harness.projection.setSettings("thread", {
+      collaborationMode: "default",
+      model: "gpt-a",
+      serviceTier: "fast",
+    });
     harness.bridge.state = "disconnected" as never;
     harness.bridge.threadTurns.set("thread", [
       {
@@ -3507,12 +3522,13 @@ describe("session forks", () => {
         threadId: "thread",
         threadSource: "codexnest-fork:operation",
         excludeTurns: true,
+        serviceTier: "fast",
       }),
       600_000,
     );
     expect(harness.bridge.request).toHaveBeenCalledWith(
       "turn/start",
-      expect.objectContaining({ threadId: "fork" }),
+      expect.objectContaining({ threadId: "fork", serviceTier: "fast" }),
     );
     await harness.app.close();
   });
@@ -3740,6 +3756,11 @@ describe("session forks", () => {
 
   it("creates a fresh compaction in a temporary fork and injects only its replacement", async () => {
     const harness = await createForkHarness();
+    await harness.projection.setSettings("thread", {
+      collaborationMode: "default",
+      model: "gpt-a",
+      serviceTier: "fast",
+    });
     const directory = await mkdtemp(join(tmpdir(), "codexnest-compressed-fork-test-"));
     directories.push(directory);
     const rolloutPath = join(directory, "rollout.jsonl");
@@ -3804,6 +3825,7 @@ describe("session forks", () => {
         threadId: "thread",
         lastTurnId: "selected-turn",
         threadSource: "codexnest-fork-temp:compressed-operation",
+        serviceTier: "fast",
       }),
       600_000,
     );
@@ -3816,7 +3838,8 @@ describe("session forks", () => {
       "thread/start",
       expect.objectContaining({
         cwd: "/work",
-        model: "gpt-b",
+        model: "gpt-a",
+        serviceTier: "fast",
         threadSource: "codexnest-fork:compressed-operation",
       }),
       600_000,
@@ -4906,13 +4929,19 @@ describe("task defaults", () => {
     ).toEqual({
       model: "gpt-a",
       titleModel: "gpt-b",
+      serviceTier: "fast",
       personality: "friendly",
     });
     expect((await save({ titleModel: null })).json()).toEqual({
       model: "gpt-a",
+      serviceTier: "fast",
       personality: "friendly",
     });
     expect((await save({ model: null })).json()).toEqual({
+      serviceTier: "fast",
+      personality: "friendly",
+    });
+    expect((await save({ serviceTier: null })).json()).toEqual({
       personality: "friendly",
     });
 
@@ -4938,6 +4967,377 @@ describe("task defaults", () => {
       personality: "friendly",
     });
     await harness.app.close();
+  });
+});
+
+describe("Fast session settings", () => {
+  it("copies the default only into new sessions and persists canonical Fast", async () => {
+    const { app, bridge, headers, projection, store } = await createForkHarness();
+    try {
+      const save = (payload: Record<string, string | null>) =>
+        app.inject({
+          method: "PUT",
+          url: "/api/v1/settings/task-defaults",
+          headers,
+          payload,
+        });
+      const enabled = await save({ model: "gpt-a", serviceTier: "priority" });
+      expect(enabled.statusCode).toBe(200);
+      expect(enabled.json()).toEqual({ model: "gpt-a", serviceTier: "fast" });
+      expect(projection.summary("thread")?.settings).not.toHaveProperty("serviceTier");
+
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/threads",
+        headers,
+        payload: { clientCreationId: "fast-default" },
+      });
+      expect(created.statusCode).toBe(201);
+      expect(created.json().thread.settings).toMatchObject({ model: "gpt-a", serviceTier: "fast" });
+      expect(
+        bridge.request.mock.calls.findLast(([method]) => method === "thread/start")?.[1],
+      ).toMatchObject({ model: "gpt-a", serviceTier: "fast" });
+
+      await store.flushed();
+      const reopened = new StateStore(store.path);
+      await reopened.load();
+      expect(reopened.view().taskDefaults).toEqual({ model: "gpt-a", serviceTier: "fast" });
+      expect(reopened.view().threadMeta.created?.settings?.serviceTier).toBe("fast");
+
+      expect((await save({ serviceTier: null })).json()).toEqual({ model: "gpt-a" });
+      expect(projection.summary("created")?.settings.serviceTier).toBe("fast");
+      bridge.nextCreatedThreadId = "standard-after-default-change";
+      const standard = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/threads",
+        headers,
+        payload: { clientCreationId: "standard-default" },
+      });
+      expect(standard.statusCode).toBe(201);
+      expect(standard.json().thread.settings).not.toHaveProperty("serviceTier");
+      expect(
+        bridge.request.mock.calls.findLast(([method]) => method === "thread/start")?.[1],
+      ).toMatchObject({ model: "gpt-a", serviceTier: null });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps the global Fast preference when the new-session model does not support it", async () => {
+    const { app, bridge, headers, store } = await createForkHarness();
+    try {
+      const saved = await app.inject({
+        method: "PUT",
+        url: "/api/v1/settings/task-defaults",
+        headers,
+        payload: { model: "gpt-b", serviceTier: "fast" },
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toEqual({ model: "gpt-b", serviceTier: "fast" });
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/threads",
+        headers,
+        payload: { clientCreationId: "unsupported-default" },
+      });
+      expect(created.statusCode).toBe(201);
+      expect(created.json().thread.settings).not.toHaveProperty("serviceTier");
+      expect(
+        bridge.request.mock.calls.findLast(([method]) => method === "thread/start")?.[1],
+      ).toMatchObject({ model: "gpt-b", serviceTier: null });
+      expect(store.view().taskDefaults?.serviceTier).toBe("fast");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("normalizes Fast patches, ignores legacy tiers, clears explicitly, and validates model support", async () => {
+    const { app, bridge, headers, projection, store } = await createForkHarness();
+    try {
+      const patch = (payload: Record<string, string | null>) =>
+        app.inject({
+          method: "PATCH",
+          url: "/api/v1/threads/thread/settings",
+          headers,
+          payload,
+        });
+      expect((await patch({ serviceTier: "fast" })).statusCode).toBe(400);
+      expect(projection.summary("thread")?.settings).not.toHaveProperty("serviceTier");
+      bridge.request.mockClear();
+      const enabled = await patch({ model: "gpt-a", serviceTier: "priority" });
+      expect(enabled.statusCode).toBe(200);
+      expect(enabled.json().settings).toMatchObject({ model: "gpt-a", serviceTier: "fast" });
+      expect(store.view().threadMeta.thread?.settings?.serviceTier).toBe("fast");
+      expect((await patch({ serviceTier: "legacy-tier" })).json().settings.serviceTier).toBe(
+        "fast",
+      );
+      expect((await patch({ serviceTier: null })).json().settings).not.toHaveProperty(
+        "serviceTier",
+      );
+      expect((await patch({ serviceTier: "fast" })).json().settings.serviceTier).toBe("fast");
+      const switched = await patch({ model: "gpt-b" });
+      expect(switched.statusCode).toBe(200);
+      expect(switched.json().settings).not.toHaveProperty("serviceTier");
+      expect((await patch({ serviceTier: "priority" })).statusCode).toBe(400);
+      expect(bridge.request.mock.calls.some(([method]) => method === "thread/resume")).toBe(false);
+
+      bridge.emit("notification", {
+        method: "turn/started",
+        params: { threadId: "thread", turn: testTurn("busy", "inProgress") },
+      } satisfies ServerNotification);
+      expect((await patch({ serviceTier: null })).statusCode).toBe(409);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([
+    { tiers: [{ id: "fast", name: "Fast" }], wireTier: "fast" },
+    { tiers: [{ id: "priority", name: "Priority" }], wireTier: "priority" },
+    {
+      tiers: [
+        { id: "fast", name: "Fast" },
+        { id: "priority", name: "Priority" },
+      ],
+      wireTier: "priority",
+    },
+  ])(
+    "uses cached $wireTier support for creation, resume, and the retried message",
+    async ({ tiers, wireTier }) => {
+      const { app, bridge, headers, projection, store } = await createForkHarness();
+      try {
+        bridge.gptAServiceTiers = tiers;
+        await projection.sync();
+        await app.inject({
+          method: "PUT",
+          url: "/api/v1/settings/task-defaults",
+          headers,
+          payload: { model: "gpt-a", serviceTier: "fast" },
+        });
+        bridge.request.mockClear();
+        const created = await app.inject({
+          method: "POST",
+          url: "/api/v1/projects/project/threads",
+          headers,
+          payload: { clientCreationId: `wire-${wireTier}` },
+        });
+        expect(created.statusCode).toBe(201);
+        expect(
+          bridge.request.mock.calls.find(([method]) => method === "thread/start")?.[1],
+        ).toMatchObject({ model: "gpt-a", serviceTier: wireTier });
+        const original = bridge.request.getMockImplementation()!;
+        let unloaded = true;
+        bridge.request.mockImplementation(async (method, params = {}) => {
+          if (method === "turn/start" && params.threadId === "created" && unloaded)
+            throw new RpcError(-32600, "thread not loaded");
+          if (method === "thread/resume" && params.threadId === "created") unloaded = false;
+          return original(method, params);
+        });
+        const sent = await app.inject({
+          method: "POST",
+          url: "/api/v1/threads/created/queue",
+          headers,
+          payload: { input: "Continue in Fast", clientMessageId: `fast-${wireTier}` },
+        });
+        expect(sent.statusCode).toBe(202);
+        await vi.waitFor(() =>
+          expect(store.view().messageReceipts?.[`fast-${wireTier}`]?.turnId).toBeTruthy(),
+        );
+        const starts = bridge.request.mock.calls.filter(([method]) => method === "turn/start");
+        expect(starts).toHaveLength(2);
+        expect(starts[0]?.[1]).toEqual(starts[1]?.[1]);
+        expect(starts[1]?.[1]).toMatchObject({ serviceTier: wireTier });
+        expect(
+          bridge.request.mock.calls.findLast(([method]) => method === "thread/resume")?.[1],
+        ).toMatchObject({ serviceTier: wireTier });
+        expect(bridge.request.mock.calls.some(([method]) => method === "model/list")).toBe(false);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
+  it("sends an explicitly disabled session in the standard tier despite enabled defaults", async () => {
+    const { app, bridge, headers, projection } = await createForkHarness();
+    try {
+      await app.inject({
+        method: "PUT",
+        url: "/api/v1/settings/task-defaults",
+        headers,
+        payload: { model: "gpt-a", serviceTier: "fast" },
+      });
+      await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/threads",
+        headers,
+        payload: { clientCreationId: "off-before-first-turn" },
+      });
+      const cleared = await app.inject({
+        method: "PATCH",
+        url: "/api/v1/threads/created/settings",
+        headers,
+        payload: { serviceTier: null },
+      });
+      expect(cleared.statusCode).toBe(200);
+      expect(projection.summary("created")?.settings).not.toHaveProperty("serviceTier");
+      bridge.request.mockClear();
+      const sent = await app.inject({
+        method: "POST",
+        url: "/api/v1/threads/created/turns",
+        headers,
+        payload: { input: "Standard first turn", clientMessageId: "standard-first-turn" },
+      });
+      expect(sent.statusCode).toBe(201);
+      expect(
+        bridge.request.mock.calls.find(([method]) => method === "turn/start")?.[1],
+      ).toMatchObject({ model: "gpt-a", serviceTier: null });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("preserves Fast in native forks while title generation keeps its standard options", async () => {
+    const { app, bridge, headers, projection, threadTitles } = await createForkHarness();
+    try {
+      bridge.gptAServiceTiers = [{ id: "priority", name: "Priority" }];
+      await projection.sync();
+      await projection.setSettings("thread", {
+        collaborationMode: "default",
+        model: "gpt-a",
+        serviceTier: "fast",
+      });
+      bridge.threadTurns.set("thread", [
+        {
+          ...testTurn("fast-fork-turn", "completed"),
+          itemsView: "full",
+          items: [agentMessage("fast-fork-answer", "Fork this answer")],
+        },
+      ]);
+      const forked = await app.inject({
+        method: "POST",
+        url: "/api/v1/threads/thread/forks",
+        headers,
+        payload: { lastTurnId: "fast-fork-turn", agentMessageId: "fast-fork-answer" },
+      });
+      expect(forked.statusCode).toBe(201);
+      expect(forked.json().thread.settings).toMatchObject({ model: "gpt-a", serviceTier: "fast" });
+      expect(
+        bridge.request.mock.calls.findLast(([method]) => method === "thread/fork")?.[1],
+      ).toMatchObject({ serviceTier: "priority" });
+      expect(threadTitles.generate).toHaveBeenCalledWith("Fork this answer", {
+        cwd: "/work",
+        model: "gpt-a",
+        effort: "high",
+      });
+      const sent = await app.inject({
+        method: "POST",
+        url: "/api/v1/threads/fork/turns",
+        headers,
+        payload: { input: "Continue fork", clientMessageId: "fast-fork-continued" },
+      });
+      expect(sent.statusCode).toBe(201);
+      expect(
+        bridge.request.mock.calls.findLast(([method]) => method === "turn/start")?.[1],
+      ).toMatchObject({ serviceTier: "priority" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([
+    { tiers: [{ id: "fast", name: "Fast" }], wireTier: "fast" },
+    {
+      tiers: [
+        { id: "fast", name: "Fast" },
+        { id: "priority", name: "Priority" },
+      ],
+      wireTier: "priority",
+    },
+    { tiers: [], wireTier: null },
+  ])("inherits Team Fast using the child model's tier ($wireTier)", async ({ tiers, wireTier }) => {
+    const { app, bridge, projection, store } = await createTeamHarness();
+    try {
+      bridge.managedModelServiceTiers = tiers;
+      await projection.sync();
+      await projection.setSettings("thread", {
+        collaborationMode: "team",
+        model: "gpt-a",
+        reasoningEffort: "high",
+        serviceTier: "fast",
+      });
+      bridge.request.mockClear();
+      const spawned = dynamicToolJson(
+        await callTeamTool(bridge, "thread", "spawn_task", {
+          title: "Inherited Fast audit",
+          prompt: "Inspect the API.",
+          serviceTier: "legacy-tier",
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(
+          store.view().threadMeta.thread?.teamOrchestration?.tasks[String(spawned.taskId)]?.status,
+        ).toBe("running"),
+      );
+      expect(
+        store.view().threadMeta.thread?.teamOrchestration?.tasks[String(spawned.taskId)],
+      ).toMatchObject({ resolvedServiceTier: wireTier });
+      for (const method of ["thread/start", "thread/resume", "turn/start"]) {
+        const call = bridge.request.mock.calls.find(
+          ([candidate, params]) =>
+            candidate === method &&
+            (method === "thread/start"
+              ? String(params.threadSource).startsWith("codexnest-managed:")
+              : params.threadId === spawned.threadId),
+        );
+        expect(call?.[1]).toMatchObject({ model: "gpt-5.6-sol", serviceTier: wireTier });
+      }
+      expect(bridge.request.mock.calls.some(([method]) => method === "model/list")).toBe(false);
+
+      await callTeamTool(bridge, String(spawned.threadId), "submit_result", {
+        outcome: "success",
+        summary: "Inspection complete.",
+      });
+      bridge.emit("notification", {
+        method: "turn/completed",
+        params: {
+          threadId: String(spawned.threadId),
+          turn: { ...testTurn(`turn-${String(spawned.threadId)}`, "completed"), itemsView: "full" },
+        },
+      } satisfies ServerNotification);
+      await vi.waitFor(() =>
+        expect(
+          store.view().threadMeta.thread?.teamOrchestration?.tasks[String(spawned.taskId)]?.delivery
+            ?.status,
+        ).toBe("delivered"),
+      );
+      await projection.setSettings("thread", {
+        collaborationMode: "team",
+        model: "gpt-a",
+        reasoningEffort: "high",
+      });
+      const followup = dynamicToolJson(
+        await callTeamTool(bridge, "thread", "followup_task", {
+          taskId: spawned.taskId,
+          prompt: "Clarify the audit.",
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(
+          store.view().threadMeta.thread?.teamOrchestration?.tasks[String(followup.taskId)]?.status,
+        ).toBe("running"),
+      );
+      expect(followup.threadId).toBe(spawned.threadId);
+      expect(
+        store.view().threadMeta.thread?.teamOrchestration?.tasks[String(followup.taskId)],
+      ).toMatchObject({ resolvedServiceTier: null });
+      expect(
+        bridge.request.mock.calls.findLast(
+          ([method, params]) => method === "turn/start" && params.threadId === spawned.threadId,
+        )?.[1],
+      ).toMatchObject({ serviceTier: null });
+    } finally {
+      await app.close();
+    }
   });
 });
 
@@ -5597,6 +5997,7 @@ describe("thread settings", () => {
     expect(resetPreference.json().settings).toEqual({
       collaborationMode: "default",
       model: "gpt-a",
+      serviceTier: "fast",
       personality: "friendly",
     });
     expect(store.snapshot().defaultReasoningEffort).toBeUndefined();
@@ -6108,6 +6509,7 @@ describe("thread settings", () => {
     expect(store.snapshot().taskDefaults).toEqual({
       model: "gpt-a",
       titleModel: "gpt-b",
+      serviceTier: "fast",
       personality: "friendly",
     });
     expect(projection.summary("thread")?.settings).not.toMatchObject({ serviceTier: "fast" });
@@ -6120,6 +6522,7 @@ describe("thread settings", () => {
     });
     expect(withDefaults.json().thread.settings).toMatchObject({
       model: "gpt-a",
+      serviceTier: "fast",
       personality: "friendly",
     });
 
@@ -9251,6 +9654,8 @@ class SettingsBridge extends EventEmitter {
   managedThreads: Thread[] = [];
   threadTurns = new Map<string, Turn[]>();
   includeManagedModel = true;
+  gptAServiceTiers = [{ id: "fast", name: "Fast" }];
+  managedModelServiceTiers = [{ id: "fast", name: "Fast" }];
   skills = [
     {
       name: "review",
@@ -9326,10 +9731,10 @@ class SettingsBridge extends EventEmitter {
     if (method === "model/list") {
       return {
         data: [
-          testModel("gpt-a", "high", true, [{ id: "fast", name: "Fast" }]),
+          testModel("gpt-a", "high", true, this.gptAServiceTiers),
           testModel("gpt-b", "low", false, []),
           ...(this.includeManagedModel
-            ? [testModel("gpt-5.6-sol", "high", true, [{ id: "fast", name: "Fast" }])]
+            ? [testModel("gpt-5.6-sol", "high", true, this.managedModelServiceTiers)]
             : []),
         ],
         nextCursor: null,
@@ -10910,6 +11315,13 @@ describe.each([1, 0])("missing first-session recovery (delivery version %s)", (d
         annotations: [],
         goalMode: false,
       });
+      const fastDefaults = await app.inject({
+        method: "PUT",
+        url: "/api/v1/settings/task-defaults",
+        headers,
+        payload: { model: "gpt-a", serviceTier: "fast" },
+      });
+      expect(fastDefaults.statusCode).toBe(200);
       bridge.nextCreatedThreadId = "replacement";
       const retry = () =>
         app.inject({
@@ -10923,11 +11335,16 @@ describe.each([1, 0])("missing first-session recovery (delivery version %s)", (d
         thread: { id: "replacement" },
         turnId: "turn-replacement",
       });
+      expect(response.json().thread.settings).not.toHaveProperty("serviceTier");
+      expect(
+        bridge.request.mock.calls.findLast(([method]) => method === "thread/start")?.[1],
+      ).toMatchObject({ serviceTier: "fast" });
       expect(store.snapshot().messageQueues?.created).toEqual([]);
       expect(store.snapshot().threadMeta.replacement?.draft?.input).toBe("Следующий черновик");
       const started = bridge.request.mock.calls.find(
         ([method, params]) => method === "turn/start" && params.threadId === "replacement",
       );
+      expect(started?.[1]).toMatchObject({ serviceTier: null });
       expect(started?.[1].input).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ type: "image", url: "data:image/png;base64,AA==" }),

@@ -1,6 +1,8 @@
 import {
   appendUserInputRecordings,
   asyncQuestionReplyMessageId,
+  fastServiceTier,
+  isFastServiceTier,
   pastedText,
 } from "@codexnest/protocol";
 import { createHash, randomUUID } from "node:crypto";
@@ -331,6 +333,9 @@ export class AppProjection extends EventEmitter {
     const settings: SessionSettings = {
       ...DEFAULT_SESSION_SETTINGS,
       ...(explicitModel ? { model: explicitModel.id } : {}),
+      ...(isFastServiceTier(defaults.serviceTier) && fastServiceTier(model)
+        ? { serviceTier: "fast" }
+        : {}),
       ...(defaults.personality && (!model || model.supportsPersonality)
         ? { personality: defaults.personality }
         : {}),
@@ -1255,7 +1260,8 @@ export class AppProjection extends EventEmitter {
 
   async setTaskDefaults(taskDefaults: TaskDefaults): Promise<void> {
     const normalized = { ...taskDefaults };
-    delete normalized.serviceTier;
+    if (isFastServiceTier(normalized.serviceTier)) normalized.serviceTier = "fast";
+    else delete normalized.serviceTier;
     await this.store.update((state) => {
       if (Object.keys(normalized).length) state.taskDefaults = normalized;
       else delete state.taskDefaults;
@@ -2233,6 +2239,7 @@ export class AppProjection extends EventEmitter {
           })
         : Promise.resolve([]),
     ]);
+    this.models = models;
     const listedIds = new Set([...listedActive, ...archived].map((thread) => thread.id));
     const loadedIds = new Set(loadedThreadIds);
     const recovered = await this.readThreadsOmittedFromList(loadedThreadIds, listedIds);
@@ -2345,7 +2352,6 @@ export class AppProjection extends EventEmitter {
       }
     });
     await this.reconcileOutcomes(recoveryTurns);
-    this.models = models;
     this.syncedAt = new Date().toISOString();
     if (shouldRecoverLoaded) {
       const recoveryFailed =
@@ -2632,13 +2638,27 @@ export class AppProjection extends EventEmitter {
       return { thread, failed: false };
     }
     try {
+      const state = this.store.view();
+      const meta = state.threadMeta[thread.id];
+      const settings = meta?.settings;
+      const managedParent = meta?.managedParent;
+      const task = managedParent
+        ? state.threadMeta[managedParent.parentThreadId]?.teamOrchestration?.tasks[
+            managedParent.taskId
+          ]
+        : undefined;
+      const serviceTier = task ? task.resolvedServiceTier : settings?.serviceTier;
+      const modelId = task?.resolvedModel ?? settings?.model ?? thread.model;
+      const model = modelId
+        ? this.models.find((candidate) => candidate.id === modelId)
+        : defaultModel(this.models);
       const resumed = parseThreadResume(
         await this.bridge.request<unknown>(
           "thread/resume",
           {
             threadId: thread.id,
             ...this.threadResumeConfigProvider(thread.id),
-            serviceTier: null,
+            serviceTier: isFastServiceTier(serviceTier) ? fastServiceTier(model) : null,
           },
           30_000,
         ),
@@ -4505,6 +4525,7 @@ function sessionSettings(settings?: SessionSettings): SessionSettings {
     ...(settings?.reasoningEffort === undefined
       ? {}
       : { reasoningEffort: settings.reasoningEffort }),
+    ...(isFastServiceTier(settings?.serviceTier) ? { serviceTier: "fast" } : {}),
     ...(settings?.personality === undefined ? {} : { personality: settings.personality }),
   };
 }

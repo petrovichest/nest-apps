@@ -233,12 +233,32 @@ describe("model capacity waiting", () => {
 describe("initialSessionSettings", () => {
   const taskDefaults = { serviceTier: "fast", personality: "friendly" };
 
-  it("ignores a legacy service-tier default when model metadata is missing", () => {
+  it("keeps Fast off when model metadata is missing", () => {
     expect(initialSessionSettings("high", [], taskDefaults)).toEqual({
       ...DEFAULT_SESSION_SETTINGS,
       reasoningEffort: "high",
       personality: "friendly",
     });
+  });
+
+  it.each(["fast", "priority"])("inherits Fast for a model advertising %s", (tier) => {
+    const model: ModelOption = {
+      id: "gpt",
+      displayName: "GPT",
+      description: "",
+      isDefault: true,
+      reasoningEfforts: [],
+      serviceTiers: [{ id: tier, displayName: "Fast" }],
+      supportsPersonality: false,
+    };
+    expect(initialSessionSettings(undefined, [model], { serviceTier: tier })).toEqual({
+      ...DEFAULT_SESSION_SETTINGS,
+      serviceTier: "fast",
+    });
+    expect(initialSessionSettings(undefined, [model], { serviceTier: "legacy-tier" })).toEqual(
+      DEFAULT_SESSION_SETTINGS,
+    );
+    expect(initialSessionSettings(undefined, [model], {})).toEqual(DEFAULT_SESSION_SETTINGS);
   });
 
   it("falls back from a stale model without carrying unsupported dependent defaults", () => {

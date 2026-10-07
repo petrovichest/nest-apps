@@ -176,6 +176,7 @@ describe("StateStore", () => {
       collaborationMode: "plan",
       model: "gpt",
       reasoningEffort: "high",
+      serviceTier: "fast",
       approvalPolicy: "on-request",
       approvalsReviewer: "auto_review",
     });
@@ -218,27 +219,82 @@ describe("StateStore", () => {
     await expect(new StateStore(path).load()).rejects.toThrow("Corrupt thread metadata");
   });
 
-  it("strips legacy service tiers from persisted settings and task defaults", async () => {
-    const { path } = await temporaryState();
-    const store = new StateStore(path);
-    await store.load();
-    await store.update((state) => {
-      state.taskDefaults = {
+  it.each(["fast", "priority"])(
+    "normalizes and persists %s in settings and task defaults",
+    async (serviceTier) => {
+      const { path } = await temporaryState();
+      const store = new StateStore(path);
+      await store.load();
+      await store.update((state) => {
+        state.taskDefaults = {
+          model: "gpt-a",
+          titleModel: "gpt-b",
+          serviceTier,
+          personality: "friendly",
+        };
+        state.threadMeta.one = {
+          pinned: false,
+          lastReadUpdatedAt: 0,
+          settings: { collaborationMode: "default", serviceTier },
+        };
+      });
+
+      const reloaded = new StateStore(path);
+      await reloaded.load();
+
+      expect(reloaded.snapshot().taskDefaults).toEqual({
         model: "gpt-a",
         titleModel: "gpt-b",
         serviceTier: "fast",
         personality: "friendly",
-      };
-    });
+      });
+      expect(reloaded.view().threadMeta.one?.settings).toEqual({
+        collaborationMode: "default",
+        serviceTier: "fast",
+      });
 
-    const reloaded = new StateStore(path);
-    await reloaded.load();
+      await reloaded.update((state) => {
+        delete state.taskDefaults!.serviceTier;
+        delete state.threadMeta.one!.settings!.serviceTier;
+      });
+      const cleared = new StateStore(path);
+      await cleared.load();
+      expect(cleared.view().taskDefaults).not.toHaveProperty("serviceTier");
+      expect(cleared.view().threadMeta.one?.settings).not.toHaveProperty("serviceTier");
+    },
+  );
 
-    expect(reloaded.snapshot().taskDefaults).toEqual({
-      model: "gpt-a",
-      titleModel: "gpt-b",
-      personality: "friendly",
-    });
+  it.each([
+    { serviceTier: "fast", expected: "fast" },
+    { serviceTier: "priority", expected: "fast" },
+    { serviceTier: "unknown", expected: undefined },
+    { serviceTier: null, expected: undefined },
+  ])("loads legacy serviceTier $serviceTier as $expected", async ({ serviceTier, expected }) => {
+    const { path } = await temporaryState();
+    await writeFile(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        auth: {},
+        projects: [],
+        taskDefaults: { model: "gpt", serviceTier },
+        threadMeta: {
+          one: {
+            pinned: false,
+            lastReadUpdatedAt: 0,
+            settings: { collaborationMode: "default", serviceTier },
+          },
+        },
+      }),
+    );
+    const store = new StateStore(path);
+    await store.load();
+    expect(store.view().taskDefaults?.serviceTier).toBe(expected);
+    expect(store.view().threadMeta.one?.settings?.serviceTier).toBe(expected);
+    await store.checkpoint();
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    expect(saved.taskDefaults.serviceTier).toBe(expected);
+    expect(saved.threadMeta.one.settings.serviceTier).toBe(expected);
   });
 
   it("persists user-input drafts inside existing thread metadata", async () => {
