@@ -267,7 +267,7 @@
   padding-bottom: 0;
 }
 
-.thread-workspace .response-piece:has(.annotation-editor, .selection-actions) {
+.thread-workspace .response-piece:has(.annotation-editor) {
   z-index: 2;
 }
 
@@ -1108,8 +1108,7 @@ a.native-subagent-row:hover strong {
   padding: 2px 16px 16px;
 }
 
-.thread-workspace :is(.timeline, .artifact-document) :is(pre, .markdown-code-block),
-.thread-workspace .timeline .selection-actions {
+.thread-workspace :is(.timeline, .artifact-document) :is(pre, .markdown-code-block) {
   border: 0;
   border-radius: var(--chat-radius-control);
   background: var(--chat-inset);
@@ -1179,12 +1178,6 @@ a.native-subagent-row:hover strong {
   top: 10px;
   right: 10px;
   border-radius: 50%;
-}
-
-.thread-workspace .timeline .selection-actions {
-  border-radius: 999px;
-  background: var(--chat-surface);
-  box-shadow: var(--chat-inner-shadow);
 }
 
 .thread-workspace .timeline .annotation-marker {

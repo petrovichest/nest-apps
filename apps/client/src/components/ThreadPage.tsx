@@ -6076,9 +6076,6 @@ function AnnotatableMarkdownContent({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLFormElement>(null);
-  const copyTimerRef = useRef<number | null>(null);
-  const [selectionDraft, setSelectionDraft] = useState<SelectionDraft | null>(null);
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const [editor, setEditor] = useState<AnnotationEditor | null>(null);
   const [comment, setComment] = useState("");
   const [markerPositions, setMarkerPositions] = useState<Record<string, AnnotationPosition>>({});
@@ -6106,32 +6103,26 @@ function AnnotatableMarkdownContent({
   }, [comment, editor, messageId, onCreate, onUpdate, source]);
 
   const captureSelection = useCallback(() => {
-    if (!enabled || editor) {
-      setSelectionDraft(null);
-      return;
-    }
+    if (!enabled || editor) return;
     const content = contentRef.current;
     const surface = surfaceRef.current;
     const selection = window.getSelection();
     if (!content || !surface || !selection || selection.rangeCount !== 1 || selection.isCollapsed) {
-      setSelectionDraft(null);
       return;
     }
     const range = selection.getRangeAt(0);
     const quote = range.toString();
     const offsets = quote.trim() ? rangeOffsets(content, range) : null;
-    if (!offsets) {
-      setSelectionDraft(null);
-      return;
-    }
+    if (!offsets) return;
     const rect = safeRangeRect(range, content);
     const surfaceRect = surface.getBoundingClientRect();
-    const selectionTop = rect.bottom - surfaceRect.top + 8;
-    setSelectionDraft({
+    setComment("");
+    setEditor({
+      mode: "new",
       quote,
       ...offsets,
       left: clampPopoverLeft(rect.left + rect.width / 2 - surfaceRect.left, surface.clientWidth),
-      top: selectionTop,
+      top: rect.bottom - surfaceRect.top + 8,
       anchorTop: rect.top - surfaceRect.top,
     });
   }, [editor, enabled]);
@@ -6182,10 +6173,6 @@ function AnnotatableMarkdownContent({
       window.removeEventListener("resize", positionMarkers);
     };
   }, [positionMarkers]);
-
-  useEffect(() => {
-    if (!enabled) setSelectionDraft(null);
-  }, [enabled]);
 
   useEffect(() => {
     if (readOnly) setEditor(null);
@@ -6253,6 +6240,20 @@ function AnnotatableMarkdownContent({
   }, [editor, positionEditor, resizeEditor]);
 
   useEffect(() => {
+    const content = contentRef.current;
+    const highlights = typeof CSS !== "undefined" ? CSS.highlights : undefined;
+    if (editor?.mode !== "new" || !content || !highlights || typeof Highlight === "undefined") {
+      return;
+    }
+    const range = resolveAnnotationRange(content, editor);
+    if (!range) return;
+    highlights.set("annotation-selection", new Highlight(range));
+    return () => {
+      highlights.delete("annotation-selection");
+    };
+  }, [editor]);
+
+  useEffect(() => {
     if (!editor) return;
     function closeOutside(event: PointerEvent) {
       if (event.target instanceof Node && editorRef.current?.contains(event.target)) return;
@@ -6265,53 +6266,6 @@ function AnnotatableMarkdownContent({
     return () => document.removeEventListener("pointerdown", closeOutside, true);
   }, [editor, saveEditor]);
 
-  useEffect(() => {
-    if (!enabled) return;
-    let timer: number | null = null;
-    const selectionChanged = () => {
-      if (timer !== null) window.clearTimeout(timer);
-      timer = window.setTimeout(captureSelection, 80);
-    };
-    document.addEventListener("selectionchange", selectionChanged);
-    return () => {
-      if (timer !== null) window.clearTimeout(timer);
-      document.removeEventListener("selectionchange", selectionChanged);
-    };
-  }, [captureSelection, enabled]);
-
-  useEffect(
-    () => () => {
-      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
-    },
-    [],
-  );
-
-  async function copySelection() {
-    if (!selectionDraft) return;
-    try {
-      await copyText(selectionDraft.quote);
-      setCopyState("copied");
-    } catch {
-      setCopyState("failed");
-    }
-    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
-    copyTimerRef.current = window.setTimeout(() => {
-      setCopyState("idle");
-      setSelectionDraft(null);
-    }, 1_200);
-  }
-
-  function openNewEditor() {
-    if (!selectionDraft) return;
-    setComment("");
-    setEditor({
-      mode: "new",
-      ...selectionDraft,
-    });
-    setSelectionDraft(null);
-    window.getSelection()?.removeAllRanges();
-  }
-
   function openExistingEditor(item: NumberedAnnotation) {
     const position = markerPositions[item.annotation.id] ?? { left: 0, top: 0 };
     setComment(item.annotation.comment);
@@ -6322,7 +6276,6 @@ function AnnotatableMarkdownContent({
       top: position.top + 28,
       anchorTop: position.top,
     });
-    setSelectionDraft(null);
   }
 
   const editedAnnotation =
@@ -6362,24 +6315,6 @@ function AnnotatableMarkdownContent({
           </button>
         ) : null;
       })}
-      {selectionDraft && (
-        <div
-          className="selection-actions"
-          style={{ left: selectionDraft.left, top: selectionDraft.top }}
-          onPointerDown={(event) => event.preventDefault()}
-        >
-          <button type="button" onClick={openNewEditor}>
-            {t("Аннотация")}
-          </button>
-          <button type="button" onClick={() => void copySelection()}>
-            {copyState === "copied"
-              ? t("Скопировано")
-              : copyState === "failed"
-                ? t("Ошибка копирования")
-                : t("Копировать")}
-          </button>
-        </div>
-      )}
       {editor && (
         <form
           ref={editorRef}
@@ -6397,6 +6332,20 @@ function AnnotatableMarkdownContent({
             rows={2}
             value={comment}
             onChange={(event) => setComment(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                saveEditor();
+              } else if (event.key === "Escape") {
+                setEditor(null);
+              }
+            }}
+            onCopy={(event) => {
+              const field = event.currentTarget;
+              if (editor.mode !== "new" || field.selectionStart !== field.selectionEnd) return;
+              event.clipboardData.setData("text/plain", editor.quote);
+              event.preventDefault();
+            }}
           />
           <div className="annotation-editor-actions">
             <button

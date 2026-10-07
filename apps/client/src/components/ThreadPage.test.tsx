@@ -1547,7 +1547,7 @@ describe("Activity", () => {
     expect(screen.getByRole("button", { name: "Копировать сообщение" })).toBeInTheDocument();
   });
 
-  it("keeps a fenced code selection after showing annotation actions", async () => {
+  it("keeps fenced code mounted after opening the annotation editor", async () => {
     render(
       <Activity
         item={{
@@ -1567,10 +1567,10 @@ describe("Activity", () => {
     selectText(code, 0, 10);
     fireEvent.pointerUp(code);
 
-    expect(await screen.findByRole("button", { name: "Аннотация" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Выделенный кодовый фрагмент")).toBe(code);
-    expect(window.getSelection()?.toString()).toBe("Выделенный");
-    expect(window.getSelection()?.anchorNode?.isConnected).toBe(true);
   });
 
   it("creates an annotation from an exact text selection", async () => {
@@ -1594,7 +1594,7 @@ describe("Activity", () => {
     const text = screen.getByText("Выделенный фрагмент ответа");
     selectText(text, 0, 10);
     fireEvent.pointerUp(text);
-    fireEvent.click(await screen.findByRole("button", { name: "Аннотация" }));
+    await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" });
     expect(screen.queryByText("Новая аннотация")).toBeNull();
     expect(screen.getByPlaceholderText("Комментарий")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Сохранить аннотацию" })).toHaveTextContent("");
@@ -1614,12 +1614,7 @@ describe("Activity", () => {
     });
   });
 
-  it("copies only the selected fragment", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+  it("copies the selected fragment from the editor with ctrl+c", async () => {
     render(
       <Activity
         item={{
@@ -1638,12 +1633,45 @@ describe("Activity", () => {
     const text = screen.getByText("Скопируй только это");
     selectText(text, 9, 15);
     fireEvent.pointerUp(text);
-    fireEvent.click(await screen.findByRole("button", { name: "Копировать" }));
+    const field = await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" });
+    const setData = vi.fn();
+    fireEvent.copy(field, { clipboardData: { setData } });
 
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("только"));
+    expect(setData).toHaveBeenCalledWith("text/plain", "только");
   });
 
-  it("places selection actions below the selected range", async () => {
+  it("saves the annotation on Enter", async () => {
+    const onCreate = vi.fn().mockReturnValue(true);
+    render(
+      <Activity
+        item={{
+          type: "agentMessage",
+          id: "agent",
+          status: "completed",
+          text: "Сохрани по Enter",
+          images: [],
+          timestamp: 1,
+          phase: "final_answer",
+        }}
+        annotationEnabled
+        onCreateAnnotation={onCreate}
+      />,
+    );
+
+    const text = screen.getByText("Сохрани по Enter");
+    selectText(text, 0, 7);
+    fireEvent.pointerUp(text);
+    const field = await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" });
+    expect(field).toHaveFocus();
+    fireEvent.change(field, { target: { value: "Готово" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ quote: "Сохрани", comment: "Готово" }),
+    );
+  });
+
+  it("places the annotation editor below the selected range", async () => {
     const descriptor = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
     Object.defineProperty(Range.prototype, "getBoundingClientRect", {
       configurable: true,
@@ -1680,7 +1708,11 @@ describe("Activity", () => {
       selectText(text, 0, 9);
       fireEvent.pointerUp(text);
 
-      expect((await screen.findByRole("button", { name: "Аннотация" })).parentElement).toHaveStyle({
+      expect(
+        (await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" })).closest(
+          "form",
+        ),
+      ).toHaveStyle({
         top: "128px",
       });
     } finally {
@@ -1753,7 +1785,7 @@ describe("Activity", () => {
     const text = screen.getByText("Фрагмент для пометки");
     selectText(text, 0, 8);
     fireEvent.pointerUp(text);
-    fireEvent.click(await screen.findByRole("button", { name: "Аннотация" }));
+    await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" });
     fireEvent.change(screen.getByRole("textbox", { name: "Комментарий к выделенному тексту" }), {
       target: { value: "Сохранить снаружи" },
     });
@@ -1766,7 +1798,7 @@ describe("Activity", () => {
 
     selectText(text, 9, 12);
     fireEvent.pointerUp(text);
-    fireEvent.click(await screen.findByRole("button", { name: "Аннотация" }));
+    await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" });
     fireEvent.pointerDown(document.body);
 
     expect(onCreate).toHaveBeenCalledTimes(1);
@@ -1832,7 +1864,7 @@ describe("Activity", () => {
     const text = screen.getByText("Фрагмент с ошибкой");
     selectText(text, 0, 8);
     fireEvent.pointerUp(text);
-    fireEvent.click(await screen.findByRole("button", { name: "Аннотация" }));
+    await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" });
     fireEvent.change(screen.getByRole("textbox", { name: "Комментарий к выделенному тексту" }), {
       target: { value: "Не потерять" },
     });
@@ -2617,7 +2649,7 @@ describe("Activity", () => {
     const text = screen.getByText("Готовый фрагмент ответа");
     selectText(text, 8, 16);
     fireEvent.pointerUp(text);
-    fireEvent.click(await screen.findByRole("button", { name: "Аннотация" }));
+    await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" });
     fireEvent.change(screen.getByRole("textbox", { name: "Комментарий к выделенному тексту" }), {
       target: { value: "Локальный комментарий" },
     });
@@ -2681,12 +2713,14 @@ describe("Activity", () => {
     selectText(older, 0, 6);
     fireEvent.pointerUp(older);
     await act(async () => new Promise((resolve) => window.setTimeout(resolve, 100)));
-    expect(screen.queryByRole("button", { name: "Аннотация" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Комментарий к выделенному тексту" })).toBeNull();
 
     const latest = screen.getByText("Новый ответ");
     selectText(latest, 0, 5);
     fireEvent.pointerUp(latest);
-    expect(await screen.findByRole("button", { name: "Аннотация" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" }),
+    ).toBeInTheDocument();
   });
 
   it("queues annotation-only drafts and clears them after queue acceptance", async () => {

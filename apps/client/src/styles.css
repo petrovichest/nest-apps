@@ -3276,7 +3276,6 @@ button.message-file:hover:not(:disabled) {
   position: relative;
 }
 
-.selection-actions,
 .annotation-editor {
   position: absolute;
   z-index: 30;
@@ -3284,26 +3283,9 @@ button.message-file:hover:not(:disabled) {
   box-shadow: var(--shadow);
 }
 
-.selection-actions {
-  display: flex;
-  overflow: hidden;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface-raised);
-}
-
-.selection-actions button {
-  min-height: var(--control-height);
-  padding: 0 11px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  font-size: var(--text-caption);
-  white-space: nowrap;
-}
-
-.selection-actions button + button {
-  border-left: 1px solid var(--line);
+::highlight(annotation-selection) {
+  background: Highlight;
+  color: HighlightText;
 }
 
 .annotation-marker {
@@ -7068,7 +7050,6 @@ button.message-file:hover:not(:disabled) {
   .action-menu-popover button,
   .goal-popover-actions button,
   .history-retry,
-  .selection-actions button,
   .skill-autocomplete > button,
   .activity-group > summary,
   .activity-card > summary {
