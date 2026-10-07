@@ -2652,13 +2652,21 @@ export class AppProjection extends EventEmitter {
       const model = modelId
         ? this.models.find((candidate) => candidate.id === modelId)
         : defaultModel(this.models);
+      // Rejoining a live turn restores its subscription, not its settings.
+      // Keep the acknowledged turn's runtime untouched after turn/start.
+      const subscriptionOnly =
+        thread.status.type === "active" || this.threads.get(thread.id)?.currentTurnId != null;
       const resumed = parseThreadResume(
         await this.bridge.request<unknown>(
           "thread/resume",
           {
             threadId: thread.id,
-            ...this.threadResumeConfigProvider(thread.id),
-            serviceTier: isFastServiceTier(serviceTier) ? fastServiceTier(model) : null,
+            ...(subscriptionOnly
+              ? {}
+              : {
+                  ...this.threadResumeConfigProvider(thread.id),
+                  serviceTier: isFastServiceTier(serviceTier) ? fastServiceTier(model) : null,
+                }),
           },
           30_000,
         ),

@@ -171,13 +171,13 @@ describe("Fast settings", () => {
   });
 
   it.each([
-    { tiers: ["fast", "priority"], savedTier: "fast", expected: "priority" },
-    { tiers: ["fast"], savedTier: "priority", expected: "fast" },
-    { tiers: [], savedTier: "fast", expected: null },
-    { tiers: ["priority"], savedTier: undefined, expected: null },
+    { tiers: ["fast", "priority"], savedTier: "fast" },
+    { tiers: ["fast"], savedTier: "priority" },
+    { tiers: [], savedTier: "fast" },
+    { tiers: ["priority"], savedTier: undefined },
   ])(
-    "rejoins using saved $savedTier and advertised $tiers as $expected",
-    async ({ tiers, savedTier, expected }) => {
+    "rejoins active turns without overwriting saved $savedTier or runtime config",
+    async ({ tiers, savedTier }) => {
       const { bridge, projection, store } = await fastSettingsHarness(tiers, true);
       await store.update((state) => {
         state.taskDefaults = { serviceTier: "fast" };
@@ -190,30 +190,30 @@ describe("Fast settings", () => {
           },
         };
       });
-      projection.setThreadResumeConfigProvider(() => ({ config: { example: true } }));
+      const resumeConfig = vi.fn(() => ({ config: { example: true } }));
+      projection.setThreadResumeConfigProvider(resumeConfig);
 
       await projection.sync();
 
-      expect(bridge.request).toHaveBeenCalledWith(
-        "thread/resume",
-        { threadId: "one", config: { example: true }, serviceTier: expected },
-        30_000,
-      );
+      expect(bridge.request).toHaveBeenCalledWith("thread/resume", { threadId: "one" }, 30_000);
       expect(bridge.request.mock.calls.filter(([method]) => method === "model/list")).toHaveLength(
         1,
       );
+      expect(resumeConfig).not.toHaveBeenCalled();
       expect(projection.summary("one")?.settings.serviceTier).toBe(savedTier ? "fast" : undefined);
     },
   );
 
-  it.each([
-    { resolvedServiceTier: "fast", resolvedModel: "gpt", expected: "priority" },
-    { resolvedServiceTier: null, resolvedModel: "gpt", expected: null },
-    { resolvedServiceTier: "fast", resolvedModel: "unavailable", expected: null },
-  ])(
-    "rejoins managed tasks with saved $resolvedServiceTier on $resolvedModel",
-    async ({ resolvedServiceTier, resolvedModel, expected }) => {
-      const { bridge, projection, store } = await fastSettingsHarness(["priority"], true);
+  it.each(
+    [
+      { resolvedServiceTier: "fast", resolvedModel: "gpt", expected: "priority" },
+      { resolvedServiceTier: null, resolvedModel: "gpt", expected: null },
+      { resolvedServiceTier: "fast", resolvedModel: "unavailable", expected: null },
+    ].flatMap((testCase) => [false, true].map((active) => ({ ...testCase, active }))),
+  )(
+    "rejoins managed tasks with saved $resolvedServiceTier on $resolvedModel (active=$active)",
+    async ({ resolvedServiceTier, resolvedModel, expected, active }) => {
+      const { bridge, projection, store } = await fastSettingsHarness(["priority"], active);
       await store.update((state) => {
         state.threadMeta.two = {
           pinned: false,
@@ -242,16 +242,109 @@ describe("Fast settings", () => {
           managedParent: { parentThreadId: "two", taskId: "task" },
         };
       });
+      if (!active) {
+        const original = bridge.request.getMockImplementation()!;
+        bridge.request.mockImplementation(async (method, params) => {
+          if (method === "thread/list")
+            return {
+              data: params.archived ? [] : [thread("one", "/work", 5, { type: "notLoaded" })],
+              nextCursor: null,
+              backwardsCursor: null,
+            };
+          if (method === "thread/loaded/list") return { data: ["one"], nextCursor: null };
+          return original(method, params);
+        });
+      }
+      const resumeConfig = vi.fn(() => ({ config: { agents: { enabled: false } } }));
+      projection.setThreadResumeConfigProvider(resumeConfig);
 
       await projection.sync();
 
       expect(bridge.request).toHaveBeenCalledWith(
         "thread/resume",
-        { threadId: "one", serviceTier: expected },
+        active
+          ? { threadId: "one" }
+          : { threadId: "one", config: { agents: { enabled: false } }, serviceTier: expected },
+        30_000,
+      );
+      expect(resumeConfig).toHaveBeenCalledTimes(active ? 0 : 1);
+    },
+  );
+
+  it.each([
+    { tiers: ["fast", "priority"], savedTier: "fast", expected: "priority" },
+    { tiers: ["fast"], savedTier: "priority", expected: "fast" },
+    { tiers: [], savedTier: "fast", expected: null },
+    { tiers: ["priority"], savedTier: undefined, expected: null },
+  ])(
+    "restores idle loaded sessions using saved $savedTier and advertised $tiers as $expected",
+    async ({ tiers, savedTier, expected }) => {
+      const { bridge, projection, store } = await fastSettingsHarness(tiers);
+      await store.update((state) => {
+        state.threadMeta.one = {
+          pinned: false,
+          lastReadUpdatedAt: 0,
+          settings: {
+            collaborationMode: "default",
+            ...(savedTier ? { serviceTier: savedTier } : {}),
+          },
+        };
+      });
+      const original = bridge.request.getMockImplementation()!;
+      bridge.request.mockImplementation(async (method, params) => {
+        if (method === "thread/list")
+          return {
+            data: params.archived ? [] : [thread("one", "/work", 5, { type: "notLoaded" })],
+            nextCursor: null,
+            backwardsCursor: null,
+          };
+        if (method === "thread/loaded/list") return { data: ["one"], nextCursor: null };
+        return original(method, params);
+      });
+      projection.setThreadResumeConfigProvider(() => ({ config: { example: true } }));
+
+      await projection.sync();
+
+      expect(bridge.request).toHaveBeenCalledWith(
+        "thread/resume",
+        { threadId: "one", config: { example: true }, serviceTier: expected },
         30_000,
       );
     },
   );
+
+  it("rejoins an acknowledged turn without changing runtime when its start notification was missed", async () => {
+    const { bridge, projection, store } = await fastSettingsHarness(["priority"]);
+    await projection.sync();
+    await store.update((state) => {
+      state.threadMeta.one = {
+        pinned: false,
+        lastReadUpdatedAt: 0,
+        settings: { collaborationMode: "default", serviceTier: "fast" },
+      };
+    });
+    projection.setThreadResumeConfigProvider(() => ({ config: { example: true } }));
+    bridge.emit("state", "unavailable");
+    bridge.emit("state", "ready");
+    bridge.request.mockClear();
+
+    await projection.restoreDeliveredTurn("one", liveThread().turns[0]!);
+
+    expect(bridge.request).toHaveBeenCalledExactlyOnceWith(
+      "thread/resume",
+      { threadId: "one" },
+      30_000,
+    );
+    expect(projection.summary("one")).toMatchObject({
+      currentTurnId: "live",
+      state: "running",
+      settings: { serviceTier: "fast" },
+    });
+    await projection.readThread("one");
+    expect(bridge.request.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(
+      1,
+    );
+  });
 });
 
 describe("session result viewing", () => {
