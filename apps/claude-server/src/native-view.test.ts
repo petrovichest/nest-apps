@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { serializePastedMessage } from "@codexnest/protocol";
 import { NativeView, normalizeNativeEvents } from "./native-view.js";
 import { subagentThreadId } from "./types.js";
 
@@ -683,6 +684,27 @@ describe("native Claude view", () => {
       "message-1:0",
     ]);
     expect(view.turns()[0]!.items[1]).toMatchObject({ timestamp: 20 });
+  });
+
+  it("keeps the original text when the native echo carries serialized pasted blocks", () => {
+    const view = new NativeView("session", "/project");
+    const pastes = { pasteBlocks: [{ id: "p1", text: "PnL: -4" }] };
+    view.recordUserMessage({
+      id: "pasted",
+      threadId: "session",
+      text: "Why?",
+      ...pastes,
+      createdAt: 10,
+      status: "dispatching",
+      deliveryMode: "queue",
+    });
+    view.apply({
+      ...user,
+      uuid: "pasted",
+      timestamp: 30,
+      message: { content: serializePastedMessage("Why?", pastes) },
+    });
+    expect(view.turns()[0]!.items[0]).toMatchObject({ text: "Why?", ...pastes });
   });
 
   it("retains accepted input through an empty snapshot before the native echo", () => {

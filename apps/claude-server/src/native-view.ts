@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   pastedText,
+  serializePastedMessage,
   type ActivityItem,
   type QueuedMessage,
   type ServerEvent,
@@ -876,6 +877,11 @@ export class NativeView {
         item = {
           ...item,
           ...pastedText(previous),
+          // The transcript stores the model-facing serialization of pasted text.
+          text:
+            item.text === serializePastedMessage(previous.text, pastedText(previous))
+              ? previous.text
+              : item.text,
           images: item.images.length ? item.images : previous.images,
           ...(!item.files?.length && previous.files?.length ? { files: previous.files } : {}),
           timestamp: Math.min(previous.timestamp, item.timestamp),
