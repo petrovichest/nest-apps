@@ -301,11 +301,9 @@ export function initialSessionSettings(
       ? { personality: taskDefaults.personality }
       : {}),
   };
-  if (
-    defaultReasoningEffort &&
-    (!model || model.reasoningEfforts.some((option) => option.value === defaultReasoningEffort))
-  ) {
-    settings.reasoningEffort = defaultReasoningEffort;
+  const effort = application.isClaude ? taskDefaults?.reasoningEffort : defaultReasoningEffort;
+  if (effort && (!model || model.reasoningEfforts.some((option) => option.value === effort))) {
+    settings.reasoningEffort = effort;
   }
   return settings;
 }

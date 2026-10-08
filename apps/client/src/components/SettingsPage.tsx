@@ -696,6 +696,40 @@ export function SettingsPage({
                   ))}
                 </select>
               </SettingsRow>
+              {application.isClaude && (
+                <SettingsRow
+                  description={t("Уровень reasoning, выбранный для новых сессий.")}
+                  label={t("Reasoning по умолчанию")}
+                  labelFor="settings-reasoning-effort"
+                >
+                  <select
+                    disabled={taskDefaultsSaving}
+                    id="settings-reasoning-effort"
+                    value={taskDefaults.reasoningEffort ?? ""}
+                    onChange={(event) =>
+                      setTaskDefaults((current) => ({
+                        ...current,
+                        reasoningEffort: event.target.value || undefined,
+                      }))
+                    }
+                  >
+                    <option value="">{t("По умолчанию")}</option>
+                    {taskDefaults.reasoningEffort &&
+                      !(selectedTaskModel?.reasoningEfforts ?? []).some(
+                        (option) => option.value === taskDefaults.reasoningEffort,
+                      ) && (
+                        <option value={taskDefaults.reasoningEffort}>
+                          {taskDefaults.reasoningEffort} — {t("Недоступна")}
+                        </option>
+                      )}
+                    {(selectedTaskModel?.reasoningEfforts ?? []).map((option) => (
+                      <option value={option.value} key={option.value}>
+                        {option.value}
+                      </option>
+                    ))}
+                  </select>
+                </SettingsRow>
+              )}
               {!application.isClaude && (
                 <SettingsRow
                   description={t("Ускоряет ответы Codex и увеличивает расход лимитов.")}
@@ -948,6 +982,9 @@ function taskDefaultsPatch(
     ...(saved.titleModel !== current.titleModel ? { titleModel: current.titleModel ?? null } : {}),
     ...(saved.serviceTier !== current.serviceTier
       ? { serviceTier: current.serviceTier ?? null }
+      : {}),
+    ...(saved.reasoningEffort !== current.reasoningEffort
+      ? { reasoningEffort: current.reasoningEffort ?? null }
       : {}),
     ...(saved.personality !== current.personality
       ? { personality: current.personality ?? null }

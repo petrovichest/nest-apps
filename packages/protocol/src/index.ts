@@ -772,6 +772,8 @@ export type TaskDefaults = {
   /** Fast mode default for new sessions, stored as "fast" when enabled. */
   serviceTier?: string;
   personality?: string;
+  /** Claude only: reasoning effort preselected for new sessions. */
+  reasoningEffort?: string;
 };
 
 export type UpdateTaskDefaultsRequest = {
@@ -780,6 +782,7 @@ export type UpdateTaskDefaultsRequest = {
   /** "fast" enables Fast mode; null clears the saved default. */
   serviceTier?: string | null;
   personality?: string | null;
+  reasoningEffort?: string | null;
 };
 
 export type ThreadGoalStatus =

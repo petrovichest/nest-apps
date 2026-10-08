@@ -253,7 +253,7 @@ export async function registerUiRoutes(
         throw new AppError("invalid_request", "Unknown Claude model");
     await ui.store.update((data) => {
       const next = { ...data.taskDefaults };
-      for (const key of ["model", "titleModel"] as const) {
+      for (const key of ["model", "titleModel", "reasoningEffort"] as const) {
         if (body[key] === undefined) continue;
         if (typeof body[key] === "string" && body[key]) next[key] = body[key];
         else delete next[key];

@@ -495,6 +495,8 @@ const ENGLISH: Record<string, string> = {
   "Эти значения применяются к новым сессиям и задачам на всех подключённых устройствах.":
     "These values apply to new sessions and tasks on every connected device.",
   "Модель, которая будет выбрана для новых сессий.": "Model selected for new sessions.",
+  "Уровень reasoning, выбранный для новых сессий.": "Reasoning level selected for new sessions.",
+  "Reasoning по умолчанию": "Default reasoning",
   "Модель для автоматических названий сессий.": "Model used for automatic session titles.",
   "Стиль ответов для новых задач.": "Response style for new tasks.",
   "По умолчанию": "Default",
