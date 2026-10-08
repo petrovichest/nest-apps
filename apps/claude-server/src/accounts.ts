@@ -500,7 +500,9 @@ export class ClaudeAccounts extends EventEmitter {
           .sort((a, b) => {
             const aLimits = a.rateLimits.limits!,
               bLimits = b.rateLimits.limits!;
+            // Spend the 5-hour window that resets first; unknown resets go last.
             return (
+              (aLimits.primary!.resetsAt ?? Infinity) - (bLimits.primary!.resetsAt ?? Infinity) ||
               aLimits.primary!.usedPercent - bLimits.primary!.usedPercent ||
               aLimits.secondary!.usedPercent - bLimits.secondary!.usedPercent
             );
