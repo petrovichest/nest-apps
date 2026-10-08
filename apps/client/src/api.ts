@@ -33,6 +33,7 @@ import type {
   StartTurnRequest,
   SkillsCatalogResponse,
   SummaryResponse,
+  SessionReference,
   ThreadDetail,
   ThreadArtifactsResponse,
   ThreadDraft,
@@ -85,6 +86,10 @@ export class ApiClient {
 
   summary(): Promise<SummaryResponse> {
     return this.request("/api/v1/summary");
+  }
+
+  readSessionReference(threadId: string): Promise<SessionReference> {
+    return this.request(`/api/v1/threads/${encodeURIComponent(threadId)}/reference`);
   }
 
   searchThreads(

@@ -1469,6 +1469,11 @@ a.native-subagent-row:hover strong {
   box-shadow: var(--chat-shadow);
 }
 
+.thread-workspace .action-menu-popover .session-reference-copy {
+  white-space: normal;
+  text-align: left;
+}
+
 .thread-workspace .action-menu-popover button {
   border-radius: var(--chat-radius-control);
 }

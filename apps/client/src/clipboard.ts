@@ -21,7 +21,21 @@ export async function copyMarkdown(text: string): Promise<void> {
   await copyText(text);
 }
 
-export async function copyText(text: string): Promise<void> {
+export async function copyText(text: string | Promise<string>): Promise<void> {
+  if (typeof text !== "string") {
+    // Safari requires starting the write in the click handler, before async data arrives.
+    if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+      const blob = text.then((value) => new Blob([value], { type: "text/plain" }));
+      void blob.catch(() => undefined);
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+        return;
+      } catch {
+        // Restricted WebViews and browsers without promised clipboard support.
+      }
+    }
+    text = await text;
+  }
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);

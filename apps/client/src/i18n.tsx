@@ -776,6 +776,12 @@ const ENGLISH: Record<string, string> = {
   "Рабочая папка": "Working folder",
   Открепить: "Unpin",
   Закрепить: "Pin",
+  "Копировать ссылку на сессию": "Copy session reference",
+  "Ссылка на сессию скопирована": "Session reference copied",
+  "Не удалось скопировать ссылку на сессию. Попробуйте ещё раз.":
+    "Could not copy the session reference. Try again.",
+  "Файл истории": "History file",
+  "Файл истории недоступен": "History file unavailable",
   "Новая сессия": "New session",
   "Закрепить сессию «{{title}}»": "Pin session “{{title}}”",
   "Открепить сессию «{{title}}»": "Unpin session “{{title}}”",

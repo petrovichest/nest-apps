@@ -3422,6 +3422,15 @@ describe("Activity", () => {
     expect(api.interrupt).not.toHaveBeenCalled();
   });
 
+  it("offers session copying in the actions menu without an eager request", () => {
+    const api = threadApi();
+    mockThreadConnection(api, summary);
+    renderThread();
+    fireEvent.click(screen.getByLabelText("Действия с задачей"));
+    expect(screen.getByRole("button", { name: "Копировать ссылку на сессию" })).toBeEnabled();
+    expect(api.readSessionReference).not.toHaveBeenCalled();
+  });
+
   it("does not expose permanent session deletion", () => {
     const api = threadApi();
     mockThreadConnection(api, { ...summary, title: "Без названия", preview: "" });
@@ -7599,6 +7608,11 @@ function completedPlanDetail() {
 
 function threadApi() {
   return {
+    readSessionReference: vi.fn().mockResolvedValue({
+      threadId: "thread",
+      cwd: "/work/project",
+      historyPath: "/native/thread.jsonl",
+    }),
     settings: { baseUrl: "https://codex.home.arpa", token: "secret" },
     createDownload: vi.fn().mockResolvedValue({
       downloadUrl: "/downloads/ticket/file.bin",

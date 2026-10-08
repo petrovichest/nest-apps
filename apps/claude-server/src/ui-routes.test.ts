@@ -175,6 +175,75 @@ async function attachActive(state: Awaited<ReturnType<typeof fixture>>, id: stri
   return { owner, steer, command };
 }
 
+describe("local session references", () => {
+  it.each([false, true])(
+    "returns native history without starting an owner, archived=%s",
+    async (archived) => {
+      const state = await fixture();
+      const { id } = await state.reserve();
+      const directory = join(state.config.configDir, "projects", "project-with-spaces");
+      await mkdir(directory, { recursive: true });
+      const path = join(directory, `${id}.jsonl`);
+      await writeFile(path, "native content, deliberately not parsed");
+      await state.ui.store.update((data) => {
+        data.threads[id]!.archived = archived;
+      });
+      const response = await state.app.inject({
+        url: `/api/v1/threads/${id}/reference`,
+        headers: state.headers,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ threadId: id, cwd: state.directory, historyPath: path });
+      expect(await readFile(response.json().historyPath, "utf8")).toBe(
+        "native content, deliberately not parsed",
+      );
+      expect(state.operations).toEqual([]);
+    },
+  );
+
+  it("uses the owner's actual config directory and resolves project symlinks", async () => {
+    const state = await fixture();
+    const { id } = await state.reserve();
+    const native = join(state.directory, "custom native history");
+    const account = join(state.directory, "account");
+    await mkdir(join(native, "projects", "project"), { recursive: true });
+    await mkdir(account);
+    await symlink(join(native, "projects"), join(account, "projects"));
+    const path = join(native, "projects", "project", `${id}.jsonl`);
+    await writeFile(path, "native history");
+    state.manager.descriptor = async () => ({ configDir: account }) as RunnerDescriptor;
+    const response = await state.app.inject({
+      url: `/api/v1/threads/${id}/reference`,
+      headers: state.headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().historyPath).toBe(path);
+    expect(state.operations).toEqual([]);
+  });
+
+  it("supports imported sessions and reports missing history without guessing a path", async () => {
+    const state = await fixture();
+    const { id } = await state.reserve();
+    await state.ui.store.update((data) => {
+      data.threads[id]!.nativeHistory = true;
+    });
+    const response = await state.app.inject({
+      url: `/api/v1/threads/${id}/reference`,
+      headers: state.headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ threadId: id, cwd: state.directory, historyPath: null });
+    expect(state.operations).toEqual([]);
+  });
+
+  it("requires authentication and rejects unknown sessions", async () => {
+    const state = await fixture();
+    const url = `/api/v1/threads/${randomUUID()}/reference`;
+    expect((await state.app.inject({ url })).statusCode).toBe(401);
+    expect((await state.app.inject({ url, headers: state.headers })).statusCode).toBe(404);
+  });
+});
+
 describe("Claude browser UI HTTP and global stream", () => {
   it("sends turns and explicit steering straight to a busy owner while explicit FIFO waits", async () => {
     const state = await fixture(),

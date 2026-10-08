@@ -4,6 +4,7 @@ import { useTypography } from "../typography";
 import { PasteBlocks } from "./PasteBlocks";
 import { isNativeSubagentLaunch, NativeSubagentLaunchCard } from "./NativeSubagentLaunchCard";
 import { SubagentActivityBar } from "./SubagentActivityBar";
+import { SessionReferenceCopy } from "./SessionReferenceCopy";
 import { PasteMessageEditor } from "./PasteEditor";
 import { PastedMarkdown } from "./PastedMarkdown";
 import {
@@ -4045,6 +4046,7 @@ export function ThreadPage({
                       <MoreIcon />
                     </summary>
                     <div className="action-menu-popover">
+                      <SessionReferenceCopy key={threadId} api={api} threadId={threadId} />
                       <button
                         onClick={(event) => void togglePin(event.currentTarget.closest("details"))}
                         disabled={pinUpdating}

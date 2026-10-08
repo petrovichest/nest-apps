@@ -9,6 +9,7 @@ import type {
   AttentionResponse,
   QueueMessageRequest,
   SessionSettings,
+  SessionReference,
   ThreadSummary,
   UpdateThreadDraftRequest,
   UpdateTranscriptionSettingsRequest,
@@ -399,6 +400,21 @@ export async function registerUiRoutes(
       throw new AppError("conflict", "Attachment is referenced by a queued message", 409);
     await ui.attachments.remove(p.id, p.attachmentId!);
     return reply.code(204).send();
+  });
+  app.get("/api/v1/threads/:id/reference", async (request): Promise<SessionReference> => {
+    const thread = ui.thread(params(request).id);
+    const descriptor = await ui.manager.descriptor(thread.id);
+    const paths = await transcriptPaths(descriptor?.configDir ?? ui.manager.config.configDir);
+    const path = paths.get(thread.id.toLowerCase());
+    let historyPath: string | null = null;
+    if (path) {
+      try {
+        historyPath = await realpath(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    return { threadId: thread.id, cwd: thread.cwd, historyPath };
   });
   app.get("/api/v1/threads/:id", async (request) => ui.detail(params(request).id));
   app.get("/api/v1/threads/:id/git-changes", async (request) =>

@@ -62,6 +62,90 @@ afterEach(async () =>
   ),
 );
 
+describe("local session references", () => {
+  it.each([false, true])(
+    "returns an existing native file without RPC, archived=%s",
+    async (archived) => {
+      const { app, bridge, projection, store, headers } = await createTeamHarness();
+      const path = join(dirname(store.path), "native history.jsonl");
+      await writeFile(path, "native content, deliberately not parsed");
+      projection.upsertThread({ ...testThread(), path, cwd: dirname(store.path) }, archived);
+      await app.ready();
+      bridge.request.mockClear();
+      try {
+        const response = await app.inject({ url: "/api/v1/threads/thread/reference", headers });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+          threadId: "thread",
+          cwd: dirname(store.path),
+          historyPath: path,
+        });
+        expect(bridge.request).not.toHaveBeenCalled();
+        expect(await readFile(response.json().historyPath, "utf8")).toBe(
+          "native content, deliberately not parsed",
+        );
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
+  it.each([null, "old-location.jsonl"])(
+    "resolves a missing or moved path using metadata only: %s",
+    async (cached) => {
+      const { app, bridge, projection, store, headers } = await createTeamHarness();
+      const path = join(dirname(store.path), "archived history.jsonl");
+      await writeFile(path, "native history");
+      bridge.threadReadPath = path;
+      projection.upsertThread(
+        { ...testThread(), path: cached ? join(dirname(store.path), cached) : null },
+        true,
+      );
+      await app.ready();
+      bridge.request.mockClear();
+      try {
+        const response = await app.inject({ url: "/api/v1/threads/thread/reference", headers });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().historyPath).toBe(path);
+        expect(bridge.request.mock.calls).toEqual([
+          ["thread/read", { threadId: "thread", includeTurns: false }, 30_000],
+        ]);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
+  it("keeps the local ID and cwd when no transcript exists", async () => {
+    const { app, bridge, headers } = await createTeamHarness();
+    await app.ready();
+    bridge.missingThreadIds.add("thread");
+    try {
+      const response = await app.inject({ url: "/api/v1/threads/thread/reference", headers });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ threadId: "thread", cwd: "/work", historyPath: null });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("requires authentication, rejects unknown sessions and reports backend failures", async () => {
+    const { app, bridge, headers } = await createTeamHarness();
+    await app.ready();
+    try {
+      expect((await app.inject({ url: "/api/v1/threads/thread/reference" })).statusCode).toBe(401);
+      expect(
+        (await app.inject({ url: "/api/v1/threads/unknown/reference", headers })).statusCode,
+      ).toBe(404);
+      bridge.request.mockRejectedValueOnce(new Error("Unavailable"));
+      const response = await app.inject({ url: "/api/v1/threads/thread/reference", headers });
+      expect(response.statusCode).toBe(500);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("model capacity recovery", () => {
   afterEach(() => vi.useRealTimers());
 

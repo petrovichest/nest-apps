@@ -52,6 +52,7 @@ import type {
   ServerEvent,
   SessionSettings,
   SessionArtifact,
+  SessionReference,
   SkillCatalogItem,
   SkillsCatalogResponse,
   StartTurnRequest,
@@ -4107,6 +4108,30 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       const cursor = validateSearchCursor(request.query.cursor);
       if (!cursor) throw new ProjectValidationError("A history cursor is required");
       return projection.readSearchTurn(request.params.id, request.params.turnId, cursor);
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/threads/:id/reference",
+    async (request, reply): Promise<SessionReference | undefined> => {
+      const summary = projection.summary(request.params.id);
+      if (!summary) return apiError(reply, 404, "not_found", "Thread not found");
+      let historyPath = await existingSessionHistoryPath(projection.rolloutPath(summary.id));
+      if (!historyPath) {
+        try {
+          const { thread } = parseThreadRead(
+            await bridge.request<unknown>(
+              "thread/read",
+              { threadId: summary.id, includeTurns: false },
+              30_000,
+            ),
+          );
+          historyPath = await existingSessionHistoryPath(thread.path);
+        } catch (error) {
+          if (!isMissingThreadError(error)) throw error;
+        }
+      }
+      return { threadId: summary.id, cwd: summary.cwd, historyPath };
     },
   );
 
@@ -8186,6 +8211,18 @@ async function validateManagedResultArtifacts(
     if (!pathContains(canonicalRoot, canonicalArtifact)) {
       throw new ProjectValidationError(`Managed task artifact escapes its workspace: ${path}`);
     }
+  }
+}
+
+async function existingSessionHistoryPath(path: string | null): Promise<string | null> {
+  if (!path) return null;
+  try {
+    const canonical = await realpath(path);
+    return (await stat(canonical)).isFile() ? canonical : null;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw error;
   }
 }
 

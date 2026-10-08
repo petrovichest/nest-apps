@@ -666,6 +666,13 @@ export type ThreadSyncPoint = {
   anchorRevision: string;
 };
 
+/** Local pointer to the native conversation history; contains no transcript data. */
+export type SessionReference = {
+  threadId: string;
+  cwd: string;
+  historyPath: string | null;
+};
+
 export type ThreadDetail = {
   version?: ProjectionVersion;
   summary: ThreadSummary;

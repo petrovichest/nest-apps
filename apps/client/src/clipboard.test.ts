@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { copyMarkdown } from "./clipboard";
+import { copyMarkdown, copyText } from "./clipboard";
 import { renderMarkdownHtml } from "./markdown-clipboard";
 
 afterEach(() => {
@@ -60,6 +60,46 @@ describe("rich Markdown clipboard", () => {
     });
     await copyMarkdown("**two**");
     expect(writeText).toHaveBeenLastCalledWith("**two**");
+  });
+});
+
+describe("async text clipboard", () => {
+  it("starts writing in the click before the reference request resolves", async () => {
+    let resolve!: (value: string) => void;
+    const source = new Promise<string>((done) => {
+      resolve = done;
+    });
+    let entries: Record<string, Promise<Blob>> = {};
+    vi.stubGlobal(
+      "ClipboardItem",
+      class {
+        constructor(value: typeof entries) {
+          entries = value;
+        }
+      },
+    );
+    const write = vi.fn(async () => {
+      await entries["text/plain"];
+    });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write } });
+    const copying = copyText(source);
+    expect(write).toHaveBeenCalledOnce();
+    resolve("Local reference");
+    await copying;
+    expect(await blobText(await entries["text/plain"]!)).toBe("Local reference");
+  });
+
+  it("falls back to writeText and propagates failed reference requests", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("ClipboardItem", class {});
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { write: vi.fn().mockRejectedValue(new Error("Unsupported")), writeText },
+    });
+    await copyText(Promise.resolve("Local reference"));
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("Local reference");
+    await expect(copyText(Promise.reject(new Error("Offline")))).rejects.toThrow("Offline");
+    expect(writeText).toHaveBeenCalledOnce();
   });
 });
 
