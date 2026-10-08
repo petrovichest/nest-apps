@@ -7003,7 +7003,8 @@ button.composer-card-filter:active {
 
   .composer {
     padding: 0 calc(var(--space-2) + var(--app-safe-area-right))
-      max(var(--space-2), var(--app-safe-area-bottom)) calc(var(--space-2) + var(--app-safe-area-left));
+      max(var(--space-2), var(--app-safe-area-bottom))
+      calc(var(--space-2) + var(--app-safe-area-left));
   }
 
   .composer.keyboard-open {

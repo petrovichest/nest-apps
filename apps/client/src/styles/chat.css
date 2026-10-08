@@ -1788,7 +1788,9 @@ a.native-subagent-row:hover strong {
   }
 
   .thread-workspace:not(.pending-fork-workspace) .timeline {
-    padding-top: calc(max(var(--space-2), var(--app-safe-area-top)) + var(--chat-header-height) + 22px);
+    padding-top: calc(
+      max(var(--space-2), var(--app-safe-area-top)) + var(--chat-header-height) + 22px
+    );
   }
 
   .thread-workspace:not(.pending-fork-workspace) .conversation-scroll {
