@@ -36,6 +36,7 @@ import type {
 import { localizeKnownServerText, type Translate, useI18n } from "../i18n";
 import { useSkillsCatalog } from "../useSkillsCatalog";
 import {
+  ChevronRightIcon,
   ClipboardIcon,
   FileIcon,
   ImageIcon,
@@ -240,6 +241,12 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cardsId = useId();
   const [activeCardType, setActiveCardType] = useState<ComposerCardType | null>(null);
+  const [cardPages, setCardPages] = useState<Record<ComposerCardType, number>>({
+    annotations: 0,
+    images: 0,
+    files: 0,
+    text: 0,
+  });
   const cardSessionRef = useRef(sessionIdentity);
   const [draftInput, setDraftInput] = useState(input);
   const draftInputRef = useRef(input);
@@ -253,6 +260,11 @@ export function Composer({
   };
   const compactCards = Object.values(cardCounts).reduce((sum, count) => sum + count, 0) > 2;
   const activeCardCount = activeCardType ? cardCounts[activeCardType] : 0;
+  const cardPage = (kind: ComposerCardType) =>
+    Math.min(cardPages[kind], Math.max(0, cardCounts[kind] - 1));
+  const activeCardPage = activeCardType ? cardPage(activeCardType) : 0;
+  const stackDepth = (kind: ComposerCardType) =>
+    compactCards ? Math.min(2, Math.max(0, cardCounts[kind] - cardPage(kind) - 1)) : 0;
   const cardTypes = [
     {
       kind: "annotations",
@@ -272,17 +284,41 @@ export function Composer({
     },
   ] as const;
   useLayoutEffect(() => {
-    if (cardSessionRef.current !== sessionIdentity || !compactCards || activeCardCount === 0) {
+    if (cardSessionRef.current !== sessionIdentity) {
       cardSessionRef.current = sessionIdentity;
       setActiveCardType(null);
+      setCardPages({ annotations: 0, images: 0, files: 0, text: 0 });
+    } else {
+      setCardPages((pages) => {
+        const next = {
+          annotations: Math.min(pages.annotations, Math.max(0, annotations.length - 1)),
+          images: Math.min(pages.images, Math.max(0, images.length - 1)),
+          files: Math.min(pages.files, Math.max(0, files.length - 1)),
+          text: Math.min(pages.text, Math.max(0, (draftPastes.pasteBlocks?.length ?? 0) - 1)),
+        };
+        return Object.keys(next).some(
+          (kind) => next[kind as ComposerCardType] !== pages[kind as ComposerCardType],
+        )
+          ? next
+          : pages;
+      });
+      if (!compactCards || activeCardCount === 0) setActiveCardType(null);
     }
-  }, [sessionIdentity, compactCards, activeCardCount]);
+  }, [
+    sessionIdentity,
+    compactCards,
+    activeCardCount,
+    annotations.length,
+    images.length,
+    files.length,
+    draftPastes.pasteBlocks?.length,
+  ]);
   useLayoutEffect(() => {
-    const panel = document.activeElement?.closest<HTMLElement>(".composer-card-panel");
-    if (panel?.hidden && formRef.current?.contains(panel)) {
+    const hiddenCard = document.activeElement?.closest<HTMLElement>("[hidden]");
+    if (hiddenCard && formRef.current?.contains(hiddenCard)) {
       textareaRef.current?.focus({ preventScroll: true });
     }
-  }, [compactCards, activeCardType]);
+  }, [compactCards, activeCardType, cardPages]);
   const pasteEditor = usePasteEditor(
     { input: draftInput, ...draftPastes },
     (next) => commitDraft(next.input, pastedText(next)),
@@ -1414,10 +1450,14 @@ export function Composer({
           id={`${cardsId}-annotations`}
           className="composer-card-panel"
           data-kind="annotations"
+          data-stack-depth={stackDepth("annotations")}
           hidden={compactCards && activeCardType !== "annotations"}
         >
           <AnnotationBubbles
             annotations={annotations}
+            visibleAnnotationId={
+              compactCards ? annotations[cardPage("annotations")]?.id : undefined
+            }
             disabled={busy}
             onOpen={(id) => onOpenAnnotation?.(id)}
             onDelete={(id) => onDeleteAnnotation?.(id)}
@@ -1427,6 +1467,7 @@ export function Composer({
           id={`${cardsId}-images`}
           className="composer-card-panel"
           data-kind="images"
+          data-stack-depth={stackDepth("images")}
           hidden={compactCards && activeCardType !== "images"}
         >
           {images.length > 0 && (
@@ -1437,7 +1478,11 @@ export function Composer({
               onPointerDownCapture={preserveTextareaFocus}
             >
               {images.map((image, index) => (
-                <div className="composer-attachment" key={image.id}>
+                <div
+                  className="composer-attachment"
+                  key={image.id}
+                  hidden={compactCards && index !== cardPage("images")}
+                >
                   <button
                     type="button"
                     className="composer-attachment-preview"
@@ -1477,6 +1522,7 @@ export function Composer({
           id={`${cardsId}-files`}
           className="composer-card-panel"
           data-kind="files"
+          data-stack-depth={stackDepth("files")}
           hidden={compactCards && activeCardType !== "files"}
         >
           {files.length > 0 && (
@@ -1486,8 +1532,12 @@ export function Composer({
               aria-label={t("Файлы")}
               onPointerDownCapture={preserveTextareaFocus}
             >
-              {files.map((file) => (
-                <div className="composer-attachment composer-file-attachment" key={file.id}>
+              {files.map((file, index) => (
+                <div
+                  className="composer-attachment composer-file-attachment"
+                  key={file.id}
+                  hidden={compactCards && index !== cardPage("files")}
+                >
                   <div className="composer-file-summary" title={file.name}>
                     <FileIcon />
                     <span>{file.name}</span>
@@ -1515,14 +1565,52 @@ export function Composer({
           id={`${cardsId}-text`}
           className="composer-card-panel"
           data-kind="text"
+          data-stack-depth={stackDepth("text")}
           hidden={compactCards && activeCardType !== "text"}
         >
           <PasteBlocks
             blocks={draftPastes.pasteBlocks}
+            visibleBlockId={
+              compactCards ? draftPastes.pasteBlocks?.[cardPage("text")]?.id : undefined
+            }
             onChange={pasteEditor.blocks}
             disabled={speechBusy || inputUnavailable}
           />
         </div>
+        {compactCards && activeCardType && activeCardCount > 1 && (
+          <div className="composer-card-pager" onPointerDownCapture={preserveTextareaFocus}>
+            <button
+              type="button"
+              className="icon-button composer-card-previous"
+              aria-label={t("Предыдущее вложение")}
+              aria-controls={`${cardsId}-${activeCardType}`}
+              disabled={activeCardPage === 0}
+              onClick={() =>
+                setCardPages((pages) => ({ ...pages, [activeCardType]: activeCardPage - 1 }))
+              }
+            >
+              <ChevronRightIcon />
+            </button>
+            <span role="status" aria-live="polite" aria-atomic="true">
+              {t("{{current}} из {{count}}", {
+                current: activeCardPage + 1,
+                count: activeCardCount,
+              })}
+            </span>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={t("Следующее вложение")}
+              aria-controls={`${cardsId}-${activeCardType}`}
+              disabled={activeCardPage === activeCardCount - 1}
+              onClick={() =>
+                setCardPages((pages) => ({ ...pages, [activeCardType]: activeCardPage + 1 }))
+              }
+            >
+              <ChevronRightIcon />
+            </button>
+          </div>
+        )}
         {compactCards && (
           <div
             className="composer-card-filters"

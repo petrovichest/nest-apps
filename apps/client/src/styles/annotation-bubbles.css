@@ -6,10 +6,6 @@
 .annotation-bubble-list {
   display: grid;
   gap: 8px;
-  max-height: min(240px, 30dvh);
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
   margin: -12px;
   padding: 12px;
 }
@@ -20,8 +16,6 @@
   place-items: center;
   width: 28px;
   height: 28px;
-  border-radius: var(--radius-md);
-  background: var(--color-hover);
   font-size: var(--text-caption);
 }
 

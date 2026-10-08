@@ -6,11 +6,13 @@ import { ArrowUpIcon, XIcon } from "./Icons";
 
 export function AnnotationBubbles({
   annotations,
+  visibleAnnotationId,
   disabled,
   onOpen,
   onDelete,
 }: {
   annotations: PendingAnnotation[];
+  visibleAnnotationId?: string;
   disabled: boolean;
   onOpen(annotationId: string): void;
   onDelete(annotationId: string): void;
@@ -21,7 +23,11 @@ export function AnnotationBubbles({
     <div className="annotation-bubbles" role="group" aria-label={t("Аннотации")}>
       <div className="annotation-bubble-list">
         {annotations.map((annotation, index) => (
-          <section className="paste-card annotation-bubble" key={annotation.id}>
+          <section
+            className="paste-card annotation-bubble"
+            key={annotation.id}
+            hidden={visibleAnnotationId !== undefined && annotation.id !== visibleAnnotationId}
+          >
             <div className="paste-card-header">
               <button
                 className="paste-card-toggle"

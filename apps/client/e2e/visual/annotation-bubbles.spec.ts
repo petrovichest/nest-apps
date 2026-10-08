@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { ThreadDetail } from "@codexnest/protocol";
 import { installVisualFixture, snapshot, waitForVisualReady } from "./fixtures";
 
@@ -9,7 +9,7 @@ async function openAnnotations(
   page: Page,
   theme: "light" | "dark",
   count: number,
-  attachments: "mixed" | "paste" | "none" = count === 2 ? "mixed" : "none",
+  attachments: "mixed" | "paste" | "files" | "none" = count === 2 ? "mixed" : "none",
 ) {
   const seed = structuredClone(snapshot);
   seed.attention = [];
@@ -32,19 +32,38 @@ async function openAnnotations(
             ]
           : [],
       files:
-        attachments === "mixed"
+        attachments === "files"
           ? [
               {
-                id: "file",
-                name: "interface.png",
-                path: "/work/interface.png",
+                id: "file-one",
+                name: "first-interface-review.md",
+                path: "/work/first-interface-review.md",
                 size: 148000,
-                mediaType: "image/png",
+                mediaType: "text/markdown",
+              },
+              {
+                id: "file-two",
+                name: "second-interface-review.md",
+                path: "/work/second-interface-review.md",
+                size: 248000,
+                mediaType: "text/markdown",
               },
             ]
-          : [],
+          : attachments === "mixed"
+            ? [
+                {
+                  id: "file",
+                  name: "interface.png",
+                  path: "/work/interface.png",
+                  size: 148000,
+                  mediaType: "image/png",
+                },
+              ]
+            : [],
       pasteBlocks:
-        attachments !== "none" ? [{ id: "context", text: "Контекст для проверки интерфейса" }] : [],
+        attachments === "mixed" || attachments === "paste"
+          ? [{ id: "context", text: "Контекст для проверки интерфейса" }]
+          : [],
       goalMode: false,
       annotations: Array.from({ length: count }, (_, index) => ({
         id: `note-${index}`,
@@ -98,6 +117,39 @@ async function openAnnotations(
   await waitForVisualReady(page);
 }
 
+async function expectNoListOverflow(panel: Locator, allowDecorativeOverflow = false) {
+  const dimensions = await panel.evaluate((element) =>
+    [element, ...element.querySelectorAll(".annotation-bubble-list, .composer-attachments")].map(
+      (list) => {
+        const style = getComputedStyle(list);
+        list.scrollTop = 100;
+        list.scrollLeft = 100;
+        return {
+          clientWidth: list.clientWidth,
+          scrollWidth: list.scrollWidth,
+          clientHeight: list.clientHeight,
+          scrollHeight: list.scrollHeight,
+          overflowX: style.overflowX,
+          overflowY: style.overflowY,
+          scrollTop: list.scrollTop,
+          scrollLeft: list.scrollLeft,
+        };
+      },
+    ),
+  );
+  for (const dimension of dimensions) {
+    expect(["auto", "scroll"]).not.toContain(dimension.overflowX);
+    expect(["auto", "scroll"]).not.toContain(dimension.overflowY);
+    expect(dimension.scrollTop).toBe(0);
+    expect(dimension.scrollLeft).toBe(0);
+    // Removal buttons extend beyond thumbnails without making the list scrollable.
+    if (!allowDecorativeOverflow) {
+      expect(dimension.scrollWidth).toBeLessThanOrEqual(dimension.clientWidth + 1);
+      expect(dimension.scrollHeight).toBeLessThanOrEqual(dimension.clientHeight + 1);
+    }
+  }
+}
+
 for (const theme of ["light", "dark"] as const) {
   for (const width of [320, 390, 1440]) {
     test(`annotation bubbles at ${width}px in ${theme}: navigation, deletion and layout`, async ({
@@ -109,8 +161,30 @@ for (const theme of ["light", "dark"] as const) {
       const row = composer.locator(".composer-card-filters");
       const input = composer.locator(".composer-box");
       const panels = composer.locator(".composer-card-panel");
+      const pager = composer.locator(".composer-card-pager");
       const annotationFilter = row.getByRole("button", { name: "Аннотации (2)", exact: true });
       await expect(row.locator(".composer-card-filter")).toHaveCount(4);
+      for (const circle of await row.locator(".composer-card-filter").all()) {
+        const bounds = (await circle.boundingBox())!;
+        expect(bounds.width).toBe(48);
+        expect(bounds.height).toBe(48);
+        const icon = (await circle.locator("svg").boundingBox())!;
+        const count = (await circle.locator(".composer-card-count").boundingBox())!;
+        expect(count.y).toBeGreaterThanOrEqual(icon.y + icon.height);
+        expect(count.y + count.height).toBeLessThanOrEqual(bounds.y + bounds.height);
+        expect(count.x).toBeGreaterThanOrEqual(bounds.x);
+        expect(count.x + count.width).toBeLessThanOrEqual(bounds.x + bounds.width);
+        const surface = await circle.evaluate((element) => {
+          const style = getComputedStyle(element);
+          const expected = document.createElement("span");
+          expected.style.backgroundColor = "var(--color-floating)";
+          element.appendChild(expected);
+          const background = getComputedStyle(expected).backgroundColor;
+          expected.remove();
+          return { actual: style.backgroundColor, expected: background };
+        });
+        expect(surface.actual).toBe(surface.expected);
+      }
       await expect(annotationFilter).toHaveAttribute("aria-expanded", "false");
       for (const panel of await panels.all()) await expect(panel).toBeHidden();
       const rowPosition = (await row.boundingBox())!;
@@ -141,14 +215,40 @@ for (const theme of ["light", "dark"] as const) {
       const bubbles = annotationPanel.getByRole("group", { name: "Аннотации", exact: true });
       const cards = bubbles.locator(".annotation-bubble");
       await expect(cards).toHaveCount(2);
+      await expect(cards.filter({ visible: true })).toHaveCount(1);
       const first = (await cards.nth(0).boundingBox())!;
-      const second = (await cards.nth(1).boundingBox())!;
-      expect(second.x).toBe(first.x);
-      expect(second.y - first.y - first.height).toBeCloseTo(8, 0);
+      await expect(cards.nth(1)).toBeHidden();
       expect(first.width).toBeLessThanOrEqual(440);
       expect(first.x).toBeGreaterThanOrEqual(0);
       expect(first.x + first.width).toBeLessThanOrEqual(width);
-      expect(second.y + second.height).toBeLessThanOrEqual(rowPosition.y);
+      expect(first.y + first.height).toBeLessThanOrEqual(rowPosition.y);
+      await expect(pager.getByRole("status")).toHaveText("1 из 2");
+      await expect(annotationPanel).toHaveAttribute("data-stack-depth", "1");
+      const previousAnnotation = pager.getByRole("button", {
+        name: "Предыдущее вложение",
+        exact: true,
+      });
+      const nextAnnotation = pager.getByRole("button", {
+        name: "Следующее вложение",
+        exact: true,
+      });
+      await expect(previousAnnotation).toBeDisabled();
+      await nextAnnotation.click();
+      await expect(pager.getByRole("status")).toHaveText("2 из 2");
+      await expect(cards.nth(0)).toBeHidden();
+      await expect(cards.nth(1)).toBeVisible();
+      await expect(annotationPanel).toHaveAttribute("data-stack-depth", "0");
+      await expect(nextAnnotation).toBeDisabled();
+      expect((await row.boundingBox())!.y).toBeCloseTo(rowPosition.y, 0);
+      expect((await input.boundingBox())!.y).toBeCloseTo(inputPosition.y, 0);
+      await previousAnnotation.click();
+      await expect(cards.nth(0)).toBeVisible();
+      await expectNoListOverflow(annotationPanel);
+      const numberStyle = await cards
+        .first()
+        .locator(".annotation-bubble-number")
+        .evaluate((element) => getComputedStyle(element).backgroundColor);
+      expect(numberStyle).toBe("rgba(0, 0, 0, 0)");
       expect(
         await cards
           .first()
@@ -166,6 +266,11 @@ for (const theme of ["light", "dark"] as const) {
       const imagePanel = composer.locator('.composer-card-panel[data-kind="images"]');
       await expect(imagePanel).toBeVisible();
       await expect(annotationPanel).toBeHidden();
+      await expect(
+        imagePanel.locator(".composer-attachment").filter({ visible: true }),
+      ).toHaveCount(1);
+      await expect(pager.getByRole("status")).toHaveText("1 из 2");
+      await expectNoListOverflow(imagePanel, true);
       expect((await imagePanel.boundingBox())!.y).toBeLessThan(rowPosition.y);
       expect((await row.boundingBox())!.y).toBeCloseTo(rowPosition.y, 0);
       expect((await input.boundingBox())!.y).toBeCloseTo(inputPosition.y, 0);
@@ -182,11 +287,20 @@ for (const theme of ["light", "dark"] as const) {
       await page.keyboard.press("Escape");
       await expect(viewer).toBeHidden();
       await expect(imageOpener).toBeFocused();
+      await pager.getByRole("button", { name: "Следующее вложение", exact: true }).click();
+      await expect(pager.getByRole("status")).toHaveText("2 из 2");
+      await expect(imageOpener).toBeHidden();
+      await expect(
+        imagePanel.getByRole("button", { name: "Открыть изображение preview-2.png", exact: true }),
+      ).toBeVisible();
+      await expectNoListOverflow(imagePanel, true);
 
       await row.getByRole("button", { name: "Файлы (1)", exact: true }).click();
-      await expect(composer.locator('.composer-card-panel[data-kind="files"]')).toBeVisible();
+      const filePanel = composer.locator('.composer-card-panel[data-kind="files"]');
+      await expect(filePanel).toBeVisible();
       await expect(composer.getByText("interface.png", { exact: true })).toBeVisible();
       await expect(imagePanel).toBeHidden();
+      await expectNoListOverflow(filePanel, true);
       const textFilter = row.getByRole("button", { name: "Вставки текста (1)", exact: true });
       await textFilter.click();
       await expect(composer.locator('.composer-card-panel[data-kind="text"]')).toBeVisible();
@@ -194,6 +308,7 @@ for (const theme of ["light", "dark"] as const) {
       await expect(composer.locator(".paste-card-snippet")).toHaveText(
         "Контекст для проверки интерфейса",
       );
+      await expectNoListOverflow(composer.locator('.composer-card-panel[data-kind="text"]'));
       await textFilter.focus();
       await page.keyboard.press("Enter");
       await expect(textFilter).toHaveAttribute("aria-expanded", "false");
@@ -223,29 +338,74 @@ for (const theme of ["light", "dark"] as const) {
       await expect(page.locator('.annotation-marker[data-annotation-id="note-1"]')).toHaveText("1");
     });
 
-    for (const count of [0, 8]) {
-      test(`annotation stack with ${count} notes at ${width}px in ${theme}`, async ({ page }) => {
+    for (const count of [0, 2, 3, 8]) {
+      test(`annotation stack with ${count} notes at ${width}px in ${theme}`, async ({
+        page,
+      }, testInfo) => {
         await page.setViewportSize({ width, height: 844 });
-        await openAnnotations(page, theme, count);
-        const bubbles = page.getByRole("group", { name: "Аннотации" });
+        await openAnnotations(page, theme, count, "none");
+        const panel = page.locator('.composer-card-panel[data-kind="annotations"]');
+        const bubbles = panel.getByRole("group", { name: "Аннотации", exact: true });
         if (count === 0) {
           await expect(bubbles).toHaveCount(0);
           await expect(page.locator(".composer-card-filters")).toHaveCount(0);
+        } else if (count <= 2) {
+          await expect(page.locator(".composer-card-filters")).toHaveCount(0);
+          await expect(bubbles.locator(".annotation-bubble").filter({ visible: true })).toHaveCount(
+            count,
+          );
+          await expect(page.locator(".composer-card-pager")).toHaveCount(0);
+          await expectNoListOverflow(bubbles.locator(".annotation-bubble-list"));
         } else {
-          const filter = page.getByRole("button", { name: "Аннотации (8)", exact: true });
+          const filter = page.getByRole("button", { name: `Аннотации (${count})`, exact: true });
           await expect(filter).toHaveAttribute("aria-expanded", "false");
           await filter.click();
-          const list = page.locator('.composer-card-panel[data-kind="annotations"]');
           await expect(bubbles.locator(".annotation-bubble")).toHaveCount(count);
-          const heightLimit = await page.evaluate(() => Math.min(240, innerHeight * 0.3));
-          expect((await list.boundingBox())!.height).toBeLessThanOrEqual(heightLimit + 1);
-          expect(
-            await list.evaluate((element) => element.scrollHeight > element.clientHeight),
-          ).toBe(true);
-          await list.evaluate((element) => {
-            element.scrollTop = 100;
+          const row = page.locator(".composer-card-filters");
+          const input = page.locator(".composer-box");
+          const pager = page.locator(".composer-card-pager");
+          const rowPosition = (await row.boundingBox())!;
+          const inputPosition = (await input.boundingBox())!;
+          const previous = pager.getByRole("button", {
+            name: "Предыдущее вложение",
+            exact: true,
           });
-          expect(await list.evaluate((element) => element.scrollTop)).toBe(100);
+          const next = pager.getByRole("button", {
+            name: "Следующее вложение",
+            exact: true,
+          });
+          for (let index = 0; index < count; index += 1) {
+            await expect(pager.getByRole("status")).toHaveText(`${index + 1} из ${count}`);
+            await expect(panel).toHaveAttribute(
+              "data-stack-depth",
+              String(Math.min(2, count - index - 1)),
+            );
+            await expect(
+              bubbles.locator(".annotation-bubble").filter({ visible: true }),
+            ).toHaveCount(1);
+            await expect(
+              bubbles.getByRole("button", {
+                name: `Перейти к аннотации ${index + 1}`,
+                exact: true,
+              }),
+            ).toBeVisible();
+            await expectNoListOverflow(panel);
+            expect((await row.boundingBox())!.y).toBeCloseTo(rowPosition.y, 0);
+            expect((await input.boundingBox())!.y).toBeCloseTo(inputPosition.y, 0);
+            if (index === 0 && count === 8 && width === 390) {
+              await page.locator(".composer").screenshot({
+                path: testInfo.outputPath("annotation-stack-first.png"),
+              });
+            }
+            if (index === 0) await expect(previous).toBeDisabled();
+            if (index === count - 1) await expect(next).toBeDisabled();
+            else await next.click();
+          }
+          await previous.click();
+          await expect(pager.getByRole("status")).toHaveText(`${count - 1} из ${count}`);
+          await filter.click();
+          await expect(panel).toBeHidden();
+          await expect(filter).toHaveAttribute("aria-expanded", "false");
         }
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
           true,
@@ -257,6 +417,34 @@ for (const theme of ["light", "dark"] as const) {
     }
   }
 }
+
+test("two files wrap on a narrow screen without a card list scrollbar", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 420 });
+  await openAnnotations(page, "light", 0, "files");
+  const composer = page.locator(".composer");
+  await expect(composer.locator(".composer-card-filters")).toHaveCount(0);
+  const panel = composer.locator('.composer-card-panel[data-kind="files"]');
+  const cards = panel.locator(".composer-file-attachment");
+  await expect(cards.filter({ visible: true })).toHaveCount(2);
+  const first = (await cards.nth(0).boundingBox())!;
+  const second = (await cards.nth(1).boundingBox())!;
+  expect(second.y).toBeGreaterThanOrEqual(first.y + first.height);
+  await expectNoListOverflow(panel);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("two annotations remain expanded without a scrollbar on a short viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 420 });
+  await openAnnotations(page, "dark", 2, "none");
+  const composer = page.locator(".composer");
+  await expect(composer.locator(".composer-card-filters")).toHaveCount(0);
+  const panel = composer.locator('.composer-card-panel[data-kind="annotations"]');
+  await expect(panel.locator(".annotation-bubble").filter({ visible: true })).toHaveCount(2);
+  await expectNoListOverflow(panel.locator(".annotation-bubble-list"));
+  await expect(composer.getByRole("textbox", { name: "Сообщение для Codex" })).toBeVisible();
+});
 
 test("adding a third card hides an unfinished paste edit without losing text or focus", async ({
   page,
@@ -280,6 +468,10 @@ test("adding a third card hides an unfinished paste edit without losing text or 
   await expect(filter).toBeVisible();
   await expect(source).toBeHidden();
   await expect(composer.getByRole("textbox", { name: "Сообщение для Codex" })).toBeFocused();
+  await filter.click();
+  await expect(source).toHaveValue("Несохранённый контекст");
+  await composer.getByRole("button", { name: "Изображения (1)", exact: true }).click();
+  await expect(source).toBeHidden();
   await filter.click();
   await expect(source).toHaveValue("Несохранённый контекст");
   await composer.getByRole("button", { name: "Сохранить", exact: true }).click();

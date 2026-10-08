@@ -904,6 +904,213 @@ describe("Composer", () => {
       expect(props.onInput).not.toHaveBeenCalled();
     });
 
+    it("pages one card at a time in every category and disables navigation at its boundaries", () => {
+      const props = composerCards({
+        annotations: [cardAnnotation(0), cardAnnotation(1), cardAnnotation(2)],
+        images: [cardImage(0), cardImage(1)],
+        files: [cardFile(0), cardFile(1)],
+        pastes: {
+          pasteBlocks: [
+            { id: "context-1", text: "Первый контекст" },
+            { id: "context-2", text: "Второй контекст" },
+          ],
+        },
+      });
+      const view = render(<Composer {...props} />);
+      const categories = [
+        ["annotations", "Аннотации (3)", /Перейти к аннотации/, 3],
+        ["images", "Изображения (2)", /Открыть изображение/, 2],
+        ["files", "Файлы (2)", /Удалить файл/, 2],
+        ["text", "Вставки текста (2)", /^Вставленный текст/, 2],
+      ] as const;
+
+      for (const [kind, label, cardAction, count] of categories) {
+        fireEvent.click(screen.getByRole("button", { name: label }));
+        const panel = view.container.querySelector<HTMLElement>(
+          `.composer-card-panel[data-kind="${kind}"]`,
+        )!;
+        const previous = screen.getByRole("button", { name: "Предыдущее вложение" });
+        const next = screen.getByRole("button", { name: "Следующее вложение" });
+        expect(previous.parentElement).toHaveTextContent(`1 из ${count}`);
+        expect(previous).toBeDisabled();
+        expect(next).toBeEnabled();
+        expect(within(panel).getAllByRole("button", { name: cardAction })).toHaveLength(1);
+
+        for (let page = 2; page <= count; page += 1) {
+          fireEvent.click(next);
+          expect(previous.parentElement).toHaveTextContent(`${page} из ${count}`);
+          expect(within(panel).getAllByRole("button", { name: cardAction })).toHaveLength(1);
+        }
+        expect(next).toBeDisabled();
+        expect(previous).toBeEnabled();
+        fireEvent.click(previous);
+        expect(previous.parentElement).toHaveTextContent(`${count - 1} из ${count}`);
+      }
+
+      expect(view.container.querySelectorAll(".annotation-bubble")).toHaveLength(3);
+      expect(view.container.querySelectorAll(".paste-blocks > .paste-card")).toHaveLength(2);
+      expect(props.onInput).not.toHaveBeenCalled();
+      expect(props.onDeleteAnnotation).not.toHaveBeenCalled();
+    });
+
+    it("remembers each category's page when switching categories and closing the panel", () => {
+      const props = composerCards({
+        annotations: [cardAnnotation(0), cardAnnotation(1), cardAnnotation(2), cardAnnotation(3)],
+        images: [cardImage(0), cardImage(1), cardImage(2)],
+      });
+      const view = render(<Composer {...props} />);
+      const input = view.container.querySelector(".composer-box textarea")!;
+      fireEvent.change(input, { target: { value: "Черновик между страницами" } });
+      const annotations = screen.getByRole("button", { name: "Аннотации (4)" });
+      const images = screen.getByRole("button", { name: "Изображения (3)" });
+      fireEvent.click(annotations);
+      fireEvent.click(screen.getByRole("button", { name: "Следующее вложение" }));
+      fireEvent.click(screen.getByRole("button", { name: "Следующее вложение" }));
+      expect(screen.getByRole("button", { name: "Перейти к аннотации 3" })).toBeVisible();
+      fireEvent.click(images);
+      fireEvent.click(screen.getByRole("button", { name: "Следующее вложение" }));
+      expect(screen.getByRole("button", { name: "Открыть изображение image-1.png" })).toBeVisible();
+
+      fireEvent.click(annotations);
+      expect(
+        screen.getByRole("button", { name: "Предыдущее вложение" }).parentElement,
+      ).toHaveTextContent("3 из 4");
+      expect(screen.getByRole("button", { name: "Перейти к аннотации 3" })).toBeVisible();
+      fireEvent.click(annotations);
+      expect(screen.queryByRole("button", { name: "Следующее вложение" })).toBeNull();
+      fireEvent.click(annotations);
+      expect(screen.getByRole("button", { name: "Перейти к аннотации 3" })).toBeVisible();
+      fireEvent.click(images);
+      expect(
+        screen.getByRole("button", { name: "Предыдущее вложение" }).parentElement,
+      ).toHaveTextContent("2 из 3");
+      expect(screen.getByRole("button", { name: "Открыть изображение image-1.png" })).toBeVisible();
+      expect(input).toHaveValue("Черновик между страницами");
+      expect(props.onInput).toHaveBeenCalledExactlyOnceWith("Черновик между страницами");
+    });
+
+    it("clamps the page to the last remaining card after the selected category shrinks", () => {
+      const annotations = [
+        cardAnnotation(0),
+        cardAnnotation(1),
+        cardAnnotation(2),
+        cardAnnotation(3),
+      ];
+      const props = composerCards({ annotations, images: [cardImage(0)] });
+      const view = render(<Composer {...props} />);
+      fireEvent.click(screen.getByRole("button", { name: "Аннотации (4)" }));
+      for (let index = 0; index < 3; index += 1) {
+        fireEvent.click(screen.getByRole("button", { name: "Следующее вложение" }));
+      }
+      expect(screen.getByRole("button", { name: "Перейти к аннотации 4" })).toBeVisible();
+
+      view.rerender(<Composer {...props} annotations={annotations.slice(0, 2)} />);
+
+      expect(screen.getByRole("button", { name: "Аннотации (2)" })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+      expect(screen.getByRole("button", { name: "Перейти к аннотации 2" })).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Предыдущее вложение" }).parentElement,
+      ).toHaveTextContent("2 из 2");
+      expect(screen.getByRole("button", { name: "Следующее вложение" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Предыдущее вложение" })).toBeEnabled();
+    });
+
+    it("preserves hidden pasted blocks when editing and removing the visible middle block", () => {
+      const blocks = [
+        { id: "context-1", text: "Первый контекст" },
+        { id: "context-2", text: "Средний контекст" },
+        { id: "context-3", text: "Последний контекст" },
+      ];
+      const props = composerCards({ pastes: { pasteBlocks: blocks } });
+      render(<Composer {...props} />);
+      fireEvent.click(screen.getByRole("button", { name: "Вставки текста (3)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Следующее вложение" }));
+      fireEvent.click(screen.getByRole("button", { name: /^Вставленный текст/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Редактировать вставленный текст" }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Исходный вставленный текст" }), {
+        target: { value: "Обновлённый средний контекст" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+
+      expect(props.onInput).toHaveBeenLastCalledWith("Черновик", {
+        pasteBlocks: [blocks[0], { ...blocks[1], text: "Обновлённый средний контекст" }, blocks[2]],
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Удалить вставленный текст" }));
+
+      expect(props.onInput).toHaveBeenLastCalledWith("Черновик", {
+        pasteBlocks: [blocks[0], blocks[2]],
+      });
+      expect(screen.queryByRole("button", { name: "Следующее вложение" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Вставки текста (2)" })).toBeNull();
+      expect(screen.getAllByRole("button", { name: /^Вставленный текст/ })).toHaveLength(2);
+      expect(screen.getByText("Первый контекст")).toBeVisible();
+      expect(screen.getByText("Последний контекст")).toBeVisible();
+      expect(screen.queryByText("Обновлённый средний контекст")).toBeNull();
+    });
+
+    it("keeps an unsaved pasted-text editor mounted when paging to another block and back", () => {
+      const props = composerCards({
+        pastes: {
+          pasteBlocks: [
+            { id: "context-1", text: "Первый контекст" },
+            { id: "context-2", text: "Второй контекст" },
+            { id: "context-3", text: "Третий контекст" },
+          ],
+        },
+      });
+      const view = render(<Composer {...props} />);
+      fireEvent.click(screen.getByRole("button", { name: "Вставки текста (3)" }));
+      fireEvent.click(screen.getByRole("button", { name: /^Вставленный текст/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Редактировать вставленный текст" }));
+      const source = screen.getByRole("textbox", { name: "Исходный вставленный текст" });
+      fireEvent.change(source, { target: { value: "Несохранённый текст на первой странице" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "Следующее вложение" }));
+
+      expect(source).toBeInTheDocument();
+      expect(source).not.toBeVisible();
+      expect(screen.queryByRole("textbox", { name: "Исходный вставленный текст" })).toBeNull();
+      expect(screen.getByRole("button", { name: /^Вставленный текст/ })).toHaveTextContent(
+        "Второй контекст",
+      );
+      expect(view.container.querySelectorAll(".paste-blocks > .paste-card")).toHaveLength(3);
+      fireEvent.click(screen.getByRole("button", { name: "Предыдущее вложение" }));
+
+      expect(screen.getByRole("textbox", { name: "Исходный вставленный текст" })).toBe(source);
+      expect(source).toBeVisible();
+      expect(source).toHaveValue("Несохранённый текст на первой странице");
+      expect(props.onInput).not.toHaveBeenCalled();
+    });
+
+    it("resets every remembered page when the active session changes", () => {
+      const props = composerCards({
+        annotations: [cardAnnotation(0), cardAnnotation(1), cardAnnotation(2)],
+        images: [cardImage(0), cardImage(1), cardImage(2)],
+        sessionIdentity: "first-thread",
+      });
+      const view = render(<Composer {...props} />);
+      fireEvent.click(screen.getByRole("button", { name: "Аннотации (3)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Следующее вложение" }));
+      fireEvent.click(screen.getByRole("button", { name: "Следующее вложение" }));
+      fireEvent.click(screen.getByRole("button", { name: "Изображения (3)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Следующее вложение" }));
+
+      view.rerender(<Composer {...props} sessionIdentity="second-thread" />);
+
+      expect(screen.queryByRole("button", { name: "Следующее вложение" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Аннотации (3)" }));
+      expect(screen.getByRole("button", { name: "Перейти к аннотации 1" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Предыдущее вложение" })).toBeDisabled();
+      fireEvent.click(screen.getByRole("button", { name: "Изображения (3)" }));
+      expect(screen.getByRole("button", { name: "Открыть изображение image-0.png" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Предыдущее вложение" })).toBeDisabled();
+      expect(props.onInput).not.toHaveBeenCalled();
+    });
+
     it("closes the selected category when its last item is removed without opening another", () => {
       const annotation = cardAnnotation(0);
       const props = composerCards({

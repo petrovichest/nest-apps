@@ -8,10 +8,12 @@ import { PastedMarkdown } from "./PastedMarkdown";
 
 export function PasteBlocks({
   blocks,
+  visibleBlockId,
   onChange,
   disabled = false,
 }: {
   blocks?: PasteBlock[];
+  visibleBlockId?: string;
   onChange?(blocks: PasteBlock[]): void;
   disabled?: boolean;
 }) {
@@ -22,6 +24,7 @@ export function PasteBlocks({
         <PasteCard
           key={block.id}
           block={block}
+          hidden={visibleBlockId !== undefined && block.id !== visibleBlockId}
           disabled={disabled}
           onEdit={
             onChange
@@ -40,11 +43,13 @@ export function PasteBlocks({
 
 function PasteCard({
   block,
+  hidden,
   disabled,
   onEdit,
   onRemove,
 }: {
   block: PasteBlock;
+  hidden: boolean;
   disabled: boolean;
   onEdit?(text: string): void;
   onRemove?(): void;
@@ -57,7 +62,7 @@ function PasteCard({
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
   return (
-    <section className="paste-card">
+    <section className="paste-card" hidden={hidden}>
       <div className="paste-card-header">
         <button
           className="paste-card-toggle"

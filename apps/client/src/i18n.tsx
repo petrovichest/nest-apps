@@ -27,6 +27,9 @@ const ENGLISH: Record<string, string> = {
   "Изображения ({{count}})": "Images ({{count}})",
   "Файлы ({{count}})": "Files ({{count}})",
   "Вставки текста ({{count}})": "Pasted text ({{count}})",
+  "Предыдущее вложение": "Previous attachment",
+  "Следующее вложение": "Next attachment",
+  "{{current}} из {{count}}": "{{current}} of {{count}}",
   "Аккаунтов: {{count}}": "Accounts: {{count}}",
   Автопереключение: "Auto-switch accounts",
   "При лимите — другой доступный аккаунт.":
