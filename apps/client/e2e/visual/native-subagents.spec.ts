@@ -204,9 +204,102 @@ for (const theme of ["light", "dark"] as const) {
         });
         const card = page.locator(".native-subagent-launches");
         await expect(card).toHaveCount(1);
-        await expect(card.getByRole("button")).toHaveAttribute("aria-expanded", "false");
+        const cardToggle = card.getByRole("button");
+        await expect(cardToggle).toHaveAttribute("aria-expanded", "false");
         await expect(card.getByRole("link")).toHaveCount(0);
-        await card.getByRole("button").click();
+        await page.mouse.move(0, 0);
+        await expect(card).toHaveCSS("padding", "4px");
+        await expect(card).toHaveCSS("border-radius", "20px");
+        await expect(card).toHaveCSS("border-width", "0px");
+        await expect(cardToggle).toHaveCSS("min-height", "44px");
+        await expect(cardToggle).toHaveCSS("padding", "10px 12px");
+        const heading = card.locator(".native-subagent-label strong");
+        await expect(heading).toHaveCSS("font-size", enlarged ? "24px" : "14px");
+        await expect(heading).toHaveCSS("font-weight", "400");
+        await expect(heading).toHaveCSS("text-transform", "none");
+        await expect(heading).toHaveCSS("letter-spacing", "normal");
+        await expect(card.locator("time")).toHaveCSS("font-size", enlarged ? "20px" : "12px");
+        if (width <= 820) {
+          const title = (await heading.boundingBox())!;
+          const metadata = (await card.locator(".native-subagent-summary").boundingBox())!;
+          const time = (await card.locator("time").boundingBox())!;
+          expect(metadata.y).toBeGreaterThanOrEqual(title.y + title.height);
+          expect(time.x).toBeCloseTo(title.x, 1);
+        }
+        const surfaces = await card.evaluate((element) => {
+          const reference = document.createElement("div");
+          reference.style.cssText = "position: absolute; visibility: hidden; pointer-events: none";
+          element.parentElement!.append(reference);
+          const resolveSurface = (background: string, shadow: string) => {
+            reference.style.background = `var(${background})`;
+            reference.style.boxShadow = `var(${shadow})`;
+            const style = getComputedStyle(reference);
+            return { background: style.backgroundColor, shadow: style.boxShadow };
+          };
+          const result = {
+            rest: resolveSurface("--color-floating", "--chat-inner-shadow"),
+            raised: resolveSurface("--color-floating", "--sidebar-surface-shadow"),
+            pressed: resolveSurface("--sidebar-control-active", "--sidebar-pressed-shadow"),
+          };
+          reference.remove();
+          return result;
+        });
+        const expectSurface = async (surface: { background: string; shadow: string }) => {
+          await expect(card).toHaveCSS("background-color", surface.background);
+          await expect(card).toHaveCSS("box-shadow", surface.shadow);
+          await expect(cardToggle).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+          await expect(cardToggle).toHaveCSS("box-shadow", "none");
+        };
+        await expectSurface(surfaces.rest);
+        const collapsedBounds = (await card.boundingBox())!;
+        if (width === 1440 && !enlarged) expect(collapsedBounds.height).toBe(52);
+        const captureCard =
+          browserName === "chromium" &&
+          !enlarged &&
+          ((width === 1440 && theme === "dark") || (width === 390 && theme === "light"));
+        const screenshotCard = async (name: string) => {
+          const bounds = (await card.boundingBox())!;
+          const viewport = page.viewportSize()!;
+          const x = Math.max(0, bounds.x - 32);
+          const y = Math.max(0, bounds.y - 32);
+          await page.screenshot({
+            path: testInfo.outputPath(name),
+            clip: {
+              x,
+              y,
+              width: Math.min(viewport.width - x, bounds.x + bounds.width + 32 - x),
+              height: Math.min(viewport.height - y, bounds.y + bounds.height + 32 - y),
+            },
+          });
+        };
+        if (captureCard) await screenshotCard("native-launch-card-collapsed.png");
+        if (await page.evaluate(() => matchMedia("(hover: hover)").matches)) {
+          await cardToggle.hover();
+          await expectSurface(surfaces.raised);
+          expect(await card.boundingBox()).toEqual(collapsedBounds);
+        }
+        await cardToggle.hover();
+        await page.mouse.down();
+        await expectSurface(surfaces.pressed);
+        expect(await card.boundingBox()).toEqual(collapsedBounds);
+        await page.mouse.move(0, 0);
+        await page.mouse.up();
+        await expect(cardToggle).toHaveAttribute("aria-expanded", "false");
+        await expectSurface(surfaces.rest);
+        await page.keyboard.press("Tab");
+        await cardToggle.focus();
+        await expect(card).toHaveCSS("outline-style", "solid");
+        await expect(cardToggle).toHaveCSS("outline-style", "none");
+        await expectSurface(surfaces.raised);
+        expect(await card.boundingBox()).toEqual(collapsedBounds);
+        await page.keyboard.press("Space");
+        await expect(cardToggle).toHaveAttribute("aria-expanded", "true");
+        await expect(card.getByRole("link")).toHaveCount(3);
+        await page.keyboard.press("Enter");
+        await expect(cardToggle).toHaveAttribute("aria-expanded", "false");
+        await expect(card.getByRole("link")).toHaveCount(0);
+        expect(await card.boundingBox()).toEqual(collapsedBounds);
+        await cardToggle.click();
         await expect(card.getByRole("link")).toHaveCount(3);
         await expect(card.getByText("2 работают", { exact: true })).toBeVisible();
         await expect(card.getByText("1 готов", { exact: true })).toBeVisible();
@@ -219,29 +312,15 @@ for (const theme of ["light", "dark"] as const) {
           "font-size",
           enlarged ? "20px" : "12px",
         );
-        await expect(card).toHaveCSS("padding", width <= 820 ? "16px" : "22px");
-        await expect(card).toHaveCSS("border-radius", width <= 820 ? "24px" : "28px");
-        const surface = await card.evaluate((element) => {
-          const reference = document.createElement("article");
-          reference.className = "message orchestration-notice";
-          element.parentElement!.append(reference);
-          const actual = getComputedStyle(element);
-          const expected = getComputedStyle(reference);
-          const matches = [
-            "backgroundColor",
-            "boxShadow",
-            "borderWidth",
-            "padding",
-            "borderRadius",
-          ].every(
-            (key) =>
-              actual[key as keyof CSSStyleDeclaration] ===
-              expected[key as keyof CSSStyleDeclaration],
-          );
-          reference.remove();
-          return { matches, overflows: element.scrollWidth > element.clientWidth };
-        });
-        expect(surface).toEqual({ matches: true, overflows: false });
+        expect(await card.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(
+          false,
+        );
+        if (captureCard) {
+          await cardToggle.evaluate((element) => element.blur());
+          await page.mouse.move(0, 0);
+          await expectSurface(surfaces.rest);
+          await screenshotCard("native-launch-card-expanded.png");
+        }
         const link = card.getByRole("link").first();
         await card.getByRole("button").focus();
         await page.keyboard.press("Tab");
@@ -352,4 +431,54 @@ for (const theme of ["light", "dark"] as const) {
       });
     }
   }
+}
+
+for (const status of ["inProgress", "failed"] as const) {
+  test(`native launch: English ${status} at 320px`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 });
+    await installVisualFixture(page, {
+      theme: "dark",
+      snapshot: { ...snapshot, uiLanguage: "en", attention: [], threads: [parent] },
+    });
+    await page.route("https://codexnest.visual/api/v1/threads/session-main", (route) =>
+      route.fulfill({
+        json: {
+          ...detail,
+          turns: [
+            {
+              ...detail.turns[0],
+              items: [
+                {
+                  type: "subagentLaunch",
+                  id: "launch-english",
+                  source: "codex",
+                  status,
+                  title: "Check layout",
+                  threadId: null,
+                  timestamp: Date.UTC(2026, 7, 3, 11, 42),
+                },
+              ],
+            },
+          ],
+        },
+        headers: { "access-control-allow-origin": "*" },
+      }),
+    );
+    await page.route("http://127.0.0.1:4310/**", (route) => route.abort());
+    await page.goto("/threads/session-main");
+    await waitForVisualReady(page);
+    const card = page.locator(".native-subagent-launches");
+    await expect(
+      card.getByText(status === "failed" ? "Failed to start subagent" : "Starting subagent", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await card.getByRole("button", { name: "Show subagents" }).click();
+    await expect(card.getByText("Check layout", { exact: true })).toBeVisible();
+    await expect(
+      card.getByLabel(status === "failed" ? "Subagent status: Error" : "Subagent status: Starting"),
+    ).toBeVisible();
+    await expect(card.getByRole("link")).toHaveCount(0);
+    expect(await card.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(false);
+  });
 }

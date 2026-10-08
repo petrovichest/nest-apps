@@ -107,6 +107,8 @@ export function NativeSubagentLaunchCard({
             <TeamIcon />
             <strong>{heading}</strong>
           </span>
+        </span>
+        <span className="native-subagent-summary">
           {timestamp != null && (
             <time
               dateTime={new Date(timestamp).toISOString()}
@@ -118,8 +120,6 @@ export function NativeSubagentLaunchCard({
               }).format(timestamp)}
             </time>
           )}
-        </span>
-        <span className="native-subagent-summary">
           {[...counts].map(([state, count]) => (
             <span className={`native-subagent-status state-${state}`} key={state}>
               {state === "running"
