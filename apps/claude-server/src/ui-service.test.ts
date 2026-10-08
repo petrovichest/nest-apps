@@ -374,6 +374,28 @@ describe("Claude UI durable session facade", () => {
     expect(generate).toHaveBeenCalledWith("Fix titles", "sonnet");
     await service.close();
   });
+  it("applies the default reasoning effort to new sessions when the model supports it", async () => {
+    const { manager, reserve } = await fixture();
+    const service = new UiService(manager as unknown as SessionManager);
+    await service.initialize({ probeModels: false });
+    await service.store.update((data) => {
+      data.models = [
+        {
+          value: "default",
+          displayName: "Default",
+          description: "",
+          supportedEffortLevels: ["high", "max"],
+        },
+      ] as typeof data.models;
+      data.taskDefaults = { reasoningEffort: "max" };
+    });
+    expect(service.thread(await reserve(service)).settings.reasoningEffort).toBe("max");
+    await service.store.update((data) => {
+      data.taskDefaults = { reasoningEffort: "xhigh" };
+    });
+    expect(service.thread(await reserve(service)).settings.reasoningEffort).toBeUndefined();
+    await service.close();
+  });
   it.each(["configuration and proxy", "native default configuration"])(
     "releases an idle owner when %s changes for the same account",
     async (change) => {

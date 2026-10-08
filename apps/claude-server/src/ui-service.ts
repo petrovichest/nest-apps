@@ -1171,9 +1171,17 @@ export class UiService extends EventEmitter {
         if (!data.projects.some((item) => item.id === projectId))
           throw new AppError("conflict", "Project was removed during session creation", 409);
         const thread = blankThread(id, project.path, projectId);
+        const defaultEffort = data.taskDefaults.reasoningEffort;
+        const defaultModel = this.modelOptions().find(
+          (item) => item.id === (data.taskDefaults.model ?? "default"),
+        );
         thread.settings = {
           collaborationMode: "default",
           ...(data.taskDefaults.model ? { model: data.taskDefaults.model } : {}),
+          ...(defaultEffort &&
+          defaultModel?.reasoningEfforts.some((option) => option.value === defaultEffort)
+            ? { reasoningEffort: defaultEffort }
+            : {}),
         };
         if (draft)
           thread.draft = {
