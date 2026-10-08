@@ -188,6 +188,18 @@ export function AsyncQuestionCard({
                     onChange={(event) =>
                       setCustom((previous) => ({ ...previous, [index]: event.target.value }))
                     }
+                    onKeyDown={(event) => {
+                      if (
+                        event.key !== "Enter" ||
+                        event.shiftKey ||
+                        event.altKey ||
+                        event.nativeEvent.isComposing
+                      ) {
+                        return;
+                      }
+                      event.preventDefault();
+                      if (!event.repeat) event.currentTarget.form?.requestSubmit();
+                    }}
                   />
                 )}
               </fieldset>

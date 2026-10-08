@@ -1027,6 +1027,20 @@ function UserInputForm({
                     value={freeformAnswer}
                     onChange={(event) => updateAnswer(question.id, event.target.value, "debounced")}
                     onSelect={captureAnswerSelection}
+                    onKeyDown={(
+                      event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
+                    ) => {
+                      if (
+                        event.key !== "Enter" ||
+                        event.shiftKey ||
+                        event.altKey ||
+                        event.nativeEvent.isComposing
+                      ) {
+                        return;
+                      }
+                      event.preventDefault();
+                      if (!event.repeat) event.currentTarget.form?.requestSubmit();
+                    }}
                     disabled={locked}
                     readOnly={speechBusy}
                   />
