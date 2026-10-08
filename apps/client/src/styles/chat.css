@@ -1767,7 +1767,7 @@ a.native-subagent-row:hover strong {
   }
 
   .thread-workspace:not(.pending-fork-workspace) .workspace-header {
-    top: var(--app-safe-area-top);
+    top: max(var(--space-2), var(--app-safe-area-top));
     right: calc(var(--space-2) + var(--app-safe-area-right));
     left: calc(var(--space-2) + var(--app-safe-area-left));
     width: auto;
@@ -1788,15 +1788,17 @@ a.native-subagent-row:hover strong {
   }
 
   .thread-workspace:not(.pending-fork-workspace) .timeline {
-    padding-top: calc(var(--app-safe-area-top) + var(--chat-header-height) + 22px);
+    padding-top: calc(max(var(--space-2), var(--app-safe-area-top)) + var(--chat-header-height) + 22px);
   }
 
   .thread-workspace:not(.pending-fork-workspace) .conversation-scroll {
-    scroll-padding-top: calc(var(--app-safe-area-top) + var(--chat-header-height) + 8px);
+    scroll-padding-top: calc(
+      max(var(--space-2), var(--app-safe-area-top)) + var(--chat-header-height) + 8px
+    );
   }
 
   .thread-workspace:not(.pending-fork-workspace) .fork-children-popover {
-    top: calc(var(--app-safe-area-top) + var(--chat-header-height) + 8px);
+    top: calc(max(var(--space-2), var(--app-safe-area-top)) + var(--chat-header-height) + 8px);
   }
 
   .thread-workspace .message.userMessage {
