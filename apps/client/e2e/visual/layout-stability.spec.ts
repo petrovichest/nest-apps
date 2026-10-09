@@ -431,9 +431,18 @@ for (const width of [320, 390, 1440]) {
         expect
           .poll(() =>
             composer.evaluate((el) =>
-              Math.abs(
-                parseFloat(getComputedStyle(el).getPropertyValue("--composer-overlay-height")) -
-                  Math.ceil(el.getBoundingClientRect().height),
+              Math.max(
+                Math.abs(
+                  parseFloat(getComputedStyle(el).getPropertyValue("--composer-overlay-height")) -
+                    Math.ceil(
+                      el.getBoundingClientRect().bottom -
+                        el.querySelector(".composer-box")!.getBoundingClientRect().top,
+                    ),
+                ),
+                Math.abs(
+                  parseFloat(getComputedStyle(el).getPropertyValue("--composer-full-height")) -
+                    Math.ceil(el.getBoundingClientRect().height),
+                ),
               ),
             ),
           )
@@ -448,11 +457,14 @@ for (const width of [320, 390, 1440]) {
       const viewport = (await scroll.boundingBox())!;
       const mobile = width <= 820;
       if (mobile) {
-        expect(viewport.y + viewport.height).toBe(original.y + original.height);
+        const bottomGap = await composer.evaluate((el) =>
+          parseFloat(getComputedStyle(el).paddingBottom),
+        );
+        expect(viewport.y + viewport.height).toBe(original.y + original.height + bottomGap);
       } else {
         expect(viewport.y + viewport.height).toBeGreaterThan(original.y + original.height);
       }
-      // Mobile has no bottom gap; the side gutter still exposes the scroll viewport.
+      // The compact layout's side gutter exposes the scroll viewport beside the composer.
       const scrollPoint = mobile
         ? { x: original.x / 2, y: original.y + original.height / 2 }
         : { x: original.x + original.width / 2, y: original.y + original.height + 6 };

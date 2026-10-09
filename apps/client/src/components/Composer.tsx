@@ -419,37 +419,43 @@ export function Composer({
 
   useLayoutEffect(() => {
     const composer = formRef.current;
+    const box = composer?.querySelector<HTMLElement>(".composer-box");
     const pane = composer?.closest<HTMLElement>(".conversation-pane");
     const scroll = pane?.querySelector<HTMLElement>(".conversation-scroll");
-    if (!composer || !pane || !scroll) return;
+    if (!composer || !box || !pane || !scroll) return;
     let previousHeight = -1;
-    const updateHeight = (height: number) => {
-      const nextHeight = Math.ceil(height);
+    let previousFullHeight = -1;
+    const updateHeight = () => {
+      const bounds = composer.getBoundingClientRect();
+      const fullHeight = Math.ceil(bounds.height);
+      // Cards above the input float over history and must not change its scroll range.
+      const nextHeight = Math.ceil(bounds.bottom - box.getBoundingClientRect().top);
+      if (fullHeight !== previousFullHeight) {
+        previousFullHeight = fullHeight;
+        pane.style.setProperty("--composer-full-height", `${fullHeight}px`);
+      }
       if (nextHeight === previousHeight) return false;
       previousHeight = nextHeight;
       pane.style.setProperty("--composer-overlay-height", `${nextHeight}px`);
       return true;
     };
-    updateHeight(composer.getBoundingClientRect().height);
+    updateHeight();
     const observer =
       typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver((entries) => {
-            const entry = entries.find((candidate) => candidate.target === composer);
-            const heightChanged = entry
-              ? updateHeight(
-                  entry.borderBoxSize?.[0]?.blockSize ?? composer.getBoundingClientRect().height,
-                )
-              : false;
+            const heightChanged = updateHeight();
             if (heightChanged || entries.some((candidate) => candidate.target === scroll)) {
               latestPropsRef.current.onLayoutChange?.();
             }
           });
     observer?.observe(composer, { box: "border-box" });
+    observer?.observe(box, { box: "border-box" });
     observer?.observe(scroll);
     return () => {
       observer?.disconnect();
       pane.style.removeProperty("--composer-overlay-height");
+      pane.style.removeProperty("--composer-full-height");
     };
   }, []);
   const [viewer, setViewer] = useState<{ index: number; opener: HTMLElement } | null>(null);

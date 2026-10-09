@@ -761,9 +761,7 @@ a.native-subagent-row:hover strong {
   max-height: min(
     52dvh,
     420px,
-    calc(
-      100dvh - var(--composer-overlay-height, 160px) - var(--chat-header-height) - var(--space-8)
-    )
+    calc(100dvh - var(--composer-full-height, 160px) - var(--chat-header-height) - var(--space-8))
   );
   padding: var(--space-4);
   border-radius: var(--chat-radius);

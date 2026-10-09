@@ -150,6 +150,173 @@ async function expectNoListOverflow(panel: Locator, allowDecorativeOverflow = fa
   }
 }
 
+async function settleComposerLayout(page: Page) {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+      ),
+  );
+}
+
+async function visibleMessageAnchor(page: Page) {
+  const index = await page.locator(".message-markdown p").evaluateAll((paragraphs) => {
+    const scrollTop = document.querySelector(".conversation-scroll")!.getBoundingClientRect().top;
+    const composerTop = document.querySelector(".composer-box")!.getBoundingClientRect().top;
+    return paragraphs.findIndex((paragraph) => {
+      const bounds = paragraph.getBoundingClientRect();
+      return bounds.top >= scrollTop + 16 && bounds.bottom < composerTop - 120;
+    });
+  });
+  expect(index).toBeGreaterThanOrEqual(0);
+  return page.locator(".message-markdown p").nth(index);
+}
+
+async function conversationPosition(page: Page, anchor: Locator) {
+  return {
+    ...(await page.locator(".conversation-scroll").evaluate((element) => ({
+      scrollTop: element.scrollTop,
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+      reservedHeight: getComputedStyle(element.closest(".conversation-pane")!)
+        .getPropertyValue("--composer-overlay-height")
+        .trim(),
+      timelinePadding: getComputedStyle(element.querySelector(".timeline")!).paddingBottom,
+      composerHeight: document.querySelector(".composer")!.getBoundingClientRect().height,
+      composerBoxHeight: document.querySelector(".composer-box")!.getBoundingClientRect().height,
+    }))),
+    anchorTop: (await anchor.boundingBox())!.y,
+  };
+}
+
+async function readConversationHistory(page: Page) {
+  const scroll = page.locator(".conversation-scroll");
+  const previous = await scroll.evaluate((element) => element.scrollTop);
+  await scroll.hover({ position: { x: 20, y: 200 } });
+  await page.mouse.wheel(0, -600);
+  await expect
+    .poll(() => scroll.evaluate((element) => element.scrollTop))
+    .toBeLessThan(previous - 100);
+  await expect(
+    page.getByRole("button", { name: "Прокрутить к последнему сообщению" }),
+  ).toBeVisible();
+  await expect
+    .poll(async () => {
+      const top = await scroll.evaluate((element) => element.scrollTop);
+      await settleComposerLayout(page);
+      return (await scroll.evaluate((element) => element.scrollTop)) - top;
+    })
+    .toBe(0);
+}
+
+function expectConversationPositionUnchanged(
+  before: Awaited<ReturnType<typeof conversationPosition>>,
+  after: Awaited<ReturnType<typeof conversationPosition>>,
+) {
+  expect(after.scrollTop).toBeCloseTo(before.scrollTop, 0);
+  expect(after.anchorTop).toBeCloseTo(before.anchorTop, 0);
+  expect(after.reservedHeight).toBe(before.reservedHeight);
+  expect(after.timelinePadding).toBe(before.timelinePadding);
+  expect(after.scrollHeight).toBe(before.scrollHeight);
+}
+
+for (const width of [390, 1440]) {
+  for (const position of ["tail", "reading"] as const) {
+    test(`annotation category opening preserves conversation position at ${position} at ${width}px`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height: 844 });
+      await openAnnotations(page, "light", 3, "none");
+      const scroll = page.locator(".conversation-scroll");
+      await expect
+        .poll(() =>
+          scroll.evaluate(
+            (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+          ),
+        )
+        .toBeLessThanOrEqual(1);
+      if (position === "reading") await readConversationHistory(page);
+      const anchor = await visibleMessageAnchor(page);
+      const before = await conversationPosition(page, anchor);
+      const category = page.getByRole("button", { name: "Аннотации (3)", exact: true });
+      await category.click();
+      await expect(category).toHaveAttribute("aria-expanded", "true");
+      await settleComposerLayout(page);
+      const opened = await conversationPosition(page, anchor);
+      await category.click();
+      await expect(category).toHaveAttribute("aria-expanded", "false");
+      await settleComposerLayout(page);
+      const closed = await conversationPosition(page, anchor);
+      await testInfo.attach("conversation-position", {
+        body: JSON.stringify({ position, before, opened, closed }, null, 2),
+        contentType: "application/json",
+      });
+      for (const state of [opened, closed]) expectConversationPositionUnchanged(before, state);
+    });
+  }
+
+  test(`textarea autoheight reserves conversation space at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await openAnnotations(page, "light", 3, "none");
+    const anchor = await visibleMessageAnchor(page);
+    const before = await conversationPosition(page, anchor);
+    const textarea = page.getByRole("textbox", { name: "Сообщение для Codex" });
+    await textarea.fill("Многострочный черновик\n".repeat(8).trim());
+    await settleComposerLayout(page);
+    const after = await conversationPosition(page, anchor);
+    const growth = after.composerBoxHeight - before.composerBoxHeight;
+    expect(growth).toBeGreaterThan(40);
+    expect(
+      Math.abs(parseFloat(after.timelinePadding) - parseFloat(before.timelinePadding) - growth),
+    ).toBeLessThanOrEqual(1);
+    expect(after.scrollHeight - after.clientHeight - after.scrollTop).toBeLessThanOrEqual(1);
+    const message = (await page.locator(".message.agentMessage").boundingBox())!;
+    const input = (await page.locator(".composer-box").boundingBox())!;
+    expect(message.y + message.height).toBeLessThanOrEqual(input.y);
+  });
+}
+
+for (const count of [0, 1]) {
+  test(`saving annotation ${count + 1} preserves conversation position below the compact threshold`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openAnnotations(page, "light", count, "none");
+    const paragraph = await visibleMessageAnchor(page);
+    await paragraph.evaluate((element) => {
+      const range = document.createRange();
+      range.setStart(element.firstChild!, 0);
+      range.setEnd(element.firstChild!, 15);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    });
+    const editor = page.getByRole("textbox", { name: "Комментарий к выделенному тексту" });
+    await expect(editor).toBeFocused();
+    await editor.fill("Новое замечание без сдвига переписки");
+    await settleComposerLayout(page);
+    const anchor = await visibleMessageAnchor(page);
+    const before = await conversationPosition(page, anchor);
+    await editor.press("Enter");
+    await expect(editor).toHaveCount(0);
+    const bubbles = page.locator(".composer .annotation-bubble");
+    await expect(bubbles).toHaveCount(count + 1);
+    await expect(page.locator(".composer-card-filters")).toHaveCount(0);
+    await settleComposerLayout(page);
+    expectConversationPositionUnchanged(before, await conversationPosition(page, anchor));
+    await bubbles
+      .last()
+      .getByRole("button", { name: `Удалить аннотацию ${count + 1}`, exact: true })
+      .click();
+    await expect(bubbles).toHaveCount(count);
+    await settleComposerLayout(page);
+    expectConversationPositionUnchanged(before, await conversationPosition(page, anchor));
+  });
+}
+
 for (const theme of ["light", "dark"] as const) {
   for (const width of [320, 390, 1440]) {
     test(`annotation bubbles at ${width}px in ${theme}: navigation, deletion and layout`, async ({
