@@ -5794,6 +5794,22 @@ export function Activity({
     );
   }
   if (item.type === "reasoning") {
+    if (application.isClaude) {
+      return (
+        <article className="message agentMessage">
+          <div className="message-body">
+            <MarkdownContent
+              text={item.text}
+              cwd={cwd}
+              onDownload={onDownload}
+              onOpenArtifact={onOpenArtifact}
+              onLoadImage={onLoadImage}
+            />
+          </div>
+          <MessageFooter text={item.text} timestamp={item.timestamp} markdown />
+        </article>
+      );
+    }
     return (
       <ActivityDetails icon={<MoreIcon />} title={t("Рассуждение")} status={item.status}>
         <MarkdownContent
@@ -7405,6 +7421,7 @@ function groupActivities(items: ActivityItem[]): Array<ActivityItem | ActivityIt
 }
 
 function isTechnicalActivity(item: ActivityItem): boolean {
+  if (item.type === "reasoning" && application.isClaude) return false;
   return ["reasoning", "command", "fileChange", "tool"].includes(item.type);
 }
 

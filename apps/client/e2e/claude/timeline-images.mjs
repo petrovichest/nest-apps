@@ -140,6 +140,7 @@ try {
   const messages = page.locator(".timeline .message.userMessage, .timeline .message.agentMessage");
   const expected = [
     "Initial task",
+    "Inspecting",
     "Working on the task",
     "Show the variants",
     "Checking the screenshots",
@@ -154,9 +155,9 @@ try {
       assert.ok(text.includes(expected[index]), `Message ${index} stays in chronological order`);
     const times = await messages.locator("time").allTextContents();
     assert.equal(times.length, expected.length);
-    assert.ok(times[2].endsWith("01:45"));
-    assert.ok(times[3].endsWith("01:47"));
+    assert.ok(times[3].endsWith("01:45"));
     assert.ok(times[4].endsWith("01:47"));
+    assert.ok(times[5].endsWith("01:47"));
     assert.equal(await page.getByText("[Image: original 2880x1800]", { exact: true }).count(), 0);
     assert.equal(
       await page.locator(".message-image-gallery img").evaluate((image) => image.naturalWidth),

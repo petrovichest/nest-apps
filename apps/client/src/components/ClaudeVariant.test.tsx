@@ -3,6 +3,7 @@ import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as CapacitorCore from "@capacitor/core";
 import type {
+  ActivityItem,
   AppUpdateStatus,
   AttentionRequest,
   ModelOption,
@@ -83,6 +84,82 @@ const models: ModelOption[] = [
 ];
 
 describe("the shared Claude interface", () => {
+  it.each(["active", null])(
+    "shows reasoning in chat and keeps tools in technical details with current turn=%s",
+    (currentTurnId) => {
+      const reasoning: ActivityItem = {
+        type: "reasoning",
+        id: "thinking",
+        text: "Проверяю причину",
+        images: [],
+        timestamp: 1,
+        phase: null,
+        status: currentTurnId ? "inProgress" : "completed",
+      };
+      const context = renderActiveClaudeThread([], false, currentTurnId, [
+        { ...reasoning, id: "empty-thinking", text: " \n " },
+        reasoning,
+        {
+          type: "tool",
+          id: "tool",
+          title: "Чтение файла",
+          detail: "Технический вывод",
+          status: "completed",
+        },
+        { ...reasoning, id: "next-thinking", text: "Нашёл причину" },
+        {
+          ...reasoning,
+          type: "agentMessage",
+          id: "answer",
+          text: "Исправление готово",
+          phase: "final_answer",
+          status: "completed",
+        },
+      ]);
+      const article = screen.getByText("Проверяю причину").closest("article")!;
+      expect(article).toHaveClass("message", "agentMessage");
+      expect(article.closest("details")).toBeNull();
+      expect(screen.queryByText("Рассуждение")).toBeNull();
+      expect(
+        Array.from(
+          context.view.container.querySelectorAll(".turn .message-body p"),
+          (node) => node.textContent,
+        ),
+      ).toEqual(["Проверяю причину", "Нашёл причину", "Исправление готово"]);
+      expect(screen.queryByText("Чтение файла")).toBeNull();
+      expect(context.loadTurnItems).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Технические детали" }));
+      const journal = context.view.container.querySelector(".turn-activity-journal")!;
+      expect(within(journal as HTMLElement).getByText("Чтение файла")).toBeInTheDocument();
+      expect(within(journal as HTMLElement).queryByText("Рассуждение")).toBeNull();
+      expect(screen.getAllByText("Проверяю причину")).toHaveLength(1);
+      expect(context.loadTurnItems).not.toHaveBeenCalled();
+
+      const detail = context.state.details.thread;
+      context.state.details.thread = {
+        ...detail,
+        turns: detail.turns.map((turn) => ({
+          ...turn,
+          items: turn.items.map((item) =>
+            item.id === reasoning.id ? { ...reasoning, text: "Проверяю причину и решение" } : item,
+          ),
+        })),
+      };
+      context.view.rerender(
+        <MemoryRouter initialEntries={["/threads/thread"]}>
+          <ThreadPage
+            onOpenNavigation={vi.fn()}
+            transcriptionConfig={transcriptionConfig}
+            transcriptionProvider="local"
+          />
+        </MemoryRouter>,
+      );
+      expect(screen.getByText("Проверяю причину и решение").closest("article")).toBe(article);
+      expect(screen.queryByText("Проверяю причину")).toBeNull();
+    },
+  );
+
   it.each([true, false])("downloads the Claude APK with managed updates %s", async (supported) => {
     const api = {
       settings: { baseUrl: "https://claude.home.arpa" },
@@ -706,6 +783,7 @@ function renderActiveClaudeThread(
   queuedMessages: QueuedMessage[] = [],
   localSteer = false,
   currentTurnId: string | null = "active",
+  items: ActivityItem[] = [],
 ) {
   const thread: ThreadSummary = {
     id: "thread",
@@ -748,7 +826,7 @@ function renderActiveClaudeThread(
           additions: 0,
           deletions: 0,
         },
-        items: [],
+        items,
       },
     ],
   };
