@@ -456,7 +456,7 @@ export function ImageViewer({
         {image.status === "loading" ? (
           <div className="image-viewer-status" role="status">
             <span className="spinner small" />
-            {t("Загружаем изображение…")}
+            <span className="working-text working-text-strong">{t("Загружаем изображение…")}</span>
           </div>
         ) : image.status === "failed" ? (
           <button type="button" className="image-viewer-retry" onClick={onRetry}>

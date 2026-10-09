@@ -405,7 +405,15 @@ function ForkStatusBanner({
         <span className="spinner small" />
       )}
       <span className="fork-status-copy">
-        <strong>{forkStatusTitle(operation, t)}</strong>
+        <strong
+          className={
+            operation.status === "ready" || operation.status === "failed"
+              ? undefined
+              : "working-text working-text-strong"
+          }
+        >
+          {forkStatusTitle(operation, t)}
+        </strong>
         <small>{copy}</small>
       </span>
       {operation.status === "failed" && (

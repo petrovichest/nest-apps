@@ -56,3 +56,34 @@ describe("application typography roles", () => {
     });
   }
 });
+
+describe("working text glint", () => {
+  it("is emitted only for users who accept motion and default colours", () => {
+    const css = readFileSync(resolve(root, "apps/client/src/styles.css"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const start = css.indexOf(
+      "@media (prefers-reduced-motion: no-preference) and (forced-colors: none)",
+    );
+    expect(start).toBeGreaterThan(-1);
+    let depth = 0;
+    let end = -1;
+    for (let index = css.indexOf("{", start); index < css.length; index += 1) {
+      if (css[index] === "{") depth += 1;
+      else if (css[index] === "}" && (depth -= 1) === 0) {
+        end = index;
+        break;
+      }
+    }
+    expect(end).toBeGreaterThan(start);
+    const gated = css.slice(start, end + 1);
+    const outside = css.slice(0, start) + css.slice(end + 1);
+    expect(gated).toContain(".working-text {");
+    expect(gated).toContain(".working-text-strong {");
+    expect(gated).toContain("animation: working-text-glint");
+    // Nothing may style the class outside the gate, otherwise reduced motion would not keep plain text.
+    expect(outside).not.toMatch(/\.working-text/);
+    expect(outside).toContain("@keyframes working-text-glint");
+  });
+});

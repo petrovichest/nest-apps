@@ -141,7 +141,7 @@ export function ClaudeAccountsSettings() {
       )}
       {loading && (
         <p role="status" className="muted">
-          {t("Загружаем аккаунты…")}
+          <span className="working-text">{t("Загружаем аккаунты…")}</span>
         </p>
       )}
       {status && (
@@ -379,7 +379,11 @@ function AccountCard({
       ) : (
         !hasKnownLimits && (
           <p className="claude-account-hint" role="status">
-            {t(account.rateLimits.refreshing ? "Получаем лимиты…" : "Лимиты ещё не получены.")}
+            {account.rateLimits.refreshing ? (
+              <span className="working-text">{t("Получаем лимиты…")}</span>
+            ) : (
+              t("Лимиты ещё не получены.")
+            )}
           </p>
         )
       )}
@@ -982,19 +986,28 @@ function AccountWizard({
             </>
           )}
           <p className="claude-login-status claude-account-meta" role="status">
-            {t(
-              login?.state === "waitingCode"
-                ? "Ожидаем код авторизации…"
-                : login?.state === "checking"
-                  ? "Проверяем авторизацию…"
-                  : login?.state === "completed"
-                    ? "Вход выполнен"
-                    : login?.state === "failed"
-                      ? "Вход не завершён. Начните заново."
-                      : login?.state === "cancelled"
-                        ? "Вход отменён"
-                        : "Готовим страницу входа…",
-            )}
+            <span
+              className={
+                login?.state === "checking" ||
+                !["waitingCode", "completed", "failed", "cancelled"].includes(login?.state ?? "")
+                  ? "working-text"
+                  : undefined
+              }
+            >
+              {t(
+                login?.state === "waitingCode"
+                  ? "Ожидаем код авторизации…"
+                  : login?.state === "checking"
+                    ? "Проверяем авторизацию…"
+                    : login?.state === "completed"
+                      ? "Вход выполнен"
+                      : login?.state === "failed"
+                        ? "Вход не завершён. Начните заново."
+                        : login?.state === "cancelled"
+                          ? "Вход отменён"
+                          : "Готовим страницу входа…",
+              )}
+            </span>
           </p>
           {login?.state === "waitingCode" && (
             <form className="claude-login-code" onSubmit={submitCode}>

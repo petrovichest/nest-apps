@@ -6715,6 +6715,80 @@ button.composer-card-filter:active {
   }
 }
 
+/* A glint rolls across the text of work that is running right now. The resting colour is the
+   text's own, so surfaces keep their look between passes. Waiting, finished and failed states
+   never get the class. Reduced motion and forced colours keep plain text, so nothing here
+   applies to them. */
+@keyframes working-text-glint {
+  0% {
+    background-position: 100% 0;
+  }
+
+  70%,
+  100% {
+    background-position: 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  @supports ((-webkit-background-clip: text) or (background-clip: text)) {
+    .working-text {
+      --working-glint-base: currentColor;
+      --working-glint-peak: var(--text);
+      --working-glint-half: 1.7em;
+      --working-glint-core: 0.2em;
+      --working-glint-ramp: calc(var(--working-glint-half) - var(--working-glint-core));
+      --working-glint-low: color-mix(
+        in srgb,
+        var(--working-glint-peak) 15.6%,
+        var(--working-glint-base)
+      );
+      --working-glint-mid: color-mix(
+        in srgb,
+        var(--working-glint-peak) 50%,
+        var(--working-glint-base)
+      );
+      --working-glint-high: color-mix(
+        in srgb,
+        var(--working-glint-peak) 84.4%,
+        var(--working-glint-base)
+      );
+      -webkit-text-fill-color: transparent;
+      background-image: linear-gradient(
+        90deg,
+        var(--working-glint-base) calc(50% - var(--working-glint-half)),
+        var(--working-glint-low)
+          calc(50% - var(--working-glint-core) - var(--working-glint-ramp) * 0.75),
+        var(--working-glint-mid)
+          calc(50% - var(--working-glint-core) - var(--working-glint-ramp) * 0.5),
+        var(--working-glint-high)
+          calc(50% - var(--working-glint-core) - var(--working-glint-ramp) * 0.25),
+        var(--working-glint-peak) calc(50% - var(--working-glint-core)),
+        var(--working-glint-peak) calc(50% + var(--working-glint-core)),
+        var(--working-glint-high)
+          calc(50% + var(--working-glint-core) + var(--working-glint-ramp) * 0.25),
+        var(--working-glint-mid)
+          calc(50% + var(--working-glint-core) + var(--working-glint-ramp) * 0.5),
+        var(--working-glint-low)
+          calc(50% + var(--working-glint-core) + var(--working-glint-ramp) * 0.75),
+        var(--working-glint-base) calc(50% + var(--working-glint-half))
+      );
+      background-size: calc(200% + 2 * var(--working-glint-half)) 100%;
+      background-repeat: no-repeat;
+      background-position: 100% 0;
+      -webkit-background-clip: text;
+      background-clip: text;
+      animation: working-text-glint 2.4s linear infinite;
+    }
+
+    /* Text that already sits at full contrast dims slightly between passes instead. */
+    .working-text-strong {
+      --working-glint-base: color-mix(in srgb, currentColor 52%, transparent);
+      --working-glint-peak: currentColor;
+    }
+  }
+}
+
 .drawer-backdrop {
   display: none;
 }

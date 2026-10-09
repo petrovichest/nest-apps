@@ -306,7 +306,11 @@ export function ThreadSearchDialog({
                 {occurrences.error ? t("Повторить") : t("Показать ещё")}
               </button>
             )}
-            {occurrences.loading && <p role="status">{t("Ищем…")}</p>}
+            {occurrences.loading && (
+              <p role="status">
+                <span className="working-text">{t("Ищем…")}</span>
+              </p>
+            )}
           </section>
         ) : query ? (
           groups.map((group, index) => (
@@ -343,7 +347,11 @@ export function ThreadSearchDialog({
                   {group.error ? t("Повторить") : t("Показать ещё")}
                 </button>
               )}
-              {group.loading && <p role="status">{t("Ищем…")}</p>}
+              {group.loading && (
+                <p role="status">
+                  <span className="working-text">{t("Ищем…")}</span>
+                </p>
+              )}
             </section>
           ))
         ) : (

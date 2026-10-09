@@ -2019,7 +2019,13 @@ function SkillAutocomplete({
         ))
       ) : (
         <div className="skill-autocomplete-state" role="status">
-          {loading ? t("Загружаем скиллы…") : errorText ? errorText : t("Нет подходящих скиллов")}
+          {loading ? (
+            <span className="working-text">{t("Загружаем скиллы…")}</span>
+          ) : errorText ? (
+            errorText
+          ) : (
+            t("Нет подходящих скиллов")
+          )}
         </div>
       )}
     </div>

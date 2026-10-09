@@ -222,7 +222,7 @@ function GalleryThumbnail({ image, index }: { image: MessageImage; index: number
       {status === "loading" && (
         <span role="status">
           <span className="spinner small" />
-          {t("Загружаем изображение…")}
+          <span className="working-text">{t("Загружаем изображение…")}</span>
         </span>
       )}
       {status === "failed" && <span>{t("Не удалось загрузить изображение. Повторить")}</span>}

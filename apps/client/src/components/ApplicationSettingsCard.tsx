@@ -51,6 +51,7 @@ export function ApplicationSettingsCard({
   const apkVersionLabel = nativePlatform
     ? (apkVersion ?? (apkVersionFailed ? t("Не удалось определить") : t("Определяем…")))
     : t("Только в Android");
+  const apkVersionPending = nativePlatform && apkVersion == null && !apkVersionFailed;
 
   useEffect(() => {
     if (!initialStatus) return;
@@ -214,7 +215,13 @@ export function ApplicationSettingsCard({
           </div>
           <div>
             <dt>{t("APK на этом устройстве")}</dt>
-            <dd className="settings-technical">{apkVersionLabel}</dd>
+            <dd className="settings-technical">
+              {apkVersionPending ? (
+                <span className="working-text working-text-strong">{apkVersionLabel}</span>
+              ) : (
+                apkVersionLabel
+              )}
+            </dd>
           </div>
           <div>
             <dt>{t("Состояние")}</dt>

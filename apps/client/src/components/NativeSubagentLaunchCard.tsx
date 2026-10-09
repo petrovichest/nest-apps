@@ -105,7 +105,9 @@ export function NativeSubagentLaunchCard({
         <span className="native-subagent-heading">
           <span className="native-subagent-label">
             <TeamIcon />
-            <strong>{heading}</strong>
+            <strong className={pending && !failed ? "working-text working-text-strong" : undefined}>
+              {heading}
+            </strong>
           </span>
         </span>
         <span className="native-subagent-summary">
@@ -121,7 +123,10 @@ export function NativeSubagentLaunchCard({
             </time>
           )}
           {[...counts].map(([state, count]) => (
-            <span className={`native-subagent-status state-${state}`} key={state}>
+            <span
+              className={`native-subagent-status state-${state}${isWorking(state) ? " working-text" : ""}`}
+              key={state}
+            >
               {state === "running"
                 ? t(count === 1 ? "{{count}} работает" : "{{count}} работают", { count })
                 : state === "completed"
@@ -151,7 +156,7 @@ export function SubagentList({ agents }: { agents: SubagentEntry[] }) {
               <span className="native-subagent-top">
                 <strong>{title}</strong>
                 <span
-                  className={`native-subagent-status state-${state}`}
+                  className={`native-subagent-status state-${state}${isWorking(state) ? " working-text" : ""}`}
                   aria-label={t("Статус субагента: {{status}}", {
                     status: subagentStateLabel(state, t),
                   })}
@@ -188,6 +193,10 @@ export function SubagentList({ agents }: { agents: SubagentEntry[] }) {
       })}
     </ul>
   );
+}
+
+function isWorking(state: SubagentState): boolean {
+  return state === "running" || state === "launching";
 }
 
 export function subagentStateLabel(state: SubagentState, t: Translate): string {

@@ -122,6 +122,11 @@ describe("model capacity waiting", () => {
         ),
       ).toBeVisible();
       expect(
+        screen.getByText(
+          "Возникла ошибка перегрузки модели. Продолжаем попытки — следующая через 5м 0с",
+        ),
+      ).not.toHaveClass("working-text");
+      expect(
         screen.queryByText("Selected model is at capacity. Please try a different model."),
       ).not.toBeInTheDocument();
       expect(screen.queryByText(/^Ошибка через/)).not.toBeInTheDocument();
@@ -225,6 +230,9 @@ describe("model capacity waiting", () => {
     expect(
       screen.getByText("Возникла ошибка перегрузки модели. Продолжаем попытки…"),
     ).toBeVisible();
+    expect(
+      screen.getByText("Возникла ошибка перегрузки модели. Продолжаем попытки…"),
+    ).not.toHaveClass("working-text");
     expect(screen.queryByText("Selected model is at capacity.")).not.toBeInTheDocument();
     expect(view.container.querySelector(".turn-activity-state-failed")).toBeNull();
   });
@@ -1343,6 +1351,7 @@ describe("Activity", () => {
       const activity = view.container.querySelector(".turn-activity-row")!;
       expect(activity).toHaveTextContent("Проверяю результат");
       expect(activity.querySelector(".spinner")).not.toBeNull();
+      expect(activity.querySelector(".turn-activity-phase")).toHaveClass("working-text");
       expect(activity.querySelector(".turn-activity-duration")).toHaveTextContent("3с");
       fireEvent.click(screen.getByRole("button", { name: "Технические детали" }));
 
@@ -1356,6 +1365,7 @@ describe("Activity", () => {
       );
       expect(activity).not.toHaveTextContent("Проверяю результат");
       expect(activity.querySelector(".spinner")).toBeNull();
+      expect(activity.querySelector(".turn-activity-phase")).not.toHaveClass("working-text");
       expect(activity.querySelector(".turn-activity-state svg")).not.toBeNull();
       expect(activity.querySelector(".turn-activity-duration")).toBeNull();
       expect(screen.getByText("Проверка завершена")).toBeVisible();
@@ -1370,6 +1380,7 @@ describe("Activity", () => {
       view.rerender(threadRoute());
       expect(activity).toHaveTextContent("Проверяю результат");
       expect(activity.querySelector(".spinner")).not.toBeNull();
+      expect(activity.querySelector(".turn-activity-phase")).toHaveClass("working-text");
       expect(activity.querySelector(".turn-activity-duration")).toHaveTextContent("13с");
       act(() => vi.advanceTimersByTime(1_000));
       expect(activity.querySelector(".turn-activity-duration")).toHaveTextContent("14с");
@@ -2054,6 +2065,7 @@ describe("Activity", () => {
     expect(screen.getByText("Готово за 3с")).toBeInTheDocument();
     expect(screen.getByText("Ошибка через 4с")).toBeInTheDocument();
     expect(screen.getByText("Прервано")).toBeInTheDocument();
+    expect(document.querySelector(".working-text")).toBeNull();
     expect(screen.queryByLabelText("Технические детали")).toBeNull();
   });
 
@@ -3697,6 +3709,7 @@ describe("Activity", () => {
 
     expect(screen.queryByText("Скрытый активный инструмент")).toBeNull();
     expect(screen.getByRole("status")).toHaveTextContent("Codex работает");
+    expect(screen.getByRole("status")).toHaveClass("working-text");
     expect(screen.queryByLabelText("Технические детали")).toBeNull();
     expect(screen.getByRole("region", { name: "Требуется внимание" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Разрешить один раз" })).toBeInTheDocument();

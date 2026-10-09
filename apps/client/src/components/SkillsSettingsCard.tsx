@@ -154,7 +154,8 @@ export function SkillsSettingsCard({
 
       {project && !catalog && loading && (
         <div className="skills-settings-state" role="status">
-          <span className="spinner small" /> {t("Загружаем скиллы…")}
+          <span className="spinner small" />{" "}
+          <span className="working-text">{t("Загружаем скиллы…")}</span>
         </div>
       )}
       {(loadError || saveError) && (

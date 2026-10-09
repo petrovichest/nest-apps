@@ -126,7 +126,13 @@ export function SessionInspector({
               <InspectorRow label={t("Статус")}>
                 <span className={`status-label status-label-${summary.state}`}>
                   <span className={threadStatusClasses(summary)} />
-                  {stateLabel(summary.state, t)}
+                  <span
+                    className={
+                      summary.state === "running" ? "working-text working-text-strong" : undefined
+                    }
+                  >
+                    {stateLabel(summary.state, t)}
+                  </span>
                 </span>
               </InspectorRow>
               <InspectorRow label={t("Модель")}>
@@ -185,7 +191,7 @@ export function SessionInspector({
           {artifactLoadState === "loading" && (
             <div className="inspector-artifact-progress" role="status">
               <span className="spinner small" />
-              <span>{t("Загружаем артефакты…")}</span>
+              <span className="working-text">{t("Загружаем артефакты…")}</span>
             </div>
           )}
           {artifactLoadState === "error" && (
@@ -386,7 +392,8 @@ function artifactStamp(artifact: SessionArtifact): string {
 
 function GitChangesValue({ value }: { value: GitChangesView }) {
   const { language, t } = useI18n();
-  if (value === null) return <>{t("Загрузка…")}</>;
+  if (value === null)
+    return <span className="working-text working-text-strong">{t("Загрузка…")}</span>;
   if (value === "error") return <>{t("Недоступно")}</>;
   if (value.state === "notRepository") return <>{t("Не Git-репозиторий")}</>;
   if (value.state === "clean") return <>{t("Нет изменений")}</>;

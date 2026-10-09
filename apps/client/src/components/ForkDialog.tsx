@@ -144,7 +144,7 @@ export function ForkDialog({
             <small>{t("Точка ответвления")}</small>
             <strong>{sourceTitle}</strong>
           </span>
-          <span className="fork-source-size">
+          <span className={`fork-source-size${estimate || estimateFailed ? "" : " working-text"}`}>
             {estimate || estimateFailed
               ? estimate
                 ? formatForkBytes(estimate.sourceBytes, language, t)
@@ -269,7 +269,9 @@ function ForkModeCard({
           <>
             <span>
               <small>{t("Объём")}</small>
-              <span className="fork-metric-value">
+              <span
+                className={`fork-metric-value${loading ? " working-text working-text-strong" : ""}`}
+              >
                 {loading
                   ? t("Считаем…")
                   : mode === "compressed" && estimate.estimatedBytes === null
@@ -279,7 +281,9 @@ function ForkModeCard({
             </span>
             <span>
               <small>{t("Время")}</small>
-              <span className="fork-metric-value">
+              <span
+                className={`fork-metric-value${loading ? " working-text working-text-strong" : ""}`}
+              >
                 {loading ? t("Считаем…") : formatForkTime(estimate.estimatedSeconds, t)}
               </span>
             </span>

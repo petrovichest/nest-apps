@@ -3743,7 +3743,7 @@ export function ThreadPage({
             </button>
           </>
         ) : (
-          <p>{t("Загрузка…")}</p>
+          <p className="working-text">{t("Загрузка…")}</p>
         )}
       </div>
     );
@@ -3763,7 +3763,7 @@ export function ThreadPage({
         ) : (
           <>
             <div className="spinner" />
-            <p>{t("Получаем состояние Codex…")}</p>
+            <p className="working-text">{t("Получаем состояние Codex…")}</p>
           </>
         )}
         {optimisticMessages.map((message) => (
@@ -3990,7 +3990,13 @@ export function ThreadPage({
                               )}
                               <span className="fork-operation-child-copy">
                                 <span className="fork-child-title">{title}</span>
-                                <small>{status}</small>
+                                <small
+                                  className={
+                                    operation.status === "failed" ? undefined : "working-text"
+                                  }
+                                >
+                                  {status}
+                                </small>
                               </span>
                             </Link>
                           );
@@ -4210,14 +4216,18 @@ export function ThreadPage({
                       onOpenArtifact={openLinkedArtifact}
                     />
                     <div className="outgoing-delivery-status" role="status">
-                      {pendingOptimisticMessage.deliveryError
-                        ? pendingOptimisticMessage.deliveryError.retryable
-                          ? localizeKnownServerText(
-                              language,
-                              pendingOptimisticMessage.deliveryError.message,
-                            )
-                          : t("Не отправлено")
-                        : t("Отправляется…")}
+                      {pendingOptimisticMessage.deliveryError ? (
+                        pendingOptimisticMessage.deliveryError.retryable ? (
+                          localizeKnownServerText(
+                            language,
+                            pendingOptimisticMessage.deliveryError.message,
+                          )
+                        ) : (
+                          t("Не отправлено")
+                        )
+                      ) : (
+                        <span className="working-text">{t("Отправляется…")}</span>
+                      )}
                       {pendingOptimisticMessage.deliveryError?.retryable === false && (
                         <button
                           type="button"
@@ -4413,7 +4423,11 @@ export function ThreadPage({
                                       <>
                                         {planNotice && <p role="status">{planNotice}</p>}
                                         {planAcceptanceInFlightRef.current && (
-                                          <p role="status">{t("Запускаем выполнение плана…")}</p>
+                                          <p role="status">
+                                            <span className="working-text">
+                                              {t("Запускаем выполнение плана…")}
+                                            </span>
+                                          </p>
                                         )}
                                         <div className="implement-plan-actions">
                                           <button
@@ -4456,9 +4470,13 @@ export function ThreadPage({
                                               type="button"
                                               onClick={() => void dismissPlan()}
                                             >
-                                              {planDismissalInFlightRef.current
-                                                ? t("Отказываемся от плана…")
-                                                : t("Отказаться от плана")}
+                                              {planDismissalInFlightRef.current ? (
+                                                <span className="working-text working-text-strong">
+                                                  {t("Отказываемся от плана…")}
+                                                </span>
+                                              ) : (
+                                                t("Отказаться от плана")
+                                              )}
                                             </button>
                                           )}
                                         </div>
@@ -4580,7 +4598,11 @@ export function ThreadPage({
                           disabled={finishing}
                           onClick={() => void finishThread()}
                         >
-                          {finishing ? t("Заканчиваем…") : t("Закончить")}
+                          {finishing ? (
+                            <span className="working-text">{t("Заканчиваем…")}</span>
+                          ) : (
+                            t("Закончить")
+                          )}
                         </button>
                       )}
                   </>
@@ -4733,7 +4755,15 @@ export function ThreadPage({
           >
             {workspaceSummary.quotaRecovery && (
               <div className="input-availability-notice" role="status">
-                <span>{t(workspaceSummary.quotaRecovery.message)}</span>
+                <span
+                  className={
+                    workspaceSummary.quotaRecovery.state === "resuming"
+                      ? "working-text working-text-strong"
+                      : undefined
+                  }
+                >
+                  {t(workspaceSummary.quotaRecovery.message)}
+                </span>
                 {workspaceSummary.quotaRecovery.state !== "failed" && (
                   <button type="button" disabled={busy} onClick={() => void stopTask()}>
                     {t("Остановить задачу")}
@@ -4766,9 +4796,13 @@ export function ThreadPage({
                 disabled={voiceRecoveryPending || busy || Boolean(activeVoiceJob || voiceUpload)}
                 onClick={() => void retryRecoveredVoiceRecording()}
               >
-                {voiceRecoveryPending
-                  ? t("Восстанавливаем сохранённую запись…")
-                  : t("Повторить сохранённую запись")}
+                {voiceRecoveryPending ? (
+                  <span className="working-text working-text-strong">
+                    {t("Восстанавливаем сохранённую запись…")}
+                  </span>
+                ) : (
+                  t("Повторить сохранённую запись")
+                )}
               </button>
             )}
             {storageWarning && preparationRef.current.active && (
@@ -4962,7 +4996,9 @@ export function VoiceTranscriptionBubble({
           <MicrophoneIcon />
         )}
       </span>
-      <span className="voice-transcription-status-label">{label}</span>
+      <span className={`voice-transcription-status-label${deliveryError ? "" : " working-text"}`}>
+        {label}
+      </span>
       {!deliveryError && (
         <span className="voice-transcription-timer" aria-hidden="true">
           {timer}
@@ -5281,7 +5317,7 @@ function MarkdownImage({
     return (
       <span className="markdown-image-state" role="status">
         <span className="spinner small" />
-        {t("Загружаем изображение…")}
+        <span className="working-text">{t("Загружаем изображение…")}</span>
       </span>
     );
   }
@@ -5315,7 +5351,7 @@ function MarkdownImage({
         {!loaded && (
           <span role="status" className="markdown-image-loading-label">
             <span className="spinner small" />
-            {t("Загружаем изображение…")}
+            <span className="working-text">{t("Загружаем изображение…")}</span>
           </span>
         )}
         <img
@@ -5390,7 +5426,7 @@ function PreviewLink({
           onClick={() => onOpenArtifact(artifact, openButtonRef.current)}
         >
           {children}
-          {busy && <span className="download-link-status"> — {t("открываем…")}</span>}
+          {busy && <span className="download-link-status working-text"> — {t("открываем…")}</span>}
         </button>
         {onDownload && (
           <button
@@ -5516,7 +5552,7 @@ function DownloadLink({
         }}
       >
         {children}
-        {busy && <span className="download-link-status"> — {t("скачиваем…")}</span>}
+        {busy && <span className="download-link-status working-text"> — {t("скачиваем…")}</span>}
       </a>
       {failed && (
         <span className="download-link-error" role="alert">
@@ -5613,7 +5649,9 @@ export function SearchHistoryView({
           </button>
         </div>
       ) : !turn ? (
-        <p role="status">{t("Загрузка…")}</p>
+        <p role="status">
+          <span className="working-text">{t("Загрузка…")}</span>
+        </p>
       ) : (
         <>
           {!messages.some((item) => item.id === occurrence.itemId) && (
@@ -5848,7 +5886,13 @@ export function Activity({
                   tabIndex={-1}
                   type="checkbox"
                 />
-                <span>{step.step}</span>
+                <span
+                  className={
+                    status === "inProgress" ? "working-text working-text-strong" : undefined
+                  }
+                >
+                  {step.step}
+                </span>
                 {status === "inProgress" && <span className="spinner small" />}
               </li>
             );
@@ -5867,7 +5911,9 @@ export function Activity({
           : t("Запущен субагент");
     return (
       <article className="message orchestration-notice">
-        <div className="activity-label">{label}</div>
+        <div className="activity-label">
+          <span className={item.status === "inProgress" ? "working-text" : undefined}>{label}</span>
+        </div>
         <ul>
           <li>
             {item.threadId ? (
@@ -5876,7 +5922,9 @@ export function Activity({
               <strong>{item.title}</strong>
             )}
             {item.status !== "completed" && (
-              <span>{item.status === "failed" ? t("Ошибка") : t("Выполняется")}</span>
+              <span className={item.status === "failed" ? undefined : "working-text"}>
+                {item.status === "failed" ? t("Ошибка") : t("Выполняется")}
+              </span>
             )}
           </li>
         </ul>
@@ -6475,7 +6523,9 @@ function ActivityGroup({
         <span className="activity-group-icon">
           <ToolIcon />
         </span>
-        <span>{labels.join(" · ") || t("Выполнены действия")}</span>
+        <span className={inProgress ? "working-text" : undefined}>
+          {labels.join(" · ") || t("Выполнены действия")}
+        </span>
         {inProgress && <span className="spinner small" />}
       </summary>
       {open && (
@@ -6718,6 +6768,7 @@ export function QueuedMessages({
             ) &&
             (editValue.trim() !== message.text ||
               JSON.stringify(pastedText(editor ?? {})) !== JSON.stringify(pastedText(message)));
+          const idleStatus = t("В очереди");
           const status = message.deliveryError
             ? localizeKnownServerText(language, message.deliveryError.message)
             : !message.confirmed
@@ -6729,7 +6780,8 @@ export function QueuedMessages({
                   : message.status === "dispatching" ||
                       (action?.messageId === message.id && action.kind === "send")
                     ? t("Отправляется…")
-                    : t("В очереди");
+                    : idleStatus;
+          const statusWorking = !message.deliveryError && status !== idleStatus;
           return (
             <article
               className={`queued-message message userMessage${message.pasteBlocks?.length ? " message-with-pastes" : ""}${editing ? " queued-message-editing" : ""}`}
@@ -6813,7 +6865,10 @@ export function QueuedMessages({
               <footer className="message-footer queued-message-footer">
                 <div className="queued-message-heading">
                   {inTimeline && (
-                    <span className="outgoing-delivery-status" role="status">
+                    <span
+                      className={`outgoing-delivery-status${message.confirmed || message.serverAccepted || message.deliveryError ? "" : " working-text"}`}
+                      role="status"
+                    >
                       {message.confirmed || message.serverAccepted
                         ? t("В очереди")
                         : message.deliveryError
@@ -6825,7 +6880,10 @@ export function QueuedMessages({
                     message.deliveryError ||
                     busy ||
                     message.status === "dispatching") && (
-                    <span className="queued-message-status" title={status ?? undefined}>
+                    <span
+                      className={`queued-message-status${statusWorking ? " working-text" : ""}`}
+                      title={status ?? undefined}
+                    >
                       {status}
                     </span>
                   )}
@@ -7090,6 +7148,7 @@ function TurnActivityStatus({
   const isWaiting = (isActive && waitingForUserInput) || capacityRetryAt !== undefined;
   const retryRemaining = useCountdown(capacityRetryAt);
   const showSpinner = !isWaiting && (isActive || loading);
+  const working = isActive && !isWaiting && !capacityFailure;
   const startedAt = turn?.startedAt ?? progress?.startedAt ?? null;
   const elapsed = useElapsed(
     startedAt ?? 0,
@@ -7141,7 +7200,10 @@ function TurnActivityStatus({
           )}
         </span>
       )}
-      <span className="turn-activity-phase" role={isActive || isWaiting ? "status" : undefined}>
+      <span
+        className={`turn-activity-phase${working ? " working-text" : ""}`}
+        role={isActive || isWaiting ? "status" : undefined}
+      >
         {label}
       </span>
     </>

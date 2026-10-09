@@ -211,7 +211,7 @@ export function ProjectDialog({ onClose }: { onClose(): void }) {
         {!listing && operation === "loading" && (
           <div className="project-directory-empty">
             <div className="spinner" />
-            <span>{t("Получаем папки с сервера…")}</span>
+            <span className="working-text">{t("Получаем папки с сервера…")}</span>
           </div>
         )}
         {listing && visibleDirectories.length === 0 && (

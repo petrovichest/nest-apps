@@ -1067,7 +1067,8 @@ function TranscriptionSettingsCard({
         )}
         {!config && !configError && (
           <div className="settings-loading compact" role="status">
-            <span className="spinner small" /> {t("Загружаем настройки…")}
+            <span className="spinner small" />{" "}
+            <span className="working-text">{t("Загружаем настройки…")}</span>
           </div>
         )}
       </div>

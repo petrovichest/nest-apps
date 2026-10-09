@@ -137,7 +137,10 @@ export function SubagentActivityBar({
       >
         <TeamIcon />
         <span className={`native-subagent-status state-${status}`} aria-hidden="true" />
-        <span className="subagent-activity-label" role="status">
+        <span
+          className={`subagent-activity-label${status === "running" ? " working-text" : ""}`}
+          role="status"
+        >
           {label}
         </span>
         {names && (

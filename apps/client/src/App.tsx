@@ -443,7 +443,7 @@ export function App({
         {!snapshot && !openingThreadWithoutSnapshot ? (
           <div className="center-state">
             <div className="spinner" />
-            <p>{t("Получаем состояние Codex…")}</p>
+            <p className="working-text">{t("Получаем состояние Codex…")}</p>
           </div>
         ) : pendingForkOperationId ? (
           <PendingForkPage
@@ -544,7 +544,11 @@ export function App({
               disabled={notificationRequesting}
               onClick={() => void enableBrowserNotifications()}
             >
-              {notificationRequesting ? t("Запрашиваем…") : t("Разрешить уведомления")}
+              {notificationRequesting ? (
+                <span className="working-text working-text-strong">{t("Запрашиваем…")}</span>
+              ) : (
+                t("Разрешить уведомления")
+              )}
             </button>
           </div>
         </Dialog>
@@ -1908,9 +1912,13 @@ function Sidebar({
                             }
                           >
                             <TrashIcon />{" "}
-                            {deletingProjectId === group.project.id
-                              ? t("Удаляем…")
-                              : t("Удалить проект")}
+                            {deletingProjectId === group.project.id ? (
+                              <span className="working-text working-text-strong">
+                                {t("Удаляем…")}
+                              </span>
+                            ) : (
+                              t("Удалить проект")
+                            )}
                           </button>
                         </div>
                       </details>
@@ -2228,7 +2236,11 @@ function ForkOperationRow({
         )}
         <span className="thread-link-copy">
           <span className="thread-link-title">{title}</span>
-          <span className="thread-link-project">{status}</span>
+          <span
+            className={`thread-link-project${operation.status === "failed" ? "" : " working-text"}`}
+          >
+            {status}
+          </span>
         </span>
       </NavLink>
       {operation.status === "failed" && (

@@ -123,7 +123,13 @@ export function UserInputVoiceQueue({
                       {question.isSecret ? "••••••" : recording.transcript}
                     </p>
                   ) : (
-                    <small>{status}</small>
+                    <small>
+                      {["queued", "failed"].includes(recording.status) ? (
+                        status
+                      ) : (
+                        <span className="working-text">{status}</span>
+                      )}
+                    </small>
                   )}
                   {recording.error && (
                     <div className="user-input-speech-error" role="alert">

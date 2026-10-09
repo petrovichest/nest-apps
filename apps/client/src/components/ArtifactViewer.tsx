@@ -195,7 +195,7 @@ function ArtifactState({ children, spinner = false }: { children: ReactNode; spi
   return (
     <div className="artifact-viewer-state" role="status">
       {spinner && <span className="spinner" />}
-      {children}
+      {spinner ? <span className="working-text">{children}</span> : children}
     </div>
   );
 }
