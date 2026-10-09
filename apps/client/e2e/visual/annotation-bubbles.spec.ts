@@ -185,7 +185,7 @@ async function settleComposerLayout(page: Page) {
   );
 }
 
-async function visibleMessageAnchor(page: Page) {
+async function visibleMessageAnchor(page: Page, offset = 0) {
   const index = await page.locator(".message-markdown p").evaluateAll((paragraphs) => {
     const scrollTop = document.querySelector(".conversation-scroll")!.getBoundingClientRect().top;
     const composerTop = document.querySelector(".composer-box")!.getBoundingClientRect().top;
@@ -195,7 +195,7 @@ async function visibleMessageAnchor(page: Page) {
     });
   });
   expect(index).toBeGreaterThanOrEqual(0);
-  return page.locator(".message-markdown p").nth(index);
+  return page.locator(".message-markdown p").nth(index + offset);
 }
 
 async function conversationPosition(page: Page, anchor: Locator) {
@@ -535,6 +535,58 @@ for (const count of [0, 1]) {
     expectConversationPositionUnchanged(before, await conversationPosition(page, anchor));
   });
 }
+
+test.describe("selection made with touch handles", () => {
+  test.use({ hasTouch: true, deviceScaleFactor: 2 });
+
+  for (const theme of ["light", "dark"] as const) {
+    test(`offers the annotation action and opens the editor from it in ${theme} theme`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openAnnotations(page, theme, 0, "none");
+      // A paragraph in the middle of the screen, away from the floating header and composer.
+      const paragraph = await visibleMessageAnchor(page, 5);
+      await paragraph.evaluate((element) => {
+        // The long press that starts a system selection is the only pointer event the page gets.
+        element.dispatchEvent(
+          new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }),
+        );
+        const range = document.createRange();
+        range.setStart(element.firstChild!, 0);
+        range.setEnd(element.firstChild!, 15);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+      });
+
+      const editor = page.getByRole("textbox", { name: "Комментарий к выделенному тексту" });
+      const action = page.getByRole("button", { name: "Аннотация", exact: true });
+      await expect(action).toBeVisible();
+      await expect(editor).toHaveCount(0);
+      const selectionBottom = await page.evaluate(
+        () => window.getSelection()!.getRangeAt(0).getBoundingClientRect().bottom,
+      );
+      const bounds = (await action.boundingBox())!;
+      // Below the system handles that hang under the selected text.
+      expect(bounds.y).toBeGreaterThanOrEqual(selectionBottom + 20);
+      expect(bounds.x).toBeGreaterThanOrEqual(0);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+      expect(bounds.height).toBeGreaterThanOrEqual(32);
+      await page.screenshot({ path: testInfo.outputPath(`touch-selection-${theme}.png`) });
+
+      await page.touchscreen.tap(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+      await expect(editor).toBeFocused();
+      await expect(action).toHaveCount(0);
+      expect(await page.evaluate(() => window.getSelection()!.isCollapsed)).toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`touch-editor-${theme}.png`) });
+      await editor.fill("Замечание, оставленное с телефона");
+      await editor.press("Enter");
+      await expect(editor).toHaveCount(0);
+      await expect(page.locator(".composer .annotation-bubble")).toHaveCount(1);
+    });
+  }
+});
 
 for (const theme of ["light", "dark"] as const) {
   for (const width of [320, 390, 1440]) {

@@ -1702,6 +1702,129 @@ describe("Activity", () => {
     );
   });
 
+  it("offers the annotation action for a selection made with touch handles", async () => {
+    const onCreate = vi.fn().mockReturnValue(true);
+    render(
+      <Activity
+        item={{
+          type: "agentMessage",
+          id: "agent",
+          status: "completed",
+          text: "Выделенный маркерами фрагмент",
+          images: [],
+          timestamp: 1,
+          phase: "final_answer",
+        }}
+        annotationEnabled
+        onCreateAnnotation={onCreate}
+      />,
+    );
+    const editorName = { name: "Комментарий к выделенному тексту" };
+
+    const text = screen.getByText("Выделенный маркерами фрагмент");
+    fireEvent.pointerDown(text, { pointerType: "touch" });
+    // Moving a system handle sends no pointer events: only the selection changes.
+    selectText(text, 0, 10);
+    fireEvent.pointerUp(text, { pointerType: "touch" });
+    const action = await screen.findByRole("button", { name: "Аннотация" });
+    expect(screen.queryByRole("textbox", editorName)).toBeNull();
+
+    fireEvent.click(action);
+    const field = await screen.findByRole("textbox", editorName);
+    expect(field).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Аннотация" })).toBeNull();
+    expect(window.getSelection()?.isCollapsed).toBe(true);
+    fireEvent.change(field, { target: { value: "Перепроверь это" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    expect(onCreate).toHaveBeenCalledWith({
+      messageId: "agent",
+      source: "agentMessage",
+      quote: "Выделенный",
+      startOffset: 0,
+      endOffset: 10,
+      comment: "Перепроверь это",
+    });
+  });
+
+  it("hides the touch action when the selection is cleared", async () => {
+    render(
+      <Activity
+        item={{
+          type: "agentMessage",
+          id: "agent",
+          status: "completed",
+          text: "Маркеры можно двигать",
+          images: [],
+          timestamp: 1,
+          phase: "final_answer",
+        }}
+        annotationEnabled
+      />,
+    );
+
+    const text = screen.getByText("Маркеры можно двигать");
+    fireEvent.pointerDown(text, { pointerType: "touch" });
+    selectText(text, 0, 7);
+    await screen.findByRole("button", { name: "Аннотация" });
+
+    window.getSelection()?.removeAllRanges();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Аннотация" })).toBeNull());
+  });
+
+  it("offers no touch action when annotations are unavailable", async () => {
+    render(
+      <Activity
+        item={{
+          type: "agentMessage",
+          id: "agent",
+          status: "completed",
+          text: "Старый ответ без аннотаций",
+          images: [],
+          timestamp: 1,
+          phase: "final_answer",
+        }}
+      />,
+    );
+
+    const text = screen.getByText("Старый ответ без аннотаций");
+    fireEvent.pointerDown(text, { pointerType: "touch" });
+    selectText(text, 0, 5);
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 150)));
+
+    expect(screen.queryByRole("button", { name: "Аннотация" })).toBeNull();
+  });
+
+  it("keeps opening the editor on pointer release for a mouse selection", async () => {
+    render(
+      <Activity
+        item={{
+          type: "agentMessage",
+          id: "agent",
+          status: "completed",
+          text: "Выделение мышью",
+          images: [],
+          timestamp: 1,
+          phase: "final_answer",
+        }}
+        annotationEnabled
+      />,
+    );
+
+    const text = screen.getByText("Выделение мышью");
+    fireEvent.pointerDown(text, { pointerType: "mouse" });
+    selectText(text, 0, 9);
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 150)));
+    expect(screen.queryByRole("button", { name: "Аннотация" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Комментарий к выделенному тексту" })).toBeNull();
+
+    fireEvent.pointerUp(text, { pointerType: "mouse" });
+    expect(
+      await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Аннотация" })).toBeNull();
+  });
+
   it("places the annotation editor below the selected range", async () => {
     const descriptor = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
     Object.defineProperty(Range.prototype, "getBoundingClientRect", {

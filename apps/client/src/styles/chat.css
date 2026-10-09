@@ -267,7 +267,7 @@
   padding-bottom: 0;
 }
 
-.thread-workspace .response-piece:has(.annotation-editor) {
+.thread-workspace .response-piece:has(.annotation-editor, .selection-actions) {
   z-index: 2;
 }
 
@@ -1196,6 +1196,13 @@ a.native-subagent-row:hover strong {
 .thread-workspace .timeline .annotation-editor {
   border: 0;
   border-radius: var(--chat-radius-compact);
+  background: var(--chat-surface);
+  box-shadow: var(--chat-shadow);
+}
+
+.thread-workspace .timeline .selection-actions {
+  border: 0;
+  border-radius: 999px;
   background: var(--chat-surface);
   box-shadow: var(--chat-shadow);
 }

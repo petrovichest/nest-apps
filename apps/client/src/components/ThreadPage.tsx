@@ -6186,6 +6186,8 @@ function AnnotatableMarkdownContent({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLFormElement>(null);
+  const pointerTypeRef = useRef("");
+  const [selectionDraft, setSelectionDraft] = useState<SelectionDraft | null>(null);
   const [editor, setEditor] = useState<AnnotationEditor | null>(null);
   const [comment, setComment] = useState("");
   const [markerPositions, setMarkerPositions] = useState<Record<string, AnnotationPosition>>({});
@@ -6212,30 +6214,39 @@ function AnnotatableMarkdownContent({
     return Boolean(saved);
   }, [comment, editor, messageId, onCreate, onUpdate, source]);
 
-  const captureSelection = useCallback(() => {
-    if (!enabled || editor) return;
+  const readSelection = useCallback((): SelectionDraft | null => {
+    if (!enabled || editor) return null;
     const content = contentRef.current;
     const surface = surfaceRef.current;
     const selection = window.getSelection();
     if (!content || !surface || !selection || selection.rangeCount !== 1 || selection.isCollapsed) {
-      return;
+      return null;
     }
     const range = selection.getRangeAt(0);
     const quote = range.toString();
     const offsets = quote.trim() ? rangeOffsets(content, range) : null;
-    if (!offsets) return;
+    if (!offsets) return null;
     const rect = safeRangeRect(range, content);
     const surfaceRect = surface.getBoundingClientRect();
-    setComment("");
-    setEditor({
-      mode: "new",
+    return {
       quote,
       ...offsets,
       left: clampPopoverLeft(rect.left + rect.width / 2 - surfaceRect.left, surface.clientWidth),
       top: rect.bottom - surfaceRect.top + 8,
       anchorTop: rect.top - surfaceRect.top,
-    });
+    };
   }, [editor, enabled]);
+
+  const openNewEditor = useCallback((draft: SelectionDraft) => {
+    setComment("");
+    setSelectionDraft(null);
+    setEditor({ mode: "new", ...draft });
+  }, []);
+
+  const captureSelection = useCallback(() => {
+    const draft = readSelection();
+    if (draft) openNewEditor(draft);
+  }, [openNewEditor, readSelection]);
 
   const positionMarkers = useCallback(() => {
     const content = contentRef.current;
@@ -6293,6 +6304,28 @@ function AnnotatableMarkdownContent({
       setEditor(null);
     }
   }, [annotations, editor, readOnly]);
+
+  useEffect(() => {
+    if (!enabled) setSelectionDraft(null);
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled || editor) return;
+    let timer: number | null = null;
+    // The system selection handles send no pointer events, so a touch selection is only
+    // visible through selectionchange. It offers an action instead of opening the editor
+    // at once, which would take the selection away while the handles are still moved.
+    const selectionChanged = () => {
+      if (pointerTypeRef.current !== "touch") return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => setSelectionDraft(readSelection()), 80);
+    };
+    document.addEventListener("selectionchange", selectionChanged);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener("selectionchange", selectionChanged);
+    };
+  }, [editor, enabled, readSelection]);
 
   const positionEditor = useCallback(() => {
     const form = editorRef.current;
@@ -6437,7 +6470,12 @@ function AnnotatableMarkdownContent({
       <div
         className="message-markdown"
         ref={contentRef}
-        onPointerUp={() => window.setTimeout(captureSelection, 0)}
+        onPointerDown={(event) => {
+          pointerTypeRef.current = event.pointerType;
+        }}
+        onPointerUp={(event) => {
+          if (event.pointerType !== "touch") window.setTimeout(captureSelection, 0);
+        }}
         onKeyUp={captureSelection}
       >
         <MarkdownContent
@@ -6465,6 +6503,26 @@ function AnnotatableMarkdownContent({
           </button>
         ) : null;
       })}
+      {selectionDraft && !editor && (
+        <div
+          className="selection-actions"
+          style={{
+            left: selectionDraft.left,
+            top: selectionDraft.top + SELECTION_HANDLE_CLEARANCE,
+          }}
+          onPointerDown={(event) => event.preventDefault()}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              openNewEditor(selectionDraft);
+              window.getSelection()?.removeAllRanges();
+            }}
+          >
+            {t("Аннотация")}
+          </button>
+        </div>
+      )}
       {editor && (
         <form
           ref={editorRef}
@@ -6536,6 +6594,10 @@ function clampPopoverLeft(left: number, width: number): number {
   if (width <= 0) return Math.max(0, left);
   return Math.max(76, Math.min(left, width - 76));
 }
+
+// The system selection handles hang about this far below the selected text and
+// would cover the corners of the annotation action.
+const SELECTION_HANDLE_CLEARANCE = 20;
 
 function ActivityGroup({
   items,
