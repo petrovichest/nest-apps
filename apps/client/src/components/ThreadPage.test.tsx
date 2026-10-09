@@ -7181,6 +7181,7 @@ describe("Activity", () => {
 
       const queued = await screen.findByRole("status", { name: "На сервере · ожидание" });
       expect(queued).toHaveTextContent("0:00");
+      expect(queued.querySelector(".voice-transcription-status-label")).toHaveClass("working-text");
 
       context.state.snapshot.voiceTranscriptions[0] = {
         ...context.state.snapshot.voiceTranscriptions[0]!,
@@ -7192,6 +7193,10 @@ describe("Activity", () => {
       const progress = await screen.findByRole("status", { name: "Распознаём" });
       expect(progress).toHaveClass("message", "userMessage", "voice-transcription-message");
       expect(progress).toHaveTextContent("Распознаём");
+      expect(progress.querySelector(".voice-transcription-status-label")).toHaveClass(
+        "working-text",
+      );
+      expect(progress.querySelector(".voice-transcription-timer")).not.toHaveClass("working-text");
       expect(progress).toHaveTextContent("≈0:08");
       expect(view.container.querySelector(".composer .microphone")).not.toHaveClass("timing");
       expect(screen.getByRole("textbox", { name: "Сообщение для Codex" })).toHaveAttribute(
