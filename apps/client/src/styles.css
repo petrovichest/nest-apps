@@ -3289,6 +3289,17 @@ button.message-file:hover:not(:disabled) {
   box-shadow: var(--shadow);
 }
 
+::highlight(annotation-quote) {
+  background: var(--color-hover);
+}
+
+::highlight(annotation-active) {
+  background: var(--color-active);
+  text-decoration: underline;
+  text-decoration-color: var(--color-muted-strong);
+  text-decoration-thickness: 1px;
+}
+
 ::highlight(annotation-selection) {
   background: Highlight;
   color: HighlightText;
@@ -3888,8 +3899,13 @@ button.message-file:hover:not(:disabled) {
   --composer-pressed-shadow: inset 0 2px 5px rgb(0 0 0 / 32%);
 }
 
-.composer > * {
+.composer > :not(.composer-base),
+.composer-base > * {
   pointer-events: auto;
+}
+
+.composer-base {
+  display: flow-root;
 }
 
 .diff-add {

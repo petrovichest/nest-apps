@@ -6324,6 +6324,14 @@ function AnnotatableMarkdownContent({
     resizeEditor();
   }, [comment, resizeEditor, annotationFontSize]);
 
+  useLayoutEffect(() => {
+    const field = editorRef.current?.querySelector("textarea");
+    if (!editor || !field) return;
+    field.focus({ preventScroll: true });
+    field.setSelectionRange(field.value.length, field.value.length);
+    field.scrollTop = field.scrollHeight;
+  }, [editor]);
+
   useEffect(() => {
     if (!editor) return;
     const viewport = window.visualViewport;
@@ -6342,16 +6350,41 @@ function AnnotatableMarkdownContent({
   useEffect(() => {
     const content = contentRef.current;
     const highlights = typeof CSS !== "undefined" ? CSS.highlights : undefined;
-    if (editor?.mode !== "new" || !content || !highlights || typeof Highlight === "undefined") {
-      return;
-    }
-    const range = resolveAnnotationRange(content, editor);
-    if (!range) return;
-    highlights.set("annotation-selection", new Highlight(range));
+    if (!content || !highlights || typeof Highlight === "undefined") return;
+
+    const savedRanges = annotations.flatMap(({ annotation }) => {
+      const range = resolveAnnotationRange(content, annotation);
+      return range ? [range] : [];
+    });
+    const activeAnnotation =
+      editor?.mode === "existing"
+        ? annotations.find(({ annotation }) => annotation.id === editor.annotationId)?.annotation
+        : editor;
+    const activeRange = activeAnnotation ? resolveAnnotationRange(content, activeAnnotation) : null;
+    const groups = [
+      { name: "annotation-quote", priority: 0, ranges: savedRanges },
+      {
+        name: editor?.mode === "new" ? "annotation-selection" : "annotation-active",
+        priority: editor?.mode === "new" ? 2 : 1,
+        ranges: activeRange ? [activeRange] : [],
+      },
+    ];
+    const ownedHighlights = groups.flatMap(({ name, priority, ranges }) => {
+      if (!ranges.length) return [];
+      // The registry belongs to the document; other messages share these highlights.
+      const highlight = highlights.get(name) ?? new Highlight();
+      highlight.priority = priority;
+      for (const range of ranges) highlight.add(range);
+      highlights.set(name, highlight);
+      return [{ name, highlight, ranges }];
+    });
     return () => {
-      highlights.delete("annotation-selection");
+      for (const { name, highlight, ranges } of ownedHighlights) {
+        for (const range of ranges) highlight.delete(range);
+        if (!highlight.size && highlights.get(name) === highlight) highlights.delete(name);
+      }
     };
-  }, [editor]);
+  }, [annotations, editor, text]);
 
   useEffect(() => {
     if (!editor) return;
@@ -6427,7 +6460,6 @@ function AnnotatableMarkdownContent({
           }}
         >
           <textarea
-            autoFocus
             aria-label={t("Комментарий к выделенному тексту")}
             placeholder={t("Комментарий")}
             rows={2}

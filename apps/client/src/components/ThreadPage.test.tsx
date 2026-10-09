@@ -1795,6 +1795,77 @@ describe("Activity", () => {
     expect(onDelete).toHaveBeenCalledWith("note");
   });
 
+  it("moves the existing annotation caret to the end when switching the mounted editor or reopening it", async () => {
+    const comment = "Одинаковый комментарий\nВторая строка";
+    const first = pendingAnnotation({
+      id: "first-note",
+      messageId: "agent",
+      quote: "первый",
+      startOffset: 0,
+      endOffset: 6,
+      comment,
+    });
+    const second = pendingAnnotation({
+      id: "second-note",
+      messageId: "agent",
+      quote: "второй",
+      startOffset: 7,
+      endOffset: 13,
+      comment,
+    });
+    render(
+      <Activity
+        item={{
+          type: "agentMessage",
+          id: "agent",
+          status: "completed",
+          text: "первый второй",
+          images: [],
+          timestamp: 1,
+          phase: "final_answer",
+        }}
+        annotations={[first, second]}
+        onUpdateAnnotation={vi.fn().mockReturnValue(true)}
+      />,
+    );
+    const firstMarker = await screen.findByRole("button", { name: "Аннотация 1" });
+    const secondMarker = screen.getByRole("button", { name: "Аннотация 2" });
+    fireEvent.click(firstMarker);
+    const editor = screen.getByRole("textbox", {
+      name: "Комментарий к выделенному тексту",
+    }) as HTMLTextAreaElement;
+    editor.setSelectionRange(1, 4);
+    secondMarker.focus();
+
+    // Identical comments cannot move the caret through a textarea value replacement.
+    fireEvent.click(secondMarker);
+
+    expect(screen.getByRole("textbox", { name: "Комментарий к выделенному тексту" })).toBe(editor);
+    expect(editor).toHaveValue(comment);
+    expect(editor).toHaveFocus();
+    expect([editor.selectionStart, editor.selectionEnd]).toEqual([comment.length, comment.length]);
+
+    editor.setSelectionRange(5, 5);
+    const nextValue = `${comment.slice(0, 5)}+${comment.slice(5)}`;
+    fireEvent.change(editor, {
+      target: { value: nextValue, selectionStart: 6, selectionEnd: 6 },
+    });
+    expect(editor).toHaveValue(nextValue);
+    expect([editor.selectionStart, editor.selectionEnd]).toEqual([6, 6]);
+    fireEvent.keyDown(editor, { key: "Escape" });
+    secondMarker.focus();
+    fireEvent.click(secondMarker);
+    const reopened = screen.getByRole("textbox", {
+      name: "Комментарий к выделенному тексту",
+    }) as HTMLTextAreaElement;
+    expect(reopened).toHaveValue(comment);
+    expect(reopened).toHaveFocus();
+    expect([reopened.selectionStart, reopened.selectionEnd]).toEqual([
+      comment.length,
+      comment.length,
+    ]);
+  });
+
   it("saves a non-empty new annotation on outside click and discards an empty one", async () => {
     const onCreate = vi.fn().mockReturnValue(true);
     render(
@@ -2671,9 +2742,15 @@ describe("Activity", () => {
       fireEvent.click(within(bubbles).getByRole("button", { name: "Перейти к аннотации 1" }));
 
       expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "instant" });
-      const editor = screen.getByRole("textbox", { name: "Комментарий к выделенному тексту" });
+      const editor = screen.getByRole("textbox", {
+        name: "Комментарий к выделенному тексту",
+      }) as HTMLTextAreaElement;
       expect(editor).toHaveValue(annotation.comment);
       expect(editor).toHaveFocus();
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([
+        annotation.comment.length,
+        annotation.comment.length,
+      ]);
       fireEvent.change(editor, { target: { value: "Обновлённый комментарий" } });
       fireEvent.click(screen.getByRole("button", { name: "Сохранить аннотацию" }));
       expect(within(bubbles).getByText("Обновлённый комментарий")).toBeVisible();
@@ -2704,6 +2781,52 @@ describe("Activity", () => {
           expect.objectContaining({ annotations: [], input: "Сохрани ввод" }),
           { keepalive: false },
         ),
+      );
+    },
+  );
+
+  it.each(["source marker", "composer bubble"] as const)(
+    "opens an existing annotation from its %s with the caret at the end and preserves typing in the middle",
+    async (opener) => {
+      const annotation = pendingAnnotation({ comment: "Первая строка комментария\nВторая строка" });
+      mockThreadConnection(threadApi(), summary, {
+        turns: [completedAgentTurn()],
+        draft: {
+          input: "Сохрани ввод",
+          images: [],
+          goalMode: false,
+          annotations: [annotation],
+          updatedAt: 2,
+        },
+      });
+      renderThread();
+      const marker = await screen.findByRole("button", { name: "Аннотация 1" });
+      marker.scrollIntoView = vi.fn();
+      const button =
+        opener === "source marker"
+          ? marker
+          : screen.getByRole("button", { name: "Перейти к аннотации 1" });
+      button.focus();
+      fireEvent.click(button);
+      const editor = screen.getByRole("textbox", {
+        name: "Комментарий к выделенному тексту",
+      }) as HTMLTextAreaElement;
+      expect(editor).toHaveValue(annotation.comment);
+      expect(editor).toHaveFocus();
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([
+        annotation.comment.length,
+        annotation.comment.length,
+      ]);
+
+      editor.setSelectionRange(3, 3);
+      const nextValue = `${annotation.comment.slice(0, 3)}!${annotation.comment.slice(3)}`;
+      fireEvent.change(editor, {
+        target: { value: nextValue, selectionStart: 4, selectionEnd: 4 },
+      });
+      expect(editor).toHaveValue(nextValue);
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([4, 4]);
+      expect(screen.getByRole("textbox", { name: "Сообщение для Codex" })).toHaveValue(
+        "Сохрани ввод",
       );
     },
   );

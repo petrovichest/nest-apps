@@ -5,11 +5,18 @@ import { installVisualFixture, snapshot, waitForVisualReady } from "./fixtures";
 const previewImage =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aI9sAAAAASUVORK5CYII=";
 
+const annotationQuotes = [
+  "Сначала сохраним черновик",
+  "Второй ответ проверим отдельно",
+  "Затем проверим восстановление текста",
+] as const;
+
 async function openAnnotations(
   page: Page,
   theme: "light" | "dark",
   count: number,
   attachments: "mixed" | "paste" | "files" | "none" = count === 2 ? "mixed" : "none",
+  multipleMessages = false,
 ) {
   const seed = structuredClone(snapshot);
   seed.attention = [];
@@ -101,6 +108,23 @@ async function openAnnotations(
       },
     ],
   };
+  if (multipleMessages) {
+    const answer = detail.turns[0]!.items[0]!;
+    if (answer.type !== "agentMessage") throw new Error("Expected the annotation source answer");
+    answer.text = `${annotationQuotes[0]}\n\n${annotationQuotes[2]}\n\n${text.slice(quote.length + 2)}`;
+    detail.turns[0]!.items.push({
+      ...answer,
+      id: "answer-two",
+      text: `${annotationQuotes[1]}\n\n${"Проверка подсветки цитат в другом сообщении.\n\n".repeat(15)}`,
+    });
+    detail.draft!.annotations = detail.draft!.annotations.map((annotation, index) => ({
+      ...annotation,
+      messageId: index === 1 ? "answer-two" : "answer",
+      quote: annotationQuotes[index]!,
+      startOffset: index === 2 ? annotationQuotes[0].length : 0,
+      endOffset: (index === 2 ? annotationQuotes[0].length : 0) + annotationQuotes[index]!.length,
+    }));
+  }
   await installVisualFixture(page, { theme, snapshot: seed });
   await page.route("http://127.0.0.1:4310/**", (route) => route.abort());
   await page.route("**/api/v1/threads/session-main", (route) =>
@@ -113,7 +137,7 @@ async function openAnnotations(
     }),
   );
   await page.goto("/threads/session-main");
-  await expect(page.locator(".message.agentMessage")).toBeVisible();
+  await expect(page.locator(".message.agentMessage").first()).toBeVisible();
   await waitForVisualReady(page);
 }
 
@@ -221,6 +245,201 @@ function expectConversationPositionUnchanged(
   expect(after.timelinePadding).toBe(before.timelinePadding);
   expect(after.scrollHeight).toBe(before.scrollHeight);
 }
+
+async function nativeAnnotationHighlight(
+  page: Page,
+  key: "annotation-quote" | "annotation-active",
+) {
+  return page.evaluate((name) => {
+    const highlight = CSS.highlights.get(name);
+    return {
+      priority: highlight?.priority ?? null,
+      ranges: Array.from(highlight ?? [], (range) => ({
+        quote: range.toString(),
+        connected: range.startContainer.isConnected && range.endContainer.isConnected,
+        annotations: Array.from(
+          range.startContainer
+            .parentElement!.closest(".annotation-surface")!
+            .querySelectorAll<HTMLElement>(".annotation-marker"),
+          (marker) => marker.dataset.annotationId,
+        ),
+      })),
+    };
+  }, key);
+}
+
+async function expectHighlightedQuote(page: Page, quote: string) {
+  await expect
+    .poll(async () => (await nativeAnnotationHighlight(page, "annotation-active")).ranges)
+    .toEqual([
+      {
+        quote,
+        connected: true,
+        annotations: quote === annotationQuotes[1] ? ["note-1"] : ["note-0", "note-2"],
+      },
+    ]);
+}
+
+async function expectCaretAtCommentEnd(field: Locator) {
+  await expect(field).toBeFocused();
+  await expect
+    .poll(() =>
+      field.evaluate((element: HTMLTextAreaElement) => ({
+        start: element.selectionStart - element.value.length,
+        end: element.selectionEnd - element.value.length,
+      })),
+    )
+    .toEqual({ start: 0, end: 0 });
+}
+
+for (const theme of ["light", "dark"] as const) {
+  test(`saved quotes retain native highlights across messages in ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAnnotations(page, theme, 3, "none", true);
+    const saved = await nativeAnnotationHighlight(page, "annotation-quote");
+    expect(saved.priority).toBe(0);
+    expect(saved.ranges.map((range) => range.quote).sort()).toEqual([...annotationQuotes].sort());
+    expect(saved.ranges.every((range) => range.connected)).toBe(true);
+    expect(saved.ranges.find((range) => range.quote === annotationQuotes[1])!.annotations).toEqual([
+      "note-1",
+    ]);
+    expect((await nativeAnnotationHighlight(page, "annotation-active")).ranges).toHaveLength(0);
+    const paragraphs = page.locator(".message-markdown p");
+    const originalMarkup = await paragraphs.evaluateAll((elements) =>
+      elements.map((element) => ({
+        markup: element.innerHTML,
+        height: element.getBoundingClientRect().height,
+      })),
+    );
+    const composer = page.locator(".composer");
+    await composer.getByRole("button", { name: "Аннотации (3)", exact: true }).click();
+    await composer.getByRole("button", { name: "Перейти к аннотации 1", exact: true }).click();
+    await expectHighlightedQuote(page, annotationQuotes[0]);
+    expect((await nativeAnnotationHighlight(page, "annotation-active")).priority).toBeGreaterThan(
+      saved.priority!,
+    );
+    const colors = await paragraphs.filter({ hasText: annotationQuotes[0] }).evaluate((element) => {
+      const expected = document.createElement("span");
+      document.body.appendChild(expected);
+      expected.style.backgroundColor = "var(--color-hover)";
+      const savedBackground = getComputedStyle(expected).backgroundColor;
+      expected.style.backgroundColor = "var(--color-active)";
+      const activeBackground = getComputedStyle(expected).backgroundColor;
+      expected.remove();
+      return {
+        savedBackground,
+        activeBackground,
+        actualSaved: getComputedStyle(element, "::highlight(annotation-quote)").backgroundColor,
+        actualActive: getComputedStyle(element, "::highlight(annotation-active)").backgroundColor,
+        textColor: getComputedStyle(element).color,
+        savedTextColor: getComputedStyle(element, "::highlight(annotation-quote)").color,
+        activeTextColor: getComputedStyle(element, "::highlight(annotation-active)").color,
+      };
+    });
+    expect(colors.actualSaved).toBe(colors.savedBackground);
+    expect(colors.actualActive).toBe(colors.activeBackground);
+    expect(colors.actualActive).not.toBe(colors.actualSaved);
+    expect(colors.savedTextColor).toBe(colors.textColor);
+    expect(colors.activeTextColor).toBe(colors.textColor);
+    for (const index of [1, 2]) {
+      await page.locator(`.annotation-marker[data-annotation-id="note-${index}"]`).click();
+      await expectHighlightedQuote(page, annotationQuotes[index]!);
+      expect((await nativeAnnotationHighlight(page, "annotation-quote")).ranges).toHaveLength(3);
+    }
+    await page.getByRole("textbox", { name: "Комментарий к выделенному тексту" }).press("Escape");
+    await expect
+      .poll(async () => (await nativeAnnotationHighlight(page, "annotation-active")).ranges)
+      .toHaveLength(0);
+    expect((await nativeAnnotationHighlight(page, "annotation-quote")).ranges).toHaveLength(3);
+    expect(
+      await paragraphs.evaluateAll((elements) =>
+        elements.map((element) => ({
+          markup: element.innerHTML,
+          height: element.getBoundingClientRect().height,
+        })),
+      ),
+    ).toEqual(originalMarkup);
+    await page.locator('.annotation-marker[data-annotation-id="note-1"]').click();
+    await expectHighlightedQuote(page, annotationQuotes[1]);
+    await page
+      .locator(".annotation-editor")
+      .getByRole("button", { name: "Удалить аннотацию", exact: true })
+      .click();
+    await expect
+      .poll(async () => (await nativeAnnotationHighlight(page, "annotation-active")).ranges)
+      .toHaveLength(0);
+    await expect
+      .poll(async () =>
+        (await nativeAnnotationHighlight(page, "annotation-quote")).ranges
+          .map((range) => range.quote)
+          .sort(),
+      )
+      .toEqual([annotationQuotes[0], annotationQuotes[2]].sort());
+    await composer.getByRole("button", { name: "Удалить аннотацию 2", exact: true }).click();
+    await expect
+      .poll(async () =>
+        (await nativeAnnotationHighlight(page, "annotation-quote")).ranges.map(
+          (range) => range.quote,
+        ),
+      )
+      .toEqual([annotationQuotes[0]]);
+    await composer.getByRole("button", { name: "Удалить аннотацию 1", exact: true }).click();
+    await expect
+      .poll(async () => (await nativeAnnotationHighlight(page, "annotation-quote")).ranges)
+      .toHaveLength(0);
+    expect((await nativeAnnotationHighlight(page, "annotation-active")).ranges).toHaveLength(0);
+  });
+}
+
+test("annotation edits place the caret at the end on open, switch and reopen without moving it while typing", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openAnnotations(page, "light", 3, "none", true);
+  const composer = page.locator(".composer");
+  await composer.getByRole("button", { name: "Аннотации (3)", exact: true }).click();
+  const firstCard = composer.getByRole("button", { name: "Перейти к аннотации 1", exact: true });
+  await firstCard.click();
+  const field = page.getByRole("textbox", { name: "Комментарий к выделенному тексту" });
+  await expectCaretAtCommentEnd(field);
+  const originalComment = await field.inputValue();
+  await field.press("Control+Home");
+  const prefix = "В начале: ";
+  await field.pressSequentially(prefix);
+  await expect(field).toHaveValue(prefix + originalComment);
+  expect(
+    await field.evaluate((element: HTMLTextAreaElement) => [
+      element.selectionStart,
+      element.selectionEnd,
+    ]),
+  ).toEqual([prefix.length, prefix.length]);
+  await field.press("ArrowLeft");
+  await field.pressSequentially("!");
+  const editedComment = `${prefix.slice(0, -1)}!${prefix.slice(-1)}${originalComment}`;
+  await expect(field).toHaveValue(editedComment);
+  expect(
+    await field.evaluate((element: HTMLTextAreaElement) => [
+      element.selectionStart,
+      element.selectionEnd,
+    ]),
+  ).toEqual([prefix.length, prefix.length]);
+  for (const index of [1, 2]) {
+    await page.locator(`.annotation-marker[data-annotation-id="note-${index}"]`).click();
+    await expectCaretAtCommentEnd(field);
+    await expectHighlightedQuote(page, annotationQuotes[index]!);
+  }
+  await field.press("Escape");
+  await firstCard.click();
+  await expect(field).toHaveValue(editedComment);
+  await expectCaretAtCommentEnd(field);
+  await field.press("Control+Home");
+  await expect
+    .poll(() => field.evaluate((element: HTMLTextAreaElement) => element.selectionStart))
+    .toBe(0);
+  await field.press("Escape");
+  await page.locator('.annotation-marker[data-annotation-id="note-0"]').click();
+  await expectCaretAtCommentEnd(field);
+});
 
 for (const width of [390, 1440]) {
   for (const position of ["tail", "reading"] as const) {

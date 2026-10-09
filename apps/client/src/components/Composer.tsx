@@ -419,17 +419,17 @@ export function Composer({
 
   useLayoutEffect(() => {
     const composer = formRef.current;
-    const box = composer?.querySelector<HTMLElement>(".composer-box");
+    const base = composer?.querySelector<HTMLElement>(".composer-base");
     const pane = composer?.closest<HTMLElement>(".conversation-pane");
     const scroll = pane?.querySelector<HTMLElement>(".conversation-scroll");
-    if (!composer || !box || !pane || !scroll) return;
+    if (!composer || !base || !pane || !scroll) return;
     let previousHeight = -1;
     let previousFullHeight = -1;
     const updateHeight = () => {
       const bounds = composer.getBoundingClientRect();
       const fullHeight = Math.ceil(bounds.height);
       // Cards above the input float over history and must not change its scroll range.
-      const nextHeight = Math.ceil(bounds.bottom - box.getBoundingClientRect().top);
+      const nextHeight = Math.ceil(bounds.bottom - base.getBoundingClientRect().top);
       if (fullHeight !== previousFullHeight) {
         previousFullHeight = fullHeight;
         pane.style.setProperty("--composer-full-height", `${fullHeight}px`);
@@ -450,7 +450,7 @@ export function Composer({
             }
           });
     observer?.observe(composer, { box: "border-box" });
-    observer?.observe(box, { box: "border-box" });
+    observer?.observe(base, { box: "border-box" });
     observer?.observe(scroll);
     return () => {
       observer?.disconnect();
@@ -1423,34 +1423,6 @@ export function Composer({
         if (canSubmit) onSubmit("queue");
       }}
     >
-      {composerError && (
-        <div
-          className={`composer-error${voiceTranscriptionErrorVisible ? " voice-transcription-error" : ""}`}
-          role="alert"
-        >
-          {voiceTranscriptionErrorVisible && <MicrophoneIcon />}
-          <span>{composerError}</span>
-          {voiceTranscriptionErrorVisible && onDismissTranscriptionError && (
-            <button
-              type="button"
-              className="voice-transcription-error-dismiss"
-              aria-label={t("Закрыть")}
-              onClick={onDismissTranscriptionError}
-            >
-              ×
-            </button>
-          )}
-        </div>
-      )}
-      {creating && projects.length === 0 && (
-        <div className="composer-empty-projects">
-          <span>{t("Чтобы начать задачу, добавьте рабочую папку.")}</span>
-          <button type="button" onClick={onNewProject}>
-            <PlusIcon /> {t("Добавить проект")}
-          </button>
-        </div>
-      )}
-      {children}
       <div className={`composer-cards${compactCards ? " compact" : ""}`}>
         <div
           id={`${cardsId}-annotations`}
@@ -1656,280 +1628,310 @@ export function Composer({
           onClose={() => setViewer(null)}
         />
       )}
-      <div className="composer-box">
-        {skillMenuOpen && (
-          <SkillAutocomplete
-            skills={matchingSkills}
-            loading={skills.loading}
-            error={skills.error}
-            activeIndex={activeSkillIndex}
-            onActiveIndexChange={setActiveSkillIndex}
-            onSelect={insertSkill}
-          />
-        )}
-        <PasteTextarea
-          editor={pasteEditor}
-          pasteEnabled={!goalMode}
-          ref={textareaRef}
-          aria-label={running ? t("Направить текущую задачу") : t("Сообщение для Codex")}
-          rows={1}
-          maxLength={goalMode ? 4_000 : undefined}
-          readOnly={speechBusy}
-          aria-busy={speechBusy}
-          aria-autocomplete={skillMenuOpen ? "list" : undefined}
-          aria-controls={skillMenuOpen ? "composer-skill-list" : undefined}
-          aria-expanded={skillMenuOpen || undefined}
-          aria-activedescendant={
-            skillMenuOpen && matchingSkills[activeSkillIndex]
-              ? `composer-skill-${skillOptionId(matchingSkills[activeSkillIndex]!)}`
-              : undefined
-          }
-          onChange={(event) => {
-            initialCaretPendingRef.current = false;
-            const caret = event.currentTarget.selectionStart;
-            const value = event.currentTarget.value;
-            setSkillCaret(caret);
-            setActiveSkillIndex(0);
-            setSkillDismissedToken(null);
-            requestSkillsForToken(value, caret);
-          }}
-          onFocus={(event) => {
-            setComposerFocused(true);
-            setSkillDismissedToken(null);
-            const caret = event.currentTarget.selectionStart;
-            setSkillCaret(caret);
-            requestSkillsForToken(event.currentTarget.value, caret);
-          }}
-          onBlur={() => {
-            setComposerFocused(false);
-            onDraftFlush?.();
-          }}
-          onPointerDown={() => {
-            initialCaretPendingRef.current = false;
-          }}
-          onKeyDownCapture={() => {
-            initialCaretPendingRef.current = false;
-          }}
-          onPaste={(event) => {
-            initialCaretPendingRef.current = false;
-            pasteImages(event);
-          }}
-          onSelect={captureInsertionPoint}
-          onKeyDown={keyboardSubmit}
-          placeholder={
-            goalMode
-              ? t("Опишите проверяемый результат цели…")
-              : running
-                ? t("Направить текущую задачу…")
-                : t("Спросите что угодно")
-          }
-        />
-        <div className="composer-toolbar" onPointerDownCapture={preserveTextareaFocus}>
-          <div className="composer-options">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={onUploadFiles ? undefined : "image/*"}
-              multiple
-              hidden
-              onChange={(event) => void addSelectedFiles(Array.from(event.target.files ?? []))}
-            />
-            <button
-              aria-label={onUploadFiles ? t("Добавить файлы") : t("Добавить изображения")}
-              className="composer-add-image"
-              type="button"
-              disabled={speechBusy}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <PlusIcon />
-            </button>
-            {creating && projects.length > 0 && (
-              <label className="project-picker">
-                <span className="sr-only">{t("Проект")}</span>
-                <select
-                  aria-label={t("Проект")}
-                  value={projectId}
-                  onBlur={() => {
-                    restoreTextareaAfterProjectChangeRef.current = false;
-                  }}
-                  onChange={(event) => {
-                    const restoreTextarea = restoreTextareaAfterProjectChangeRef.current;
-                    restoreTextareaAfterProjectChangeRef.current = false;
-                    onProjectChange?.(event.target.value);
-                    if (restoreTextarea) textareaRef.current?.focus();
-                  }}
-                >
-                  {projects.map((project) => (
-                    <option value={project.id} key={project.id}>
-                      {project.displayName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <SettingsPicker
-              effortDisabled={effortDisabled}
-              disabled={running || busy || settingsBusy || settingsDisabled || speechBusy}
-              teamToggleDisabled={
-                busy ||
-                settingsBusy ||
-                settingsDisabled ||
-                speechBusy ||
-                (running && settings.collaborationMode !== "team")
-              }
-              models={models}
-              value={settings}
-              onChange={onSettingsChange}
-              goalMode={goalMode}
-              goal={goal}
-              goalBusy={goalBusy}
-              onGoalModeChange={onGoalModeChange}
-              onGoalUpdate={onGoalUpdate}
-              onGoalClear={onGoalClear}
-            />
-            {!application.isClaude &&
-              codexSettings &&
-              ((codexSettings.model !== null && codexSettings.model !== settings.model) ||
-                (codexSettings.reasoningEffort !== null &&
-                  codexSettings.reasoningEffort !== settings.reasoningEffort)) && (
-                <span
-                  className="composer-hint codex-settings-hint"
-                  title={t(
-                    "Настройки, сообщённые Codex; не модель конкретного ответа. Ваш выбор применится при следующей отправке.",
-                  )}
-                >
-                  {t("В Codex: {{model}} · {{effort}}", {
-                    model: codexSettings.model ?? t("Не сообщено"),
-                    effort: codexSettings.reasoningEffort ?? t("Не сообщено"),
-                  })}
-                </span>
-              )}
-            {running && (
-              <span className="composer-hint">{t("Сообщение будет добавлено в очередь")}</span>
+      <div className="composer-base">
+        {composerError && (
+          <div
+            className={`composer-error${voiceTranscriptionErrorVisible ? " voice-transcription-error" : ""}`}
+            role="alert"
+          >
+            {voiceTranscriptionErrorVisible && <MicrophoneIcon />}
+            <span>{composerError}</span>
+            {voiceTranscriptionErrorVisible && onDismissTranscriptionError && (
+              <button
+                type="button"
+                className="voice-transcription-error-dismiss"
+                aria-label={t("Закрыть")}
+                onClick={onDismissTranscriptionError}
+              >
+                ×
+              </button>
             )}
           </div>
-          <div className="composer-actions">
-            {transcriptionConfig && (
-              <>
+        )}
+        {creating && projects.length === 0 && (
+          <div className="composer-empty-projects">
+            <span>{t("Чтобы начать задачу, добавьте рабочую папку.")}</span>
+            <button type="button" onClick={onNewProject}>
+              <PlusIcon /> {t("Добавить проект")}
+            </button>
+          </div>
+        )}
+        {children}
+        <div className="composer-box">
+          {skillMenuOpen && (
+            <SkillAutocomplete
+              skills={matchingSkills}
+              loading={skills.loading}
+              error={skills.error}
+              activeIndex={activeSkillIndex}
+              onActiveIndexChange={setActiveSkillIndex}
+              onSelect={insertSkill}
+            />
+          )}
+          <PasteTextarea
+            editor={pasteEditor}
+            pasteEnabled={!goalMode}
+            ref={textareaRef}
+            aria-label={running ? t("Направить текущую задачу") : t("Сообщение для Codex")}
+            rows={1}
+            maxLength={goalMode ? 4_000 : undefined}
+            readOnly={speechBusy}
+            aria-busy={speechBusy}
+            aria-autocomplete={skillMenuOpen ? "list" : undefined}
+            aria-controls={skillMenuOpen ? "composer-skill-list" : undefined}
+            aria-expanded={skillMenuOpen || undefined}
+            aria-activedescendant={
+              skillMenuOpen && matchingSkills[activeSkillIndex]
+                ? `composer-skill-${skillOptionId(matchingSkills[activeSkillIndex]!)}`
+                : undefined
+            }
+            onChange={(event) => {
+              initialCaretPendingRef.current = false;
+              const caret = event.currentTarget.selectionStart;
+              const value = event.currentTarget.value;
+              setSkillCaret(caret);
+              setActiveSkillIndex(0);
+              setSkillDismissedToken(null);
+              requestSkillsForToken(value, caret);
+            }}
+            onFocus={(event) => {
+              setComposerFocused(true);
+              setSkillDismissedToken(null);
+              const caret = event.currentTarget.selectionStart;
+              setSkillCaret(caret);
+              requestSkillsForToken(event.currentTarget.value, caret);
+            }}
+            onBlur={() => {
+              setComposerFocused(false);
+              onDraftFlush?.();
+            }}
+            onPointerDown={() => {
+              initialCaretPendingRef.current = false;
+            }}
+            onKeyDownCapture={() => {
+              initialCaretPendingRef.current = false;
+            }}
+            onPaste={(event) => {
+              initialCaretPendingRef.current = false;
+              pasteImages(event);
+            }}
+            onSelect={captureInsertionPoint}
+            onKeyDown={keyboardSubmit}
+            placeholder={
+              goalMode
+                ? t("Опишите проверяемый результат цели…")
+                : running
+                  ? t("Направить текущую задачу…")
+                  : t("Спросите что угодно")
+            }
+          />
+          <div className="composer-toolbar" onPointerDownCapture={preserveTextareaFocus}>
+            <div className="composer-options">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={onUploadFiles ? undefined : "image/*"}
+                multiple
+                hidden
+                onChange={(event) => void addSelectedFiles(Array.from(event.target.files ?? []))}
+              />
+              <button
+                aria-label={onUploadFiles ? t("Добавить файлы") : t("Добавить изображения")}
+                className="composer-add-image"
+                type="button"
+                disabled={speechBusy}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <PlusIcon />
+              </button>
+              {creating && projects.length > 0 && (
+                <label className="project-picker">
+                  <span className="sr-only">{t("Проект")}</span>
+                  <select
+                    aria-label={t("Проект")}
+                    value={projectId}
+                    onBlur={() => {
+                      restoreTextareaAfterProjectChangeRef.current = false;
+                    }}
+                    onChange={(event) => {
+                      const restoreTextarea = restoreTextareaAfterProjectChangeRef.current;
+                      restoreTextareaAfterProjectChangeRef.current = false;
+                      onProjectChange?.(event.target.value);
+                      if (restoreTextarea) textareaRef.current?.focus();
+                    }}
+                  >
+                    {projects.map((project) => (
+                      <option value={project.id} key={project.id}>
+                        {project.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <SettingsPicker
+                effortDisabled={effortDisabled}
+                disabled={running || busy || settingsBusy || settingsDisabled || speechBusy}
+                teamToggleDisabled={
+                  busy ||
+                  settingsBusy ||
+                  settingsDisabled ||
+                  speechBusy ||
+                  (running && settings.collaborationMode !== "team")
+                }
+                models={models}
+                value={settings}
+                onChange={onSettingsChange}
+                goalMode={goalMode}
+                goal={goal}
+                goalBusy={goalBusy}
+                onGoalModeChange={onGoalModeChange}
+                onGoalUpdate={onGoalUpdate}
+                onGoalClear={onGoalClear}
+              />
+              {!application.isClaude &&
+                codexSettings &&
+                ((codexSettings.model !== null && codexSettings.model !== settings.model) ||
+                  (codexSettings.reasoningEffort !== null &&
+                    codexSettings.reasoningEffort !== settings.reasoningEffort)) && (
+                  <span
+                    className="composer-hint codex-settings-hint"
+                    title={t(
+                      "Настройки, сообщённые Codex; не модель конкретного ответа. Ваш выбор применится при следующей отправке.",
+                    )}
+                  >
+                    {t("В Codex: {{model}} · {{effort}}", {
+                      model: codexSettings.model ?? t("Не сообщено"),
+                      effort: codexSettings.reasoningEffort ?? t("Не сообщено"),
+                    })}
+                  </span>
+                )}
+              {running && (
+                <span className="composer-hint">{t("Сообщение будет добавлено в очередь")}</span>
+              )}
+            </div>
+            <div className="composer-actions">
+              {transcriptionConfig && (
+                <>
+                  <button
+                    aria-label={
+                      speechState === "recording"
+                        ? t("Остановить запись")
+                        : speechState === "requesting"
+                          ? t("Запрашиваем доступ к микрофону")
+                          : speechState === "uploading"
+                            ? t("Отправляем запись — не закрывайте")
+                            : voiceUploadPending
+                              ? t("Отправляем запись — не закрывайте")
+                              : transcriptionStatus && remoteTranscriptionStatus === "queued"
+                                ? t("Запись на сервере · можно закрыть")
+                                : transcriptionStatus && remoteTranscriptionStatus === "applying"
+                                  ? t("На сервере · готовим результат")
+                                  : transcriptionBusy
+                                    ? t("Распознаём запись")
+                                    : speechUnavailable
+                                      ? speechUnavailable
+                                      : hasRetryRecording
+                                        ? t("Повторить")
+                                        : t("Начать запись")
+                    }
+                    aria-pressed={speechState === "recording"}
+                    className={`composer-action microphone${speechState === "recording" ? " recording" : ""}${speechTimerText ? " timing" : ""}`}
+                    disabled={
+                      speechState === "requesting" ||
+                      speechState === "uploading" ||
+                      speechState === "transcribing" ||
+                      voiceUploadPending ||
+                      voiceInputLocked ||
+                      Boolean(transcriptionStatus) ||
+                      (speechState === "idle" &&
+                        (inputUnavailable || busy || settingsBusy || Boolean(speechUnavailable)))
+                    }
+                    title={speechUnavailable ?? undefined}
+                    type="button"
+                    onPointerDown={
+                      speechState === "idle" &&
+                      !hasRetryRecording &&
+                      !transcriptionStatus &&
+                      !voiceInputLocked
+                        ? captureInsertionPoint
+                        : undefined
+                    }
+                    onClick={() =>
+                      speechState === "recording"
+                        ? stopRecording()
+                        : hasRetryRecording
+                          ? void retryVoiceRecording()
+                          : void startRecording()
+                    }
+                  >
+                    {speechTimerText ? (
+                      <span className="composer-action-timer" aria-hidden="true">
+                        {speechTimerText}
+                      </span>
+                    ) : speechState === "requesting" ||
+                      speechState === "uploading" ||
+                      voiceUploadPending ||
+                      remoteTranscriptionStatus === "applying" ? (
+                      <span className="spinner small" />
+                    ) : (
+                      <MicrophoneIcon />
+                    )}
+                  </button>
+                </>
+              )}
+              {running && onStop && (
+                <button
+                  aria-label={t("Остановить задачу")}
+                  className="composer-action stop composer-task-stop"
+                  type="button"
+                  onClick={onStop}
+                >
+                  <StopIcon />
+                </button>
+              )}
+              {speechState === "recording" ? (
+                <button
+                  aria-label={t("Отменить запись")}
+                  className="composer-action stop"
+                  type="button"
+                  onClick={cancelRecording}
+                >
+                  <XIcon />
+                </button>
+              ) : onCancelVoiceTranscription ? (
+                <button
+                  aria-label={t("Отменить обработку записи")}
+                  className="composer-action stop"
+                  disabled={voiceCancellationPending}
+                  type="button"
+                  onClick={onCancelVoiceTranscription}
+                >
+                  {voiceCancellationPending ? <span className="spinner small" /> : <XIcon />}
+                </button>
+              ) : (
                 <button
                   aria-label={
-                    speechState === "recording"
-                      ? t("Остановить запись")
-                      : speechState === "requesting"
-                        ? t("Запрашиваем доступ к микрофону")
-                        : speechState === "uploading"
-                          ? t("Отправляем запись — не закрывайте")
-                          : voiceUploadPending
-                            ? t("Отправляем запись — не закрывайте")
-                            : transcriptionStatus && remoteTranscriptionStatus === "queued"
-                              ? t("Запись на сервере · можно закрыть")
-                              : transcriptionStatus && remoteTranscriptionStatus === "applying"
-                                ? t("На сервере · готовим результат")
-                                : transcriptionBusy
-                                  ? t("Распознаём запись")
-                                  : speechUnavailable
-                                    ? speechUnavailable
-                                    : hasRetryRecording
-                                      ? t("Повторить")
-                                      : t("Начать запись")
+                    running
+                      ? t("Добавить в очередь")
+                      : goalMode
+                        ? t("Запустить цель")
+                        : t("Отправить")
                   }
-                  aria-pressed={speechState === "recording"}
-                  className={`composer-action microphone${speechState === "recording" ? " recording" : ""}${speechTimerText ? " timing" : ""}`}
-                  disabled={
-                    speechState === "requesting" ||
-                    speechState === "uploading" ||
-                    speechState === "transcribing" ||
-                    voiceUploadPending ||
-                    voiceInputLocked ||
-                    Boolean(transcriptionStatus) ||
-                    (speechState === "idle" &&
-                      (inputUnavailable || busy || settingsBusy || Boolean(speechUnavailable)))
-                  }
-                  title={speechUnavailable ?? undefined}
-                  type="button"
-                  onPointerDown={
-                    speechState === "idle" &&
-                    !hasRetryRecording &&
-                    !transcriptionStatus &&
-                    !voiceInputLocked
-                      ? captureInsertionPoint
-                      : undefined
-                  }
-                  onClick={() =>
-                    speechState === "recording"
-                      ? stopRecording()
-                      : hasRetryRecording
-                        ? void retryVoiceRecording()
-                        : void startRecording()
-                  }
+                  className="composer-action send"
+                  disabled={!canSubmit}
+                  type="submit"
                 >
-                  {speechTimerText ? (
-                    <span className="composer-action-timer" aria-hidden="true">
-                      {speechTimerText}
-                    </span>
-                  ) : speechState === "requesting" ||
-                    speechState === "uploading" ||
-                    voiceUploadPending ||
-                    remoteTranscriptionStatus === "applying" ? (
-                    <span className="spinner small" />
-                  ) : (
-                    <MicrophoneIcon />
-                  )}
+                  <SendIcon />
                 </button>
-              </>
-            )}
-            {running && onStop && (
-              <button
-                aria-label={t("Остановить задачу")}
-                className="composer-action stop composer-task-stop"
-                type="button"
-                onClick={onStop}
-              >
-                <StopIcon />
-              </button>
-            )}
-            {speechState === "recording" ? (
-              <button
-                aria-label={t("Отменить запись")}
-                className="composer-action stop"
-                type="button"
-                onClick={cancelRecording}
-              >
-                <XIcon />
-              </button>
-            ) : onCancelVoiceTranscription ? (
-              <button
-                aria-label={t("Отменить обработку записи")}
-                className="composer-action stop"
-                disabled={voiceCancellationPending}
-                type="button"
-                onClick={onCancelVoiceTranscription}
-              >
-                {voiceCancellationPending ? <span className="spinner small" /> : <XIcon />}
-              </button>
-            ) : (
-              <button
-                aria-label={
-                  running
-                    ? t("Добавить в очередь")
-                    : goalMode
-                      ? t("Запустить цель")
-                      : t("Отправить")
-                }
-                className="composer-action send"
-                disabled={!canSubmit}
-                type="submit"
-              >
-                <SendIcon />
-              </button>
-            )}
+              )}
+            </div>
           </div>
+          {speechStatusText && (
+            <span className="sr-only" role="status">
+              {speechStatusText}
+            </span>
+          )}
         </div>
-        {speechStatusText && (
-          <span className="sr-only" role="status">
-            {speechStatusText}
-          </span>
-        )}
       </div>
     </form>
   );

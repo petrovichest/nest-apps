@@ -436,7 +436,7 @@ for (const width of [320, 390, 1440]) {
                   parseFloat(getComputedStyle(el).getPropertyValue("--composer-overlay-height")) -
                     Math.ceil(
                       el.getBoundingClientRect().bottom -
-                        el.querySelector(".composer-box")!.getBoundingClientRect().top,
+                        el.querySelector(".composer-base")!.getBoundingClientRect().top,
                     ),
                 ),
                 Math.abs(
@@ -530,6 +530,112 @@ for (const width of [320, 390, 1440]) {
       await page.setViewportSize({ width, height: 520 });
       await expectTailVisible();
       await expectPackedActions(page);
+    });
+  }
+}
+
+for (const width of [390, 1440]) {
+  for (const theme of ["light", "dark"] as const) {
+    test(`running agents at ${width}px in ${theme}: chat tail stays reachable through floating card changes`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: width < 610 ? 844 : 1000 });
+      const { summary, send } = await chat(page, theme, messageText.repeat(4));
+      send({ type: "queue.changed", threadId: summary.id, messages: [] });
+      send({
+        type: "thread.upserted",
+        thread: { ...summary, state: "running", currentTurnId: "running" },
+      });
+      for (const index of [1, 2]) {
+        const id = `running-child-${index}`;
+        send({
+          type: "thread.upserted",
+          thread: {
+            ...summary,
+            id,
+            title: `Проверка ${index}`,
+            state: "running",
+            currentTurnId: `${id}-turn`,
+            pinned: false,
+            relation: {
+              kind: "subagent",
+              sessionId: id,
+              parentThreadId: summary.id,
+              nickname: `Агент ${index}`,
+              role: "worker",
+            },
+          },
+        });
+      }
+      const scroll = page.locator(".conversation-scroll");
+      const tail = page.locator(".active-turn-placeholder .turn-activity-row");
+      const bar = page.locator(".subagent-activity");
+      const toggle = bar.getByRole("button", { name: "Показать субагентов", exact: true });
+      const box = page.locator(".composer-box");
+      await expect(bar.getByRole("status")).toHaveText("2 агента работают");
+      await expect(tail).toContainText("Codex работает");
+
+      const expectTailReachable = async () => {
+        await waitForVisualReady(page);
+        await scroll.evaluate((element) => {
+          element.scrollTop = element.scrollHeight;
+        });
+        await expect
+          .poll(() =>
+            scroll.evaluate(
+              (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+            ),
+          )
+          .toBeLessThanOrEqual(1);
+        await expect(tail).toBeInViewport({ ratio: 1 });
+        await expect(toggle).toBeInViewport({ ratio: 1 });
+        expect(await verticalGap(tail, bar)).toBeGreaterThanOrEqual(16);
+      };
+      await expectTailReachable();
+      const stationary = await geometry(
+        page.locator(
+          ".active-turn-placeholder .turn-activity-row,.subagent-activity,.composer-box",
+        ),
+      );
+      const scrollHeight = await scroll.evaluate((element) => element.scrollHeight);
+      const scrollTop = await scroll.evaluate((element) => element.scrollTop);
+
+      await page.locator('.composer input[type="file"]').setInputFiles(
+        [1, 2, 3].map((index) => ({
+          name: `preview-${index}.png`,
+          mimeType: "image/png",
+          buffer: Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=",
+            "base64",
+          ),
+        })),
+      );
+      const filter = page.getByRole("button", { name: "Изображения (3)", exact: true });
+      await expect(filter).toHaveAttribute("aria-expanded", "false");
+
+      const expectCardsFloat = async () => {
+        await waitForVisualReady(page);
+        expect(await scroll.evaluate((element) => element.scrollHeight)).toBe(scrollHeight);
+        expect(await scroll.evaluate((element) => element.scrollTop)).toBeCloseTo(scrollTop, 0);
+        unchanged(
+          stationary,
+          await geometry(
+            page.locator(
+              ".active-turn-placeholder .turn-activity-row,.subagent-activity,.composer-box",
+            ),
+          ),
+        );
+        await expectTailReachable();
+      };
+      await expectCardsFloat();
+      await filter.click();
+      await expect(page.locator('.composer-card-panel[data-kind="images"]')).toBeVisible();
+      await expect(filter).toHaveAttribute("aria-expanded", "true");
+      await expectCardsFloat();
+      await filter.click();
+      await expect(filter).toHaveAttribute("aria-expanded", "false");
+      await expectCardsFloat();
+      expect(await verticalGap(bar, box)).toBeGreaterThanOrEqual(8);
     });
   }
 }
