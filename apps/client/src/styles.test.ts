@@ -87,3 +87,29 @@ describe("working text glint", () => {
     expect(outside).toContain("@keyframes working-text-glint");
   });
 });
+
+describe("spinner", () => {
+  const css = readFileSync(resolve(root, "apps/client/src/styles.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+
+  it("is a masked ring whose thickness is a variable, not a border", () => {
+    const rule = css.match(/\n\.spinner \{([^}]*)\}/)?.[1] ?? "";
+    expect(rule).toContain("--spinner-w:");
+    expect(rule).toMatch(/\bmask:/);
+    expect(rule).not.toMatch(/\bborder(?:-(?:top|right|bottom|left))?(?:-(?:width|style|color))?:/);
+    // A border draws nothing on the spinner, so a thinner ring has to go through the variable.
+    for (const block of css.matchAll(/([^{}]*\.spinner[^{}]*)\{([^{}]*)\}/g)) {
+      expect(block[2], block[1]!.trim()).not.toMatch(/\bborder-width:/);
+    }
+  });
+
+  it("stays still and takes the running colour under reduced motion", () => {
+    const reduced = [...css.matchAll(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/g)]
+      .map((match) => match[0])
+      .join("\n");
+    expect(reduced).toMatch(/\.spinner\s*\{[^}]*--spinner-color:\s*var\(--status-running\)/);
+    expect(reduced).toMatch(/\.spinner,[^{]*\{\s*animation:\s*none/);
+  });
+});
