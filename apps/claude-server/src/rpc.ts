@@ -4,7 +4,9 @@ import { connect, type Socket } from "node:net";
 import { AppError, type RpcMessage } from "./types";
 
 export class RunnerConnection extends EventEmitter {
-  private buffer = "";
+  /** Chunks of the line being received; joined once, so an 8 MB snapshot is not rescanned per chunk. */
+  private partial: string[] = [];
+  private partialBytes = 0;
   private pending = new Map<
     string,
     { resolve(value: any): void; reject(error: Error): void; timer: NodeJS.Timeout }
@@ -13,11 +15,15 @@ export class RunnerConnection extends EventEmitter {
     super();
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
-      this.buffer += chunk;
+      let start = 0;
       let newline: number;
-      while ((newline = this.buffer.indexOf("\n")) >= 0) {
-        const line = this.buffer.slice(0, newline);
-        this.buffer = this.buffer.slice(newline + 1);
+      while ((newline = chunk.indexOf("\n", start)) >= 0) {
+        const line = this.partial.length
+          ? this.partial.join("") + chunk.slice(start, newline)
+          : chunk.slice(start, newline);
+        this.partial = [];
+        this.partialBytes = 0;
+        start = newline + 1;
         if (line.length > 32 * 1024 * 1024) {
           socket.destroy();
           return;
@@ -46,7 +52,12 @@ export class RunnerConnection extends EventEmitter {
           else pending.resolve(message.result);
         } else this.emit("message", message);
       }
-      if (Buffer.byteLength(this.buffer) > 32 * 1024 * 1024) socket.destroy();
+      if (start < chunk.length) {
+        const rest = start ? chunk.slice(start) : chunk;
+        this.partial.push(rest);
+        this.partialBytes += Buffer.byteLength(rest);
+        if (this.partialBytes > 32 * 1024 * 1024) socket.destroy();
+      }
     });
     socket.on("error", () => undefined);
     socket.on("close", () => {
