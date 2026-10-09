@@ -184,14 +184,16 @@ for (const reloadDuring of ["creation", "upload"] as const) {
               request.onsuccess = () => resolve(request.result);
             });
             const saved = await new Promise<
-              Array<{ voiceSubmission?: { recording: { id: string; audio: Blob } } }>
+              Array<{
+                voiceSubmission?: { recording: { id: string; audio: { data: ArrayBuffer } } };
+              }>
             >((resolve) => {
               const request = database.transaction("drafts").objectStore("drafts").getAll();
               request.onsuccess = () => resolve(request.result);
             });
             database.close();
             const voice = saved.find((entry) => entry.voiceSubmission)?.voiceSubmission;
-            return { id: voice?.recording.id, size: voice?.recording.audio.size };
+            return { id: voice?.recording.id, size: voice?.recording.audio.data.byteLength };
           }),
         )
         .toMatchObject({ id: expect.any(String), size: 17 });

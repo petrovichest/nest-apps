@@ -153,6 +153,27 @@ export type PendingVoiceRecording = {
 
 let cleanupStartedAt = 0;
 
+/**
+ * WebKit can silently fail a transaction that stores a Blob, or one that was read back from
+ * IndexedDB. Voice recordings (24 MiB at most) are kept as bytes and rebuilt into a Blob on read.
+ * Records written before this hold the Blob itself; it is copied out of the database when read,
+ * and handed out unchanged when that copy fails, so a stored recording is never dropped.
+ */
+type StoredBlob = { data: ArrayBuffer; type: string };
+
+async function storedBlob(blob: Blob): Promise<StoredBlob> {
+  return { data: await blob.arrayBuffer(), type: blob.type };
+}
+
+async function restoredBlob(stored: Blob | StoredBlob): Promise<Blob> {
+  if (!(stored instanceof Blob)) return new Blob([stored.data], { type: stored.type });
+  try {
+    return new Blob([await stored.arrayBuffer()], { type: stored.type });
+  } catch {
+    return stored;
+  }
+}
+
 export function connectionCacheKey(settings: ConnectionSettings): string {
   return `${settings.baseUrl.replace(/\/+$/u, "")}\0${tokenFingerprint(settings.token)}`;
 }
@@ -284,10 +305,14 @@ export async function loadNewSessionDraft(
   settings: ConnectionSettings,
   projectId: string,
 ): Promise<LocalNewSessionDraft | null> {
-  return readValue<LocalNewSessionDraft>(
+  const draft = await readValue<LocalNewSessionDraft>(
     DRAFT_STORE,
     newSessionDraftKey(connectionCacheKey(settings), projectId),
   );
+  const voice = draft?.voiceSubmission;
+  if (!draft || !voice) return draft;
+  const audio = await restoredBlob(voice.recording.audio);
+  return { ...draft, voiceSubmission: { ...voice, recording: { ...voice.recording, audio } } };
 }
 
 export async function saveNewSessionDraft(
@@ -317,7 +342,23 @@ export async function saveNewSessionDraft(
     ...preparation,
     updatedAt,
   };
-  return writeValue(DRAFT_STORE, draft);
+  try {
+    const voice = draft.voiceSubmission;
+    return await writeValue(
+      DRAFT_STORE,
+      voice
+        ? {
+            ...draft,
+            voiceSubmission: {
+              ...voice,
+              recording: { ...voice.recording, audio: await storedBlob(voice.recording.audio) },
+            },
+          }
+        : draft,
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function deleteNewSessionDraft(
@@ -492,17 +533,30 @@ export async function deleteOutboxMessage(id: string): Promise<void> {
 export async function listPendingVoiceRecordings(
   settings: ConnectionSettings,
 ): Promise<PendingVoiceRecording[]> {
-  return (await readAll<PendingVoiceRecording>(RECORDING_STORE))
+  const stored = (await readAll<PendingVoiceRecording>(RECORDING_STORE))
     .filter((recording) => recording.connectionKey === connectionCacheKey(settings))
     .sort((left, right) => left.createdAt - right.createdAt);
+  return Promise.all(stored.map(restoredRecording));
 }
 
 export async function loadPendingVoiceRecording(id: string): Promise<PendingVoiceRecording | null> {
-  return readValue<PendingVoiceRecording>(RECORDING_STORE, id);
+  const stored = await readValue<PendingVoiceRecording>(RECORDING_STORE, id);
+  return stored ? restoredRecording(stored) : null;
 }
 
 export async function putPendingVoiceRecording(recording: PendingVoiceRecording): Promise<boolean> {
-  return writeValue(RECORDING_STORE, recording);
+  try {
+    return await writeValue(RECORDING_STORE, {
+      ...recording,
+      audio: await storedBlob(recording.audio),
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function restoredRecording(stored: PendingVoiceRecording): Promise<PendingVoiceRecording> {
+  return { ...stored, audio: await restoredBlob(stored.audio) };
 }
 
 export async function deletePendingVoiceRecording(id: string): Promise<void> {
