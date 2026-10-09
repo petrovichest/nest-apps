@@ -148,7 +148,11 @@ export function ClaudeAccountsSettings() {
         <div className="claude-auto-switch claude-account-surface">
           <div>
             <label htmlFor={`${headingId}-auto`}>{t("Автопереключение")}</label>
-            <p>{t("При лимите — другой доступный аккаунт.")}</p>
+            <p>
+              {t(
+                "Сначала тратится аккаунт, у которого 5-часовой лимит сбросится раньше; при лимите — другой доступный.",
+              )}
+            </p>
           </div>
           <input
             id={`${headingId}-auto`}

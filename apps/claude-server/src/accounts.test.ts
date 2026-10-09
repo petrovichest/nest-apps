@@ -21,8 +21,12 @@ afterEach(async () => {
 });
 const NOW = 1_800_000_000_000;
 const direct: ClaudeProxyInput = { enabled: false, protocol: "http", value: "" };
-const usage = (fiveUsed = 20, weeklyUsed = 30): NativeClaudeUsage => ({
-  primary: { usedPercent: fiveUsed, windowDurationMins: 300, resetsAt: NOW + 10_000_000 },
+const usage = (
+  fiveUsed = 20,
+  weeklyUsed = 30,
+  fiveResetsAt = NOW + 10_000_000,
+): NativeClaudeUsage => ({
+  primary: { usedPercent: fiveUsed, windowDurationMins: 300, resetsAt: fiveResetsAt },
   secondary: { usedPercent: weeklyUsed, windowDurationMins: 10080, resetsAt: NOW + 100_000_000 },
 });
 class LoginChild extends EventEmitter {
@@ -623,6 +627,74 @@ describe("Claude quota account selection", () => {
     expect(await accounts.rotate(id)).toBeNull();
     limits.set(config.configDir, usage(100, 100));
     expect(await accounts.rotate(id)).toBeNull();
+  });
+  it("moves to the account whose 5-hour window resets first before anything is exhausted", async () => {
+    const { accounts, config, limits, add } = await fixture();
+    const later = accounts.status().currentAccountId!;
+    limits.set(config.configDir, usage(64, 22, NOW + 20_000_000));
+    const sooner = await add("sooner@example.com");
+    limits.set(sooner.configDir, usage(0, 43, NOW + 5_000_000));
+    const changed = vi.fn();
+    accounts.on("changed", changed);
+    await accounts.refresh();
+    expect(accounts.status().currentAccountId).toBe(sooner.id);
+    expect(changed).toHaveBeenLastCalledWith(
+      expect.objectContaining({ currentAccountId: sooner.id }),
+    );
+    expect(accounts.status().currentAccountId).not.toBe(later);
+    // Once the other window is the one that ends first, the selection follows it back.
+    limits.set(sooner.configDir, usage(0, 43, NOW + 30_000_000));
+    await accounts.refresh();
+    expect(accounts.status().currentAccountId).toBe(later);
+  });
+  it("keeps the current account when 5-hour windows tie or it already resets first", async () => {
+    const { accounts, config, limits, add } = await fixture();
+    const current = accounts.status().currentAccountId!;
+    limits.set(config.configDir, usage(60));
+    const other = await add("other@example.com");
+    limits.set(other.configDir, usage(5));
+    await accounts.refresh();
+    expect(accounts.status().currentAccountId).toBe(current);
+    limits.set(other.configDir, usage(5, 30, NOW + 20_000_000));
+    await accounts.refresh();
+    expect(accounts.status().currentAccountId).toBe(current);
+  });
+  it("never prefers an earlier reset when auto-switch is off", async () => {
+    const { accounts, config, limits, add } = await fixture();
+    const current = accounts.status().currentAccountId!;
+    limits.set(config.configDir, usage(60));
+    const other = await add("other@example.com");
+    limits.set(other.configDir, usage(0, 30, NOW + 5_000_000));
+    await accounts.setAutoSwitch(false);
+    await accounts.refresh();
+    expect(accounts.status().currentAccountId).toBe(current);
+  });
+  it("does not move to an account that is exhausted or has unknown limits", async () => {
+    const { accounts, config, limits, add } = await fixture();
+    const current = accounts.status().currentAccountId!;
+    limits.set(config.configDir, usage(60));
+    const other = await add("other@example.com");
+    for (const exhausted of [usage(100, 30, NOW + 5_000_000), usage(0, 100, NOW + 5_000_000)]) {
+      limits.set(other.configDir, exhausted);
+      await accounts.refresh();
+      expect(accounts.status().currentAccountId).toBe(current);
+    }
+    limits.set(other.configDir, { primary: null, secondary: null });
+    await accounts.refresh();
+    expect(accounts.status().currentAccountId).toBe(current);
+    limits.set(other.configDir, usage(0, 30, NOW + 5_000_000));
+    await accounts.refresh();
+    expect(accounts.status().currentAccountId).toBe(other.id);
+  });
+  it("applies the earlier-reset preference as soon as auto-switch is turned on", async () => {
+    const { accounts, config, limits, add } = await fixture();
+    limits.set(config.configDir, usage(60));
+    const other = await add("other@example.com");
+    limits.set(other.configDir, usage(0, 30, NOW + 5_000_000));
+    await accounts.setAutoSwitch(false);
+    await accounts.refresh();
+    expect(accounts.status().currentAccountId).not.toBe(other.id);
+    expect((await accounts.setAutoSwitch(true)).currentAccountId).toBe(other.id);
   });
   it("ignores a stale in-flight usage result after proxy settings change", async () => {
     let release: ((usage: NativeClaudeUsage) => void) | undefined;

@@ -32,8 +32,8 @@ const ENGLISH: Record<string, string> = {
   "{{current}} из {{count}}": "{{current}} of {{count}}",
   "Аккаунтов: {{count}}": "Accounts: {{count}}",
   Автопереключение: "Auto-switch accounts",
-  "При лимите — другой доступный аккаунт.":
-    "Switch to an available account when the quota runs out.",
+  "Сначала тратится аккаунт, у которого 5-часовой лимит сбросится раньше; при лимите — другой доступный.":
+    "Use the account whose 5-hour quota resets first; switch to another available one when a quota runs out.",
   "Прогрев лимитов": "Warm up limits",
   "Запускать простаивающее 5-часовое окно коротким запросом.":
     "Start an idle 5-hour window with a short request.",

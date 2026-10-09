@@ -104,6 +104,19 @@ export type ClaudeAccountsOptions = {
   env?: NodeJS.ProcessEnv;
 };
 
+const fiveHourReset = (account: SavedAccount): number =>
+  account.rateLimits.limits?.primary?.resetsAt ?? Infinity;
+/** Spend the 5-hour window that resets first; unknown resets go last. */
+function spendFirst(a: SavedAccount, b: SavedAccount): number {
+  const aLimits = a.rateLimits.limits!,
+    bLimits = b.rateLimits.limits!;
+  return (
+    fiveHourReset(a) - fiveHourReset(b) ||
+    aLimits.primary!.usedPercent - bLimits.primary!.usedPercent ||
+    aLimits.secondary!.usedPercent - bLimits.secondary!.usedPercent
+  );
+}
+
 /** Account metadata is application-owned; actual authentication stays native to Claude Code. */
 export class ClaudeAccounts extends EventEmitter {
   private registry: Registry = {
@@ -306,6 +319,7 @@ export class ClaudeAccounts extends EventEmitter {
     if (this.closed) throw new AppError("unavailable", "Claude account service is closing", 503);
     const accounts = accountId ? [this.account(accountId)] : [...this.registry.accounts];
     await Promise.all(accounts.map((account) => this.refreshAccount(account)));
+    await this.preferEarlierReset();
     return this.status();
   }
   private refreshAccount(account: SavedAccount): Promise<void> {
@@ -399,12 +413,13 @@ export class ClaudeAccounts extends EventEmitter {
     await this.initialize();
     if (typeof enabled !== "boolean")
       throw new AppError("invalid_request", "autoSwitch must be a boolean");
-    return this.edit(async () => {
+    await this.edit(async () => {
       this.registry.autoSwitch = enabled;
       await this.save();
       this.emitChanged();
-      return this.status();
     });
+    if (enabled) await this.preferEarlierReset();
+    return this.status();
   }
   async setWarmLimits(enabled: boolean): Promise<ClaudeAccountsStatus> {
     await this.initialize();
@@ -497,16 +512,7 @@ export class ClaudeAccounts extends EventEmitter {
           return this.launch(current);
         const candidates = eligible
           .filter((account) => account.accountId !== failedAccountId)
-          .sort((a, b) => {
-            const aLimits = a.rateLimits.limits!,
-              bLimits = b.rateLimits.limits!;
-            // Spend the 5-hour window that resets first; unknown resets go last.
-            return (
-              (aLimits.primary!.resetsAt ?? Infinity) - (bLimits.primary!.resetsAt ?? Infinity) ||
-              aLimits.primary!.usedPercent - bLimits.primary!.usedPercent ||
-              aLimits.secondary!.usedPercent - bLimits.secondary!.usedPercent
-            );
-          });
+          .sort(spendFirst);
         const next = candidates[0];
         if (!next) return null;
         await this.edit(async () => {
@@ -518,6 +524,31 @@ export class ClaudeAccounts extends EventEmitter {
       });
     this.rotation = operation;
     return operation;
+  }
+  /**
+   * Quota failures only rotate after a limit is hit, so also hand the selection to a usable
+   * account whose 5-hour window ends sooner instead of burning the later one first.
+   */
+  private async preferEarlierReset(): Promise<void> {
+    if (!this.registry.autoSwitch || this.closed) return;
+    const usable = this.registry.accounts
+      .filter((account) => this.eligible(account))
+      .sort(spendFirst);
+    const current = usable.find((account) => account.accountId === this.registry.currentAccountId);
+    const next = usable[0];
+    // Only a strictly earlier reset switches, so equal windows never make the account flap.
+    if (!current || !next || fiveHourReset(next) >= fiveHourReset(current)) return;
+    await this.edit(async () => {
+      if (
+        !this.registry.autoSwitch ||
+        this.registry.currentAccountId !== current.accountId ||
+        !this.registry.accounts.includes(next)
+      )
+        return;
+      this.registry.currentAccountId = next.accountId;
+      await this.save();
+      this.emitChanged();
+    });
   }
   private modelWindows(
     account: SavedAccount,
