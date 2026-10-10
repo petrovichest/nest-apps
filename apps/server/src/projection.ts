@@ -884,6 +884,19 @@ export class AppProjection extends EventEmitter {
     return completed ? this.completeTurn(threadId, completed, true) : null;
   }
 
+  // Unknown or equal start times prove nothing, so the remembered turn stays current then.
+  private startedAfterCurrentTurn(cached: CachedThread, turn: Turn): boolean {
+    const currentTurnId = cached.currentTurnId;
+    if (!currentTurnId || turn.startedAt === null) return false;
+    const progressStartedAt = this.progress.get(
+      turnKey(cached.thread.id, currentTurnId),
+    )?.startedAt;
+    const currentStartedAt =
+      cached.thread.turns.find((candidate) => candidate.id === currentTurnId)?.startedAt ??
+      (progressStartedAt == null ? null : progressStartedAt / 1_000);
+    return currentStartedAt !== null && turn.startedAt > currentStartedAt;
+  }
+
   private async readTurnsPage(
     id: string,
     cursor: string | null,
@@ -3085,7 +3098,15 @@ export class AppProjection extends EventEmitter {
       await recoverTimelineOrder(rolloutPath, [turn], {});
     }
     if (recovered && cached?.currentTurnId !== turn.id) return null;
-    if (cached?.currentTurnId && cached.currentTurnId !== turn.id) return null;
+    if (cached?.currentTurnId && cached.currentTurnId !== turn.id) {
+      if (!this.startedAfterCurrentTurn(cached, turn)) return null;
+      // Codex runs one turn per thread at a time, so a later turn finishing means the remembered
+      // one is over. This happens when the Codex daemon restarts and resumes the work as a new
+      // turn while the connection is down; the thread would otherwise stay running and hold its
+      // message queue forever.
+      await this.markInterrupted(threadId, [cached.currentTurnId]);
+      if (cached.currentTurnId) return null;
+    }
     if (cached) {
       cached.currentTurnId = null;
       cached.liveOutcome = outcome;

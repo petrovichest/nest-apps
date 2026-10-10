@@ -11570,6 +11570,57 @@ describe("completion recovery", () => {
       await app.close();
     }
   });
+
+  it("releases a queued message when the Codex daemon resumed the work as a later turn", async () => {
+    const { app, bridge, projection, store, headers } = await createTeamHarness();
+    try {
+      await projection.setSettings("thread", { collaborationMode: "default" });
+      bridge.emit("notification", {
+        method: "turn/started",
+        params: {
+          threadId: "thread",
+          turn: { ...testTurn("replaced", "inProgress"), startedAt: 10 },
+        },
+      } satisfies ServerNotification);
+      await vi.waitFor(() => expect(projection.summary("thread")?.currentTurnId).toBe("replaced"));
+      const queued = await app.inject({
+        method: "POST",
+        url: "/api/v1/threads/thread/queue",
+        headers,
+        payload: { input: "Next request", clientMessageId: "after-daemon-restart" },
+      });
+      expect(queued.statusCode).toBe(202);
+      expect(bridge.request.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(
+        0,
+      );
+
+      // The daemon restarted while the connection was down, so only the new turn's end arrives.
+      bridge.emit("notification", {
+        method: "turn/completed",
+        params: {
+          threadId: "thread",
+          turn: { ...testTurn("resumed", "completed"), startedAt: 20, completedAt: 30 },
+        },
+      } satisfies ServerNotification);
+
+      await vi.waitFor(() =>
+        expect(store.view().messageReceipts?.["after-daemon-restart"]).toMatchObject({
+          status: "delivered",
+          turnId: "turn",
+        }),
+      );
+      expect(store.view().messageQueues?.thread).toBeUndefined();
+      expect(bridge.request.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(
+        1,
+      );
+      expect(projection.summary("thread")).toMatchObject({
+        state: "running",
+        currentTurnId: "turn",
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe("file attachments", () => {

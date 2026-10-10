@@ -6371,6 +6371,64 @@ describe("AppProjection", () => {
     },
   );
 
+  it("ends a remembered turn when a later turn completes after the turn change was missed", async () => {
+    const { store, bridge, projection } = await searchHarness();
+    const events: ServerEvent[] = [];
+    projection.on("event", (_sequence, event: ServerEvent) => events.push(event));
+    projection.upsertThread(
+      thread("one", "/work", 10, { type: "active", activeFlags: [] }, [
+        { ...testTurn("replaced", "inProgress"), startedAt: 10 },
+      ]),
+    );
+    expect(projection.summary("one")).toMatchObject({
+      state: "running",
+      currentTurnId: "replaced",
+    });
+
+    // The Codex daemon restarted and resumed the work as a new turn while the connection was down.
+    bridge.emit("notification", {
+      method: "turn/completed",
+      params: {
+        threadId: "one",
+        turn: { ...testTurn("resumed", "completed"), startedAt: 20, completedAt: 30 },
+      },
+    } satisfies ServerNotification);
+
+    await vi.waitFor(() => expect(store.view().threadMeta.one?.lastResult?.turnId).toBe("resumed"));
+    expect(projection.summary("one")).toMatchObject({ state: "completed", currentTurnId: null });
+    expect(store.view().threadMeta.one).toMatchObject({ lastOutcome: "completed" });
+    expect(events.filter((event) => event.type === "thread.upserted").at(-1)).toMatchObject({
+      thread: { currentTurnId: null },
+    });
+  });
+
+  it("keeps the current turn when an older, equal or undated turn completes", async () => {
+    const { store, bridge, projection } = await searchHarness();
+    projection.upsertThread(
+      thread("one", "/work", 20, { type: "active", activeFlags: [] }, [
+        { ...testTurn("live", "inProgress"), startedAt: 20 },
+      ]),
+    );
+    const complete = async (turn: Thread["turns"][number]) => {
+      bridge.emit("notification", {
+        method: "turn/completed",
+        params: { threadId: "one", turn },
+      } satisfies ServerNotification);
+      await store.flushed();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+
+    await complete({ ...testTurn("older", "completed"), startedAt: 10 });
+    await complete({ ...testTurn("same-second", "completed"), startedAt: 20 });
+    await complete({ ...testTurn("undated", "completed"), startedAt: null });
+    expect(projection.summary("one")).toMatchObject({ state: "running", currentTurnId: "live" });
+    expect(store.view().threadMeta.one?.lastOutcome).toBeUndefined();
+
+    await complete({ ...testTurn("later", "completed"), startedAt: 30, completedAt: 40 });
+    await vi.waitFor(() => expect(store.view().threadMeta.one?.lastResult?.turnId).toBe("later"));
+    expect(projection.summary("one")).toMatchObject({ state: "completed", currentTurnId: null });
+  });
+
   it("keeps final text active until the turn itself is terminal", async () => {
     const { bridge, projection, terminal } = await createCompletionRecoveryHarness();
     terminal.status = "inProgress";
