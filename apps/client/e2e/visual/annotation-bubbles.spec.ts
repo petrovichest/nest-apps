@@ -586,6 +586,65 @@ test.describe("selection made with touch handles", () => {
       await expect(page.locator(".composer .annotation-bubble")).toHaveCount(1);
     });
   }
+
+  test("keeps the editor clear of the header and of the composer that the keyboard lifts over it", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openAnnotations(page, "light", 3, "none");
+    // Read the history away from its tail, with the selection in the upper half of the screen.
+    await readConversationHistory(page);
+    const paragraph = await visibleMessageAnchor(page);
+    await paragraph.evaluate((element) => {
+      const scroll = document.querySelector(".conversation-scroll")!;
+      scroll.scrollTop += element.getBoundingClientRect().top - 200;
+    });
+    await settleComposerLayout(page);
+    await paragraph.evaluate((element) => {
+      element.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }),
+      );
+      const range = document.createRange();
+      range.setStart(element.firstChild!, 0);
+      range.setEnd(element.firstChild!, 15);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+    const action = page.getByRole("button", { name: "Аннотация", exact: true });
+    await expect(action).toBeVisible();
+    const bounds = (await action.boundingBox())!;
+    await page.touchscreen.tap(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await expect(page.locator(".annotation-editor").getByRole("textbox")).toBeFocused();
+    await settleComposerLayout(page);
+
+    const clearance = () =>
+      page.evaluate(() => {
+        const rect = (selector: string) =>
+          document.querySelector(selector)!.getBoundingClientRect();
+        const form = rect(".annotation-editor");
+        return {
+          formTop: form.top,
+          formBottom: form.bottom,
+          headerBottom: rect(".workspace-header").bottom,
+          // The scroll button floats right above the composer.
+          composerTop: Math.min(rect(".composer").top, rect(".scroll-to-bottom").top),
+        };
+      });
+    const opened = await clearance();
+    expect(opened.formTop).toBeGreaterThanOrEqual(opened.headerBottom);
+    expect(opened.formBottom).toBeLessThanOrEqual(opened.composerTop);
+    await page.screenshot({ path: testInfo.outputPath("editor-opened.png") });
+
+    // The soft keyboard shrinks the window and the composer rises with its bottom edge.
+    await page.setViewportSize({ width: 390, height: 460 });
+    await settleComposerLayout(page);
+    const lifted = await clearance();
+    await page.screenshot({ path: testInfo.outputPath("editor-with-keyboard.png") });
+    expect(lifted.composerTop).toBeLessThan(opened.composerTop - 200);
+    expect(lifted.formTop).toBeGreaterThanOrEqual(lifted.headerBottom);
+    expect(lifted.formBottom).toBeLessThanOrEqual(lifted.composerTop);
+  });
 });
 
 for (const theme of ["light", "dark"] as const) {

@@ -6337,14 +6337,28 @@ function AnnotatableMarkdownContent({
     const viewportWidth = viewport?.width ?? window.innerWidth;
     const viewportHeight = viewport?.height ?? window.innerHeight;
     const scrollBounds = surface.closest(".conversation-scroll")?.getBoundingClientRect();
+    // The header, the composer and its scroll button float over the history, and the keyboard
+    // lifts the composer over the place the editor opened at: stay in the clear between them.
+    const pane = surface.closest(".conversation-pane");
+    const headerBottom = pane?.querySelector(".workspace-header")?.getBoundingClientRect().bottom;
+    const composerTop = Math.min(
+      ...Array.from(
+        pane?.querySelectorAll(".composer, .scroll-to-bottom") ?? [],
+        (element) => element.getBoundingClientRect().top,
+      ),
+    );
     const left = Math.max(viewportLeft, scrollBounds?.left ?? viewportLeft) + 16;
     const right =
       Math.min(viewportLeft + viewportWidth, scrollBounds?.right ?? viewportLeft + viewportWidth) -
       16;
-    const top = Math.max(viewportTop, scrollBounds?.top ?? viewportTop) + 16;
+    const top =
+      Math.max(viewportTop, scrollBounds?.top ?? viewportTop, headerBottom ?? viewportTop) + 16;
     const bottom =
-      Math.min(viewportTop + viewportHeight, scrollBounds?.bottom ?? viewportTop + viewportHeight) -
-      16;
+      Math.min(
+        viewportTop + viewportHeight,
+        scrollBounds?.bottom ?? viewportTop + viewportHeight,
+        composerTop,
+      ) - 16;
     form.style.maxWidth = `${Math.max(0, right - left)}px`;
     const field = form.querySelector("textarea");
     if (field) field.style.maxHeight = `${Math.max(56, Math.min(176, bottom - top - 24))}px`;
