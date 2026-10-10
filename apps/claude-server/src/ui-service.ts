@@ -358,6 +358,10 @@ export class UiService extends EventEmitter {
       view = this.views.get(id);
     if (thread.subagent) return this.subagentSummary(thread);
     const last = view?.turns().at(-1);
+    // An unconfirmed steer is never resent and is hidden from the queue, so nothing waits on it.
+    const waiting = thread.queue.some(
+      (message) => message.deliveryMode !== "steer" || !message.deliveryError,
+    );
     const state = owner?.pendingRequests.length
       ? "needsAttention"
       : thread.quotaRecovery && ["pending", "resuming"].includes(thread.quotaRecovery.state)
@@ -370,7 +374,7 @@ export class UiService extends EventEmitter {
             ? "interrupted"
             : owner?.state === "running" || owner?.state === "starting"
               ? "running"
-              : thread.queue.length
+              : waiting
                 ? "queued"
                 : owner?.state === "failed"
                   ? "failed"
@@ -1451,7 +1455,16 @@ export class UiService extends EventEmitter {
       });
     this.dispatches.set(id, task);
   }
+  /** Unconfirmed messages that Claude later echoed into the transcript were delivered after all. */
+  private async settleEchoed(id: string): Promise<void> {
+    const unconfirmed = this.thread(id).queue.filter((message) => message.deliveryError);
+    if (!unconfirmed.length) return;
+    const view = await this.view(id);
+    for (const message of unconfirmed)
+      if (view.hasUserMessage(message.id)) await this.accepted(id, message.id);
+  }
   private async dispatch(id: string): Promise<void> {
+    await this.settleEchoed(id);
     if (!this.thread(id).queue.length) return;
     if (
       this.thread(id).quotaRecovery &&

@@ -1138,6 +1138,60 @@ describe("Claude UI durable session facade", () => {
     },
   );
 
+  it("settles unconfirmed steering once Claude echoes it into the transcript", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    owner.state = "running";
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    manager.accepting = true;
+    manager.outcome = "unknown";
+    const message = await service.steer(id, {
+      input: "Acknowledged after the interruption",
+      clientMessageId: randomUUID(),
+    });
+    await expect.poll(() => service.thread(id).queue[0]?.deliveryError?.retryable).toBe(false);
+    manager.emit(id, "native", {
+      type: "user",
+      uuid: message.id,
+      claudenest_delivery: "steer",
+      message: { content: message.text },
+    });
+    await expect.poll(async () => (await service.detail(id)).turns.length).toBe(1);
+    service.schedule(id);
+    await waitForQueue(service, id, 0);
+    const detail = await service.detail(id);
+    expect(detail.turns.flatMap((turn) => turn.items.map((item) => item.id))).toEqual([message.id]);
+    expect(service.thread(id).deliveries[message.id]?.accepted).toBe(true);
+    expect(manager.steers).toHaveLength(1);
+    expect(manager.sends).toEqual([]);
+  });
+
+  it("keeps unconfirmed steering that is missing from the transcript and never reports it as queued", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = snapshot(id, directory);
+    owner.state = "running";
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    manager.accepting = true;
+    manager.outcome = "unknown";
+    const message = await service.steer(id, {
+      input: "Cancelled before it was read",
+      clientMessageId: randomUUID(),
+    });
+    await expect.poll(() => service.thread(id).queue[0]?.deliveryError?.retryable).toBe(false);
+    service.schedule(id);
+    await service.store.flush();
+    expect(service.thread(id).queue.map((entry) => entry.id)).toEqual([message.id]);
+    expect(service.summary(id)).toMatchObject({ state: "failed", queuedMessageCount: 0 });
+    expect(manager.steers).toHaveLength(1);
+    expect(manager.sends).toEqual([]);
+  });
+
   it("keeps a legacy active owner intact and upgrades it only after the active turn finishes", async () => {
     const { manager, start, reserve, directory } = await fixture();
     const service = await start(),

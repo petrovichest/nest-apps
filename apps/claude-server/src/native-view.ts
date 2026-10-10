@@ -207,6 +207,10 @@ export class NativeView {
     return structuredClone(this.values);
   }
 
+  hasUserMessage(id: string): boolean {
+    return this.userTurns.has(id);
+  }
+
   hasToolImagePath(path: string): boolean {
     return this.values.some((turn) =>
       turn.items.some(
