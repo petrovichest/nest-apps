@@ -6,6 +6,7 @@ import {
   validPastedText,
   serializePastedMessage,
   copyPastedMessage,
+  sessionTitleSource,
 } from "./pasted-text.js";
 
 describe("pasted text", () => {
@@ -82,5 +83,24 @@ describe("pasted text", () => {
       "# Original\n```\n42\n```\n\nCheck abc now",
     );
     expect(serializePastedMessage("old message", {})).toBe("old message");
+  });
+  it("names a session from the typed text first, then attached files and pasted blocks", () => {
+    const pastes = {
+      inlinePastes: [{ id: "a", start: 6, end: 9 }],
+      pasteBlocks: [
+        { id: "b", text: "first\nblock" },
+        { id: "c", text: "second block" },
+      ],
+    };
+    expect(
+      sessionTitleSource("  Check abc now ", pastes, [{ name: "a.pdf" }, { name: "b.csv" }]),
+    ).toBe(
+      "Check abc now\n\nAttached files: a.pdf, b.csv\n\nPasted text 1:\nfirst\nblock\n\nPasted text 2:\nsecond block",
+    );
+    expect(sessionTitleSource("Only typed", {})).toBe("Only typed");
+    expect(sessionTitleSource("", { pasteBlocks: [{ id: "b", text: "only paste" }] })).toBe(
+      "Pasted text 1:\nonly paste",
+    );
+    expect(sessionTitleSource("  ", {})).toBe("");
   });
 });

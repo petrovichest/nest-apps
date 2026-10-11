@@ -139,6 +139,24 @@ export function copyPastedMessage(input: string, pastes: PastedText): string {
     .join("\n\n");
 }
 
+/**
+ * Everything in a first message that can name a session. The typed text leads so that a long
+ * paste cannot crowd it out of the title model's input limit.
+ */
+export function sessionTitleSource(
+  input: string,
+  pastes: PastedText,
+  files: readonly { name: string }[] = [],
+): string {
+  return [
+    input.trim(),
+    files.length ? `Attached files: ${files.map((file) => file.name).join(", ")}` : "",
+    ...(pastes.pasteBlocks ?? []).map((block, index) => `Pasted text ${index + 1}:\n${block.text}`),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 /** Keep the original presentation separately; these labels are only for model context. */
 export function serializePastedMessage(input: string, pastes: PastedText): string {
   if (!pastes.inlinePastes?.length && !pastes.pasteBlocks?.length) return input;

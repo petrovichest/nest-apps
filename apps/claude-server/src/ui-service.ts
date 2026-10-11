@@ -8,6 +8,7 @@ import {
   copyPastedMessage,
   pastedText,
   serializePastedMessage,
+  sessionTitleSource,
   trimPastedMessage,
   validPastedText,
 } from "@codexnest/protocol";
@@ -1271,7 +1272,6 @@ export class UiService extends EventEmitter {
     }
     if (body.files?.length) await this.attachments.validate(id, body.files);
     const imageFiles: ThreadFileAttachment[] = [];
-    const titleSource = text.trim() ? text : copyPastedMessage(text, body);
     let provisionalTitle = "",
       fresh = false,
       durable = false;
@@ -1339,8 +1339,9 @@ export class UiService extends EventEmitter {
           ...(imageFiles.length ? { imageFiles } : {}),
         };
         if (current.title === "Новая сессия") {
-          current.title = titleSource.replace(/\s+/g, " ").trim().slice(0, 100) || "Вложения";
-          if (titleSource.trim()) provisionalTitle = current.title;
+          const shown = text.trim() ? text : copyPastedMessage(text, body);
+          current.title = shown.replace(/\s+/g, " ").trim().slice(0, 100) || "Вложения";
+          provisionalTitle = current.title;
         }
         current.updatedAt = Date.now();
         const sentDraft = current.draft,
@@ -1380,7 +1381,13 @@ export class UiService extends EventEmitter {
           await this.applyPermissions(id);
         }
         this.publish({ type: "thread.upserted", thread: this.summary(id) });
-        if (provisionalTitle) void this.refineTitle(id, provisionalTitle, titleSource);
+        if (provisionalTitle)
+          void this.refineTitle(
+            id,
+            provisionalTitle,
+            sessionTitleSource(text, body, body.files),
+            body.images ?? [],
+          );
       }
       this.publishQueue(id);
       this.schedule(id);
@@ -1390,10 +1397,15 @@ export class UiService extends EventEmitter {
         await Promise.allSettled(imageFiles.map((file) => this.attachments.remove(id, file.id)));
     }
   }
-  private async refineTitle(id: string, provisional: string, text: string): Promise<void> {
+  private async refineTitle(
+    id: string,
+    provisional: string,
+    text: string,
+    images: readonly string[],
+  ): Promise<void> {
     if (!this.generateTitle) return;
     try {
-      const title = await this.generateTitle(text, this.store.data.taskDefaults.titleModel);
+      const title = await this.generateTitle(text, this.store.data.taskDefaults.titleModel, images);
       let changed = false;
       await this.store.update((data) => {
         const thread = data.threads[id];

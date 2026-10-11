@@ -4979,10 +4979,68 @@ describe("task defaults", () => {
 
     expect(response.statusCode).toBe(202);
     await vi.waitFor(() => {
-      expect(harness.threadTitles.generate).toHaveBeenCalledWith(pastedSource, {
+      expect(harness.threadTitles.generate).toHaveBeenCalledWith(
+        `Pasted text 1:\n${pastedSource}`,
+        {
+          cwd: "/work",
+          model: "gpt-b",
+          effort: "low",
+        },
+      );
+      expect(harness.bridge.request).toHaveBeenCalledWith("thread/name/set", {
+        threadId: "thread",
+        name: "Готовая реализация",
+      });
+    });
+    await harness.app.close();
+  });
+
+  it("generates a first-turn title from the typed text, pasted text and images together", async () => {
+    const harness = await createForkHarness();
+    await harness.projection.markUnmaterialized("thread");
+    const image = "data:image/png;base64,aW1hZ2U=";
+
+    const response = await harness.app.inject({
+      method: "POST",
+      url: "/api/v1/threads/thread/queue",
+      headers: harness.headers,
+      payload: {
+        clientMessageId: "mixed-title-message",
+        input: "Почему это падает?",
+        pasteBlocks: [{ id: "log", text: "TS2304: Cannot find name" }],
+        images: [image],
+      },
+    });
+
+    expect(response.statusCode).toBe(202);
+    await vi.waitFor(() =>
+      expect(harness.threadTitles.generate).toHaveBeenCalledWith(
+        "Почему это падает?\n\nPasted text 1:\nTS2304: Cannot find name",
+        { cwd: "/work", model: "gpt-b", effort: "low", images: [image] },
+      ),
+    );
+    await harness.app.close();
+  });
+
+  it("generates a first-turn title from an image alone", async () => {
+    const harness = await createForkHarness();
+    await harness.projection.markUnmaterialized("thread");
+    const image = "data:image/png;base64,aW1hZ2U=";
+
+    const response = await harness.app.inject({
+      method: "POST",
+      url: "/api/v1/threads/thread/queue",
+      headers: harness.headers,
+      payload: { clientMessageId: "image-title-message", input: "", images: [image] },
+    });
+
+    expect(response.statusCode).toBe(202);
+    await vi.waitFor(() => {
+      expect(harness.threadTitles.generate).toHaveBeenCalledWith("", {
         cwd: "/work",
         model: "gpt-b",
         effort: "low",
+        images: [image],
       });
       expect(harness.bridge.request).toHaveBeenCalledWith("thread/name/set", {
         threadId: "thread",

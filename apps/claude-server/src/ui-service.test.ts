@@ -371,7 +371,7 @@ describe("Claude UI durable session facade", () => {
     const id = await reserve(service);
     await service.enqueue(id, { clientMessageId: randomUUID(), input: "Fix titles", images: [] });
     await expect.poll(() => service.summary(id).title).toBe("Fix session titles");
-    expect(generate).toHaveBeenCalledWith("Fix titles", "sonnet");
+    expect(generate).toHaveBeenCalledWith("Fix titles", "sonnet", []);
     await service.close();
   });
   it("titles a session by its pasted text when the first message has no typed text", async () => {
@@ -388,24 +388,59 @@ describe("Claude UI durable session facade", () => {
       pasteBlocks: [{ id: "paste", text: pasted }],
     });
     expect(service.summary(id).title).toBe("I want to check one idea. Analyze the deals.");
-    expect(generate).toHaveBeenCalledWith(pasted, undefined);
+    expect(generate).toHaveBeenCalledWith(`Pasted text 1:\n${pasted}`, undefined, []);
     finish("Idea analysis");
     await expect.poll(() => service.summary(id).title).toBe("Idea analysis");
     await service.close();
   });
-  it("keeps the generic title for a first message with attachments but no text", async () => {
+  it("generates the title from the typed text, files, pasted text and images together", async () => {
     const { manager, reserve } = await fixture();
-    const generate = vi.fn(async () => "Unused");
+    const generate = vi.fn(async () => "Build failure");
     const service = new UiService(manager as unknown as SessionManager, generate);
     await service.initialize({ probeModels: false });
     const id = await reserve(service);
+    const file = await service.attachments.save(
+      id,
+      "report.pdf",
+      "application/pdf",
+      Readable.from("report"),
+    );
+    const image = "data:image/png;base64,aW1hZ2U=";
     await service.enqueue(id, {
       clientMessageId: randomUUID(),
-      input: "",
-      images: ["data:image/png;base64,aW1hZ2U="],
+      input: "Why does this fail?",
+      pasteBlocks: [{ id: "log", text: "TS2304: Cannot find name" }],
+      images: [image],
+      files: [file],
     });
-    expect(service.summary(id).title).toBe("Вложения");
-    expect(generate).not.toHaveBeenCalled();
+    expect(service.summary(id).title).toBe("Why does this fail?");
+    expect(generate).toHaveBeenCalledWith(
+      `Why does this fail?\n\nAttached files: ${file.name}\n\nPasted text 1:\nTS2304: Cannot find name`,
+      undefined,
+      [image],
+    );
+    await expect.poll(() => service.summary(id).title).toBe("Build failure");
+    await service.close();
+  });
+  it("titles an attachments-only session by its images and keeps the generic title on failure", async () => {
+    const { manager, reserve } = await fixture();
+    const generate = vi
+      .fn<(text: string, model?: string, images?: readonly string[]) => Promise<string>>()
+      .mockResolvedValueOnce("Screenshot review")
+      .mockRejectedValueOnce(new Error("unavailable"));
+    const service = new UiService(manager as unknown as SessionManager, generate);
+    await service.initialize({ probeModels: false });
+    const image = "data:image/png;base64,aW1hZ2U=";
+    const first = await reserve(service);
+    await service.enqueue(first, { clientMessageId: randomUUID(), input: "", images: [image] });
+    expect(service.summary(first).title).toBe("Вложения");
+    expect(generate).toHaveBeenCalledWith("", undefined, [image]);
+    await expect.poll(() => service.summary(first).title).toBe("Screenshot review");
+    const second = await reserve(service);
+    await service.enqueue(second, { clientMessageId: randomUUID(), input: "", images: [image] });
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(service.summary(second).title).toBe("Вложения");
     await service.close();
   });
   it("applies the default reasoning effort to new sessions when the model supports it", async () => {

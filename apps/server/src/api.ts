@@ -2,11 +2,11 @@ import {
   fastServiceTier,
   isFastServiceTier,
   mergeProjectDraft,
-  copyPastedMessage,
   pastedText,
   trimPastedMessage,
   rebasePastedText,
   serializePastedMessage,
+  sessionTitleSource,
   validPastedText,
   type PastedText,
 } from "@codexnest/protocol";
@@ -551,8 +551,14 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   app.addContentTypeParser(/^audio\//i, { parseAs: "buffer" }, (_request, body, done) => {
     done(null, body);
   });
-  const scheduleThreadTitle = (threadId: string, input: string, summary: ThreadSummary): void => {
-    if (!threadTitles || !input.trim() || projection.hasExplicitName(threadId)) return;
+  const scheduleThreadTitle = (
+    threadId: string,
+    input: string,
+    images: readonly string[],
+    summary: ThreadSummary,
+  ): void => {
+    if (!threadTitles || (!input.trim() && !images.length) || projection.hasExplicitName(threadId))
+      return;
     const model = effectiveTitleModel(
       summary.settings,
       store.view().taskDefaults,
@@ -563,6 +569,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         cwd: summary.cwd,
         model: model?.id,
         effort: model?.reasoningEfforts[0]?.value,
+        ...(images.length ? { images } : {}),
       })
       .then(async (name) => {
         if (projection.hasExplicitName(threadId)) return;
@@ -888,7 +895,12 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       scheduleTeamTasks(threadId);
     }
     if (shouldGenerateTitle) {
-      scheduleThreadTitle(threadId, copyPastedMessage(input, pastes), summary);
+      scheduleThreadTitle(
+        threadId,
+        sessionTitleSource(input, pastes, validatedFiles),
+        images,
+        summary,
+      );
     }
     if (!goal) return { turnId };
     try {

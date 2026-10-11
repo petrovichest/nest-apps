@@ -59,6 +59,28 @@ describe("ThreadTitleGenerator", () => {
     });
   });
 
+  it("sends the first images after the source text and omits an empty text item", async () => {
+    const bridge = fakeBridge('{"title":"Скриншот ошибки"}');
+    const generator = new ThreadTitleGenerator(bridge as unknown as CodexBridge);
+    const images = [1, 2, 3, 4].map((n) => `data:image/png;base64,${n}`);
+
+    await generator.generate("Почему?", { cwd: "/work", images });
+    await generator.generate("  ", { cwd: "/work", images: images.slice(0, 1) });
+
+    const inputs = bridge.request.mock.calls
+      .filter(([method]) => method === "turn/start")
+      .map(([, params]) => params.input);
+    expect(inputs).toEqual([
+      [
+        { type: "text", text: "Почему?", text_elements: [] },
+        { type: "image", url: images[0] },
+        { type: "image", url: images[1] },
+        { type: "image", url: images[2] },
+      ],
+      [{ type: "image", url: images[0] }],
+    ]);
+  });
+
   it("interrupts and unsubscribes a title turn after a timeout", async () => {
     const bridge = fakeBridge();
     const generator = new ThreadTitleGenerator(bridge as unknown as CodexBridge);
