@@ -64,7 +64,10 @@ chat; their missing attachment/control capabilities are reported explicitly.
 During active work, ordinary Send/Enter delivers input immediately to Claude's
 stream-json stdin. Tool-phase instructions can join the current native turn;
 input arriving while text is streaming may become Claude's next native turn.
-Neither path interrupts the task. Ctrl/Cmd+Enter explicitly
+Neither path interrupts the task. A message sent while Claude waits for an
+`AskUserQuestion` answer skips those questions: the CLI reads nothing until they
+are closed, so the facade denies them right after delivering the message and
+Claude answers the message first. Ctrl/Cmd+Enter explicitly
 adds a FIFO message that waits for idle. Sending a queued message now promotes
 that same durable delivery into steering. Voice follows the selected delivery
 mode. IDs, attachments and draft revisions survive reconnect and API restart;

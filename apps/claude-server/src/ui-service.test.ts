@@ -1019,6 +1019,56 @@ describe("Claude UI durable session facade", () => {
     expect(manager.sends.map((delivery) => delivery.prompt)).toEqual(["Later"]);
   });
 
+  it("skips the open questions after delivering a steering message sent instead of an answer", async () => {
+    const { manager, start, reserve, directory } = await fixture();
+    const service = await start("manual"),
+      id = await reserve(service);
+    const owner = snapshot(id, directory, [
+      { requestId: "question", toolName: "AskUserQuestion", input: { questions: [] } },
+      { requestId: "bash", toolName: "Bash", input: { command: "pwd" } },
+    ]);
+    owner.permissionMode = "manual";
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    manager.accepting = true;
+    const order: string[] = [];
+    const steer = manager.steer.bind(manager),
+      command = manager.command.bind(manager);
+    vi.spyOn(manager, "steer").mockImplementation(async (...args) => {
+      order.push("steer");
+      return steer(...args);
+    });
+    vi.spyOn(manager, "command").mockImplementation(async (...args) => {
+      order.push(`command:${args[1]}`);
+      return command(...args);
+    });
+    const queued = await service.enqueue(id, {
+      input: "Later",
+      deliveryMode: "queue",
+      clientMessageId: randomUUID(),
+    });
+    expect(manager.commands).toEqual([]);
+    const clientMessageId = randomUUID();
+    await service.steer(id, {
+      input: "Explain first, then we discuss the questions",
+      clientMessageId,
+    });
+    await expect.poll(() => service.thread(id).deliveries[clientMessageId]?.accepted).toBe(true);
+    expect(order).toEqual(["steer", "command:respond"]);
+    expect(manager.commands).toEqual([
+      {
+        id,
+        method: "respond",
+        params: expect.objectContaining({
+          targetRequestId: "question",
+          response: { behavior: "deny", message: expect.stringContaining("did not answer") },
+        }),
+      },
+    ]);
+    expect(service.attention().map((item) => item.id)).toEqual([`${id}:bash`]);
+    expect(service.thread(id).queue.map((message) => message.id)).toEqual([queued.id]);
+  });
+
   it("keeps acknowledged steering in the timeline before later replies and preserves its send time", async () => {
     const { manager, start, reserve, directory } = await fixture();
     const service = await start(),

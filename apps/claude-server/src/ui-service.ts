@@ -64,6 +64,9 @@ const MAX_PLAN_TEXTS = 20;
 const PLAN_REVIEW_MESSAGE =
   "ClaudeNest is showing this plan to the user for review. End your turn now without further " +
   "tool calls or a summary of the plan. The user will either approve it or reply with changes.";
+const QUESTIONS_SKIPPED_MESSAGE =
+  "The user did not answer these questions and sent a message instead. Read that message and " +
+  "respond to it first; ask a question again only if it is still needed.";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export function commandId(value: string): string {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
@@ -1651,6 +1654,7 @@ export class UiService extends EventEmitter {
           "Unknown delivery outcome; automatic resend is disabled",
           409,
         );
+      if (message.deliveryMode === "steer") await this.skipQuestions(id);
       if (receipt.status === "completed" || message.deliveryMode !== "steer")
         await this.accepted(id, message.id);
       await this.attach(id);
@@ -1685,6 +1689,26 @@ export class UiService extends EventEmitter {
               : "Claude delivery failed",
           receipt?.status !== "unknown" && error instanceof AppError && error.code !== "conflict",
         );
+    }
+  }
+  /**
+   * Claude reads nothing while it waits for an answer. A message sent instead of the answer
+   * closes the open questions; it is already on Claude's input, so it is read right after.
+   */
+  private async skipQuestions(id: string): Promise<void> {
+    const questions =
+      this.owners.get(id)?.pendingRequests.filter((item) => item.toolName === "AskUserQuestion") ??
+      [];
+    for (const request of questions) {
+      try {
+        await this.manager.command(id, "respond", {
+          requestId: commandId(`skip-question:${id}:${request.requestId}`),
+          targetRequestId: request.requestId,
+          response: { behavior: "deny", message: QUESTIONS_SKIPPED_MESSAGE },
+        });
+      } catch {
+        // Answered or cancelled in the meantime; a question that stays open can still be answered.
+      }
     }
   }
   private async accepted(id: string, messageId: string): Promise<void> {
