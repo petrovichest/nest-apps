@@ -590,6 +590,62 @@ describe("the shared Claude interface", () => {
     expect(onInput).toHaveBeenLastCalledWith("/review ");
   });
 
+  it("reads the skill folders again each time the slash menu opens, so a new skill shows up", async () => {
+    const skill = (name: string) => ({
+      name,
+      displayName: name,
+      description: `Run ${name}`,
+      shortDescription: null,
+      path: `/skills/${name}/SKILL.md`,
+      scope: "user" as const,
+      enabled: true,
+    });
+    const listSkills = vi
+      .fn()
+      .mockResolvedValueOnce({ cwd: "/work/project", skills: [skill("review")], errors: [] })
+      .mockResolvedValue({
+        cwd: "/work/project",
+        skills: [skill("review"), skill("added-later")],
+        errors: [],
+      });
+    connection.mockReturnValue({ api: { listSkills } });
+    render(
+      <Composer
+        cwd="/work/project"
+        input=""
+        images={[]}
+        onInput={vi.fn()}
+        onImagesChange={vi.fn()}
+        onSubmit={vi.fn()}
+        busy={false}
+        codexSettings={{ model: "claude-opus-5", reasoningEffort: null }}
+        settings={{ collaborationMode: "default", model: "sonnet" }}
+        onSettingsChange={vi.fn()}
+        models={models}
+        error={null}
+      />,
+    );
+    const textarea = screen.getByRole("textbox");
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "/" } });
+    await screen.findByRole("option", { name: /\/review/ });
+    expect(listSkills.mock.calls).toEqual([["/work/project", false]]);
+    expect(screen.queryByRole("option", { name: /added-later/ })).toBeNull();
+
+    // Typing on inside one opening does not ask again.
+    fireEvent.change(textarea, { target: { value: "/r" } });
+    expect(listSkills).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(textarea, { target: { value: "" } });
+    expect(screen.queryByRole("listbox", { name: "Доступные скиллы" })).toBeNull();
+    fireEvent.change(textarea, { target: { value: "/" } });
+    await screen.findByRole("option", { name: /\/added-later/ });
+    expect(listSkills.mock.calls).toEqual([
+      ["/work/project", false],
+      ["/work/project", true],
+    ]);
+  });
+
   it.each([
     ["active", true, "steer"],
     ["active", false, "queue"],
