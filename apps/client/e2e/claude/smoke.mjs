@@ -210,10 +210,24 @@ try {
   await page.reload();
   await composer.waitFor();
   assert.equal(await composer.inputValue(), "Сохранённый черновик");
+  await composer.fill("/smo");
+  await page.getByRole("option", { name: /\/smoke-skill/ }).waitFor();
+  await composer.press("Enter");
+  assert.equal(await composer.inputValue(), "/smoke-skill ");
+  await composer.fill("Сохранённый черновик");
   await page.getByRole("link", { name: "Настройки", exact: true }).click();
   await page.getByRole("tab", { name: "Claude", exact: true }).waitFor();
   assert.equal(await page.getByRole("tab", { name: "Обслуживание", exact: true }).count(), 1);
-  assert.equal(await page.getByRole("tab", { name: "Скиллы", exact: true }).count(), 0);
+  await page.getByRole("tab", { name: "Скиллы", exact: true }).click();
+  await page.getByText("smoke-skill", { exact: true }).waitFor();
+  const skillToggled = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PUT" &&
+      new URL(response.url()).pathname === "/api/v1/skills/config",
+  );
+  await page.getByRole("switch", { name: "Выключить скилл smoke-skill" }).click();
+  assert.equal((await skillToggled).status(), 200);
+  await page.getByRole("switch", { name: "Включить скилл smoke-skill" }).waitFor();
   await page.getByRole("tab", { name: "Claude", exact: true }).click();
   await page.getByText("smoke@example.com", { exact: true }).waitFor();
   const automaticAccounts = page.getByRole("switch", {
@@ -301,7 +315,7 @@ try {
   assert.deepEqual(errors, [], "No uncaught browser errors");
   assert.equal(
     fixture.requests.some((request) =>
-      /settings\/codex|rate-limits|\/skills|\/goal|git-changes|artifacts/.test(request.url),
+      /settings\/codex|rate-limits|\/goal|git-changes|artifacts/.test(request.url),
     ),
     false,
     "No unsupported Codex API requests",

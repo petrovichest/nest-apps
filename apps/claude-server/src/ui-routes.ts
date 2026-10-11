@@ -23,6 +23,7 @@ import { AppError, record, type ClaudePermissionMode } from "./types";
 import { readGitChanges } from "./git-changes";
 import { transcriptPaths } from "./history";
 import { transcriptMatch, turnOccurrences } from "./search";
+import { listClaudeSkills, setClaudeSkillEnabled } from "./skills";
 import { ClaudeVoiceService } from "./voice";
 import { UiVoiceJobs } from "./ui-voice";
 
@@ -39,6 +40,16 @@ function string(value: unknown, name: string, limit = 200_000): string {
   if (typeof value !== "string" || !value.trim() || value.length > limit)
     throw new AppError("invalid_request", `${name} must be nonempty text`);
   return value;
+}
+/** Skills are read only for a configured project or the folder of a visible session. */
+function skillsCwd(ui: UiService, value: unknown): string {
+  if (typeof value !== "string" || !value) throw new AppError("invalid_request", "cwd is required");
+  if (
+    ui.store.data.projects.some((project) => project.path === value) ||
+    Object.values(ui.store.data.threads).some((thread) => thread.cwd === value)
+  )
+    return value;
+  throw new AppError("forbidden", "cwd is not a configured project or visible session path", 403);
 }
 /** Reports extension failures through the shared HTTP error shape. */
 async function browserOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -233,6 +244,33 @@ export async function registerUiRoutes(
       turn = (await ui.detail(p.id)).turns.find((candidate) => candidate.id === p.turnId);
     if (!turn) throw new AppError("conflict", "Search result changed; search again", 409);
     return { instanceId: ui.instanceId, turn };
+  });
+  app.get("/api/v1/skills", async (request) => {
+    const input = query(request);
+    if (Object.keys(input).some((key) => !["cwd", "forceReload"].includes(key)))
+      throw new AppError("invalid_request", "Unknown skills query field");
+    if (![undefined, "true", "false"].includes(input.forceReload))
+      throw new AppError("invalid_request", "forceReload must be true or false");
+    // The folders are read on every request, so a new skill shows up without a reload flag.
+    return listClaudeSkills(ui.manager.config.configDir, skillsCwd(ui, input.cwd));
+  });
+  app.put("/api/v1/skills/config", async (request) => {
+    const body = record(request.body);
+    if (Object.keys(body).some((key) => !["cwd", "path", "enabled"].includes(key)))
+      throw new AppError("invalid_request", "Unknown skill config field");
+    if (typeof body.path !== "string" || !body.path)
+      throw new AppError("invalid_request", "path is required");
+    if (typeof body.enabled !== "boolean")
+      throw new AppError("invalid_request", "enabled must be boolean");
+    const cwd = skillsCwd(ui, body.cwd),
+      { configDir } = ui.manager.config,
+      find = async () =>
+        (await listClaudeSkills(configDir, cwd)).skills.find((item) => item.path === body.path);
+    const skill = await find();
+    if (!skill) throw new AppError("not_found", "Skill not found", 404);
+    await setClaudeSkillEnabled(configDir, skill.name, body.enabled);
+    ui.publish({ type: "skills.changed" });
+    return { path: body.path, enabled: (await find())?.enabled ?? body.enabled };
   });
   app.get("/api/v1/settings/permissions", async () => ui.permissionSettings());
   app.put("/api/v1/settings/permissions", async (request) => {

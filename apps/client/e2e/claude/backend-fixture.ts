@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { appendFileSync, mkdirSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -194,6 +194,12 @@ export async function startFixture(clientDist: string) {
   const directory = await mkdtemp(join(tmpdir(), "claudenest-browser-"));
   const projectPath = join(directory, "Browser smoke project");
   await mkdir(projectPath);
+  const skillFolder = join(directory, "native", "skills", "smoke-skill");
+  await mkdir(skillFolder, { recursive: true });
+  await writeFile(
+    join(skillFolder, "SKILL.md"),
+    "---\nname: smoke-skill\ndescription: Isolated smoke skill\n---\nBody\n",
+  );
   const stt = createServer((_request, response) => {
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify({ text: "Голосовая проверка работает" }));

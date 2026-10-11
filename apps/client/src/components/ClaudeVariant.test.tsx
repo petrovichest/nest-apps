@@ -410,7 +410,7 @@ describe("the shared Claude interface", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Claude" }));
     expect(screen.queryByRole("switch", { name: /Fast mode/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Приложение" }));
-    expect(screen.queryByRole("tab", { name: "Скиллы" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Скиллы" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Обслуживание" })).toBeInTheDocument();
     const provider = screen.getByLabelText("Провайдер распознавания речи");
     expect(within(provider).queryByRole("option", { name: "OpenAI API" })).not.toBeInTheDocument();
@@ -537,6 +537,57 @@ describe("the shared Claude interface", () => {
     expect(onStop).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Добавить в очередь" })).toBeEnabled();
     expect(screen.getByText("Сообщение будет добавлено в очередь")).toBeInTheDocument();
+  });
+
+  it("opens the skill menu only for a slash at the start of the message and inserts /name", async () => {
+    const skill = (name: string, enabled: boolean) => ({
+      name,
+      displayName: name,
+      description: `Run ${name}`,
+      shortDescription: null,
+      path: `/skills/${name}/SKILL.md`,
+      scope: "user" as const,
+      enabled,
+    });
+    const listSkills = vi.fn().mockResolvedValue({
+      cwd: "/work/project",
+      skills: [skill("review", true), skill("review-off", false)],
+      errors: [],
+    });
+    connection.mockReturnValue({ api: { listSkills } });
+    const onInput = vi.fn();
+    render(
+      <Composer
+        cwd="/work/project"
+        input=""
+        images={[]}
+        onInput={onInput}
+        onImagesChange={vi.fn()}
+        onSubmit={vi.fn()}
+        busy={false}
+        codexSettings={{ model: "claude-opus-5", reasoningEffort: null }}
+        settings={{ collaborationMode: "default", model: "sonnet" }}
+        onSettingsChange={vi.fn()}
+        models={models}
+        error={null}
+      />,
+    );
+    const textarea = screen.getByRole("textbox");
+    fireEvent.focus(textarea);
+    // Codex's dollar syntax and a slash in the middle of a message do not run a Claude skill.
+    for (const value of ["$rev", "Сначала /rev"]) fireEvent.change(textarea, { target: { value } });
+    expect(screen.queryByRole("listbox", { name: "Доступные скиллы" })).toBeNull();
+    expect(listSkills).not.toHaveBeenCalled();
+
+    fireEvent.change(textarea, { target: { value: "/rev" } });
+    const list = await screen.findByRole("listbox", { name: "Доступные скиллы" });
+    expect(listSkills).toHaveBeenCalledWith("/work/project", false);
+    expect(within(list).getAllByRole("option")).toHaveLength(1);
+    expect(within(list).getByRole("option")).toHaveTextContent("/review");
+
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(textarea).toHaveValue("/review "));
+    expect(onInput).toHaveBeenLastCalledWith("/review ");
   });
 
   it.each([

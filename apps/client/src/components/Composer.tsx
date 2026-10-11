@@ -494,6 +494,14 @@ export function Composer({
   const skillMenuOpen =
     Boolean(cwd && activeSkillToken) && activeSkillTokenKey !== skillDismissedToken;
   const skills = useSkillsCatalog(cwd, skillsEpoch, Boolean(cwd && requestedSkillsCwd === cwd));
+  // Claude has no watcher for the skill folders: read them again each time the menu opens.
+  const skillMenuWasOpen = useRef(false);
+  const { catalog: skillCatalog, refresh: refreshSkills } = skills;
+  useEffect(() => {
+    const opened = skillMenuOpen && !skillMenuWasOpen.current;
+    skillMenuWasOpen.current = skillMenuOpen;
+    if (opened && application.isClaude && skillCatalog) refreshSkills();
+  }, [refreshSkills, skillCatalog, skillMenuOpen]);
   const matchingSkills = useMemo(
     () => filterSkills(skills.catalog?.skills ?? [], activeSkillToken?.query ?? "", language),
     [activeSkillToken?.query, language, skills.catalog?.skills],
@@ -2019,7 +2027,10 @@ function SkillAutocomplete({
             onClick={() => onSelect(skill)}
           >
             <span>
-              <strong>${skill.name}</strong>
+              <strong>
+                {application.skillPrefix}
+                {skill.name}
+              </strong>
               {skill.displayName !== skill.name && <small>{skill.displayName}</small>}
             </span>
             <p>{skill.shortDescription || skill.description}</p>
@@ -2042,11 +2053,12 @@ function SkillAutocomplete({
 
 function skillTokenAt(value: string, caret: number | null): SkillToken | null {
   if (caret === null || caret < 0 || caret > value.length) return null;
+  const prefix = application.skillPrefix;
   let start = caret;
   while (start > 0 && isSkillNameCharacter(value[start - 1]!)) start -= 1;
-  if (start > 0 && value[start - 1] === "$") start -= 1;
-  if (value[start] !== "$") return null;
-  if (start > 0 && !/\s/u.test(value[start - 1]!)) return null;
+  if (start > 0 && value[start - 1] === prefix) start -= 1;
+  if (value[start] !== prefix) return null;
+  if (start > 0 && (application.isClaude || !/\s/u.test(value[start - 1]!))) return null;
   const query = value.slice(start + 1, caret);
   if ([...query].some((character) => !isSkillNameCharacter(character))) return null;
   let end = caret;
@@ -2067,7 +2079,7 @@ function replaceSkillToken(
   token: SkillToken,
   name: string,
 ): { value: string; caret: number } {
-  const marker = `$${name}`;
+  const marker = `${application.skillPrefix}${name}`;
   const trailingSpace = token.end === value.length ? " " : "";
   const next = `${value.slice(0, token.start)}${marker}${trailingSpace}${value.slice(token.end)}`;
   return { value: next, caret: token.start + marker.length + trailingSpace.length };

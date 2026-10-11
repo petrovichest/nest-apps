@@ -7,6 +7,7 @@ import type {
   Project,
   QueuedMessage,
   ServerFrame,
+  SkillsCatalogResponse,
   ThreadDetail,
   ThreadDraft,
   ThreadFileAttachment,
@@ -404,6 +405,90 @@ describe("Claude browser UI HTTP and global stream", () => {
       headers: state.headers,
     });
     expect(dirty.json()).toMatchObject({ state: "dirty", deletions: 0 });
+  });
+
+  it("lists the skills of a known project and switches one off through Claude's own setting", async () => {
+    const state = await fixture();
+    const { project, id } = await state.reserve();
+    const folder = join(state.config.configDir, "skills", "grilling");
+    const path = join(folder, "SKILL.md");
+    await mkdir(folder, { recursive: true });
+    await writeFile(path, "---\nname: grilling\ndescription: Grill the user\n---\nBody\n");
+    const settings = join(state.config.configDir, "settings.json");
+    await writeFile(settings, JSON.stringify({ env: { KEEP: "me" } }, null, 2) + "\n");
+    const frames: ServerFrame[] = [];
+    state.ui.on("frame", (frame: ServerFrame) => frames.push(frame));
+    const list = (cwd: string, extra = "") =>
+      state.app.inject({
+        method: "GET",
+        url: `/api/v1/skills?cwd=${encodeURIComponent(cwd)}${extra}`,
+        headers: state.headers,
+      });
+    const put = (payload: Record<string, unknown>) =>
+      state.app.inject({
+        method: "PUT",
+        url: "/api/v1/skills/config",
+        headers: state.headers,
+        payload,
+      });
+
+    expect(state.ui.snapshot().capabilities.skills).toBe(true);
+    const listed = await list(project.path, "&forceReload=true");
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json<SkillsCatalogResponse>()).toEqual({
+      cwd: project.path,
+      skills: [
+        {
+          name: "grilling",
+          displayName: "grilling",
+          description: "Grill the user",
+          shortDescription: null,
+          path,
+          scope: "user",
+          enabled: true,
+        },
+      ],
+      errors: [],
+    });
+    // A visible session's folder is accepted too, even when it is not a configured project.
+    const sessionCwd = join(state.directory, "session-only");
+    await state.ui.store.update((data) => {
+      data.threads[id]!.cwd = sessionCwd;
+    });
+    expect((await list(sessionCwd)).statusCode).toBe(200);
+
+    const off = await put({ cwd: project.path, path, enabled: false });
+    expect(off.json()).toEqual({ path, enabled: false });
+    expect(JSON.parse(await readFile(settings, "utf8"))).toEqual({
+      env: { KEEP: "me" },
+      skillOverrides: { grilling: "off" },
+    });
+    expect(frames.filter((frame) => frame.type === "event")).toMatchObject([
+      { event: { type: "skills.changed" } },
+    ]);
+    expect((await list(project.path)).json<SkillsCatalogResponse>().skills[0]?.enabled).toBe(false);
+
+    const on = await put({ cwd: project.path, path, enabled: true });
+    expect(on.json()).toEqual({ path, enabled: true });
+    expect(JSON.parse(await readFile(settings, "utf8"))).toEqual({ env: { KEEP: "me" } });
+
+    for (const [response, status] of [
+      [await list("/not/a/project"), 403],
+      [
+        await state.app.inject({ method: "GET", url: "/api/v1/skills", headers: state.headers }),
+        400,
+      ],
+      [await list(project.path, "&other=1"), 400],
+      [await list(project.path, "&forceReload=maybe"), 400],
+      [await put({ cwd: "/not/a/project", path, enabled: false }), 403],
+      [await put({ cwd: project.path, path: join(folder, "OTHER.md"), enabled: false }), 404],
+      [await put({ cwd: project.path, path, enabled: "yes" }), 400],
+      [await put({ cwd: project.path, path, enabled: false, extra: 1 }), 400],
+    ] as const)
+      expect(response.statusCode).toBe(status);
+    expect(frames.filter((frame) => frame.type === "event")).toHaveLength(2);
+    const unauthorized = await state.app.inject({ method: "GET", url: "/api/v1/skills" });
+    expect(unauthorized.statusCode).toBe(401);
   });
 
   it("searches native message history, lists occurrences, and loads a found turn", async () => {

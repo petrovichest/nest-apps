@@ -550,7 +550,7 @@ export class UiService extends EventEmitter {
         browserIntegration: Boolean(this.browserStatus),
         fullTextSearch: true,
         sessionApprovalGrants: true,
-        skills: false,
+        skills: true,
         gitChanges: true,
         artifacts: false,
         appUpdates: true,

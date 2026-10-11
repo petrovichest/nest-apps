@@ -9,6 +9,8 @@ export const application = {
   agentName: isClaude ? "Claude" : "Codex",
   storagePrefix: isClaude ? "claudenest" : "codexnest",
   eventsPath: isClaude ? "/api/v1/ui/events" : "/api/v1/events",
+  /** Codex takes `$name` anywhere in a message; Claude runs `/name` only at the very start. */
+  skillPrefix: isClaude ? "/" : "$",
   capabilities: {
     codexManagement: !isClaude,
     rateLimits: true,
@@ -19,7 +21,7 @@ export const application = {
     browserIntegration: true,
     fullTextSearch: true,
     sessionApprovalGrants: true,
-    skills: !isClaude,
+    skills: true,
     gitChanges: true,
     artifacts: !isClaude,
     appUpdates: true,

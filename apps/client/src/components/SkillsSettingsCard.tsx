@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Project, SkillCatalogItem } from "@codexnest/protocol";
 
+import { application } from "../application";
 import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n } from "../i18n";
 import { useSkillsCatalog } from "../useSkillsCatalog";
@@ -185,7 +186,10 @@ export function SkillsSettingsCard({
               <div className="skills-settings-copy">
                 <div>
                   <strong>{skill.displayName || skill.name}</strong>
-                  <code>${skill.name}</code>
+                  <code>
+                    {application.skillPrefix}
+                    {skill.name}
+                  </code>
                 </div>
                 <p>{skill.shortDescription || skill.description || t("Описание не указано")}</p>
                 <small>{skillScopeLabel(skill.scope, t)}</small>
