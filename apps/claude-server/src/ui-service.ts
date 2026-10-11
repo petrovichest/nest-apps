@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import { Readable } from "node:stream";
 import type { TitleGenerator } from "./title";
 import {
+  copyPastedMessage,
   pastedText,
   serializePastedMessage,
   trimPastedMessage,
@@ -1270,6 +1271,7 @@ export class UiService extends EventEmitter {
     }
     if (body.files?.length) await this.attachments.validate(id, body.files);
     const imageFiles: ThreadFileAttachment[] = [];
+    const titleSource = text.trim() ? text : copyPastedMessage(text, body);
     let provisionalTitle = "",
       fresh = false,
       durable = false;
@@ -1337,8 +1339,8 @@ export class UiService extends EventEmitter {
           ...(imageFiles.length ? { imageFiles } : {}),
         };
         if (current.title === "Новая сессия") {
-          current.title = text.replace(/\s+/g, " ").slice(0, 100) || "Вложения";
-          if (text.trim()) provisionalTitle = current.title;
+          current.title = titleSource.replace(/\s+/g, " ").trim().slice(0, 100) || "Вложения";
+          if (titleSource.trim()) provisionalTitle = current.title;
         }
         current.updatedAt = Date.now();
         const sentDraft = current.draft,
@@ -1378,7 +1380,7 @@ export class UiService extends EventEmitter {
           await this.applyPermissions(id);
         }
         this.publish({ type: "thread.upserted", thread: this.summary(id) });
-        if (provisionalTitle) void this.refineTitle(id, provisionalTitle, text);
+        if (provisionalTitle) void this.refineTitle(id, provisionalTitle, titleSource);
       }
       this.publishQueue(id);
       this.schedule(id);

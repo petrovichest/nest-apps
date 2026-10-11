@@ -374,6 +374,40 @@ describe("Claude UI durable session facade", () => {
     expect(generate).toHaveBeenCalledWith("Fix titles", "sonnet");
     await service.close();
   });
+  it("titles a session by its pasted text when the first message has no typed text", async () => {
+    const { manager, reserve } = await fixture();
+    let finish!: (title: string) => void;
+    const generate = vi.fn(() => new Promise<string>((resolve) => (finish = resolve)));
+    const service = new UiService(manager as unknown as SessionManager, generate);
+    await service.initialize({ probeModels: false });
+    const id = await reserve(service);
+    const pasted = "\n\nI want to check one idea.\n  Analyze   the deals.";
+    await service.enqueue(id, {
+      clientMessageId: randomUUID(),
+      input: "",
+      pasteBlocks: [{ id: "paste", text: pasted }],
+    });
+    expect(service.summary(id).title).toBe("I want to check one idea. Analyze the deals.");
+    expect(generate).toHaveBeenCalledWith(pasted, undefined);
+    finish("Idea analysis");
+    await expect.poll(() => service.summary(id).title).toBe("Idea analysis");
+    await service.close();
+  });
+  it("keeps the generic title for a first message with attachments but no text", async () => {
+    const { manager, reserve } = await fixture();
+    const generate = vi.fn(async () => "Unused");
+    const service = new UiService(manager as unknown as SessionManager, generate);
+    await service.initialize({ probeModels: false });
+    const id = await reserve(service);
+    await service.enqueue(id, {
+      clientMessageId: randomUUID(),
+      input: "",
+      images: ["data:image/png;base64,aW1hZ2U="],
+    });
+    expect(service.summary(id).title).toBe("Вложения");
+    expect(generate).not.toHaveBeenCalled();
+    await service.close();
+  });
   it("applies the default reasoning effort to new sessions when the model supports it", async () => {
     const { manager, reserve } = await fixture();
     const service = new UiService(manager as unknown as SessionManager);
