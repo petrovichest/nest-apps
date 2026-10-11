@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { typedCommand } from "./command-prompt.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type JsonObject = Record<string, unknown>;
@@ -100,13 +101,15 @@ async function readTranscript(file: Transcript): Promise<SessionHistory & { titl
         object(entry.message)
       ) {
         const content = entry.message.content;
-        if (typeof content === "string") firstUser = content;
+        if (typeof content === "string") firstUser = typedCommand(content);
         else if (Array.isArray(content)) {
-          firstUser = content
-            .filter(object)
-            .filter((part) => part.type === "text" && typeof part.text === "string")
-            .map((part) => part.text)
-            .join(" ");
+          firstUser = typedCommand(
+            content
+              .filter(object)
+              .filter((part) => part.type === "text" && typeof part.text === "string")
+              .map((part) => part.text)
+              .join(" "),
+          );
         }
       }
     }

@@ -8,6 +8,7 @@ import {
   type TurnPlanStep,
   type TurnView,
 } from "@codexnest/protocol";
+import { typedCommand } from "./command-prompt.js";
 import { nativeResultInterrupted, subagentThreadId } from "./types.js";
 
 type Json = Record<string, unknown>;
@@ -55,7 +56,7 @@ function userContent(content: unknown): {
   images: string[];
   files: Array<{ name: string; path: string }>;
 } {
-  let text = textContent(content);
+  let text = typedCommand(textContent(content));
   const files: Array<{ name: string; path: string }> = [];
   for (const marker of ["claudenest_attachments", "codexnest_attachments"]) {
     const start = text.lastIndexOf(`<${marker}>`);

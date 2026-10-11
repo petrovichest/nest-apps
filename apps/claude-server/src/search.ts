@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import type { ThreadSearchOccurrence, TurnView } from "@codexnest/protocol";
+import { typedCommand } from "./command-prompt.js";
 
 type Json = Record<string, unknown>;
 const BEFORE = 60;
@@ -45,7 +46,9 @@ function messageText(entry: Json): string {
             .map((part) => part.text as string)
             .join("\n")
         : "";
-  return text.replace(/<claudenest_attachments>[\s\S]*?<\/claudenest_attachments>/g, "").trim();
+  return typedCommand(text)
+    .replace(/<claudenest_attachments>[\s\S]*?<\/claudenest_attachments>/g, "")
+    .trim();
 }
 
 /** Scans one native transcript and returns the first message matching the search text. */

@@ -130,6 +130,55 @@ describe("native Claude view", () => {
       phase: "final_answer",
     });
   });
+  it("shows a typed slash command as typed, not as Claude Code's tag record, and hides the skill body", () => {
+    const topic = "первая строка\n1. пункт";
+    const record = `<command-message>grilling</command-message>\n<command-name>/grilling</command-name>\n<command-args>${topic}</command-args>`;
+    const view = normalizeNativeEvents(
+      [
+        { ...user, uuid: "command-1", message: { role: "user", content: record } },
+        {
+          type: "user",
+          uuid: "skill-body",
+          isMeta: true,
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "Base directory for this skill: /x\n\nInterview" }],
+          },
+        },
+        assistant,
+      ],
+      { sessionId: "session", cwd: "/project" },
+    );
+    expect(view.turns).toHaveLength(1);
+    expect(view.turns[0]!.items.map((item) => item.id)).toEqual(["command-1", "message-1:0"]);
+    expect(view.turns[0]!.items[0]).toMatchObject({
+      type: "userMessage",
+      text: `/grilling ${topic}`,
+    });
+    expect(JSON.stringify(view.turns)).not.toContain("Base directory");
+  });
+  it("keeps the exact text the user typed when Claude Code echoes a slash command as a tag record", () => {
+    const view = new NativeView("session", "/project");
+    view.recordUserMessage({
+      id: "command-1",
+      threadId: "session",
+      text: "/grilling тема",
+      createdAt: 10,
+      status: "dispatching",
+      deliveryMode: "queue",
+    });
+    view.apply({
+      ...user,
+      uuid: "command-1",
+      timestamp: 20,
+      message: {
+        content:
+          "<command-message>grilling</command-message>\n<command-name>/grilling</command-name>\n<command-args>тема</command-args>",
+      },
+    });
+    expect(view.turns()).toHaveLength(1);
+    expect(view.turns()[0]!.items[0]).toMatchObject({ id: "command-1", text: "/grilling тема" });
+  });
   it("projects ExitPlanMode as a completed plan from its plan file even after ClaudeNest declines it", () => {
     const planTool = (id: string, file: string, content: string) => [
       {

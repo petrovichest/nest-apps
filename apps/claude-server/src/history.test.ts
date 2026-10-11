@@ -129,6 +129,13 @@ describe("native Claude history", () => {
     expect(await readFile(path, "utf8")).toBe(original);
   });
 
+  it("titles a session by the slash command as typed, not by Claude Code's tag record", async () => {
+    const record =
+      "<command-message>grilling</command-message>\n<command-name>/grilling</command-name>\n<command-args>проверить идею</command-args>";
+    await writeFile(join(project, `${FIRST}.jsonl`), lines(nativeUser(FIRST, record)));
+    expect((await listHistory(configDir))[0]?.title).toBe("/grilling проверить идею");
+  });
+
   it("returns empty history lists for a fresh installation and rejects traversal/non-UUID IDs", async () => {
     expect(await listHistory(join(configDir, "absent"))).toEqual([]);
     await expect(readHistory(configDir, "../projects")).rejects.toThrow(
