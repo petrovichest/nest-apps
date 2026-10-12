@@ -727,6 +727,66 @@ describe("browser extension transport", () => {
     await harness.close();
   });
 
+  it("drops a capture it cannot store without answering, so the extension stays connected", async () => {
+    const harness = await createHarness();
+    await harness.store.update((state) => {
+      state.threadMeta.thread = {
+        pinned: false,
+        lastReadUpdatedAt: 0,
+        browserEnabled: true,
+        browserBinding: {
+          bindingId: "binding-v2",
+          instanceId: "extension-instance-1",
+          attachedAt: Date.now(),
+        },
+      };
+    });
+    const extension = await connect(
+      harness.app,
+      "extension-instance-1",
+      [bindingSummary("thread")],
+      2,
+    );
+    await extension.nextType("server.hello");
+    const received: string[] = [];
+    extension.socket.on("message", (data) =>
+      received.push((JSON.parse(data.toString()) as { type: string }).type),
+    );
+
+    // Tab 2 is not part of the binding, like a capture still in flight when its tab was detached.
+    // The extension never waits for an answer, so the chunk and the commit follow the start.
+    const metadata = { byteLength: 2, sha256: "0".repeat(64) };
+    for (const frame of [
+      {
+        type: "network.capture.start",
+        threadId: "thread",
+        tabId: 2,
+        exchangeId: "stale-exchange",
+        provider: "chrome",
+        parts: { metadata },
+      },
+      { type: "network.capture.chunk", part: "metadata", offset: 0, data: "e30=" },
+      { type: "network.capture.commit" },
+    ]) {
+      extension.socket.send(JSON.stringify({ captureId: "stale-capture", ...frame }));
+    }
+    extension.socket.send(JSON.stringify({ type: "client.ping", at: 1 }));
+    await extension.nextType("server.pong");
+    // Listing waits in the capture store's queue behind the chunk and the commit.
+    const listed = await harness.mcp("binding-v2", {
+      jsonrpc: "2.0",
+      id: 20,
+      method: "tools/call",
+      params: { name: "read_network_requests", arguments: { limit: 10 } },
+    });
+    expect(listed.statusCode).toBe(200);
+
+    // The extension closes its connection on any protocol.error.
+    expect(received).not.toContain("protocol.error");
+    extension.socket.close();
+    await harness.close();
+  });
+
   it("keeps v1 Chrome network fallback and reports update-required for v2-only tools", async () => {
     const harness = await createHarness();
     await harness.store.update((state) => {

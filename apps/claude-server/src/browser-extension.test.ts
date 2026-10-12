@@ -25,6 +25,12 @@ const TOKEN = "private-test-token-with-at-least-32-characters";
 // Session owners outlive the server, so the secret derives from the owner token alone.
 const SECRET = createHmac("sha256", TOKEN).update("claudenest-browser-mcp").digest("base64url");
 type SessionLaunch = Parameters<SessionManager["setBrowserLaunch"]>[0];
+const listNetworkRequests = {
+  jsonrpc: "2.0",
+  id: 1,
+  method: "tools/call",
+  params: { name: "read_network_requests", arguments: {} },
+};
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
@@ -288,6 +294,47 @@ describe("ClaudeNest browser extension transport", () => {
     expect((await lost).json()).toMatchObject({
       result: { isError: true, content: [{ text: expect.stringContaining("outcome unknown") }] },
     });
+  });
+
+  it("drops a capture it cannot store without answering, so the extension stays connected", async () => {
+    const harness = await createHarness();
+    const { thread } = await harness.thread();
+    const extension = await harness.attach(thread, "instance-1");
+    extension.socket.send(
+      JSON.stringify({ type: "binding.updated", binding: bindingSummary(thread) }),
+    );
+    await vi.waitFor(() => expect(harness.ui.summary(thread).browserStatus).toBe("connected"));
+    const bindingId = harness.stored(thread).browserBinding!.bindingId;
+    const received: string[] = [];
+    extension.socket.on("message", (data) =>
+      received.push((JSON.parse(data.toString()) as { type: string }).type),
+    );
+
+    // Tab 2 is not part of the binding, like a capture still in flight when its tab was detached.
+    // The extension never waits for an answer, so the chunk and the commit follow the start.
+    const metadata = { byteLength: 2, sha256: "0".repeat(64) };
+    for (const frame of [
+      {
+        type: "network.capture.start",
+        threadId: thread,
+        tabId: 2,
+        exchangeId: "stale-exchange",
+        provider: "chrome",
+        parts: { metadata },
+      },
+      { type: "network.capture.chunk", part: "metadata", offset: 0, data: "e30=" },
+      { type: "network.capture.commit" },
+    ]) {
+      extension.socket.send(JSON.stringify({ captureId: "stale-capture", ...frame }));
+    }
+    extension.socket.send(JSON.stringify({ type: "client.ping", at: 1 }));
+    await extension.nextType("server.pong");
+    // Listing waits in the capture store's queue behind the chunk and the commit.
+    expect((await harness.mcp(bindingId, listNetworkRequests)).statusCode).toBe(200);
+
+    // The extension closes its connection on any protocol.error.
+    expect(received).not.toContain("protocol.error");
+    extension.socket.close();
   });
 
   it("fails an undispatched call after the reconnect window", async () => {

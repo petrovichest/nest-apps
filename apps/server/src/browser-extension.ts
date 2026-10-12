@@ -579,7 +579,7 @@ export class BrowserExtensionServer {
         connection.socket,
       );
     } catch (error) {
-      this.sendProtocolError(connection.socket, "network_capture_rejected", error);
+      this.rejectNetworkCapture(error);
     }
   }
 
@@ -597,7 +597,7 @@ export class BrowserExtensionServer {
       );
     } catch (error) {
       await this.captures.abortStream(frame.captureId, connection.socket).catch(() => undefined);
-      this.sendProtocolError(connection.socket, "network_capture_rejected", error);
+      this.rejectNetworkCapture(error);
     }
   }
 
@@ -608,7 +608,7 @@ export class BrowserExtensionServer {
     try {
       await this.captures.commitStream(frame.captureId, connection.socket);
     } catch (error) {
-      this.sendProtocolError(connection.socket, "network_capture_rejected", error);
+      this.rejectNetworkCapture(error);
     }
   }
 
@@ -619,12 +619,17 @@ export class BrowserExtensionServer {
     try {
       await this.captures.abortStream(frame.captureId, connection.socket);
     } catch (error) {
-      this.sendProtocolError(connection.socket, "network_capture_rejected", error);
+      this.rejectNetworkCapture(error);
     }
   }
 
-  private sendProtocolError(socket: WebSocket, code: string, error: unknown): void {
-    this.send(socket, { type: "protocol.error", code, message: safePublicMessage(error) });
+  /**
+   * The extension streams a capture without waiting for an answer and closes its connection on any
+   * protocol.error, so a capture that cannot be stored (for instance one still in flight when its
+   * tab was detached) is dropped without a reply.
+   */
+  private rejectNetworkCapture(error: unknown): void {
+    this.app.log.warn({ err: error }, "Browser network capture rejected");
   }
 
   private async handleSessionRequest(
