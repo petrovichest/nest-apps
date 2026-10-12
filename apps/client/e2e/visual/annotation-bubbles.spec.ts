@@ -647,6 +647,109 @@ test.describe("selection made with touch handles", () => {
   });
 });
 
+test.describe("selection made with the mouse", () => {
+  const editorName = { name: "Комментарий к выделенному тексту" };
+
+  // One line of a paragraph: both ends of its text and the gutters on either side of the column.
+  async function line(paragraph: Locator) {
+    return paragraph.evaluate((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const rects = Array.from(range.getClientRects());
+      const column = element.closest(".message-markdown")!.getBoundingClientRect();
+      return {
+        text: element.textContent!,
+        lines: rects.length,
+        startX: rects[0]!.left + 1,
+        endX: rects[0]!.right - 1,
+        y: rects[0]!.top + rects[0]!.height / 2,
+        gutterLeft: column.left - 40,
+        gutterRight: column.right + 40,
+      };
+    });
+  }
+
+  async function drag(page: Page, from: { x: number; y: number }, to: { x: number; y: number }) {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 10 });
+    await page.mouse.up();
+  }
+
+  // A browser reports a double or triple click as one press and release per click, counting up.
+  async function clicks(page: Page, at: { x: number; y: number }, count: number) {
+    await page.mouse.move(at.x, at.y);
+    for (let clickCount = 1; clickCount <= count; clickCount += 1) {
+      await page.mouse.down({ clickCount });
+      await page.mouse.up({ clickCount });
+    }
+  }
+
+  async function savedQuote(page: Page) {
+    const editor = page.getByRole("textbox", editorName);
+    await expect(editor).toBeFocused();
+    await editor.fill("Замечание");
+    await editor.press("Enter");
+    await expect(editor).toHaveCount(0);
+    const quotes = page.locator(".composer .annotation-bubble-quote");
+    await expect(quotes).toHaveCount(1);
+    return (await quotes.textContent())!.replace(/^«|»$/g, "");
+  }
+
+  for (const direction of ["backwards", "forwards"] as const) {
+    test(`a drag ${direction} released beside the text selects the whole line`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await openAnnotations(page, "light", 0, "none");
+      await settleComposerLayout(page);
+      const geometry = await line(await visibleMessageAnchor(page, 2));
+      expect(geometry.lines).toBe(1);
+
+      // Backwards the mouse runs past the first letter, out of the message text.
+      await drag(
+        page,
+        { x: direction === "backwards" ? geometry.endX : geometry.startX, y: geometry.y },
+        {
+          x: direction === "backwards" ? geometry.gutterLeft : geometry.gutterRight,
+          y: geometry.y,
+        },
+      );
+
+      expect(await savedQuote(page)).toBe(geometry.text);
+    });
+  }
+
+  test("a double click selects a word and a triple click on the last paragraph its whole text", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openAnnotations(page, "light", 0, "none");
+    await settleComposerLayout(page);
+    const word = await (
+      await visibleMessageAnchor(page, 2)
+    ).evaluate((element) => {
+      const range = document.createRange();
+      range.setStart(element.firstChild!, 2);
+      range.setEnd(element.firstChild!, 3);
+      const rect = range.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    });
+    await clicks(page, word, 2);
+    const editor = page.getByRole("textbox", editorName);
+    await expect(editor).toBeFocused();
+    await editor.press("Escape");
+    await expect(editor).toHaveCount(0);
+
+    // The selection of the last paragraph reaches into the message footer after it.
+    const last = page.locator(".message-markdown p").last();
+    const bounds = (await last.boundingBox())!;
+    await clicks(page, { x: bounds.x + 20, y: bounds.y + bounds.height / 2 }, 3);
+
+    expect(await savedQuote(page)).toBe(await last.evaluate((element) => element.textContent));
+  });
+});
+
 for (const theme of ["light", "dark"] as const) {
   for (const width of [320, 390, 1440]) {
     test(`annotation bubbles at ${width}px in ${theme}: navigation, deletion and layout`, async ({

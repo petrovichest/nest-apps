@@ -1825,6 +1825,131 @@ describe("Activity", () => {
     expect(screen.queryByRole("button", { name: "Аннотация" })).toBeNull();
   });
 
+  it("opens the editor when a mouse selection is released outside the message text", async () => {
+    render(
+      <Activity
+        item={{
+          type: "agentMessage",
+          id: "agent",
+          status: "completed",
+          text: "Выделение назад",
+          images: [],
+          timestamp: 1,
+          phase: "final_answer",
+        }}
+        annotationEnabled
+      />,
+    );
+
+    const text = screen.getByText("Выделение назад");
+    fireEvent.pointerDown(text, { pointerType: "mouse" });
+    selectText(text, 0, 9);
+    // Dragging backwards ends past the first letter, over whatever lies there.
+    fireEvent.pointerUp(document.body, { pointerType: "mouse" });
+
+    expect(
+      await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" }),
+    ).toBeInTheDocument();
+  });
+
+  it("ignores a release outside the message text that did not start in it", async () => {
+    render(
+      <Activity
+        item={{
+          type: "agentMessage",
+          id: "agent",
+          status: "completed",
+          text: "Чужое выделение",
+          images: [],
+          timestamp: 1,
+          phase: "final_answer",
+        }}
+        annotationEnabled
+      />,
+    );
+
+    selectText(screen.getByText("Чужое выделение"), 0, 5);
+    fireEvent.pointerDown(document.body, { pointerType: "mouse" });
+    fireEvent.pointerUp(document.body, { pointerType: "mouse" });
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 150)));
+
+    expect(screen.queryByRole("textbox", { name: "Комментарий к выделенному тексту" })).toBeNull();
+  });
+
+  it("annotates the part of a selection that runs past the end of the message", async () => {
+    const onCreate = vi.fn().mockReturnValue(true);
+    render(
+      <Activity
+        item={{
+          type: "agentMessage",
+          id: "agent",
+          status: "completed",
+          text: "Последний абзац",
+          images: [],
+          timestamp: 1,
+          phase: "final_answer",
+        }}
+        annotationEnabled
+        onCreateAnnotation={onCreate}
+      />,
+    );
+
+    // A triple click on the last paragraph also takes the start of whatever follows it.
+    const text = screen.getByText("Последний абзац");
+    const range = document.createRange();
+    range.setStart(text.firstChild!, 0);
+    range.setEnd(text.closest("article")!.querySelector(".message-footer")!, 0);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent.pointerDown(text, { pointerType: "mouse" });
+    fireEvent.pointerUp(text, { pointerType: "mouse" });
+    const field = await screen.findByRole("textbox", { name: "Комментарий к выделенному тексту" });
+    fireEvent.change(field, { target: { value: "Весь абзац" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    expect(onCreate).toHaveBeenCalledWith({
+      messageId: "agent",
+      source: "agentMessage",
+      quote: "Последний абзац",
+      startOffset: 0,
+      endOffset: 15,
+      comment: "Весь абзац",
+    });
+  });
+
+  it("leaves a selection that starts before the message to the browser", async () => {
+    render(
+      <>
+        <p>Предыдущий ответ</p>
+        <Activity
+          item={{
+            type: "agentMessage",
+            id: "agent",
+            status: "completed",
+            text: "Последний ответ",
+            images: [],
+            timestamp: 1,
+            phase: "final_answer",
+          }}
+          annotationEnabled
+        />
+      </>,
+    );
+
+    const previous = screen.getByText("Предыдущий ответ");
+    const text = screen.getByText("Последний ответ");
+    const range = document.createRange();
+    range.setStart(previous.firstChild!, 4);
+    range.setEnd(text.firstChild!, 4);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent.pointerDown(previous, { pointerType: "mouse" });
+    fireEvent.pointerUp(text, { pointerType: "mouse" });
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 150)));
+
+    expect(screen.queryByRole("textbox", { name: "Комментарий к выделенному тексту" })).toBeNull();
+  });
+
   it("places the annotation editor below the selected range", async () => {
     const descriptor = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
     Object.defineProperty(Range.prototype, "getBoundingClientRect", {

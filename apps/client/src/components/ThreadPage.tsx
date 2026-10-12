@@ -70,6 +70,7 @@ import {
   loadPendingAnnotations,
   type PendingAnnotation,
   rangeOffsets,
+  rangeWithin,
   resolveAnnotationRange,
   savePendingAnnotations,
 } from "../annotations";
@@ -6187,6 +6188,7 @@ function AnnotatableMarkdownContent({
   const contentRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLFormElement>(null);
   const pointerTypeRef = useRef("");
+  const pressedRef = useRef(false);
   const [selectionDraft, setSelectionDraft] = useState<SelectionDraft | null>(null);
   const [editor, setEditor] = useState<AnnotationEditor | null>(null);
   const [comment, setComment] = useState("");
@@ -6222,7 +6224,11 @@ function AnnotatableMarkdownContent({
     if (!content || !surface || !selection || selection.rangeCount !== 1 || selection.isCollapsed) {
       return null;
     }
-    const range = selection.getRangeAt(0);
+    // A drag back past the first line, or a triple click on the last paragraph, leaves the
+    // selection running over the edge of the message: annotate the part inside it.
+    const range = content.contains(selection.anchorNode)
+      ? rangeWithin(content, selection.getRangeAt(0))
+      : selection.getRangeAt(0);
     const quote = range.toString();
     const offsets = quote.trim() ? rangeOffsets(content, range) : null;
     if (!offsets) return null;
@@ -6326,6 +6332,22 @@ function AnnotatableMarkdownContent({
       document.removeEventListener("selectionchange", selectionChanged);
     };
   }, [editor, enabled, readSelection]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    // A drag that selects text can be released anywhere: backwards it runs past the first
+    // letter, out of the message, and the release goes to whatever lies under the pointer.
+    const released = (event: PointerEvent) => {
+      const pressed = pressedRef.current;
+      pressedRef.current = false;
+      const inside = event.target instanceof Node && contentRef.current?.contains(event.target);
+      if (event.pointerType !== "touch" && (pressed || inside)) {
+        window.setTimeout(captureSelection, 0);
+      }
+    };
+    document.addEventListener("pointerup", released);
+    return () => document.removeEventListener("pointerup", released);
+  }, [captureSelection, enabled]);
 
   const positionEditor = useCallback(() => {
     const form = editorRef.current;
@@ -6486,9 +6508,7 @@ function AnnotatableMarkdownContent({
         ref={contentRef}
         onPointerDown={(event) => {
           pointerTypeRef.current = event.pointerType;
-        }}
-        onPointerUp={(event) => {
-          if (event.pointerType !== "touch") window.setTimeout(captureSelection, 0);
+          pressedRef.current = enabled && event.pointerType !== "touch";
         }}
         onKeyUp={captureSelection}
       >

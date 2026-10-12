@@ -6,6 +6,7 @@ import {
   loadPendingAnnotations,
   type PendingAnnotation,
   rangeOffsets,
+  rangeWithin,
   resolveAnnotationRange,
   savePendingAnnotations,
 } from "./annotations";
@@ -63,6 +64,28 @@ describe("pending annotations", () => {
     expect(formatAnnotatedMessage("Continue", [annotation], "en")).toContain(
       "## Annotations for the agent's previous response\n\n### Annotation 1",
     );
+  });
+
+  it("keeps only the part of a range that lies inside the container", () => {
+    const page = document.createElement("div");
+    page.innerHTML = "<p>До</p><div><p>Первый</p><p>Второй</p></div><p>После</p>";
+    const container = page.children[1] as HTMLElement;
+    const before = page.children[0]!.firstChild!;
+    const first = container.children[0]!.firstChild!;
+    const after = page.children[2]!.firstChild!;
+    const span = (startNode: Node, start: number, endNode: Node, end: number) => {
+      const range = document.createRange();
+      range.setStart(startNode, start);
+      range.setEnd(endNode, end);
+      return rangeWithin(container, range).toString();
+    };
+
+    expect(span(before, 1, after, 2)).toBe("ПервыйВторой");
+    expect(span(first, 2, after, 2)).toBe("рвыйВторой");
+    expect(span(before, 1, first, 3)).toBe("Пер");
+    expect(span(first, 1, first, 4)).toBe("ерв");
+    expect(span(before, 0, before, 2)).toBe("");
+    expect(span(after, 0, after, 2)).toBe("");
   });
 
   it("restores a DOM range and falls back to the closest matching quote", () => {

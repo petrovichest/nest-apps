@@ -84,6 +84,20 @@ export function rangeOffsets(
   return { startOffset, endOffset: startOffset + range.toString().length };
 }
 
+/** The part of a range that lies inside the container; empty when none of it does. */
+export function rangeWithin(container: HTMLElement, range: Range): Range {
+  const inside = range.cloneRange();
+  const bounds = container.ownerDocument.createRange();
+  bounds.selectNodeContents(container);
+  if (inside.compareBoundaryPoints(inside.START_TO_START, bounds) < 0) {
+    inside.setStart(bounds.startContainer, bounds.startOffset);
+  }
+  if (inside.compareBoundaryPoints(inside.END_TO_END, bounds) > 0) {
+    inside.setEnd(bounds.endContainer, bounds.endOffset);
+  }
+  return inside;
+}
+
 export function resolveAnnotationRange(
   container: HTMLElement,
   annotation: Pick<PendingAnnotation, "quote" | "startOffset" | "endOffset">,
