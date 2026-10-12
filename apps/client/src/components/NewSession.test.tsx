@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useSyncExternalStore } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router";
 
@@ -13,6 +14,7 @@ import type {
 import { ApiClientError } from "../api";
 import { mergeProjectDraft } from "@codexnest/protocol";
 import type { LocalNewSessionDraft } from "../offline-store";
+import { clientReducer, initialState, type ClientAction, type ClientState } from "../state";
 import { NewSession } from "./NewSession";
 
 const connection = vi.hoisted(() => vi.fn());
@@ -277,6 +279,143 @@ describe("NewSession", () => {
       { expectedUpdatedAt: draft.updatedAt },
     );
   });
+
+  it.each([
+    { outcome: "sent", serverKeepsDraft: false },
+    { outcome: "cancelled", serverKeepsDraft: true },
+  ])(
+    "settles the photos of a first voice message that was $outcome when only a snapshot arrives",
+    async ({ serverKeepsDraft }) => {
+      installRecorder();
+      const images = [
+        { id: "image-1", name: "first.png", url: "data:image/png;base64,aA==" },
+        { id: "image-2", name: "second.png", url: "data:image/png;base64,aB==" },
+      ];
+      let serverDraft: ThreadDraft | null = {
+        input: "",
+        images,
+        goalMode: false,
+        annotations: [],
+        updatedAt: 19,
+      };
+      // IndexedDB is mocked in this file: keep the local drafts in memory so a stale copy would come back.
+      const localDrafts = new Map<string, unknown>();
+      drafts.saveLocal.mockImplementation(async (_settings, id, value, updatedAt = Date.now()) => {
+        localDrafts.set(id, { threadId: id, value, updatedAt });
+      });
+      drafts.loadLocal.mockImplementation(async (_settings, id) => localDrafts.get(id) ?? null);
+      drafts.deleteLocal.mockImplementation(async (_settings, id) => {
+        localDrafts.delete(id);
+      });
+      const instanceId = "instance";
+      const created = {
+        ...thread,
+        title: "Без названия",
+        cwd: project.path,
+        state: "idle",
+        currentTurnId: null,
+        queuedMessageCount: 0,
+        createdAt: 1,
+        updatedAt: 2,
+      } as unknown as ThreadSummary;
+      let state: ClientState = {
+        ...initialState,
+        network: "connected",
+        snapshot: {
+          instanceId,
+          sequence: 1,
+          projects: [project],
+          threads: [],
+          attention: [],
+          voiceTranscriptions: [],
+          models: [],
+          connection: { state: "ready" },
+        } as unknown as ClientState["snapshot"],
+      };
+      const context = mockConnection({
+        readProjectDraft: vi.fn().mockResolvedValue({ ...serverDraft, updatedAt: 3 }),
+        createProjectThread: vi.fn().mockResolvedValue({ thread: created, draft: serverDraft }),
+      });
+      // The real reducer, and a page that re-renders when it changes, as the connection provider does.
+      const listeners = new Set<() => void>();
+      const dispatch = vi.fn((action: ClientAction) => {
+        state = clientReducer(state, action);
+        context.state = state as unknown as typeof context.state;
+        for (const listener of listeners) listener();
+      });
+      Object.assign(context, {
+        dispatch,
+        state,
+        queueVoiceRecording: vi.fn(async (recording) => {
+          await drafts.saveLocal(connectionSettings, recording.threadId, recording.draft, 19);
+          dispatch({
+            type: "voice.accepted",
+            job: {
+              id: recording.id,
+              threadId: recording.threadId,
+              mode: "send",
+              status: "queued",
+              createdAt: Date.now(),
+              startedAt: null,
+              audioDurationMs: 1_000,
+              estimatedTotalSeconds: null,
+              error: null,
+            },
+          });
+        }),
+        refreshDetail: vi.fn(async () => {
+          const detail = {
+            version: { instanceId, sequence: state.snapshot!.sequence },
+            summary: created,
+            turns: [],
+            queuedMessages: [],
+            olderTurnsCursor: null,
+            draft: serverDraft,
+          };
+          dispatch({ type: "detail", detail });
+          return detail;
+        }),
+      });
+      connection.mockImplementation(() => {
+        useSyncExternalStore(
+          (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          () => state,
+        );
+        return context;
+      });
+      renderNewSession(voiceConfig);
+      await screen.findByRole("textbox", { name: "Сообщение для Codex" });
+      expect(await screen.findByAltText("first.png")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Начать запись" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Остановить запись" }));
+      await screen.findByText("Созданная сессия");
+      await waitFor(() => expect(drafts.delete).toHaveBeenCalled());
+      expect(state.snapshot?.voiceTranscriptions).toHaveLength(1);
+
+      // The job is gone from the snapshot and no "removed" event came: a message with photos does not
+      // fit the socket. Sent, the server dropped the draft; cancelled, it still has it.
+      if (!serverKeepsDraft) serverDraft = null;
+      act(() => {
+        dispatch({
+          type: "snapshot",
+          snapshot: { ...state.snapshot!, sequence: 2, voiceTranscriptions: [] },
+        });
+      });
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
+
+      if (serverKeepsDraft) {
+        expect(await screen.findByAltText("first.png")).toBeInTheDocument();
+        expect(screen.getByAltText("second.png")).toBeInTheDocument();
+      } else {
+        expect(screen.queryByAltText("first.png")).toBeNull();
+        expect(screen.queryByAltText("second.png")).toBeNull();
+        expect(localDrafts.has("created")).toBe(false);
+      }
+    },
+  );
 
   it("cancels a first recording without creating a session or submitting audio", async () => {
     installRecorder();

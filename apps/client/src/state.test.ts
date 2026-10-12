@@ -972,6 +972,66 @@ describe("clientReducer", () => {
     expect(state.snapshot?.voiceTranscriptions).toEqual([]);
   });
 
+  it("infers the outcome of a voice job that leaves a snapshot without a removal event", () => {
+    const job: VoiceTranscriptionJob = {
+      id: "voice",
+      threadId: "one",
+      mode: "send",
+      status: "transcribing",
+      createdAt: 10,
+      startedAt: 11,
+      audioDurationMs: 2_000,
+      estimatedTotalSeconds: null,
+      error: null,
+    };
+    const sent = { one: { jobId: "voice", outcome: "send" } };
+    const afterSnapshot = (before: VoiceTranscriptionJob, next: Partial<AppSnapshot> = {}) =>
+      clientReducer(
+        clientReducer(initialState, {
+          type: "snapshot",
+          snapshot: { ...snapshot, voiceTranscriptions: [before] },
+        }),
+        {
+          type: "snapshot",
+          snapshot: { ...snapshot, sequence: 9, voiceTranscriptions: [], ...next },
+        },
+      ).voiceRemovals;
+
+    // The message with photos did not fit the socket: the server sent a snapshot, not the event.
+    expect(afterSnapshot(job)).toEqual(sent);
+    expect(afterSnapshot({ ...job, mode: "queue" })).toEqual(sent);
+    expect(afterSnapshot({ ...job, mode: "steer" })).toEqual(sent);
+    expect(afterSnapshot({ ...job, mode: "draft" })).toEqual({
+      one: { jobId: "voice", outcome: "draft" },
+    });
+
+    // Nothing was sent, or the page has nothing to clear.
+    expect(afterSnapshot({ ...job, status: "failed" })).toEqual({});
+    expect(
+      afterSnapshot({ ...job, userInput: { draftKey: "question", questionId: "first", order: 0 } }),
+    ).toEqual({});
+    expect(afterSnapshot(job, { voiceTranscriptions: [job] })).toEqual({});
+    expect(afterSnapshot(job, { threads: [] })).toEqual({});
+
+    // The event, when it does arrive, keeps its own outcome.
+    let state = clientReducer(initialState, {
+      type: "snapshot",
+      snapshot: { ...snapshot, voiceTranscriptions: [job] },
+    });
+    state = clientReducer(state, {
+      type: "event",
+      version: { instanceId: "legacy", sequence: 5 },
+      event: {
+        type: "voiceTranscription.removed",
+        threadId: "one",
+        jobId: "voice",
+        outcome: "cancelled",
+      },
+    });
+    state = clientReducer(state, { type: "snapshot", snapshot: { ...snapshot, sequence: 9 } });
+    expect(state.voiceRemovals.one).toEqual({ jobId: "voice", outcome: "cancelled" });
+  });
+
   it("does not let a late upload acknowledgement roll transcription back to queued", () => {
     const queued = {
       id: "voice",

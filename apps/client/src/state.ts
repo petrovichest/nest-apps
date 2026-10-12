@@ -185,6 +185,7 @@ export function clientReducer(state: ClientState, action: ClientAction): ClientS
             )
           : {},
         userInputDrafts: reconcileUserInputDrafts(state.userInputDrafts, action.snapshot.attention),
+        voiceRemovals: voiceRemovalsFromSnapshot(state, snapshot, snapshotThreads),
         network: "connected",
         error: null,
         snapshotEpoch: state.snapshotEpoch + 1,
@@ -1397,6 +1398,34 @@ function userMessageIds(detail: ThreadDetail): Set<string> {
       turn.items.filter((item) => item.type === "userMessage").map((item) => item.id),
     ),
   );
+}
+
+// A message with photos is too big for the socket, so the server sends a snapshot instead of the
+// "voice job removed" event; a reconnect loses the event as well. Take a job that left the snapshot
+// without one as finished, with the outcome the event would have carried. If it was cancelled
+// instead, the page reads the draft back from the server right after and restores the composer.
+function voiceRemovalsFromSnapshot(
+  state: ClientState,
+  snapshot: AppSnapshot,
+  threads: ReadonlyMap<string, ThreadSummary>,
+): ClientState["voiceRemovals"] {
+  const remaining = new Set((snapshot.voiceTranscriptions ?? []).map((job) => job.id));
+  let removals = state.voiceRemovals;
+  for (const job of state.snapshot?.voiceTranscriptions ?? []) {
+    if (
+      job.userInput ||
+      job.status === "failed" ||
+      remaining.has(job.id) ||
+      !threads.has(job.threadId)
+    ) {
+      continue;
+    }
+    removals = {
+      ...removals,
+      [job.threadId]: { jobId: job.id, outcome: job.mode === "draft" ? "draft" : "send" },
+    };
+  }
+  return removals;
 }
 
 function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
