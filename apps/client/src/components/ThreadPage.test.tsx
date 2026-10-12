@@ -6603,7 +6603,10 @@ describe("Activity", () => {
       ).toBeNull();
       fireEvent.scroll(scroll);
       height = 1_200;
-      context.state.details.thread = { ...context.state.details.thread };
+      context.state.details.thread = {
+        ...context.state.details.thread,
+        turns: [...context.state.details.thread.turns],
+      };
       view.rerender(threadRoute());
       expect(scroll.scrollTop).toBe(700);
     },
@@ -6675,9 +6678,49 @@ describe("Activity", () => {
     expect(screen.queryByRole("button", { name: "Прокрутить к последнему сообщению" })).toBeNull();
 
     height = 1_800;
-    context.state.details.thread = { ...context.state.details.thread };
+    context.state.details.thread = {
+      ...context.state.details.thread,
+      turns: [...context.state.details.thread.turns],
+    };
     view.rerender(threadRoute());
     expect(scroll.scrollTop).toBe(1_300);
+  });
+
+  it("leaves the view in place when a saved draft adds cards below the text", () => {
+    const context = mockThreadConnection(threadApi(), summary);
+    const view = renderThread();
+    const scroll = view.container.querySelector(".conversation-scroll") as HTMLDivElement;
+    let height = 1_500;
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, value: 500 },
+      scrollTo: {
+        configurable: true,
+        value: ({ top }: ScrollToOptions) => {
+          scroll.scrollTop = Math.min(top ?? 0, height - scroll.clientHeight);
+        },
+      },
+    });
+    scroll.scrollTop = 1_000;
+    fireEvent.scroll(scroll);
+
+    // The cards above the input extend the scroll range; the saved draft that brings them
+    // back is not new history and must not pull the text the reader holds up the screen.
+    height = 1_600;
+    context.state.details.thread = {
+      ...context.state.details.thread,
+      draft: { input: "", images: [], goalMode: false, annotations: [], updatedAt: 2 },
+    };
+    view.rerender(threadRoute());
+    expect(scroll.scrollTop).toBe(1_000);
+
+    height = 1_700;
+    context.state.details.thread = {
+      ...context.state.details.thread,
+      turns: [...context.state.details.thread.turns],
+    };
+    view.rerender(threadRoute());
+    expect(scroll.scrollTop).toBe(1_200);
   });
 
   it.each(["wheel", "unmount", "session switch"])(

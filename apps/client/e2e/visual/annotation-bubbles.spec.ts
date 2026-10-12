@@ -205,7 +205,7 @@ async function conversationPosition(page: Page, anchor: Locator) {
       scrollHeight: element.scrollHeight,
       clientHeight: element.clientHeight,
       reservedHeight: getComputedStyle(element.closest(".conversation-pane")!)
-        .getPropertyValue("--composer-overlay-height")
+        .getPropertyValue("--composer-full-height")
         .trim(),
       timelinePadding: getComputedStyle(element.querySelector(".timeline")!).paddingBottom,
       composerHeight: document.querySelector(".composer")!.getBoundingClientRect().height,
@@ -235,15 +235,19 @@ async function readConversationHistory(page: Page) {
     .toBe(0);
 }
 
+// Cards float over the text: they never move it, whatever room they take below it.
 function expectConversationPositionUnchanged(
   before: Awaited<ReturnType<typeof conversationPosition>>,
   after: Awaited<ReturnType<typeof conversationPosition>>,
 ) {
   expect(after.scrollTop).toBeCloseTo(before.scrollTop, 0);
   expect(after.anchorTop).toBeCloseTo(before.anchorTop, 0);
-  expect(after.reservedHeight).toBe(before.reservedHeight);
-  expect(after.timelinePadding).toBe(before.timelinePadding);
-  expect(after.scrollHeight).toBe(before.scrollHeight);
+}
+
+// The history reserves the whole composer, cards included, and one gap below its last line.
+function expectReserveFollowsComposer(state: Awaited<ReturnType<typeof conversationPosition>>) {
+  expect(parseFloat(state.reservedHeight)).toBe(Math.ceil(state.composerHeight));
+  expect(parseFloat(state.timelinePadding)).toBe(parseFloat(state.reservedHeight) + 16);
 }
 
 async function nativeAnnotationHighlight(
@@ -472,7 +476,11 @@ for (const width of [390, 1440]) {
         body: JSON.stringify({ position, before, opened, closed }, null, 2),
         contentType: "application/json",
       });
+      for (const state of [before, opened, closed]) expectReserveFollowsComposer(state);
       for (const state of [opened, closed]) expectConversationPositionUnchanged(before, state);
+      // The open stack takes room below the text without moving it.
+      expect(opened.scrollHeight).toBeGreaterThan(before.scrollHeight + 40);
+      expect(closed.scrollHeight).toBe(before.scrollHeight);
     });
   }
 
@@ -491,10 +499,43 @@ for (const width of [390, 1440]) {
       Math.abs(parseFloat(after.timelinePadding) - parseFloat(before.timelinePadding) - growth),
     ).toBeLessThanOrEqual(1);
     expect(after.scrollHeight - after.clientHeight - after.scrollTop).toBeLessThanOrEqual(1);
+    expectReserveFollowsComposer(after);
     const message = (await page.locator(".message.agentMessage").boundingBox())!;
-    const input = (await page.locator(".composer-box").boundingBox())!;
-    expect(message.y + message.height).toBeLessThanOrEqual(input.y);
+    const cards = (await page.locator(".composer-cards").boundingBox())!;
+    expect(message.y + message.height).toBeLessThanOrEqual(cards.y);
   });
+}
+
+for (const width of [390, 1440]) {
+  for (const [count, category] of [
+    [1, "none"],
+    [2, "none"],
+    [3, "closed"],
+    [3, "open"],
+  ] as const) {
+    test(`the end of the chat scrolls above the composer cards with ${count} notes, category ${category}, at ${width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await openAnnotations(page, "light", count, "none");
+      if (category === "open") {
+        await page.getByRole("button", { name: "Аннотации (3)", exact: true }).click();
+      }
+      await settleComposerLayout(page);
+      await page.locator(".conversation-scroll").evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      await settleComposerLayout(page);
+      const clearance = await page.evaluate(() => {
+        const messages = document.querySelectorAll(".message.agentMessage");
+        const last = messages[messages.length - 1]!.getBoundingClientRect();
+        const cards = document.querySelector(".composer-cards")!.getBoundingClientRect();
+        return { messageBottom: last.bottom, cardsTop: cards.top, cardsHeight: cards.height };
+      });
+      expect(clearance.cardsHeight).toBeGreaterThan(40);
+      expect(clearance.messageBottom).toBeLessThanOrEqual(clearance.cardsTop - 8);
+    });
+  }
 }
 
 for (const count of [0, 1]) {
@@ -519,20 +560,30 @@ for (const count of [0, 1]) {
     await settleComposerLayout(page);
     const anchor = await visibleMessageAnchor(page);
     const before = await conversationPosition(page, anchor);
+    // The saved draft comes back as a new thread detail; it must not pull the view along.
+    const draftSaved = page.waitForResponse(
+      (response) => response.url().includes("/draft") && response.request().method() === "PUT",
+    );
     await editor.press("Enter");
     await expect(editor).toHaveCount(0);
     const bubbles = page.locator(".composer .annotation-bubble");
     await expect(bubbles).toHaveCount(count + 1);
     await expect(page.locator(".composer-card-filters")).toHaveCount(0);
+    await draftSaved;
     await settleComposerLayout(page);
-    expectConversationPositionUnchanged(before, await conversationPosition(page, anchor));
+    const saved = await conversationPosition(page, anchor);
+    expectConversationPositionUnchanged(before, saved);
+    expectReserveFollowsComposer(saved);
+    expect(saved.scrollHeight).toBeGreaterThan(before.scrollHeight + 40);
     await bubbles
       .last()
       .getByRole("button", { name: `Удалить аннотацию ${count + 1}`, exact: true })
       .click();
     await expect(bubbles).toHaveCount(count);
     await settleComposerLayout(page);
-    expectConversationPositionUnchanged(before, await conversationPosition(page, anchor));
+    const deleted = await conversationPosition(page, anchor);
+    expectConversationPositionUnchanged(before, deleted);
+    expect(deleted.scrollHeight).toBe(before.scrollHeight);
   });
 }
 

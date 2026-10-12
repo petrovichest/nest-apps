@@ -423,20 +423,20 @@ export function Composer({
     const pane = composer?.closest<HTMLElement>(".conversation-pane");
     const scroll = pane?.querySelector<HTMLElement>(".conversation-scroll");
     if (!composer || !base || !pane || !scroll) return;
-    let previousHeight = -1;
+    let previousBaseHeight = -1;
     let previousFullHeight = -1;
     const updateHeight = () => {
       const bounds = composer.getBoundingClientRect();
       const fullHeight = Math.ceil(bounds.height);
-      // Cards above the input float over history and must not change its scroll range.
-      const nextHeight = Math.ceil(bounds.bottom - base.getBoundingClientRect().top);
+      // History keeps room for the cards above the input, so its end can be scrolled clear of
+      // them. They float over the text: only the input block below them moves the tail.
+      const baseHeight = Math.ceil(bounds.bottom - base.getBoundingClientRect().top);
       if (fullHeight !== previousFullHeight) {
         previousFullHeight = fullHeight;
         pane.style.setProperty("--composer-full-height", `${fullHeight}px`);
       }
-      if (nextHeight === previousHeight) return false;
-      previousHeight = nextHeight;
-      pane.style.setProperty("--composer-overlay-height", `${nextHeight}px`);
+      if (baseHeight === previousBaseHeight) return false;
+      previousBaseHeight = baseHeight;
       return true;
     };
     updateHeight();
@@ -454,7 +454,6 @@ export function Composer({
     observer?.observe(scroll);
     return () => {
       observer?.disconnect();
-      pane.style.removeProperty("--composer-overlay-height");
       pane.style.removeProperty("--composer-full-height");
     };
   }, []);

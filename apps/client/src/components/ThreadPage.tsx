@@ -2609,11 +2609,24 @@ export function ThreadPage({
     olderScrollAnchor.current = null;
   }, [detail, searchTarget, threadId]);
 
+  // A saved draft replaces `detail` without changing the history. The cards it adds float over
+  // the text, so it must not pull the view down to the end that now lies below them.
+  const hasDetail = Boolean(detail);
   useLayoutEffect(() => {
     if (searchTarget) return;
-    if (!detail || initialScrollThread.current !== threadId || !followsTail.current) return;
+    if (!hasDetail || initialScrollThread.current !== threadId || !followsTail.current) return;
     scrollToEnd(scrollRef.current);
-  }, [attention, autoVoiceProgressKey, detail, searchTarget, threadId]);
+  }, [
+    attention,
+    autoVoiceProgressKey,
+    detail?.historyError,
+    detail?.queuedMessages,
+    detail?.summary,
+    detail?.turns,
+    hasDetail,
+    searchTarget,
+    threadId,
+  ]);
 
   useLayoutEffect(() => {
     if (searchTarget) return;

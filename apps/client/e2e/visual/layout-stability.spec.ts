@@ -431,18 +431,9 @@ for (const width of [320, 390, 1440]) {
         expect
           .poll(() =>
             composer.evaluate((el) =>
-              Math.max(
-                Math.abs(
-                  parseFloat(getComputedStyle(el).getPropertyValue("--composer-overlay-height")) -
-                    Math.ceil(
-                      el.getBoundingClientRect().bottom -
-                        el.querySelector(".composer-base")!.getBoundingClientRect().top,
-                    ),
-                ),
-                Math.abs(
-                  parseFloat(getComputedStyle(el).getPropertyValue("--composer-full-height")) -
-                    Math.ceil(el.getBoundingClientRect().height),
-                ),
+              Math.abs(
+                parseFloat(getComputedStyle(el).getPropertyValue("--composer-full-height")) -
+                  Math.ceil(el.getBoundingClientRect().height),
               ),
             ),
           )
@@ -510,6 +501,7 @@ for (const width of [320, 390, 1440]) {
       await expectTailVisible();
       await input.fill("");
       await expectTailVisible();
+      const tailTop = await scroll.evaluate((el) => el.scrollTop);
       await composer.locator('input[type="file"]').setInputFiles({
         name: "preview.png",
         mimeType: "image/png",
@@ -519,7 +511,15 @@ for (const width of [320, 390, 1440]) {
         ),
       });
       await expect(page.locator(".composer-attachments")).toBeVisible();
+      await expectMeasured();
+      // The card floats over the text without moving it; the room for it lies below the tail.
+      expect(await scroll.evaluate((el) => el.scrollTop)).toBeCloseTo(tailTop, 0);
+      await expect.poll(distanceFromTail).toBeGreaterThan(40);
+      await scroll.evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
       await expectTailVisible();
+      expect(await verticalGap(queue, page.locator(".composer-cards"))).toBeGreaterThanOrEqual(8);
       await page
         .getByRole("button", { name: "Удалить изображение preview.png", exact: true })
         .click();
@@ -613,9 +613,12 @@ for (const width of [390, 1440]) {
       const filter = page.getByRole("button", { name: "Изображения (3)", exact: true });
       await expect(filter).toHaveAttribute("aria-expanded", "false");
 
+      // Cards take room below the text without moving it.
       const expectCardsFloat = async () => {
         await waitForVisualReady(page);
-        expect(await scroll.evaluate((element) => element.scrollHeight)).toBe(scrollHeight);
+        expect(await scroll.evaluate((element) => element.scrollHeight)).toBeGreaterThan(
+          scrollHeight + 40,
+        );
         expect(await scroll.evaluate((element) => element.scrollTop)).toBeCloseTo(scrollTop, 0);
         unchanged(
           stationary,
@@ -625,7 +628,11 @@ for (const width of [390, 1440]) {
             ),
           ),
         );
+      };
+      // Scrolled to the end, the chat clears the cards and the agents bar below them.
+      const expectTailAboveCards = async () => {
         await expectTailReachable();
+        expect(await verticalGap(tail, page.locator(".composer-cards"))).toBeGreaterThanOrEqual(8);
       };
       await expectCardsFloat();
       await filter.click();
@@ -636,6 +643,10 @@ for (const width of [390, 1440]) {
       await expect(filter).toHaveAttribute("aria-expanded", "false");
       await expectCardsFloat();
       expect(await verticalGap(bar, box)).toBeGreaterThanOrEqual(8);
+      await expectTailAboveCards();
+      await filter.click();
+      await expect(filter).toHaveAttribute("aria-expanded", "true");
+      await expectTailAboveCards();
     });
   }
 }
