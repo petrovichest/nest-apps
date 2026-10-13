@@ -4,19 +4,21 @@ import { mkdtemp, mkdir, readFile, readlink, rm, stat, writeFile } from "node:fs
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ClaudeProxyInput } from "@codexnest/protocol";
+import type { ClaudeAccountsStatus, ClaudeProxyInput } from "@codexnest/protocol";
 import {
   ClaudeAccounts,
   authorizationCode,
   type NativeClaudeAuth,
   type NativeClaudeUsage,
   type ClaudeAccountsOptions,
+  type ClaudeLaunchAccount,
 } from "./accounts.js";
 import type { Config } from "./config.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
+  vi.useRealTimers();
   vi.unstubAllEnvs();
 });
 const NOW = 1_800_000_000_000;
@@ -585,6 +587,161 @@ describe("native Claude account storage and login", () => {
     expect(authorizationCode(" code#state ")).toBe("code#state");
     expect(authorizationCode("https://callback.example?code=foo&state=bar")).toBe("foo#bar");
     expect(() => authorizationCode("code\nother")).toThrow("complete");
+  });
+});
+
+describe("Claude account refresh scheduling", () => {
+  function nextUpdate(accounts: ClaudeAccounts, id: string, at: number): Promise<void> {
+    return new Promise((resolve) => {
+      const changed = (status: ClaudeAccountsStatus) => {
+        const state = status.accounts.find((account) => account.id === id)?.rateLimits;
+        if (!state?.refreshing && (state?.updatedAt ?? 0) >= at) {
+          accounts.off("changed", changed);
+          resolve();
+        }
+      };
+      accounts.on("changed", changed);
+    });
+  }
+
+  it("waits for every shared blocker to reset and checks only the due account", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(NOW);
+    const firstReset = NOW + 60 * 60_000;
+    const secondReset = NOW + 90 * 60_000;
+    let firstUsage = {
+      ...usage(100, 100, NOW + 30 * 60_000),
+      secondary: { ...usage().secondary!, resetsAt: firstReset, usedPercent: 100 },
+    };
+    const readUsage = vi.fn(async (account: ClaudeLaunchAccount) =>
+      account.configDir.endsWith("/native") ? firstUsage : usage(100, 30, secondReset),
+    );
+    const { accounts, config, add } = await fixture({ poll: true, now: Date.now, readUsage });
+    await accounts.setWarmLimits(false);
+    const firstId = accounts.status().currentAccountId!;
+    const second = await add("waiting@example.com");
+    await accounts.refresh();
+    readUsage.mockClear();
+
+    await vi.advanceTimersByTimeAsync(59 * 60_000);
+    expect(readUsage).not.toHaveBeenCalled();
+    firstUsage = {
+      ...firstUsage,
+      primary: { ...firstUsage.primary!, resetsAt: NOW + 86_400_000 },
+      secondary: { ...firstUsage.secondary, resetsAt: NOW + 172_800_000 },
+    };
+    const firstUpdated = nextUpdate(accounts, firstId, firstReset);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await firstUpdated;
+    expect(readUsage.mock.calls.map(([account]) => account.configDir)).toEqual([config.configDir]);
+
+    await vi.advanceTimersByTimeAsync(29 * 60_000);
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    const secondUpdated = nextUpdate(accounts, second.id, secondReset);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await secondUpdated;
+    expect(readUsage.mock.calls.map(([account]) => account.configDir)).toEqual([
+      config.configDir,
+      second.configDir,
+    ]);
+  });
+
+  it("keeps ordinary polling for usable accounts and backs off when reset data lags", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(NOW);
+    const resetAt = NOW + 60 * 60_000;
+    let currentUsage = usage(100, 30, resetAt);
+    const readUsage = vi.fn(async () => currentUsage);
+    const { accounts } = await fixture({ poll: true, now: Date.now, readUsage });
+    await accounts.setWarmLimits(false);
+    await accounts.refresh();
+    const id = accounts.status().currentAccountId!;
+    readUsage.mockClear();
+
+    const resetUpdated = nextUpdate(accounts, id, resetAt);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    await resetUpdated;
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    expect(readUsage).toHaveBeenCalledTimes(1);
+
+    currentUsage = usage(10, 30, NOW + 86_400_000);
+    const availableUpdated = nextUpdate(accounts, id, resetAt + 5 * 60_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await availableUpdated;
+    expect(readUsage).toHaveBeenCalledTimes(2);
+    const ordinaryUpdated = nextUpdate(accounts, id, resetAt + 10 * 60_000);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    await ordinaryUpdated;
+    expect(readUsage).toHaveBeenCalledTimes(3);
+  });
+
+  it("preserves the reset deadline across restart and allows explicit refresh", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(NOW);
+    const resetAt = NOW + 60 * 60_000;
+    const { accounts, config, limits } = await fixture({ now: Date.now });
+    await accounts.setWarmLimits(false);
+    limits.set(config.configDir, usage(100, 30, resetAt));
+    await accounts.refresh();
+    await accounts.close();
+    const readUsage = vi.fn(async () => usage(100, 30, resetAt));
+    const restarted = new ClaudeAccounts(config, {
+      env: {},
+      now: Date.now,
+      readVersion: async () => "fake",
+      readAuth: async () => ({
+        loggedIn: true,
+        authMethod: "claude.ai",
+        email: "test@example.com",
+      }),
+      readUsage,
+    });
+    cleanup.push(() => restarted.close());
+    await restarted.initialize();
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(readUsage).not.toHaveBeenCalled();
+    await restarted.refresh();
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(29 * 60_000);
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    const updated = nextUpdate(restarted, restarted.status().currentAccountId!, resetAt);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await updated;
+    expect(readUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses a bounded retry when the reset time is unknown or a check fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(NOW);
+    const readUsage = vi.fn(async () => ({
+      ...usage(),
+      primary: { ...usage().primary!, usedPercent: 100, resetsAt: null },
+    }));
+    const { accounts } = await fixture({ poll: true, now: Date.now, readUsage });
+    await accounts.setWarmLimits(false);
+    await accounts.refresh();
+    const id = accounts.status().currentAccountId!;
+    readUsage.mockClear();
+    readUsage.mockRejectedValueOnce(new Error("Usage endpoint unavailable"));
+    const failed = new Promise<void>((resolve) => {
+      const changed = (status: ClaudeAccountsStatus) => {
+        if (status.accounts.find((account) => account.id === id)?.rateLimits.refreshError) {
+          accounts.off("changed", changed);
+          resolve();
+        }
+      };
+      accounts.on("changed", changed);
+    });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    await failed;
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    const retried = nextUpdate(accounts, id, NOW + 10 * 60_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await retried;
+    expect(readUsage).toHaveBeenCalledTimes(2);
   });
 });
 

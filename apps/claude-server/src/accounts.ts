@@ -200,11 +200,7 @@ export class ClaudeAccounts extends EventEmitter {
     ]);
     await this.save();
     if (this.options.poll !== false && !this.closed) {
-      this.timer = setInterval(() => {
-        void this.refresh().catch(() => undefined);
-      }, POLL_MS);
-      this.timer.unref();
-      void this.refresh().catch(() => undefined);
+      void this.pollAccounts().catch(() => undefined);
     }
   }
 
@@ -233,10 +229,77 @@ export class ClaudeAccounts extends EventEmitter {
     )?.accountId;
   }
   private emitChanged(): void {
-    if (!this.closed) this.emit("changed", this.status());
+    if (!this.closed) {
+      this.emit("changed", this.status());
+      this.schedulePoll();
+    }
   }
   private now(): number {
     return (this.options.now ?? Date.now)();
+  }
+  /** Shared quotas block every model; both exhausted windows must reset before reuse. */
+  private quotaResetAt(account: SavedAccount): number | undefined {
+    const resets = [account.rateLimits.limits?.primary, account.rateLimits.limits?.secondary]
+      .filter(
+        (window) =>
+          window &&
+          Number.isFinite(window.usedPercent) &&
+          window.usedPercent >= 100 &&
+          typeof window.resetsAt === "number" &&
+          Number.isFinite(window.resetsAt),
+      )
+      .map((window) => window!.resetsAt!);
+    return resets.length ? Math.max(...resets) : undefined;
+  }
+  private schedulePoll(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    if (this.options.poll === false || this.closed) return;
+    const now = this.now();
+    const scheduled = this.registry.accounts
+      .filter((account) => !account.rateLimits.refreshing)
+      .map((account) => {
+        const resetAt = this.quotaResetAt(account);
+        const checkedAt = account.rateLimits.updatedAt ?? now;
+        const at =
+          resetAt !== undefined && resetAt > now
+            ? resetAt
+            : account.rateLimits.refreshError
+              ? now + POLL_MS
+              : resetAt !== undefined && resetAt > checkedAt
+                ? resetAt
+                : checkedAt + POLL_MS;
+        return { id: account.accountId, at };
+      });
+    if (!scheduled.length) return;
+    const at = Math.min(...scheduled.map((account) => account.at));
+    const due = scheduled.filter((account) => account.at <= at).map((account) => account.id);
+    this.timer = setTimeout(
+      () => {
+        this.timer = undefined;
+        if (this.now() < at) this.schedulePoll();
+        else void this.pollAccounts(due).catch(() => undefined);
+      },
+      Math.max(0, Math.min(at - now, 2_147_000_000)),
+    );
+    this.timer.unref();
+  }
+  private async pollAccounts(accountIds?: string[]): Promise<void> {
+    await this.initialize();
+    if (this.closed) return;
+    const now = this.now();
+    const accounts = this.registry.accounts.filter(
+      (account) =>
+        (!accountIds || accountIds.includes(account.accountId)) &&
+        !account.rateLimits.refreshing &&
+        (this.quotaResetAt(account) ?? 0) <= now,
+    );
+    try {
+      await Promise.all(accounts.map((account) => this.refreshAccount(account)));
+      await this.preferEarlierReset();
+    } finally {
+      this.schedulePoll();
+    }
   }
   private async save(): Promise<void> {
     await writeJsonAtomic(this.registryPath, this.registry);
@@ -1070,7 +1133,7 @@ export class ClaudeAccounts extends EventEmitter {
   }
   async close(): Promise<void> {
     this.closed = true;
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     for (const login of this.logins.values())
       if (!["completed", "failed", "cancelled"].includes(login.status.state))
         await this.cancelLogin(login.status.id);
