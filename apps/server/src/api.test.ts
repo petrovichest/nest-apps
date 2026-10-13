@@ -5597,7 +5597,7 @@ describe("thread settings", () => {
     await app.close();
   });
   it.each(["default", "plan", "team"] as const)(
-    "explains explicit image delivery in existing %s sessions without an extra resume",
+    "passes image and question instructions to existing %s sessions without an extra resume",
     async (collaborationMode) => {
       const { app, bridge, projection, store, headers } = await createTeamHarness();
       try {
@@ -5624,6 +5624,12 @@ describe("thread settings", () => {
               kind: "application",
               value: expect.stringMatching(
                 /only in expandable technical details.*Markdown image.*commentary, plan, or final message.*outside that directory.*view_image.*Do not claim to have shown/is,
+              ),
+            },
+            "codexnest.questions": {
+              kind: "application",
+              value: expect.stringMatching(
+                /answer is necessary.*ordinary final message.*end the turn.*plain text.*Do not use request_user_input_async or request_user_input.*including in Plan mode.*user's next message.*Do not continue work, poll.*automatic continuation is not a user answer.*do not proceed past the pending decision.*approval and permission requirements/is,
               ),
             },
           },
@@ -6082,6 +6088,10 @@ describe("thread settings", () => {
         "codexnest.team": {
           kind: "application",
           value: expect.stringContaining("codexnest managed-task tools"),
+        },
+        "codexnest.questions": {
+          kind: "application",
+          value: expect.stringContaining("ordinary final message and end the turn"),
         },
       },
     });
@@ -6572,7 +6582,15 @@ describe("thread settings", () => {
     await vi.waitFor(() => expect(store.snapshot().messageQueues?.thread).toBeUndefined());
     expect(
       bridge.request.mock.calls.filter(([method]) => method === "turn/start").at(-1)?.[1],
-    ).toMatchObject({ clientUserMessageId: "client-after-steer" });
+    ).toMatchObject({
+      clientUserMessageId: "client-after-steer",
+      additionalContext: {
+        "codexnest.questions": {
+          kind: "application",
+          value: expect.stringContaining("ordinary final message and end the turn"),
+        },
+      },
+    });
 
     const invalid = await app.inject({
       method: "PATCH",
@@ -8481,6 +8499,10 @@ describe("Team orchestration", () => {
           value: expect.stringMatching(
             /Проверить интерфейс.*Summary: Интерфейс проверен.*Проверить сервер/is,
           ),
+        },
+        "codexnest.questions": {
+          kind: "application",
+          value: expect.stringContaining("An automatic continuation is not a user answer"),
         },
       },
     });

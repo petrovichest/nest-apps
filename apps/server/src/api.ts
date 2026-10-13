@@ -298,6 +298,14 @@ const IMAGE_DELIVERY_CONTEXT = [
   "Prefer files in the thread's working directory. Before linking a local image outside that directory, open it with view_image in this thread, then link its exact path. If a tool returns only image data, save the chosen image in the working directory before linking it.",
   "Viewing, generating, or forwarding an image through a tool output such as image(...) does not attach it to your message. Do not claim to have shown an image unless you have included it in a user-facing message.",
 ].join(" ");
+const QUESTION_CONTEXT = [
+  "In CodexNest, ask the user a question only when their answer is necessary to proceed; inspect the environment first for facts you can discover.",
+  "Ask the question in an ordinary final message and end the turn. You may list answer choices in plain text.",
+  "Do not use request_user_input_async or request_user_input to ask user questions, including in Plan mode.",
+  "After asking, wait for the user's next message. Do not continue work, poll, or call sleep or other waiting tools.",
+  "An automatic continuation is not a user answer. If a question remains unanswered, do not proceed past the pending decision or assume an answer.",
+  "Preserve tool approval and permission requirements.",
+].join(" ");
 
 interface DownloadTicket {
   root: string;
@@ -8603,6 +8611,7 @@ function turnSettings(
     },
     additionalContext: {
       "codexnest.images": { kind: "application", value: IMAGE_DELIVERY_CONTEXT },
+      "codexnest.questions": { kind: "application", value: QUESTION_CONTEXT },
       ...(settings.collaborationMode === "plan"
         ? {
             "codexnest.plan": {
