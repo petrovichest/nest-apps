@@ -681,6 +681,7 @@ describe("Claude UI durable session facade", () => {
     const draft = { input: "Unsent text", images: [], goalMode: false, annotations: [] };
     const first = await service.createThread(project.id, creationId, draft);
     const repeated = await service.createThread(project.id, creationId, draft);
+    expect(first.thread.settings.collaborationMode).toBe("default");
     expect(repeated.thread.id).toBe(first.thread.id);
     expect((await service.detail(first.thread.id)).draft?.input).toBe("Unsent text");
     expect(manager.creates).toEqual([]);

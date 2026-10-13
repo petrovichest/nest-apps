@@ -49,7 +49,7 @@ const thread = {
   id: "created",
   projectId: project.id,
   relation: { kind: "root" },
-  settings: { collaborationMode: "plan" },
+  settings: { collaborationMode: "default" },
 } as unknown as ThreadSummary;
 
 const connectionSettings = { baseUrl: "https://pi.local", token: "token" };
@@ -898,7 +898,7 @@ describe("NewSession", () => {
       const updateThreadSettings = vi.fn().mockResolvedValue({
         ...thread,
         settings: {
-          collaborationMode: "plan",
+          collaborationMode: "default",
           ...(expectedTier ? { serviceTier: expectedTier } : {}),
         },
       });
@@ -922,7 +922,7 @@ describe("NewSession", () => {
         thread: {
           ...thread,
           settings: {
-            collaborationMode: "plan",
+            collaborationMode: "default",
             ...(defaultTier ? { serviceTier: defaultTier } : {}),
           },
         },
@@ -1077,7 +1077,7 @@ describe("NewSession", () => {
       target: { files: [new File(["image"], "saved.png", { type: "image/png" })] },
     });
     expect(await screen.findByAltText("saved.png")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Выключить режим планирования" }));
+    fireEvent.click(screen.getByRole("button", { name: "Включить режим планирования" }));
     fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
     expect(textbox).toHaveValue("Сохрани после ухода");
 
@@ -1092,7 +1092,7 @@ describe("NewSession", () => {
         }),
       ]);
       expect(stored?.settings).toEqual({
-        collaborationMode: "default",
+        collaborationMode: "plan",
         personality: "friendly",
       });
     });
@@ -1109,7 +1109,9 @@ describe("NewSession", () => {
     expect(await screen.findByText("Сохрани после ухода")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Сообщение для Codex" })).toHaveValue("");
     expect(view.container.querySelector('img[src^="data:image/png"]')).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Включить режим планирования" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Выключить режим планирования" }),
+    ).toBeInTheDocument();
     await waitFor(() => expect(createProjectThread).toHaveBeenCalledOnce());
     expect(sendReliable).not.toHaveBeenCalled();
   });

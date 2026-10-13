@@ -19,7 +19,7 @@ import { ThreadSearchDialog } from "./ThreadSearchDialog";
 import { SettingsPage } from "./SettingsPage";
 import { ApplicationSettingsCard } from "./ApplicationSettingsCard";
 import { Composer } from "./Composer";
-import { ThreadPage } from "./ThreadPage";
+import { initialSessionSettings, ThreadPage } from "./ThreadPage";
 import { ApiClientError } from "../api";
 
 vi.hoisted(() => vi.stubEnv("VITE_APP_PROVIDER", "claude"));
@@ -304,17 +304,19 @@ describe("the shared Claude interface", () => {
     expect(onChange).toHaveBeenCalledWith({ model: "haiku" });
   });
 
-  it("allows a supported effort when preparing a new session", () => {
+  it("starts new sessions without Plan and allows a supported effort", () => {
     const onChange = vi.fn();
     render(
       <SettingsPicker
         models={models}
-        value={{ collaborationMode: "default", model: "sonnet" }}
+        value={initialSessionSettings(undefined, models, { model: "sonnet" })}
         disabled={false}
         goalMode={false}
         onChange={onChange}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Включить режим планирования" }));
+    expect(onChange).toHaveBeenCalledWith({ collaborationMode: "plan" });
     fireEvent.click(screen.getByRole("button", { name: "Модель и уровень рассуждений" }));
     fireEvent.click(screen.getByRole("radio", { name: "high" }));
     expect(onChange).toHaveBeenCalledWith({ reasoningEffort: "high" });

@@ -5102,7 +5102,7 @@ describe("task defaults", () => {
       personality: "friendly",
     });
     expect(harness.projection.newSessionSettings).toEqual({
-      collaborationMode: "plan",
+      collaborationMode: "default",
       personality: "friendly",
     });
     expect((await save({ titleModel: null })).json()).toEqual({
@@ -5957,20 +5957,20 @@ describe("thread settings", () => {
     expect(bridge.request.mock.calls.some(([method]) => method === "thread/metadata/update")).toBe(
       false,
     );
-    expect(emptyCreated.json().thread.settings).toEqual({ collaborationMode: "plan" });
+    expect(emptyCreated.json().thread.settings).toEqual({ collaborationMode: "default" });
     expect(
       bridge.request.mock.calls.filter(([method]) => method === "thread/start").at(-1)?.[1],
     ).toMatchObject({ cwd: "/work", dynamicTools: expect.any(Array) });
     expect(bridge.request.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(
       turnsBeforeEmptyThread,
     );
-    const disabledEmpty = await app.inject({
+    const plannedEmpty = await app.inject({
       method: "PATCH",
       url: "/api/v1/threads/created/settings",
       headers,
-      payload: { collaborationMode: "default" },
+      payload: { collaborationMode: "plan" },
     });
-    expect(disabledEmpty.json().settings).toEqual({ collaborationMode: "default" });
+    expect(plannedEmpty.json().settings).toEqual({ collaborationMode: "plan" });
     const resetEmpty = await app.inject({
       method: "POST",
       url: "/api/v1/projects/project/threads",
@@ -5979,7 +5979,7 @@ describe("thread settings", () => {
     });
     expect(resetEmpty.json().thread).toMatchObject({
       id: "created",
-      settings: { collaborationMode: "default" },
+      settings: { collaborationMode: "plan" },
     });
     expect(bridge.request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(
       threadStartsBeforeEmptyThread + 1,
@@ -6136,7 +6136,7 @@ describe("thread settings", () => {
     expect(inherited.statusCode).toBe(201);
     expect(inherited.json().draft).toBeNull();
     expect(inherited.json().thread.settings).toEqual({
-      collaborationMode: "plan",
+      collaborationMode: "default",
       reasoningEffort: "high",
     });
 

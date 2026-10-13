@@ -3602,7 +3602,7 @@ describe("App routing and navigation", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Модель и уровень рассуждений" }));
     expect(screen.getByRole("dialog", { name: "Настройки модели" })).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "Выключить режим планирования" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Включить режим планирования" }));
     expect(api.updateThreadSettings).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByRole("textbox", { name: "Сообщение для Codex" }), {
@@ -3618,7 +3618,7 @@ describe("App routing and navigation", () => {
         id: "created",
         title: "Новая задача",
         settings: {
-          collaborationMode: "plan",
+          collaborationMode: "default",
           reasoningEffort: "high",
           personality: "friendly",
         },
@@ -3627,7 +3627,7 @@ describe("App routing and navigation", () => {
 
     await waitFor(() =>
       expect(api.updateThreadSettings).toHaveBeenCalledWith("created", {
-        collaborationMode: "default",
+        collaborationMode: "plan",
       }),
     );
     await waitFor(() =>
@@ -3663,7 +3663,7 @@ describe("App routing and navigation", () => {
     renderApp("/threads/newer");
     fireEvent.click(screen.getByRole("button", { name: "Создать новую сессию в проекте Проект" }));
     expect(api.createProjectThread).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole("button", { name: "Выключить режим планирования" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Включить режим планирования" }));
 
     fireEvent.change(screen.getByRole("textbox", { name: "Сообщение для Codex" }), {
       target: { value: "Первое сообщение" },
@@ -3678,7 +3678,7 @@ describe("App routing and navigation", () => {
         id: "created",
         title: "Новая задача",
         settings: {
-          collaborationMode: "plan",
+          collaborationMode: "default",
           reasoningEffort: "high",
           serviceTier: "fast",
           personality: "friendly",
@@ -3688,7 +3688,7 @@ describe("App routing and navigation", () => {
 
     await waitFor(() =>
       expect(api.updateThreadSettings).toHaveBeenCalledWith("created", {
-        collaborationMode: "default",
+        collaborationMode: "plan",
       }),
     );
     expect(api.updateThreadSettings).toHaveBeenCalledOnce();
@@ -3716,8 +3716,8 @@ describe("App routing and navigation", () => {
     renderApp("/threads/newer");
     fireEvent.click(screen.getByRole("button", { name: "Создать новую сессию в проекте Проект" }));
     expect(api.createProjectThread).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole("button", { name: "Выключить режим планирования" }));
-    fireEvent.click(screen.getByRole("button", { name: "Включить режим планирования" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Включить режим планирования" }));
+    fireEvent.click(screen.getByRole("button", { name: "Выключить режим планирования" }));
 
     fireEvent.change(screen.getByRole("textbox", { name: "Сообщение для Codex" }), {
       target: { value: "Первое сообщение" },
@@ -3732,7 +3732,7 @@ describe("App routing and navigation", () => {
         id: "created",
         title: "Новая задача",
         settings: {
-          collaborationMode: "plan",
+          collaborationMode: "default",
           reasoningEffort: "high",
           personality: "friendly",
         },
@@ -3820,12 +3820,12 @@ describe("App routing and navigation", () => {
         ...baseThread,
         id: "created",
         title: "Новая задача",
-        settings: { collaborationMode: "plan" },
+        settings: { collaborationMode: "default" },
       },
     });
 
     expect(api.updateThreadDraft).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Выключить режим планирования" }));
+    fireEvent.click(screen.getByRole("button", { name: "Включить режим планирования" }));
     fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
     draftTransfer.resolve({
       input: "Не потеряй первое сообщение",
@@ -3836,7 +3836,7 @@ describe("App routing and navigation", () => {
     });
     await waitFor(() =>
       expect(api.updateThreadSettings).toHaveBeenCalledWith("created", {
-        collaborationMode: "default",
+        collaborationMode: "plan",
       }),
     );
 
@@ -3845,7 +3845,7 @@ describe("App routing and navigation", () => {
       ...baseThread,
       id: "created",
       title: "Новая задача",
-      settings: { collaborationMode: "default" },
+      settings: { collaborationMode: "plan" },
     });
 
     await waitFor(() =>

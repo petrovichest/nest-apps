@@ -812,7 +812,7 @@ export type UpdateThreadGoalRequest = {
 };
 
 export const DEFAULT_SESSION_SETTINGS: SessionSettings = {
-  collaborationMode: "plan",
+  collaborationMode: "default",
 };
 
 export type AttentionBase = {
