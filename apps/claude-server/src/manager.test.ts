@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "./config.js";
-import type { ClaudeAccounts, ClaudeLaunchAccount } from "./accounts.js";
+import { ClaudeAccounts, type ClaudeLaunchAccount } from "./accounts.js";
 import { QUOTA_CONTINUATION_MESSAGE } from "./quota-recovery.js";
 import { SessionManager, type SessionLauncher } from "./manager.js";
 import { SessionRunner, type RunnerTransport } from "./runner.js";
 import type { CommandReceipt, RunnerDescriptor } from "./types.js";
+import { UiService } from "./ui-service.js";
 
 class FakeClaude extends EventEmitter implements RunnerTransport {
   readonly pid = 600001;
@@ -294,6 +295,69 @@ describe("Claude backend manager integration", () => {
     });
     expect(launcher.starts).toBe(1);
     expect(old.transport.stops).toBe(0);
+  });
+
+  it("shares usage updates across waiting sessions without starting a refresh loop", async () => {
+    const { backend, launcher, input, config } = await fixture();
+    let usedPercent = 100;
+    const readUsage = vi.fn(async () => ({
+      primary: { usedPercent, windowDurationMins: 300, resetsAt: Date.now() + 3_600_000 },
+      secondary: { usedPercent: 40, windowDurationMins: 10080, resetsAt: Date.now() + 86_400_000 },
+    }));
+    const accounts = new ClaudeAccounts(config, {
+      poll: false,
+      env: {},
+      readVersion: async () => "fake",
+      readAuth: async () => ({
+        loggedIn: true,
+        authMethod: "claude.ai",
+        email: "test@example.com",
+      }),
+      readUsage,
+    });
+    cleanup.push(() => accounts.close());
+    await accounts.initialize();
+    await accounts.refresh();
+    const manager = await backend(accounts);
+    const inputs = [input, { ...input, sessionId: randomUUID(), requestId: randomUUID() }];
+    for (const delivery of inputs) await manager.create(delivery);
+    const service = new UiService(manager);
+    cleanup.push(() => service.close());
+    await service.initialize({ probeModels: false, pollRateLimits: false });
+    const originalOwners = inputs.map((delivery) => launcher.owners.get(delivery.sessionId)!);
+    for (const owner of originalOwners) {
+      owner.transport.emit("event", { type: "assistant", error: "rate_limit" });
+      owner.transport.emit("event", { type: "result", is_error: true });
+    }
+    const recoveryStates = () =>
+      inputs.map((delivery) => service.thread(delivery.sessionId).quotaRecovery?.state);
+    await expect.poll(recoveryStates).toEqual(["waiting", "waiting"]);
+    const continuationIds = inputs.map(
+      (delivery) => service.thread(delivery.sessionId).quotaRecovery!.continuationId,
+    );
+    readUsage.mockClear();
+
+    await accounts.refresh();
+    await expect.poll(recoveryStates).toEqual(["waiting", "waiting"]);
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    expect(launcher.starts).toBe(2);
+    expect(originalOwners.map((owner) => owner.transport.stops)).toEqual([0, 0]);
+
+    usedPercent = 10;
+    await accounts.refresh();
+    await expect.poll(recoveryStates).toEqual(["continued", "continued"]);
+    expect(readUsage).toHaveBeenCalledTimes(2);
+    expect(launcher.starts).toBe(4);
+    for (const [index, delivery] of inputs.entries())
+      expect(launcher.owners.get(delivery.sessionId)!.transport.sends).toEqual([
+        { requestId: continuationIds[index], text: QUOTA_CONTINUATION_MESSAGE },
+      ]);
+
+    await accounts.refresh();
+    expect(readUsage).toHaveBeenCalledTimes(3);
+    expect(launcher.starts).toBe(4);
+    for (const delivery of inputs)
+      expect(launcher.owners.get(delivery.sessionId)!.transport.sends).toHaveLength(1);
   });
 
   it("can reuse the only account after waiting for its quota reset and a fresh eligibility check", async () => {

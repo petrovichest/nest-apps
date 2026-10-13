@@ -561,6 +561,7 @@ export class SessionManager {
           canReuseFailed ? undefined : failedAccountId,
           recovery.model ??
             quotaModel(snapshot?.model ?? previous.model, snapshot?.supportedModels),
+          { refresh: !recovery.wasWaiting },
         );
         if (!allowed() || !this.accounts.status().autoSwitch) return { state: "cancelled" };
         if (!next) return { state: "waiting" };

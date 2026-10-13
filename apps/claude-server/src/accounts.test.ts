@@ -617,6 +617,34 @@ describe("Claude quota account selection", () => {
     const results = await Promise.all([accounts.rotate(failed), accounts.rotate(failed)]);
     expect(results.map((result) => result?.accountId)).toEqual([good.id, good.id]);
   });
+  it("selects from known limits without refreshing when a recovery is waiting", async () => {
+    const { accounts, config, limits, add } = await fixture();
+    const failed = accounts.status().currentAccountId!;
+    limits.set(config.configDir, usage(100));
+    const good = await add("ready@example.com");
+    await accounts.refresh();
+    const refresh = vi.spyOn(accounts, "refresh");
+    expect((await accounts.rotate(failed, undefined, { refresh: false }))?.accountId).toBe(good.id);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+  it("does not select an account while its known limits are being refreshed", async () => {
+    const readUsage = vi.fn(async () => usage());
+    const { accounts } = await fixture({ readUsage });
+    await accounts.refresh();
+    let release!: (value: NativeClaudeUsage) => void;
+    readUsage.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    const refreshing = accounts.refresh();
+    try {
+      await vi.waitFor(() => expect(release).toBeDefined());
+      expect(await accounts.rotate(undefined, undefined, { refresh: false })).toBeNull();
+      expect(readUsage).toHaveBeenCalledTimes(2);
+    } finally {
+      release(usage(100));
+      await refreshing;
+    }
+    expect(await accounts.rotate(undefined, undefined, { refresh: false })).toBeNull();
+    expect(readUsage).toHaveBeenCalledTimes(2);
+  });
   it("does not switch when disabled, exhausted or windows unknown", async () => {
     const { accounts, config, limits } = await fixture();
     const id = accounts.status().currentAccountId!;

@@ -496,13 +496,18 @@ export class ClaudeAccounts extends EventEmitter {
     if (selected) return this.launch(selected);
     throw new AppError("unavailable", "Add and select a Claude account first", 503);
   }
-  async rotate(failedAccountId?: string, model?: string): Promise<ClaudeLaunchAccount | null> {
+  async rotate(
+    failedAccountId?: string,
+    model?: string,
+    options: { refresh?: boolean } = {},
+  ): Promise<ClaudeLaunchAccount | null> {
     await this.initialize();
     const operation = this.rotation
       .catch(() => undefined)
       .then(async () => {
         if (!this.registry.autoSwitch || this.closed) return null;
-        await this.refresh();
+        // Waiting sessions share account updates instead of triggering another refresh cycle.
+        if (options.refresh !== false) await this.refresh();
         if (!this.registry.autoSwitch || this.closed) return null;
         const eligible = this.registry.accounts.filter((account) => this.eligible(account, model));
         const current = eligible.find(
@@ -567,6 +572,7 @@ export class ClaudeAccounts extends EventEmitter {
       account.authenticated &&
       !account.connectionError &&
       !state.refreshError &&
+      !state.refreshing &&
       this.modelWindows(account, model).every(
         (window) =>
           !window ||
