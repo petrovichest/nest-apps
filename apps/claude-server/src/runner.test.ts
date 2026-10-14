@@ -704,6 +704,41 @@ describe("additive protocol-1 features", () => {
     );
   });
 
+  it("keeps an input running when Claude first answers a background-task notification", async () => {
+    const { fake, runner, client } = await fixture();
+    fake.autoEcho = false;
+    const connection = await client(),
+      requestId = randomUUID(),
+      status = () =>
+        runner.snapshot().commands.find((receipt) => receipt.requestId === requestId)?.status;
+    await connection.request("send", { requestId, text: "Continue" });
+    fake.emit("event", {
+      type: "result",
+      subtype: "success",
+      num_turns: 0,
+      origin: { kind: "task-notification" },
+    });
+    expect(runner.snapshot()).toMatchObject({ state: "running", awaitingResult: true });
+    expect(status()).toBe("accepted");
+    fake.emit("event", { type: "user", uuid: requestId, message: { content: "Continue" } });
+    expect(status()).toBe("completed");
+    expect(runner.snapshot()).toMatchObject({ state: "running", awaitingResult: true });
+    fake.emit("event", { type: "result", subtype: "success" });
+    expect(runner.snapshot()).toMatchObject({ state: "idle", awaitingResult: false });
+
+    // Once Claude has acknowledged the input, a notification-origin result still ends its turn.
+    const second = randomUUID();
+    fake.autoEcho = true;
+    await connection.request("send", { requestId: second, text: "Next" });
+    expect(runner.snapshot().state).toBe("running");
+    fake.emit("event", {
+      type: "result",
+      subtype: "success",
+      origin: { kind: "task-notification" },
+    });
+    expect(runner.snapshot()).toMatchObject({ state: "idle", awaitingResult: false });
+  });
+
   it("accepts steering while waiting for a question and preserves that question", async () => {
     const { fake, runner, client } = await fixture();
     const connection = await client();

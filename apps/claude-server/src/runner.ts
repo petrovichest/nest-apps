@@ -675,7 +675,18 @@ export class SessionRunner {
         if (this.state !== "interrupted") this.refreshState();
       }
     }
-    if (event.type === "result" && isMainNativeEvent(event)) {
+    // Claude answers a finished background task ahead of an input still waiting behind it. That
+    // result belongs to the notification, so the input stays in flight until its own result.
+    const origin = event.origin;
+    const notification =
+      typeof origin === "object" &&
+      origin !== null &&
+      (origin as { kind?: unknown }).kind === "task-notification";
+    if (
+      event.type === "result" &&
+      isMainNativeEvent(event) &&
+      !(notification && this.unacknowledgedInputs.size > 0)
+    ) {
       this.nativeTaskRunning = false;
       if (this.activeSendRequestId) {
         const receipt = this.receipts.get(this.activeSendRequestId);
