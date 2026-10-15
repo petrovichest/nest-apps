@@ -17,6 +17,7 @@ import WebSocket from "ws";
 import { buildApp } from "./app";
 import type { Config } from "./config";
 import type { SessionManager } from "./manager";
+import type { ClaudeAccounts } from "./accounts";
 import type { RunnerConnection } from "./rpc";
 import { AppError, type CommandReceipt, type RunnerDescriptor, type RunnerSnapshot } from "./types";
 import { UiService } from "./ui-service";
@@ -25,7 +26,7 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
 });
-async function fixture() {
+async function fixture(configure?: (manager: SessionManager) => Promise<void>) {
   const directory = await mkdtemp("/tmp/claude-ui-http-");
   const clientDist = join(directory, "client");
   await mkdir(clientDist);
@@ -72,6 +73,7 @@ async function fixture() {
   } as unknown as SessionManager;
   const ui = new UiService(manager);
   await ui.initialize({ probeModels: false });
+  await configure?.(manager);
   const app = await buildApp(manager, ui);
   await app.ready();
   cleanup.push(async () => {
@@ -246,6 +248,52 @@ describe("local session references", () => {
 });
 
 describe("Claude browser UI HTTP and global stream", () => {
+  it("refines uploaded voice with the selected account instead of the API's default profile", async () => {
+    const launchAccount = vi.fn();
+    const state = await fixture(async (manager) => {
+      const selectedConfig = join(dirname(manager.config.stateDir), "selected-account");
+      launchAccount.mockResolvedValue({
+        accountId: "selected",
+        configDir: selectedConfig,
+        proxy: {
+          protocol: "http",
+          url: "http://selected-proxy.invalid:8080",
+        },
+      });
+      Object.assign(manager, {
+        accounts: {
+          launchAccount,
+          off: vi.fn(),
+          close: async () => {},
+        } as unknown as ClaudeAccounts,
+      });
+      manager.config.claudeBin = join(dirname(manager.config.stateDir), "refiner");
+      await writeFile(
+        manager.config.claudeBin,
+        `#!${process.execPath}
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const selected = process.env.CLAUDE_CONFIG_DIR === ${JSON.stringify(selectedConfig)} &&
+    process.env.HTTPS_PROXY === "http://selected-proxy.invalid:8080";
+  process.stdout.write(JSON.stringify({ is_error: !selected, structured_output: { text: "Текст." } }));
+});
+`,
+        { mode: 0o700 },
+      );
+    });
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ text: "текст" }));
+    cleanup.push(async () => fetch.mockRestore());
+    const response = await state.app.inject({
+      method: "POST",
+      url: "/api/v1/transcriptions",
+      headers: { ...state.headers, "content-type": "audio/webm" },
+      payload: Buffer.from("recording"),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().text).toBe("Текст.");
+    expect(launchAccount).toHaveBeenCalledOnce();
+  });
+
   it("sends turns and explicit steering straight to a busy owner while explicit FIFO waits", async () => {
     const state = await fixture(),
       { id } = await state.reserve();

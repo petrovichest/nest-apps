@@ -604,6 +604,43 @@ export type ThreadDraftAnnotation = {
   createdAt: number;
 };
 
+export function formatAnnotatedMessage(
+  input: string,
+  annotations: readonly ThreadDraftAnnotation[],
+  language: UiLanguage = "ru",
+): string {
+  const sections: string[] = [];
+  const message = input.trim();
+  if (message) sections.push(message);
+  if (annotations.length) {
+    const title =
+      language === "en"
+        ? "## Annotations for the agent's previous response"
+        : "## Аннотации к предыдущему ответу агента";
+    const annotationLabel = language === "en" ? "Annotation" : "Аннотация";
+    const quoteLabel = language === "en" ? "Selected text:" : "Выделенный текст:";
+    const commentLabel = language === "en" ? "Comment:" : "Комментарий:";
+    sections.push(
+      [
+        title,
+        ...annotations.map((annotation, index) =>
+          [
+            `### ${annotationLabel} ${index + 1}`,
+            quoteLabel,
+            annotation.quote
+              .split("\n")
+              .map((line) => `> ${line}`)
+              .join("\n"),
+            commentLabel,
+            annotation.comment.trim(),
+          ].join("\n\n"),
+        ),
+      ].join("\n\n"),
+    );
+  }
+  return sections.join("\n\n");
+}
+
 export type UpdateThreadDraftRequest = PastedText & {
   input: string;
   images: ThreadDraftImage[];

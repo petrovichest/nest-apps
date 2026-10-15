@@ -139,9 +139,14 @@ export async function registerUiRoutes(
   ui: UiService,
   browser?: BrowserExtensionServer,
 ): Promise<() => Promise<void>> {
+  const accounts = ui.manager.accounts;
   const voice = new ClaudeVoiceService({
     claudeBin: ui.manager.config.claudeBin,
     configDir: ui.manager.config.configDir,
+    launchAccount: accounts ? () => accounts.launchAccount() : undefined,
+    onRefinementError: () => {
+      process.stderr.write("ClaudeNest: Transcript refinement failed; keeping raw transcript.\n");
+    },
     loadSettings: async () => ui.store.data.voiceSettings,
     saveSettings: async (settings) => {
       await ui.store.update((data) => {

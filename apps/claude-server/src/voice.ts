@@ -7,6 +7,8 @@ import type {
   TranscriptionConfigResponse,
   UpdateTranscriptionSettingsRequest,
 } from "@codexnest/protocol";
+import type { ClaudeLaunchAccount } from "./accounts";
+import { createClaudeProxyEnvironment, type ClaudeProxyEnvironment } from "./proxy";
 
 export const MAX_TRANSCRIPTION_BYTES = 24 * 1024 * 1024;
 export const MAX_RECORDING_SECONDS = 300;
@@ -41,6 +43,7 @@ export interface VoiceTranscriptionOptions {
 export interface VoiceServiceOptions {
   claudeBin?: string;
   configDir?: string;
+  launchAccount?: () => Promise<ClaudeLaunchAccount>;
   neutralCwd?: string;
   env?: NodeJS.ProcessEnv;
   settings?: Partial<VoiceSettings>;
@@ -270,9 +273,6 @@ export class ClaudeVoiceService {
     const temporary = this.options.neutralCwd
       ? undefined
       : await mkdtemp(join(tmpdir(), "claudenest-voice-"));
-    const env = { ...process.env, ...this.options.env };
-    delete env.CLAUDECODE;
-    if (this.options.configDir) env.CLAUDE_CONFIG_DIR = this.options.configDir;
     const args = [
       "-p",
       "--output-format",
@@ -292,7 +292,21 @@ export class ClaudeVoiceService {
       "--json-schema",
       JSON.stringify(REFINEMENT_SCHEMA),
     ];
+    let connection: ClaudeProxyEnvironment | undefined;
     try {
+      const account = await this.options.launchAccount?.();
+      const configDir = account?.defaultConfig
+        ? ""
+        : (account?.configDir ?? this.options.configDir);
+      let env = { ...process.env, ...this.options.env };
+      delete env.CLAUDECODE;
+      if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
+      else if (account?.defaultConfig) delete env.CLAUDE_CONFIG_DIR;
+      if (account?.proxy !== undefined) {
+        connection = await createClaudeProxyEnvironment(account.proxy, configDir ?? "", { env });
+        env = connection.env;
+      }
+      signal?.throwIfAborted();
       const output = await runRefiner(
         this.options.spawnProcess ?? spawn,
         this.options.claudeBin,
@@ -307,6 +321,7 @@ export class ClaudeVoiceService {
       );
       return parseRefinement(output);
     } finally {
+      await connection?.close().catch(() => undefined);
       if (temporary) await rm(temporary, { recursive: true, force: true });
     }
   }

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ClaudeLaunchAccount } from "./accounts";
 
 import {
   ClaudeVoiceService,
@@ -290,6 +291,67 @@ describe("Claude local voice", () => {
       "исходный текст",
     );
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("uses the currently selected account and its proxy for every refinement", async () => {
+    const launchAccount = vi.fn<() => Promise<ClaudeLaunchAccount>>(async () => ({
+      accountId: "selected",
+      configDir: "/selected/account",
+      proxy: {
+        protocol: "http" as const,
+        host: "proxy.test",
+        port: 8080,
+        username: null,
+        password: null,
+        url: "http://proxy.test:8080",
+      },
+    }));
+    const environments: NodeJS.ProcessEnv[] = [];
+    const voice = service({
+      claudeBin: "/installed/claude",
+      configDir: "/expired/default-account",
+      launchAccount,
+      env: { ANTHROPIC_API_KEY: "ambient-key", HTTPS_PROXY: "http://wrong.test:9999" },
+      spawnProcess: ((_command, _args, options) => {
+        environments.push(options.env);
+        const child = new FakeChild();
+        child.stdin.once("finish", () => {
+          child.stdout.end(JSON.stringify({ structured_output: { text: "Исходный текст." } }));
+          child.emit("close", 0, null);
+        });
+        return child;
+      }) as typeof spawn,
+    });
+    await expect(voice.transcribe(Buffer.from("audio"), "audio/webm")).resolves.toBe(
+      "Исходный текст.",
+    );
+    expect(environments[0]).toMatchObject({
+      CLAUDE_CONFIG_DIR: "/selected/account",
+      HTTPS_PROXY: "http://proxy.test:8080",
+      NO_PROXY: "localhost,127.0.0.1,::1",
+    });
+    expect(environments[0]!.ANTHROPIC_API_KEY).toBeUndefined();
+    launchAccount.mockResolvedValueOnce({
+      accountId: "next",
+      configDir: "/next/account",
+      proxy: null,
+    });
+    await expect(voice.transcribe(Buffer.from("audio"), "audio/webm")).resolves.toBe(
+      "Исходный текст.",
+    );
+    expect(launchAccount).toHaveBeenCalledTimes(2);
+    expect(environments[1]!.CLAUDE_CONFIG_DIR).toBe("/next/account");
+    expect(environments[1]!.HTTPS_PROXY).toBeUndefined();
+    launchAccount.mockResolvedValueOnce({
+      accountId: "native-default",
+      configDir: "/native/home/.claude",
+      defaultConfig: true,
+      proxy: null,
+    });
+    await expect(voice.transcribe(Buffer.from("audio"), "audio/webm")).resolves.toBe(
+      "Исходный текст.",
+    );
+    expect(environments[2]!.CLAUDE_CONFIG_DIR).toBeUndefined();
   });
 
   it("propagates user cancellation during refinement instead of applying a transcript", async () => {

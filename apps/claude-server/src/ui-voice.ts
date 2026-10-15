@@ -2,7 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
-import { replacePasteRanges, serializePastedMessage } from "@codexnest/protocol";
+import {
+  formatAnnotatedMessage,
+  replacePasteRanges,
+  serializePastedMessage,
+} from "@codexnest/protocol";
 import type { QueueMessageRequest, ThreadDraft, VoiceTranscriptionJob } from "@codexnest/protocol";
 
 import type { UiService } from "./ui-service";
@@ -438,7 +442,11 @@ export class UiVoiceJobs {
       } else {
         record.sendDraftUpdatedAt = currentRevision;
         record.sendInput = {
-          input: formatInput(inserted),
+          input: formatAnnotatedMessage(
+            serializePastedMessage(inserted.input, inserted),
+            inserted.annotations,
+            data.uiLanguage,
+          ),
           images: inserted.images.map((image) => image.url),
           ...(inserted.files?.length ? { files: inserted.files } : {}),
           clientMessageId: `voice:${record.job.id}`,
@@ -539,15 +547,4 @@ function insertTranscript(
       ? { inlinePastes: replacePasteRanges(draft.inlinePastes, start, end, insertion.length) }
       : {}),
   };
-}
-function formatInput(draft: ThreadDraft): string {
-  const text = serializePastedMessage(draft.input, draft).trim();
-  if (!draft.annotations.length) return text;
-  return [
-    text,
-    "Annotations for the agent's previous response:",
-    ...draft.annotations.map((annotation) => `${annotation.quote}\n${annotation.comment}`),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
 }

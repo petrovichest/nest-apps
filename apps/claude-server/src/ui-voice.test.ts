@@ -331,6 +331,51 @@ describe("durable Claude UI voice jobs", () => {
     },
   );
 
+  it.each(["send", "steer", "queue"])(
+    "formats annotations in the UI language when voice is submitted as %s",
+    async (mode) => {
+      for (const language of ["ru", "en"] as const) {
+        const state = await fixture();
+        await state.store.update((data) => {
+          data.uiLanguage = language;
+          data.threads[state.threadId]!.draft!.annotations = [
+            {
+              id: "annotation",
+              messageId: "answer",
+              source: "agentMessage",
+              quote: "First line\nSecond line",
+              comment: "  Use this option.  ",
+              startOffset: 0,
+              endOffset: 22,
+              createdAt: 1,
+            },
+          ];
+        });
+        const job = await state.jobs.create(
+          state.threadId,
+          Buffer.from("audio"),
+          "audio/webm",
+          uploadQuery(mode),
+          1000,
+        );
+        await vi.waitFor(() => expect(state.store.data.voice[job!.id]!.applied).toBe(true));
+        expect(state.enqueue.mock.calls[0]![1].input).toBe(
+          [
+            "voice world",
+            language === "ru"
+              ? "## Аннотации к предыдущему ответу агента"
+              : "## Annotations for the agent's previous response",
+            language === "ru" ? "### Аннотация 1" : "### Annotation 1",
+            language === "ru" ? "Выделенный текст:" : "Selected text:",
+            "> First line\n> Second line",
+            language === "ru" ? "Комментарий:" : "Comment:",
+            "Use this option.",
+          ].join("\n\n"),
+        );
+      }
+    },
+  );
+
   it("steers the revised draft with its attachments when typing continues during transcription", async () => {
     const result = deferred<string>();
     const state = await fixture(vi.fn(() => result.promise));
