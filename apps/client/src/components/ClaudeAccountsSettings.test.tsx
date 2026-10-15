@@ -179,7 +179,7 @@ describe("ClaudeAccountsSettings", () => {
   it("shows and copies full SOCKS5 credentials and tests only after an explicit click", async () => {
     const api = mockApi();
     render(<ClaudeAccountsSettings />);
-    fireEvent.click(await screen.findByRole("button", { name: "Добавить аккаунт" }));
+    await openAccountDialog();
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByLabelText("Через прокси")).toBeChecked();
     const input = within(dialog).getByLabelText("Прокси");
@@ -222,7 +222,7 @@ describe("ClaudeAccountsSettings", () => {
   it("offers ambiguous proxy interpretations without retyping and changes explicit protocols", async () => {
     const api = mockApi();
     render(<ClaudeAccountsSettings />);
-    fireEvent.click(await screen.findByRole("button", { name: "Добавить аккаунт" }));
+    await openAccountDialog();
     const dialog = screen.getByRole("dialog");
     const input = within(dialog).getByLabelText("Прокси");
     fireEvent.change(input, { target: { value: "one:80:two:90" } });
@@ -249,7 +249,7 @@ describe("ClaudeAccountsSettings", () => {
   it("keeps invalid input local and does not echo secret backend errors", async () => {
     const api = mockApi();
     render(<ClaudeAccountsSettings />);
-    fireEvent.click(await screen.findByRole("button", { name: "Добавить аккаунт" }));
+    await openAccountDialog();
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Прокси"), {
       target: { value: "private-password" },
@@ -340,7 +340,7 @@ describe("ClaudeAccountsSettings", () => {
         }),
     );
     render(<ClaudeAccountsSettings />);
-    fireEvent.click(await screen.findByRole("button", { name: "Добавить аккаунт" }));
+    await openAccountDialog();
     fireEvent.click(screen.getByLabelText("Без прокси"));
     fireEvent.click(screen.getByRole("button", { name: "Перейти к входу" }));
     fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
@@ -351,7 +351,7 @@ describe("ClaudeAccountsSettings", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("preserves the existing proxy on reauthentication and requires fresh credentials for editing", async () => {
+  it("preserves the proxy on reauthentication and supports editing settings from an older server", async () => {
     const api = mockApi();
     render(<ClaudeAccountsSettings />);
     await screen.findByText("person@example.com");
@@ -394,8 +394,14 @@ describe("ClaudeAccountsSettings", () => {
   });
 });
 
+async function openAccountDialog() {
+  const button = await screen.findByRole("button", { name: "Добавить аккаунт" });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
+}
+
 async function openDirectLogin() {
-  fireEvent.click(await screen.findByRole("button", { name: "Добавить аккаунт" }));
+  await openAccountDialog();
   fireEvent.click(screen.getByLabelText("Без прокси"));
   fireEvent.click(screen.getByRole("button", { name: "Перейти к входу" }));
   await screen.findByRole("link", { name: "Открыть страницу входа" });
