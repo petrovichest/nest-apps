@@ -31,6 +31,7 @@ export function proxyStatus(proxy: ParsedClaudeProxy | null): ClaudeProxyStatus 
     port: proxy?.port ?? null,
     username: proxy?.username ?? null,
     hasPassword: Boolean(proxy?.password),
+    url: proxy?.url ?? null,
   };
 }
 

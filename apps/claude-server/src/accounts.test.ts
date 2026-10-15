@@ -233,7 +233,7 @@ describe("native Claude account storage and login", () => {
         proxy: expect.objectContaining({ url: upstream }),
       }),
     );
-    expect(JSON.stringify(accounts.status())).not.toContain("native-secret");
+    expect(accounts.status().accounts[0]?.proxy.url).toBe(upstream);
     expect((await stat(join(config.stateDir, "claude-accounts.json"))).mode & 0o777).toBe(0o600);
     const added = await add("direct@example.com");
     await accounts.select(added.id);
@@ -289,7 +289,7 @@ describe("native Claude account storage and login", () => {
     );
   });
   it.each(["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"])(
-    "imports the original native %s connection without exposing credentials",
+    "imports the full original native %s connection into authenticated settings",
     async (name) => {
       const { accounts } = await fixture({
         env: { [name]: "socks5://user:private@proxy.example:1080" },
@@ -299,8 +299,8 @@ describe("native Claude account storage and login", () => {
         protocol: "socks5",
         host: "proxy.example",
         port: 1080,
+        url: "socks5h://user:private@proxy.example:1080",
       });
-      expect(JSON.stringify(accounts.status())).not.toContain("private");
     },
   );
   it("keeps settings available for an invalid imported proxy and never falls back to direct", async () => {
@@ -478,7 +478,9 @@ describe("native Claude account storage and login", () => {
     expect(child.inputs).toEqual(["abc#test\n"]);
     child.close();
     await vi.waitFor(() => expect(accounts.login(login.id).state).toBe("completed"));
-    expect(JSON.stringify(accounts.status())).not.toContain("secret");
+    expect(
+      accounts.status().accounts.find((account) => account.email === "new@example.com")?.proxy.url,
+    ).toBe("http://user:secret@proxy.example:8080");
   });
   it("reauthenticates the same email under its stable account ID and survives restart", async () => {
     const { accounts, config, options, add } = await fixture();

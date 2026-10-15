@@ -37,7 +37,7 @@ describe("managed Claude proxy connections", () => {
     await connection.close();
   });
   it.each(["http", "https"] as const)(
-    "uses %s upstream directly and exposes only masked status",
+    "uses %s upstream directly and includes the full URL in authenticated settings status",
     async (protocol) => {
       const proxy = parseClaudeProxy(`${protocol}://user:secret@proxy.example:443`);
       const createServer = vi.fn();
@@ -55,8 +55,8 @@ describe("managed Claude proxy connections", () => {
         port: 443,
         username: "user",
         hasPassword: true,
+        url: proxy.url,
       });
-      expect(JSON.stringify(proxyStatus(proxy))).not.toContain("secret");
       await connection.close();
     },
   );
@@ -119,6 +119,7 @@ describe("managed Claude proxy connections", () => {
       },
     });
     expect(failed.ok).toBe(false);
-    expect(JSON.stringify(failed)).not.toContain("secret");
+    expect(failed.error).not.toContain("secret");
+    expect(failed.proxy.url).toBe(input.value);
   });
 });

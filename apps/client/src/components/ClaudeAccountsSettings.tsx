@@ -23,7 +23,6 @@ import {
   BrowserIcon,
   CheckIcon,
   CopyIcon,
-  EyeIcon,
   MoreIcon,
   PlusIcon,
   RefreshIcon,
@@ -398,6 +397,9 @@ function AccountCard({
             {proxyDescription(account.proxy, t)}
           </span>
         </p>
+        {account.proxy.enabled && account.proxy.url && (
+          <ProxyCopyButton value={account.proxy.url} />
+        )}
         {!account.authenticated && (
           <button type="button" disabled={busy} onClick={onLogin} aria-label={t("Войти в Claude")}>
             {t("Войти")}
@@ -415,6 +417,36 @@ function AccountCard({
         </button>
       </footer>
     </article>
+  );
+}
+
+function ProxyCopyButton({ value, disabled = false }: { value: string; disabled?: boolean }) {
+  const { t } = useI18n();
+  const [result, setResult] = useState<"idle" | "copied" | "failed">("idle");
+  useEffect(() => setResult("idle"), [value]);
+  const label = t(
+    result === "copied"
+      ? "Скопировано"
+      : result === "failed"
+        ? "Не удалось скопировать"
+        : "Скопировать прокси",
+  );
+  return (
+    <button
+      type="button"
+      className="icon-button"
+      aria-label={label}
+      title={label}
+      disabled={disabled || !value.trim()}
+      onClick={() =>
+        void copyText(value).then(
+          () => setResult("copied"),
+          () => setResult("failed"),
+        )
+      }
+    >
+      {result === "copied" ? <CheckIcon /> : <CopyIcon />}
+    </button>
   );
 }
 
@@ -491,9 +523,8 @@ function AccountWizard({
   );
   const [enabled, setEnabled] = useState(account?.proxy.enabled ?? true);
   const [protocol, setProtocol] = useState<ClaudeProxyProtocol>(account?.proxy.protocol ?? "http");
-  const [rawProxy, setRawProxy] = useState("");
+  const [rawProxy, setRawProxy] = useState(account?.proxy.url ?? "");
   const [choice, setChoice] = useState<string | null>(null);
-  const [showProxy, setShowProxy] = useState(false);
   const [changed, setChanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -789,7 +820,7 @@ function AccountWizard({
               <div className="claude-proxy-input">
                 <input
                   id={`${headingId}-proxy`}
-                  type={showProxy ? "text" : "password"}
+                  type="text"
                   autoComplete="off"
                   spellCheck={false}
                   value={rawProxy}
@@ -813,15 +844,7 @@ function AccountWizard({
                     changeConnection();
                   }}
                 />
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={t(showProxy ? "Скрыть прокси" : "Показать прокси")}
-                  disabled={busy}
-                  onClick={() => setShowProxy(!showProxy)}
-                >
-                  <EyeIcon crossed={showProxy} />
-                </button>
+                <ProxyCopyButton value={selected?.url ?? rawProxy.trim()} disabled={busy} />
               </div>
               <p className="claude-account-hint">
                 {t("Вставьте строку как получили от провайдера — разберём автоматически.")}
@@ -888,7 +911,7 @@ function AccountWizard({
                     <dt>{t("Логин")}</dt>
                     <dd>{selected.username ?? "—"}</dd>
                     <dt>{t("Пароль")}</dt>
-                    <dd>{selected.password ? "••••••••" : "—"}</dd>
+                    <dd>{selected.password || "—"}</dd>
                   </dl>
                 </div>
               )}
@@ -1103,7 +1126,8 @@ function endpoint(host: string, port: number): string {
 
 function proxyDescription(proxy: ClaudeProxyStatus, t: Translate): string {
   return proxy.enabled
-    ? `${proxy.protocol.toUpperCase()} · ${proxy.host && proxy.port ? endpoint(proxy.host, proxy.port) : t("Адрес недоступен")}`
+    ? (proxy.url ??
+        `${proxy.protocol.toUpperCase()} · ${proxy.host && proxy.port ? endpoint(proxy.host, proxy.port) : t("Адрес недоступен")}`)
     : t("Без прокси");
 }
 

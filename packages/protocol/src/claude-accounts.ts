@@ -13,6 +13,8 @@ export type ClaudeProxyStatus = {
   port: number | null;
   username: string | null;
   hasPassword: boolean;
+  /** Full proxy URL, including credentials, for authenticated settings clients. */
+  url?: string | null;
 };
 export type ClaudeAccount = {
   id: string;

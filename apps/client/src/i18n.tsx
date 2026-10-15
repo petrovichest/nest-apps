@@ -1136,6 +1136,7 @@ const ENGLISH: Record<string, string> = {
   "На сервере · готовим результат": "On the server · preparing the result",
   "На сервере · {{status}}": "On the server · {{status}}",
   Скопировано: "Copied",
+  "Скопировать прокси": "Copy proxy",
   "Сначала отправьте или удалите аннотации": "Send or delete the annotations first",
   "Сначала отправьте или удалите аннотации к плану": "Send or delete the plan annotations first",
   "Сообщение будет добавлено в очередь": "The message will be added to the queue",

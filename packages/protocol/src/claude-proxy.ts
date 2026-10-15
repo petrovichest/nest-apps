@@ -6,7 +6,7 @@ export type ParsedClaudeProxy = {
   port: number;
   username?: string;
   password?: string;
-  /** Contains credentials. Never include this value in public account status or logs. */
+  /** Contains credentials. Expose only to authenticated clients; never log it. */
   url: string;
 };
 

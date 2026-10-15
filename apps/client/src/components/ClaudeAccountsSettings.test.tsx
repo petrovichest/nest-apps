@@ -25,6 +25,43 @@ afterEach(() => {
 });
 
 describe("ClaudeAccountsSettings", () => {
+  it("shows and copies a saved proxy and prefills its complete editable URL", async () => {
+    const url = "https://user:p%40ss%3Aword@proxy.example:8443";
+    const proxy = { ...account().proxy, url };
+    const api = mockApi(status({ accounts: [account({ proxy })] }));
+    render(<ClaudeAccountsSettings />);
+    const card = await screen.findByRole("article", { name: "person@example.com" });
+    expect(within(card).getByText(url)).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "Скопировать прокси" }));
+    await waitFor(() => expect(copyText).toHaveBeenCalledExactlyOnceWith(url));
+    expect(within(card).getByRole("button", { name: "Скопировано" })).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "Настроить" }));
+    const dialog = screen.getByRole("dialog");
+    const input = within(dialog).getByLabelText("Прокси");
+    expect(input).toHaveValue(url);
+    expect(input).toHaveAttribute("type", "text");
+    expect(within(dialog).getByText("p@ss:word")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Скопировать прокси" }));
+    await waitFor(() => expect(copyText).toHaveBeenCalledTimes(2));
+    expect(copyText).toHaveBeenLastCalledWith(url);
+    expect(within(dialog).getByRole("button", { name: "Сохранить подключение" })).toBeDisabled();
+    expect(api.testClaudeProxy).not.toHaveBeenCalled();
+    expect(api.updateClaudeAccountProxy).not.toHaveBeenCalled();
+  });
+
+  it("reports clipboard failure and leaves the full proxy available to select manually", async () => {
+    const url = "http://user:password@proxy.example:8080";
+    mockApi(status({ accounts: [account({ proxy: { ...account().proxy, url } })] }));
+    copyText.mockRejectedValueOnce(new Error("Clipboard unavailable"));
+    render(<ClaudeAccountsSettings />);
+    const card = await screen.findByRole("article", { name: "person@example.com" });
+    fireEvent.click(within(card).getByRole("button", { name: "Скопировать прокси" }));
+    expect(
+      await within(card).findByRole("button", { name: "Не удалось скопировать" }),
+    ).toBeInTheDocument();
+    expect(within(card).getByText(url)).toBeInTheDocument();
+  });
+
   it("shows equal email accounts, weekly exhaustion and unknown limits without polling usage on render", async () => {
     const api = mockApi(
       status({
@@ -139,21 +176,27 @@ describe("ClaudeAccountsSettings", () => {
     await waitFor(() => expect(api.selectClaudeAccount).toHaveBeenCalledWith("fractional"));
   });
 
-  it("accepts SOCKS5, masks parsed credentials and tests only after an explicit click", async () => {
+  it("shows and copies full SOCKS5 credentials and tests only after an explicit click", async () => {
     const api = mockApi();
     render(<ClaudeAccountsSettings />);
     fireEvent.click(await screen.findByRole("button", { name: "Добавить аккаунт" }));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByLabelText("Через прокси")).toBeChecked();
     const input = within(dialog).getByLabelText("Прокси");
-    expect(input).toHaveAttribute("type", "password");
+    expect(input).toHaveAttribute("type", "text");
     fireEvent.change(input, {
       target: { value: "socks5://proxy-user:private-password@proxy.example:1080" },
     });
     expect(within(dialog).getByLabelText("Тип прокси")).toHaveValue("socks5");
     expect(within(dialog).getByText("proxy.example:1080")).toBeInTheDocument();
     expect(within(dialog).getByText("proxy-user")).toBeInTheDocument();
-    expect(within(dialog).queryByText("private-password")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("private-password")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Скопировать прокси" }));
+    await waitFor(() =>
+      expect(copyText).toHaveBeenCalledWith(
+        "socks5h://proxy-user:private-password@proxy.example:1080",
+      ),
+    );
     expect(api.testClaudeProxy).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Проверить прокси" }));
     await waitFor(() =>
