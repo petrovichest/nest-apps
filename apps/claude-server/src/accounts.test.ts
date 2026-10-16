@@ -766,6 +766,27 @@ describe("evenly spaced Claude warm-ups", () => {
     expect(spawnProcess).toHaveBeenCalledTimes(2);
   });
 
+  it("lets real work select an idle subscription before its warm-up slot", async () => {
+    const state = await group(4);
+    state.setUsage(0, usage(100, 30, NOW + 60 * minute));
+    state.setUsage(1, state.idle(30));
+    state.setUsage(2, state.idle(5));
+    state.setUsage(3, state.idle(100));
+    await state.refreshAt(0);
+    const readUsage = vi.fn(state.options.readUsage!);
+    state.options.readUsage = readUsage;
+    expect(
+      (await state.accounts.rotate(state.entries[0]!.id, "haiku", { refresh: false }))?.accountId,
+    ).toBe(state.entries[2]!.id);
+    expect(readUsage).not.toHaveBeenCalled();
+    expect(state.warmed).toEqual([]);
+    // A running window with an earlier reset still takes priority over idle subscriptions.
+    state.setUsage(1, usage(10, 30, NOW + 20 * minute));
+    await state.refreshAt(0);
+    expect(state.accounts.status().currentAccountId).toBe(state.entries[1]!.id);
+    expect(state.warmed).toEqual([]);
+  });
+
   it("wakes at the exact warm-up deadline between normal usage polls", async () => {
     const state = await group(2);
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });

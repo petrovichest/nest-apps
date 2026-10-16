@@ -117,7 +117,7 @@ function spendFirst(a: SavedAccount, b: SavedAccount): number {
     bLimits = b.rateLimits.limits!;
   return (
     fiveHourReset(a) - fiveHourReset(b) ||
-    aLimits.primary!.usedPercent - bLimits.primary!.usedPercent ||
+    (aLimits.primary?.usedPercent ?? 0) - (bLimits.primary?.usedPercent ?? 0) ||
     aLimits.secondary!.usedPercent - bLimits.secondary!.usedPercent
   );
 }
@@ -771,13 +771,15 @@ export class ClaudeAccounts extends EventEmitter {
             window.usedPercent < 100),
       ) &&
       [state.limits?.primary, state.limits?.secondary].every(
-        (window) =>
-          window &&
-          Number.isFinite(window.usedPercent) &&
-          window.usedPercent >= 0 &&
-          window.usedPercent < 100 &&
-          (window.resetsAt === null ||
-            (Number.isFinite(window.resetsAt) && window.resetsAt > this.now())),
+        (window, index) =>
+          // An idle subscription can serve a real request before its scheduled warm-up.
+          (index === 0 && window === null) ||
+          (window &&
+            Number.isFinite(window.usedPercent) &&
+            window.usedPercent >= 0 &&
+            window.usedPercent < 100 &&
+            (window.resetsAt === null ||
+              (Number.isFinite(window.resetsAt) && window.resetsAt > this.now()))),
       )
     );
   }
