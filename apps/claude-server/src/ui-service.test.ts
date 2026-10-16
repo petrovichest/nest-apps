@@ -503,6 +503,46 @@ describe("Claude UI durable session facade", () => {
       expect(manager.sends.map((delivery) => delivery.prompt)).toEqual(["Second task"]);
     },
   );
+  it("reports how full the context is from native answers and sizes the window from the model", async () => {
+    const { manager, start, reserve } = await fixture();
+    manager.accepting = true;
+    const service = await start(),
+      id = await reserve(service);
+    await service.enqueue(id, { clientMessageId: randomUUID(), input: "First task", images: [] });
+    await waitForQueue(service, id, 0);
+    expect(service.summary(id).contextUsage).toBeUndefined();
+    const answer = (messageId: string, usage: Record<string, number>) => ({
+      type: "assistant",
+      uuid: randomUUID(),
+      message: {
+        id: messageId,
+        model: "claude-sonnet-5-5",
+        content: [{ type: "text", text: messageId }],
+        usage,
+      },
+    });
+    manager.emit(id, "native", answer("one", { input_tokens: 50_000, output_tokens: 1_000 }));
+    await expect
+      .poll(() => service.summary(id).contextUsage)
+      .toEqual({ usedTokens: 51_000, windowTokens: 200_000 });
+    await service.store.update((data) => {
+      data.threads[id]!.settings.model = "sonnet[1m]";
+    });
+    expect(service.summary(id).contextUsage?.windowTokens).toBe(1_000_000);
+    manager.emit(id, "native", {
+      type: "result",
+      is_error: false,
+      modelUsage: { "claude-sonnet-5-5": { contextWindow: 400_000 } },
+    });
+    await expect.poll(() => service.summary(id).contextUsage?.windowTokens).toBe(400_000);
+    manager.emit(id, "native", {
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: { trigger: "manual", pre_tokens: 51_000, post_tokens: 6_000 },
+    });
+    await expect.poll(() => service.summary(id).contextUsage?.usedTokens).toBeNull();
+    expect(service.summary(id).contextUsage?.windowTokens).toBe(400_000);
+  });
   it("relaunches an idle owner at the next message after its browser binding changes", async () => {
     const { manager, start, reserve } = await fixture();
     manager.accepting = true;

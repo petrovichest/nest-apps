@@ -58,6 +58,18 @@ class SmokeClaude extends EventEmitter implements RunnerTransport {
       uuid: requestId,
       message: { role: "user", content: content ?? text },
     });
+    if (text === "/compact") {
+      this.native({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "manual", pre_tokens: 82_400, post_tokens: 9_000 },
+      });
+      setTimeout(
+        () => this.native({ type: "result", subtype: "success", result: "", duration_ms: 50 }),
+        100,
+      );
+      return;
+    }
     if (this.sends === 1) {
       this.native({
         type: "assistant",
@@ -133,7 +145,9 @@ class SmokeClaude extends EventEmitter implements RunnerTransport {
       uuid: randomUUID(),
       message: {
         role: "assistant",
+        model: this.model,
         content: [{ type: "text", text: "Ответы приняты. Продолжаю работу." }],
+        usage: { input_tokens: 2_000, cache_read_input_tokens: 80_000, output_tokens: 400 },
       },
     });
     setTimeout(

@@ -509,6 +509,16 @@ function resolveVoiceTranscriptionMode(
   return currentTurnId || (application.isClaude && ownerRunning) ? "steer" : "send";
 }
 
+/** The session is working, so the composer queues messages and the context cannot be compacted. */
+function sessionIsRunning(summary: ThreadSummary): boolean {
+  return (
+    Boolean(summary.currentTurnId) ||
+    (application.isClaude && summary.state === "running") ||
+    Boolean(summary.capacityRetry) ||
+    (summary.settings.collaborationMode === "team" && summary.state === "running")
+  );
+}
+
 export function ThreadPage({
   projects,
   transcriptionConfig = null,
@@ -735,6 +745,29 @@ export function ThreadPage({
   } | null>(null);
   const forkDialogOpenerRef = useRef<HTMLElement | null>(null);
   const [settingsBusy, setSettingsBusy] = useState(false);
+  const [compactRequested, setCompactRequested] = useState(false);
+  const compactSawRunningRef = useRef(false);
+  const summaryRunning = summary ? sessionIsRunning(summary) : false;
+  useEffect(() => {
+    setCompactRequested(false);
+    compactSawRunningRef.current = false;
+  }, [threadId]);
+  useEffect(() => {
+    // The spinner covers the compaction turn; it ends when that turn does, or after a grace
+    // period if the session never started one.
+    if (!compactRequested) return;
+    if (summaryRunning) {
+      compactSawRunningRef.current = true;
+      return;
+    }
+    if (compactSawRunningRef.current) {
+      compactSawRunningRef.current = false;
+      setCompactRequested(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setCompactRequested(false), 20_000);
+    return () => window.clearTimeout(timer);
+  }, [compactRequested, summaryRunning]);
   const [refreshing, setRefreshing] = useState(false);
   const [browserUpdating, setBrowserUpdating] = useState(false);
   const [pinUpdating, setPinUpdating] = useState(false);
@@ -3622,6 +3655,22 @@ export function ThreadPage({
   }
   const toggleArchive = () => void api.archive(threadId, !summary!.archived);
 
+  async function compactContext() {
+    if (compactRequested) return;
+    setCompactRequested(true);
+    setError(null);
+    try {
+      await api.compact(threadId);
+    } catch (caught) {
+      setCompactRequested(false);
+      setError(
+        caught instanceof Error
+          ? localizeKnownServerText(language, caught.message)
+          : t("Не удалось сжать контекст"),
+      );
+    }
+  }
+
   async function updateSettings(patch: UpdateThreadSettingsRequest) {
     patch = clientSessionSettingsPatch(patch);
     if (Object.keys(patch).length === 0) return;
@@ -4670,7 +4719,13 @@ export function ThreadPage({
             }
             onLayoutChange={handleComposerLayoutChange}
             inputUnavailable={inputUnavailable}
-            codexSettings={workspaceSummary.codexSettings}
+            contextUsage={
+              workspaceSummary.relation.kind === "subagent"
+                ? undefined
+                : workspaceSummary.contextUsage
+            }
+            contextCompacting={compactRequested}
+            onCompactContext={() => void compactContext()}
             autoFocus={
               preparationRef.current.active ||
               (location.state as { focusComposer?: unknown } | null)?.focusComposer === true
@@ -4705,13 +4760,7 @@ export function ThreadPage({
               queuedShortcutMessage ? () => void sendQueuedNow(queuedShortcutMessage.id) : undefined
             }
             busy={busy || (preparationRef.current.active && pendingOptimisticMessage !== null)}
-            running={
-              Boolean(workspaceSummary.currentTurnId) ||
-              (application.isClaude && workspaceSummary.state === "running") ||
-              Boolean(workspaceSummary.capacityRetry) ||
-              (workspaceSummary.settings.collaborationMode === "team" &&
-                workspaceSummary.state === "running")
-            }
+            running={sessionIsRunning(workspaceSummary)}
             settings={preparationRef.current.active ? pendingSettings : workspaceSummary.settings}
             onSettingsChange={(patch) => void updateSettings(patch)}
             settingsBusy={settingsBusy}

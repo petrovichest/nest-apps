@@ -444,6 +444,23 @@ export class UiService extends EventEmitter {
         model: owner?.model ?? view?.model ?? thread.settings.model ?? null,
         reasoningEffort: thread.settings.reasoningEffort ?? null,
       },
+      ...this.contextUsage(view, [thread.settings.model, owner?.model, view?.model]),
+    };
+  }
+  /** The window comes from a finished turn; without one the model name and the size decide. */
+  private contextUsage(
+    view: NativeView | undefined,
+    models: Array<string | undefined>,
+  ): Pick<ThreadSummary, "contextUsage"> {
+    const context = view?.context;
+    if (!context) return {};
+    const million =
+      models.some((model) => /\[1m\]/i.test(model ?? "")) || (context.used ?? 0) > 200_000;
+    return {
+      contextUsage: {
+        usedTokens: context.used,
+        windowTokens: context.window ?? (million ? 1_000_000 : 200_000),
+      },
     };
   }
   private subagentLaunch(thread: UiThread): SubagentLaunch | undefined {
@@ -891,8 +908,11 @@ export class UiService extends EventEmitter {
         for (const update of this.views.get(subagentThreadId(id, childToolUseId))?.apply(native) ??
           [])
           this.publish(update);
+      const contextBefore = view.context?.used;
       for (const update of view.apply(native)) this.publish(update);
       if (native.type !== "stream_event") await this.syncSubagents(id);
+      if (view.context?.used !== contextBefore && native.type !== "result")
+        this.publish({ type: "thread.upserted", thread: this.summary(id) });
       if (native.type === "result" && isMainNativeEvent(native)) {
         const failure = nativeQuotaFailure(this.quotaEvents.get(id) ?? []);
         owner.quotaFailure = failure ? { terminalSequence: event.sequence, ...failure } : undefined;

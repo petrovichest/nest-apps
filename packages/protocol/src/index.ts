@@ -330,6 +330,11 @@ export type ThreadSummary = {
   canAcceptDirectInput?: boolean | null;
   /** Current configured settings reported by Codex, not per-turn execution telemetry. */
   codexSettings?: { model: string | null; reasoningEffort: string | null };
+  /**
+   * How full the model's context window was after the last answer. `usedTokens` is null between a
+   * compaction and the next report; the field is absent while nothing has been reported.
+   */
+  contextUsage?: { usedTokens: number | null; windowTokens: number };
 };
 
 export type ThreadSearchScope = "titles" | "messages";

@@ -254,7 +254,6 @@ const ENGLISH: Record<string, string> = {
   "Проверить снова": "Check again",
   "Настройки, сообщённые Codex; не модель конкретного ответа. Ваш выбор применится при следующей отправке.":
     "Settings reported by Codex, not the model used for a specific answer. Your selection applies on the next send.",
-  "В Codex: {{model}} · {{effort}}": "In Codex: {{model}} · {{effort}}",
   "Вопросы Codex": "Codex questions",
   "Можно ответить, пока Codex работает": "You can reply while Codex works",
   "Ответ доставлен Codex": "Reply delivered to Codex",
@@ -1139,7 +1138,10 @@ const ENGLISH: Record<string, string> = {
   "Скопировать прокси": "Copy proxy",
   "Сначала отправьте или удалите аннотации": "Send or delete the annotations first",
   "Сначала отправьте или удалите аннотации к плану": "Send or delete the plan annotations first",
-  "Сообщение будет добавлено в очередь": "The message will be added to the queue",
+  "Сжать контекст": "Compact the context",
+  "Заполненность контекста неизвестна": "Context usage is unknown",
+  "Контекст заполнен на {{percent}}%": "Context is {{percent}}% full",
+  "Не удалось сжать контекст": "Could not compact the context",
   "Сообщение для Codex": "Message for Codex",
   "Следующее изображение": "Next image",
   "Сохранить аннотацию": "Save annotation",
@@ -1246,6 +1248,8 @@ export function localizeKnownServerText(
     if (value === "Search result changed; search again")
       return "История изменилась. Повторите поиск.";
     if (value === "Session history is unavailable") return "История сессии недоступна";
+    if (value === "Context can be compacted when the session is idle")
+      return "Контекст можно сжать, когда сессия свободна";
     if (value === "The draft changed before voice upload") {
       return "Черновик изменился; сохранённая запись не была потеряна. Повторите восстановление.";
     }

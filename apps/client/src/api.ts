@@ -741,6 +741,10 @@ export class ApiClient {
     });
   }
 
+  compact(id: string): Promise<void> {
+    return this.request(`/api/v1/threads/${encodeURIComponent(id)}/compact`, { method: "POST" });
+  }
+
   archive(id: string, archived: boolean): Promise<void> {
     return this.request(
       `/api/v1/threads/${encodeURIComponent(id)}/${archived ? "archive" : "unarchive"}`,

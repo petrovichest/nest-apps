@@ -41,6 +41,53 @@ function stream(event: Record<string, unknown>) {
 }
 
 describe("native Claude view", () => {
+  it("follows how full the context is: latest answer, compaction, reported window", () => {
+    const view = new NativeView("session", "/project");
+    expect(view.context).toBeUndefined();
+    const answer = (id: string, usage: Record<string, number>) => ({
+      type: "assistant",
+      uuid: `uuid-${id}`,
+      message: { id, model: "claude-sonnet-5-5", content: [{ type: "text", text: id }], usage },
+    });
+    view.apply(user);
+    view.apply(
+      answer("a", {
+        input_tokens: 2,
+        cache_creation_input_tokens: 1_000,
+        cache_read_input_tokens: 9_000,
+        output_tokens: 500,
+      }),
+    );
+    expect(view.context).toEqual({ used: 10_502, window: undefined });
+    // A subagent's usage does not count towards the main conversation.
+    view.apply({ ...answer("side", { input_tokens: 150_000 }), parent_tool_use_id: "tool" });
+    expect(view.context?.used).toBe(10_502);
+    // A synthetic error message reports nothing.
+    view.apply({
+      ...answer("error", { input_tokens: 0, output_tokens: 0 }),
+      message: { id: "error", model: "<synthetic>", content: [], usage: { input_tokens: 0 } },
+    });
+    expect(view.context?.used).toBe(10_502);
+    view.apply({
+      type: "result",
+      subtype: "success",
+      modelUsage: {
+        "claude-haiku-4-5": { contextWindow: 200_000 },
+        "claude-sonnet-5-5[1m]": { contextWindow: 1_000_000 },
+      },
+    });
+    expect(view.context).toEqual({ used: 10_502, window: 1_000_000 });
+    view.apply({
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: { trigger: "manual", pre_tokens: 900_000, post_tokens: 12_713 },
+    });
+    expect(view.context).toEqual({ used: null, window: 1_000_000 });
+    view.apply(answer("b", { input_tokens: 20_000, output_tokens: 100 }));
+    expect(view.context?.used).toBe(20_100);
+    view.reset([]);
+    expect(view.context).toBeUndefined();
+  });
   it("keeps the actual model when a quota error reports a synthetic model", () => {
     const view = new NativeView("session", "/project");
     view.apply(user);

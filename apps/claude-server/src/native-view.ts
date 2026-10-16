@@ -142,6 +142,10 @@ export class NativeView {
   private active?: TurnView;
   private latestStream?: StreamMessage;
   private effectiveModel?: string;
+  /** Tokens the latest main-conversation answer read and wrote; null right after a compaction. */
+  private contextTokens?: number | null;
+  /** The model's window, reported by a finished turn; absent until one has been seen. */
+  private contextWindow?: number;
 
   constructor(
     readonly sessionId: string,
@@ -153,6 +157,38 @@ export class NativeView {
   /** Keeps the native recovery input in Claude's history while hiding it in the chat. */
   rememberQuotaContinuation(id: string): void {
     this.quotaContinuations.add(id);
+  }
+
+  /** Follows how full the context is: the latest answer's size, a compaction, the reported window. */
+  private trackContext(event: Json): void {
+    if (event.type === "assistant" && object(event.message) && object(event.message.usage)) {
+      if (event.message.model === "<synthetic>") return;
+      const usage = event.message.usage;
+      let used = 0;
+      for (const key of [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+      ])
+        if (typeof usage[key] === "number" && usage[key] > 0) used += usage[key];
+      if (used > 0) this.contextTokens = used;
+    } else if (event.type === "system" && event.subtype === "compact_boundary") {
+      // The CLI's own post-compaction count leaves out the system prompt and tools, which the
+      // next answer's usage includes; the size is unknown until that answer arrives.
+      this.contextTokens = null;
+    } else if (event.type === "result" && object(event.modelUsage)) {
+      const windows = Object.entries(event.modelUsage).flatMap(([model, usage]) =>
+        object(usage) && typeof usage.contextWindow === "number" && usage.contextWindow > 0
+          ? [{ model, window: usage.contextWindow }]
+          : [],
+      );
+      const own = windows.find(({ model }) =>
+        this.effectiveModel ? model.startsWith(this.effectiveModel) : false,
+      );
+      const window = own?.window ?? Math.max(0, ...windows.map((item) => item.window));
+      if (window > 0) this.contextWindow = window;
+    }
   }
 
   /** Events that belong to another conversation than the one this view renders. */
@@ -200,6 +236,12 @@ export class NativeView {
 
   get model(): string | undefined {
     return this.effectiveModel;
+  }
+  /** Context fill after the latest answer; `used` is null until the answer after a compaction. */
+  get context(): { used: number | null; window?: number } | undefined {
+    return this.contextTokens === undefined
+      ? undefined
+      : { used: this.contextTokens, window: this.contextWindow };
   }
   get currentTurnId(): string | null {
     return this.active?.status === "inProgress" ? this.active.id : null;
@@ -387,6 +429,8 @@ export class NativeView {
     this.active = undefined;
     this.latestStream = undefined;
     this.effectiveModel = undefined;
+    this.contextTokens = undefined;
+    this.contextWindow = undefined;
     for (let index = 0; index <= events.length; index++) {
       for (const { turn, item } of inputs.get(index) ?? [])
         this.apply({
@@ -413,6 +457,7 @@ export class NativeView {
   apply(event: Json): ServerEvent[] {
     event = this.withSourceMetadata(event);
     if (this.foreign(event)) return [];
+    this.trackContext(event);
     if (
       event.type === "user" &&
       (event.claudenest_quota_continuation === true ||

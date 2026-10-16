@@ -26,6 +26,7 @@ import type {
   SkillCatalogItem,
   ThreadGoal,
   ThreadFileAttachment,
+  ThreadSummary,
   TranscriptionConfigResponse,
   TranscriptionProvider,
   UpdateThreadGoalRequest,
@@ -48,6 +49,7 @@ import {
   XIcon,
 } from "./Icons";
 import { ImageViewer } from "./ImageViewer";
+import { ContextMeter } from "./ContextMeter";
 import { SettingsPicker } from "./SettingsPicker";
 import {
   formatRecordingTime,
@@ -129,7 +131,9 @@ export function Composer({
   onSendQueuedNow,
   busy,
   inputUnavailable = false,
-  codexSettings,
+  contextUsage,
+  contextCompacting = false,
+  onCompactContext,
   running = false,
   settings,
   onSettingsChange,
@@ -190,7 +194,10 @@ export function Composer({
   onSendQueuedNow?(): void;
   busy: boolean;
   inputUnavailable?: boolean;
-  codexSettings?: { model: string | null; reasoningEffort: string | null };
+  /** Context fill of an existing session; the meter stays hidden without it. */
+  contextUsage?: ThreadSummary["contextUsage"];
+  contextCompacting?: boolean;
+  onCompactContext?(): void;
   running?: boolean;
   settings: SessionSettings;
   onSettingsChange(value: UpdateThreadSettingsRequest): void;
@@ -1795,25 +1802,13 @@ export function Composer({
                 onGoalUpdate={onGoalUpdate}
                 onGoalClear={onGoalClear}
               />
-              {!application.isClaude &&
-                codexSettings &&
-                ((codexSettings.model !== null && codexSettings.model !== settings.model) ||
-                  (codexSettings.reasoningEffort !== null &&
-                    codexSettings.reasoningEffort !== settings.reasoningEffort)) && (
-                  <span
-                    className="composer-hint codex-settings-hint"
-                    title={t(
-                      "Настройки, сообщённые Codex; не модель конкретного ответа. Ваш выбор применится при следующей отправке.",
-                    )}
-                  >
-                    {t("В Codex: {{model}} · {{effort}}", {
-                      model: codexSettings.model ?? t("Не сообщено"),
-                      effort: codexSettings.reasoningEffort ?? t("Не сообщено"),
-                    })}
-                  </span>
-                )}
-              {running && (
-                <span className="composer-hint">{t("Сообщение будет добавлено в очередь")}</span>
+              {contextUsage && onCompactContext && (
+                <ContextMeter
+                  usage={contextUsage}
+                  running={running}
+                  compacting={contextCompacting}
+                  onCompact={onCompactContext}
+                />
               )}
             </div>
             <div className="composer-actions">

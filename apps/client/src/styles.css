@@ -4954,9 +4954,148 @@ button.composer-card-filter:active {
   }
 }
 
-.composer-hint {
-  color: var(--muted);
-  font-size: var(--text-caption);
+/* Context fill: the spinner's ring, held still, with a round head where the level is. It never
+   animates by itself; the app's own .spinner takes its place while a compaction runs. */
+@property --context-angle {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 0deg;
+}
+
+.context-meter {
+  --context-color: var(--text);
+  --context-size: 15px;
+  --context-width: 2px;
+  width: auto;
+  min-width: 0;
+  gap: var(--space-1-5);
+  color: var(--muted-strong);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.context-meter[data-level="warn"] {
+  --context-color: var(--status-attention);
+  color: var(--color-warning-text);
+}
+
+.context-meter[data-level="high"] {
+  --context-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.context-meter.active {
+  color: var(--text-strong);
+}
+
+.context-meter[aria-disabled="true"] {
+  pointer-events: none;
+}
+
+.context-value {
+  min-width: 3.1ch;
+  line-height: 1;
+  text-align: left;
+  transition: opacity var(--motion-standard);
+}
+
+.context-meter[data-compacting] .context-value {
+  opacity: 0.55;
+}
+
+/* The slot is as wide as an icon, so swapping ring, icon and spinner never moves the percentage. */
+.context-slot {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+}
+
+.context-slot > * {
+  grid-area: 1 / 1;
+}
+
+.context-slot .spinner {
+  width: var(--context-size);
+  height: var(--context-size);
+  --spinner-w: var(--context-width);
+}
+
+.context-icon {
+  display: block;
+  animation: context-swap var(--motion-fast) var(--motion-ease);
+}
+
+.context-ring {
+  --context-track: color-mix(in srgb, var(--color-muted-strong) 24%, transparent);
+  --context-radius: calc(var(--context-size) / 2 - var(--context-width) / 2);
+  display: block;
+  width: var(--context-size);
+  height: var(--context-size);
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      from 0deg,
+      color-mix(in srgb, var(--context-color) 30%, transparent) 0deg,
+      var(--context-color) var(--context-angle),
+      transparent var(--context-angle)
+    ),
+    var(--line-strong);
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--context-width) - 0.3px),
+    #000 calc(100% - var(--context-width) + 0.3px)
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--context-width) - 0.3px),
+    #000 calc(100% - var(--context-width) + 0.3px)
+  );
+  transition: --context-angle 0.6s var(--motion-ease);
+}
+
+@supports (width: calc(sin(1deg) * 1px)) {
+  .context-ring {
+    --head-x: calc(var(--context-size) / 2 + var(--context-radius) * sin(var(--context-angle)));
+    --head-y: calc(var(--context-size) / 2 - var(--context-radius) * cos(var(--context-angle)));
+    background:
+      radial-gradient(
+        circle at var(--head-x) var(--head-y),
+        var(--context-color) calc(var(--context-width) / 2 - 0.3px),
+        transparent calc(var(--context-width) / 2 + 0.3px)
+      ),
+      conic-gradient(
+        from 0deg,
+        color-mix(in srgb, var(--context-color) 30%, transparent) 0deg,
+        var(--context-color) var(--context-angle),
+        transparent var(--context-angle)
+      ),
+      var(--line-strong);
+  }
+
+  .context-ring[data-empty] {
+    background: var(--line-strong);
+  }
+}
+
+@keyframes context-swap {
+  from {
+    opacity: 0;
+    transform: scale(0.75);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-ring {
+    transition: none;
+  }
+
+  .context-icon {
+    animation: none;
+  }
 }
 
 .composer-error {
@@ -7296,10 +7435,6 @@ button.composer-card-filter:active {
     padding: var(--space-3) var(--space-4) 0;
   }
 
-  .composer-hint {
-    display: none;
-  }
-
   .goal-popover {
     position: fixed;
     right: 10px;
@@ -7983,11 +8118,6 @@ button.composer-card-filter:active {
   padding-left: 14px;
   background: var(--surface-muted);
   border-radius: var(--radius-sm);
-}
-
-.codex-settings-hint {
-  max-width: 280px;
-  overflow-wrap: anywhere;
 }
 
 @media (max-width: 600px) {

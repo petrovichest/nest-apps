@@ -189,7 +189,6 @@ describe("Composer", () => {
       onSettingsChange: vi.fn(),
       models,
       error: null,
-      codexSettings: { model: "native", reasoningEffort: "high" },
     };
     const view = render(<Composer {...props} inputUnavailable />);
     const textbox = screen.getByRole("textbox", { name: "Сообщение для Codex" });
@@ -201,15 +200,10 @@ describe("Composer", () => {
     fireEvent.keyDown(textbox, { key: "Enter", ctrlKey: true });
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Отправить" })).toBeDisabled();
-    expect(screen.getByText("В Codex: native · high")).toBeInTheDocument();
     view.rerender(<Composer {...props} inputUnavailable={false} />);
     expect(screen.getByRole("button", { name: "Начать запись" })).toBeEnabled();
     expect(textbox).toHaveValue("Исправленный черновик");
     expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
-    view.rerender(
-      <Composer {...props} codexSettings={{ model: "chosen", reasoningEffort: "low" }} />,
-    );
-    expect(screen.queryByText(/^В Codex:/)).not.toBeInTheDocument();
     expect(textbox).toHaveValue("Исправленный черновик");
   });
   it("opens filtered skill suggestions for a dollar token and inserts with Enter", async () => {

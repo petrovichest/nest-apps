@@ -125,6 +125,8 @@ const LOADED_RECOVERY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
 
 export class AppProjection extends EventEmitter {
   private readonly threads = new Map<string, CachedThread>();
+  /** Latest context fill per thread; Codex reports it only while a thread is loaded. */
+  private readonly contextUsage = new Map<string, NonNullable<ThreadSummary["contextUsage"]>>();
   private readonly unmaterializedThreads = new Set<string>();
   private readonly activity = new Map<string, ActivityItem>();
   private readonly progress = new Map<string, TurnProgress>();
@@ -2348,6 +2350,7 @@ export class AppProjection extends EventEmitter {
         (!cached || !parentThreadId || !incoming.has(parentThreadId))
       ) {
         this.threads.delete(id);
+        this.contextUsage.delete(id);
       }
     }
 
@@ -3251,6 +3254,19 @@ export class AppProjection extends EventEmitter {
         }
         break;
       }
+      case "thread/tokenUsage/updated": {
+        // Sent after every answer, after a compaction and again when a thread is resumed.
+        const { threadId, tokenUsage } = notification.params;
+        const windowTokens = tokenUsage.modelContextWindow;
+        if (windowTokens !== null && windowTokens > 0) {
+          this.contextUsage.set(threadId, {
+            usedTokens: Math.max(0, Math.floor(tokenUsage.last.totalTokens)),
+            windowTokens,
+          });
+          this.publishThread(threadId);
+        }
+        break;
+      }
       case "thread/status/changed": {
         const cached = this.threads.get(notification.params.threadId);
         if (cached) {
@@ -3619,6 +3635,7 @@ export class AppProjection extends EventEmitter {
 
   private forgetThread(threadId: string): void {
     this.threads.delete(threadId);
+    this.contextUsage.delete(threadId);
     this.latestDetails.delete(threadId);
     this.subscribedThreads.delete(threadId);
     this.unmaterializedThreads.delete(threadId);
@@ -3831,6 +3848,9 @@ export class AppProjection extends EventEmitter {
         model: cached.thread.model ?? null,
         reasoningEffort: cached.thread.reasoningEffort ?? null,
       },
+      ...(this.contextUsage.has(cached.thread.id)
+        ? { contextUsage: this.contextUsage.get(cached.thread.id)! }
+        : {}),
     };
   }
 

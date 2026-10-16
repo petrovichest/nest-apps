@@ -333,6 +333,35 @@ process.stdin.on("end", () => {
     expect(state.operations).toEqual([]);
   });
 
+  it("compacts an idle session with the CLI's own command and refuses while a task runs", async () => {
+    const state = await fixture(),
+      { id } = await state.reserve();
+    const idle = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/compact`,
+      headers: state.headers,
+    });
+    expect(idle.statusCode).toBe(202);
+    await expect
+      .poll(() => state.operations.length + state.ui.thread(id).queue.length)
+      .toBeGreaterThan(0);
+    const { steer, command } = await attachActive(state, id);
+    const busy = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/compact`,
+      headers: state.headers,
+    });
+    expect(busy.statusCode).toBe(409);
+    expect(steer).not.toHaveBeenCalled();
+    expect(command).not.toHaveBeenCalled();
+    const missing = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${randomUUID()}/compact`,
+      headers: state.headers,
+    });
+    expect(missing.statusCode).toBe(404);
+  });
+
   it("promotes a selected queued message to steering and preserves its original retry identity", async () => {
     const state = await fixture(),
       { id } = await state.reserve();

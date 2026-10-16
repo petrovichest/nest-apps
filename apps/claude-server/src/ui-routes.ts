@@ -640,6 +640,13 @@ export async function registerUiRoutes(
   app.post("/api/v1/threads/:id/plan/dismiss", async (request) =>
     ui.dismissPlan(params(request).id, string(record(request.body).turnId, "turnId", 300)),
   );
+  app.post("/api/v1/threads/:id/compact", async (request, reply) => {
+    const id = params(request).id;
+    if (["running", "queued", "needsAttention"].includes(ui.summary(id).state))
+      throw new AppError("conflict", "Context can be compacted when the session is idle", 409);
+    const message = await ui.enqueue(id, { input: "/compact", deliveryMode: "queue" });
+    return reply.code(202).send({ turnId: message.id });
+  });
   app.post("/api/v1/threads/:id/interrupt", async (request) => {
     const id = params(request).id;
     ui.thread(id);

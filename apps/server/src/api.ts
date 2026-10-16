@@ -5305,6 +5305,25 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     },
   );
 
+  app.post<{ Params: { id: string } }>("/api/v1/threads/:id/compact", async (request, reply) => {
+    const threadId = request.params.id;
+    const summary = projection.summary(threadId);
+    if (!summary) return apiError(reply, 404, "not_found", "Thread not found");
+    assertWritableThread(summary);
+    if (summary.currentTurnId || ["running", "queued", "needsAttention"].includes(summary.state)) {
+      throw new ProjectConflictError("Context can be compacted when the session is idle");
+    }
+    const compact = () => bridge.request("thread/compact/start", { threadId }, 30_000);
+    try {
+      await compact();
+    } catch (error) {
+      if (!isThreadResumeRequiredError(error, threadId)) throw error;
+      await bridge.request("thread/resume", { threadId, excludeTurns: true });
+      await compact();
+    }
+    return reply.code(202).send({});
+  });
+
   for (const [route, method] of [
     ["archive", "thread/archive"],
     ["unarchive", "thread/unarchive"],

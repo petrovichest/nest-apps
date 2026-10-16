@@ -219,6 +219,12 @@ export const TargetIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const CompactIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="m6.5 4.5 4.1 4.1a2 2 0 0 0 2.8 0l4.1-4.1M6.5 19.5l4.1-4.1a2 2 0 0 1 2.8 0l4.1 4.1" />
+  </Icon>
+);
+
 export const SendIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M12 19.5v-14M6 10.5l4.6-4.6a2 2 0 0 1 2.8 0l4.6 4.6" />

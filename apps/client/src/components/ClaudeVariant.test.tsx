@@ -521,7 +521,6 @@ describe("the shared Claude interface", () => {
         onStop={onStop}
         busy={false}
         running
-        codexSettings={{ model: "claude-opus-5", reasoningEffort: null }}
         settings={{ collaborationMode: "default", model: "sonnet" }}
         onSettingsChange={vi.fn()}
         models={models}
@@ -530,7 +529,6 @@ describe("the shared Claude interface", () => {
     );
     const textarea = screen.getByRole("textbox");
     expect(screen.queryByText("Полный доступ")).not.toBeInTheDocument();
-    expect(view.container.querySelector(".codex-settings-hint")).toBeNull();
     fireEvent.keyDown(textarea, { key: "Enter" });
     fireEvent.submit(view.container.querySelector("form")!);
     fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
@@ -538,7 +536,7 @@ describe("the shared Claude interface", () => {
     expect(onSubmit.mock.calls).toEqual([["queue"], ["queue"], ["immediate"], ["immediate"]]);
     expect(onStop).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Добавить в очередь" })).toBeEnabled();
-    expect(screen.getByText("Сообщение будет добавлено в очередь")).toBeInTheDocument();
+    expect(screen.queryByText("Сообщение будет добавлено в очередь")).not.toBeInTheDocument();
   });
 
   it("opens the skill menu only for a slash at the start of the message and inserts /name", async () => {
@@ -567,7 +565,6 @@ describe("the shared Claude interface", () => {
         onImagesChange={vi.fn()}
         onSubmit={vi.fn()}
         busy={false}
-        codexSettings={{ model: "claude-opus-5", reasoningEffort: null }}
         settings={{ collaborationMode: "default", model: "sonnet" }}
         onSettingsChange={vi.fn()}
         models={models}
@@ -620,7 +617,6 @@ describe("the shared Claude interface", () => {
         onImagesChange={vi.fn()}
         onSubmit={vi.fn()}
         busy={false}
-        codexSettings={{ model: "claude-opus-5", reasoningEffort: null }}
         settings={{ collaborationMode: "default", model: "sonnet" }}
         onSettingsChange={vi.fn()}
         models={models}

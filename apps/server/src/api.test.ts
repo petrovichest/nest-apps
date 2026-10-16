@@ -7077,6 +7077,110 @@ describe("thread settings", () => {
   });
 });
 
+describe("context usage", () => {
+  const breakdown = (totalTokens: number) => ({
+    totalTokens,
+    inputTokens: totalTokens,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+  });
+  const tokenUsage = (last: number, modelContextWindow: number | null) =>
+    ({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        tokenUsage: { total: breakdown(last * 3), last: breakdown(last), modelContextWindow },
+      },
+    }) as const;
+
+  it("follows the last answer's size against the window, including right after a compaction", async () => {
+    const { app, bridge, projection } = await createForkHarness();
+    projection.upsertThread(testThread());
+    expect(projection.summary("thread")?.contextUsage).toBeUndefined();
+    bridge.emit("notification", tokenUsage(84_000, 200_000));
+    await vi.waitFor(() =>
+      expect(projection.summary("thread")?.contextUsage).toEqual({
+        usedTokens: 84_000,
+        windowTokens: 200_000,
+      }),
+    );
+    // Codex reports the new, smaller size itself when a compaction ends.
+    bridge.emit("notification", tokenUsage(9_000, 200_000));
+    await vi.waitFor(() =>
+      expect(projection.summary("thread")?.contextUsage?.usedTokens).toBe(9_000),
+    );
+    await app.close();
+  });
+
+  it("ignores a report without a window", async () => {
+    const { app, bridge, projection } = await createForkHarness();
+    projection.upsertThread(testThread());
+    bridge.emit("notification", tokenUsage(5_000, null));
+    await nextImmediate();
+    expect(projection.summary("thread")?.contextUsage).toBeUndefined();
+    await app.close();
+  });
+
+  it("compacts an idle session, resuming it first when it is not loaded", async () => {
+    const { app, bridge, projection, headers } = await createForkHarness();
+    projection.upsertThread(testThread());
+    bridge.request.mockClear();
+    let rejected = false;
+    bridge.request.mockImplementation(async (method: string) => {
+      if (method === "thread/compact/start" && !rejected) {
+        rejected = true;
+        throw new RpcError(-32600, "thread not found: thread");
+      }
+      return {};
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/threads/thread/compact",
+      headers,
+    });
+    expect(response.statusCode).toBe(202);
+    const calls = bridge.request.mock.calls.filter(([method]) =>
+      String(method).startsWith("thread/"),
+    );
+    expect(calls.map(([method]) => method)).toEqual([
+      "thread/compact/start",
+      "thread/resume",
+      "thread/compact/start",
+    ]);
+    expect(calls[2]![1]).toEqual({ threadId: "thread" });
+    await app.close();
+  });
+
+  it("refuses to compact a running or unknown session without calling Codex", async () => {
+    const { app, bridge, projection, headers } = await createForkHarness();
+    projection.upsertThread({
+      ...testThread(),
+      status: { type: "active", activeFlags: [] },
+      turns: [testTurn("turn", "inProgress")],
+    });
+    bridge.request.mockClear();
+    const running = await app.inject({
+      method: "POST",
+      url: "/api/v1/threads/thread/compact",
+      headers,
+    });
+    expect(running.statusCode).toBe(409);
+    const missing = await app.inject({
+      method: "POST",
+      url: "/api/v1/threads/missing/compact",
+      headers,
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(
+      bridge.request.mock.calls.filter(([method]) => String(method).startsWith("thread/")),
+    ).toEqual([]);
+    await app.close();
+  });
+});
+
 describe("empty-session Team activation", () => {
   async function createEmptySessionHarness() {
     const harness = await createForkHarness(0);
