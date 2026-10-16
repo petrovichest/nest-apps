@@ -35,8 +35,8 @@ const ENGLISH: Record<string, string> = {
   "Сначала тратится аккаунт, у которого 5-часовой лимит сбросится раньше; при лимите — другой доступный.":
     "Use the account whose 5-hour quota resets first; switch to another available one when a quota runs out.",
   "Прогрев лимитов": "Warm up limits",
-  "Запускать простаивающее 5-часовое окно коротким запросом.":
-    "Start an idle 5-hour window with a short request.",
+  "Равномерно распределять сбросы 5-часовых лимитов, прогревая свободные аккаунты.":
+    "Space out 5-hour quota resets by warming up idle accounts.",
   "Тариф неизвестен": "Plan unknown",
   "Войдите в аккаунт, чтобы получить лимиты.": "Sign in to see the account quotas.",
   "Не удалось получить лимиты": "Could not get quotas",

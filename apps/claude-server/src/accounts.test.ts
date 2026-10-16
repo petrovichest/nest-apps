@@ -592,6 +592,205 @@ describe("native Claude account storage and login", () => {
   });
 });
 
+describe("evenly spaced Claude warm-ups", () => {
+  const minute = 60_000;
+  const period = 300 * minute;
+  async function group(count: number) {
+    let now = NOW;
+    const state = await fixture({ now: () => now });
+    const entries = [
+      { id: state.accounts.status().currentAccountId!, configDir: state.config.configDir },
+    ];
+    for (let index = 1; index < count; index++)
+      entries.push(await state.add(`account-${index}@example.com`));
+    const warmed: Array<{ id: string; at: number }> = [];
+    const events = new EventEmitter();
+    state.options.spawnProcess = vi.fn((_bin, args, options) => {
+      expect(args?.[0]).toBe("-p");
+      const entry = entries.find((item) => item.configDir === options!.env!.CLAUDE_CONFIG_DIR)!;
+      warmed.push({ id: entry.id, at: state.options.now!() });
+      state.limits.set(entry.configDir, usage(1, 30, state.options.now!() + period));
+      events.emit("warm");
+      const child = new LoginChild();
+      queueMicrotask(() => child.close());
+      return child;
+    }) as unknown as typeof spawn;
+    const setUsage = (index: number, value: NativeClaudeUsage) =>
+      state.limits.set(entries[index]!.configDir, value);
+    const idle = (weeklyUsed = 30): NativeClaudeUsage => ({
+      primary: null,
+      secondary: usage(0, weeklyUsed).secondary,
+    });
+    const refreshAt = async (minutes: number, accounts = state.accounts) => {
+      now = NOW + minutes * minute;
+      await accounts.refresh();
+    };
+    return { ...state, entries, warmed, events, setUsage, idle, refreshAt };
+  }
+
+  it("spreads clustered resets into equal gaps and preserves them over the next cycle", async () => {
+    const state = await group(3);
+    state.entries.forEach((_, index) =>
+      state.setUsage(index, usage(100, 30, NOW + (60 + index * 10) * minute)),
+    );
+    await state.refreshAt(0);
+    expect(state.warmed).toEqual([]);
+    state.setUsage(0, state.idle());
+    await state.refreshAt(60);
+    state.setUsage(1, state.idle());
+    state.setUsage(2, state.idle());
+    await state.refreshAt(80);
+    await state.refreshAt(159);
+    expect(state.warmed).toEqual([{ id: state.entries[0]!.id, at: NOW + 60 * minute }]);
+    await state.refreshAt(160);
+    await state.refreshAt(260);
+    state.setUsage(0, state.idle());
+    await state.refreshAt(360);
+    expect(state.warmed).toEqual(
+      [0, 1, 2, 0].map((index, turn) => ({
+        id: state.entries[index]!.id,
+        at: NOW + (60 + turn * 100) * minute,
+      })),
+    );
+  });
+
+  it("starts only one of four idle accounts during concurrent refreshes", async () => {
+    const state = await group(4);
+    state.entries.forEach((_, index) => state.setUsage(index, state.idle()));
+    await Promise.all([state.accounts.refresh(), state.accounts.refresh()]);
+    expect(state.warmed).toEqual([{ id: state.entries[0]!.id, at: NOW }]);
+    await state.refreshAt(74);
+    expect(state.warmed).toHaveLength(1);
+    await state.refreshAt(75);
+    await state.refreshAt(150);
+    await state.refreshAt(225);
+    expect(state.warmed).toEqual(
+      state.entries.map((entry, index) => ({ id: entry.id, at: NOW + index * 75 * minute })),
+    );
+  });
+
+  it("excludes exhausted weekly quotas and rejoins them with equal weight after recovery", async () => {
+    const state = await group(3);
+    state.setUsage(0, state.idle(99));
+    state.setUsage(1, state.idle());
+    state.setUsage(2, state.idle(100));
+    await state.refreshAt(0);
+    expect(state.warmed).toHaveLength(1);
+    await state.refreshAt(149);
+    expect(state.warmed).toHaveLength(1);
+    await state.refreshAt(150);
+    expect(state.warmed[1]).toEqual({ id: state.entries[1]!.id, at: NOW + 150 * minute });
+    state.setUsage(2, state.idle(0));
+    await state.refreshAt(160);
+    await state.refreshAt(199);
+    expect(state.warmed).toHaveLength(2);
+    await state.refreshAt(200);
+    expect(state.warmed.map((warm) => warm.at)).toEqual(
+      [0, 150, 200].map((offset) => NOW + offset * minute),
+    );
+  });
+
+  it("recalculates the spacing after removing an account", async () => {
+    const state = await group(3);
+    state.entries.forEach((_, index) => state.setUsage(index, state.idle()));
+    await state.refreshAt(0);
+    await state.accounts.remove(state.entries[2]!.id);
+    await state.refreshAt(100);
+    expect(state.warmed).toHaveLength(1);
+    await state.refreshAt(150);
+    expect(state.warmed[1]).toEqual({ id: state.entries[1]!.id, at: NOW + 150 * minute });
+  });
+
+  it("counts busy accounts but warms a free account while another is busy", async () => {
+    const state = await group(2);
+    let busy = true;
+    state.options.canWarm = (id) => id !== state.entries[0]!.id || !busy;
+    state.entries.forEach((_, index) => state.setUsage(index, state.idle()));
+    await state.refreshAt(0);
+    expect(state.warmed).toHaveLength(0);
+    await state.refreshAt(150);
+    expect(state.warmed).toEqual([{ id: state.entries[1]!.id, at: NOW + 150 * minute }]);
+    busy = false;
+    await state.refreshAt(160);
+    expect(state.warmed).toHaveLength(1);
+    await state.refreshAt(300);
+    expect(state.warmed[1]).toEqual({ id: state.entries[0]!.id, at: NOW + 300 * minute });
+  });
+
+  it("reconstructs pending slots across restart while the old clustered windows still run", async () => {
+    const state = await group(3);
+    state.entries.forEach((_, index) =>
+      state.setUsage(index, usage(100, 30, NOW + (60 + index * 10) * minute)),
+    );
+    await state.refreshAt(0);
+    state.setUsage(0, state.idle());
+    await state.refreshAt(60);
+    await state.accounts.close();
+    const restarted = new ClaudeAccounts(state.config, state.options);
+    cleanup.push(() => restarted.close());
+    await restarted.initialize();
+    await state.refreshAt(65, restarted);
+    state.setUsage(1, state.idle());
+    state.setUsage(2, state.idle());
+    await state.refreshAt(80, restarted);
+    expect(state.warmed).toHaveLength(1);
+    await state.refreshAt(160, restarted);
+    expect(state.warmed[1]).toEqual({ id: state.entries[1]!.id, at: NOW + 160 * minute });
+  });
+
+  it("adapts future slots when a user starts a window ahead of schedule", async () => {
+    const state = await group(3);
+    state.entries.forEach((_, index) => state.setUsage(index, state.idle()));
+    await state.refreshAt(0);
+    state.setUsage(1, usage(10, 30, NOW + 320 * minute));
+    await state.refreshAt(20);
+    await state.refreshAt(100);
+    expect(state.warmed).toHaveLength(1);
+    await state.refreshAt(120);
+    expect(state.warmed[1]).toEqual({ id: state.entries[2]!.id, at: NOW + 120 * minute });
+  });
+
+  it("retains bounded retries when a warm-up fails", async () => {
+    const state = await group(1);
+    state.setUsage(0, state.idle());
+    const spawnProcess = vi.fn(() => {
+      const child = new LoginChild();
+      queueMicrotask(() => child.close(1));
+      return child;
+    }) as unknown as typeof spawn;
+    state.options.spawnProcess = spawnProcess;
+    await state.refreshAt(0);
+    await state.refreshAt(14);
+    expect(spawnProcess).toHaveBeenCalledTimes(1);
+    await state.refreshAt(15);
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+  });
+
+  it("wakes at the exact warm-up deadline between normal usage polls", async () => {
+    const state = await group(2);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(NOW);
+    state.options.now = Date.now;
+    state.options.poll = true;
+    state.setUsage(0, usage(100, 30, NOW + 61_000));
+    state.setUsage(1, usage(100, 30, NOW + 121_000));
+    await state.accounts.refresh();
+    state.setUsage(0, state.idle());
+    const firstWarm = new Promise<void>((resolve) => state.events.once("warm", resolve));
+    await vi.advanceTimersByTimeAsync(61_000);
+    await firstWarm;
+    await state.accounts.refresh();
+    state.setUsage(1, state.idle());
+    const secondWarm = new Promise<void>((resolve) => state.events.once("warm", resolve));
+    await vi.advanceTimersByTimeAsync(150 * minute);
+    await secondWarm;
+    expect(state.warmed.map((warm) => warm.at)).toEqual([
+      NOW + 61_000,
+      NOW + 61_000 + 150 * minute,
+    ]);
+  });
+});
+
 describe("Claude account refresh scheduling", () => {
   function nextUpdate(accounts: ClaudeAccounts, id: string, at: number): Promise<void> {
     return new Promise((resolve) => {

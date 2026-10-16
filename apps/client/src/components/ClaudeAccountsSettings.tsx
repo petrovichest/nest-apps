@@ -170,7 +170,9 @@ export function ClaudeAccountsSettings() {
         <div className="claude-auto-switch claude-account-surface">
           <div>
             <label htmlFor={`${headingId}-warm`}>{t("Прогрев лимитов")}</label>
-            <p>{t("Запускать простаивающее 5-часовое окно коротким запросом.")}</p>
+            <p>
+              {t("Равномерно распределять сбросы 5-часовых лимитов, прогревая свободные аккаунты.")}
+            </p>
           </div>
           <input
             id={`${headingId}-warm`}

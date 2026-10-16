@@ -28,6 +28,9 @@ import {
 } from "./proxy.js";
 
 const POLL_MS = 5 * 60_000;
+const FIVE_HOURS_MS = 5 * 60 * 60_000;
+/** Native reset timestamps and CLI startup can differ from the target slot by a few seconds. */
+const WARM_SLOT_TOLERANCE_MS = 60_000;
 /** Spacing between warm-ups of one account, in case the usage endpoint lags behind the new window. */
 const WARM_RETRY_MS = 15 * 60_000;
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
@@ -98,6 +101,8 @@ export type ClaudeAccountsOptions = {
   proxyEnvironment?: typeof createClaudeProxyEnvironment;
   now?: () => number;
   poll?: boolean;
+  /** Synchronous check of already observed sessions; warming must not probe owners over RPC. */
+  canWarm?: (accountId: string) => boolean;
   /** Test override for the native default ~/.claude location. */
   defaultConfigDir?: string;
   /** Native service environment; injectable so tests never inspect real proxy credentials. */
@@ -130,6 +135,8 @@ export class ClaudeAccounts extends EventEmitter {
   private rotation: Promise<unknown> = Promise.resolve();
   private refreshes = new Map<string, Promise<void>>();
   private warmedAt = new Map<string, number>();
+  private warmSchedule = new Map<string, { at: number; resetAt: number | null }>();
+  private warming?: Promise<void>;
   private logins = new Map<string, Login>();
   private timer?: NodeJS.Timeout;
   private closed = false;
@@ -237,6 +244,62 @@ export class ClaudeAccounts extends EventEmitter {
   private now(): number {
     return (this.options.now ?? Date.now)();
   }
+  /** Reconsider an overdue warm-up as soon as an owner releases its account. */
+  accountActivityChanged(): void {
+    this.schedulePoll();
+  }
+  private planWarmups(): void {
+    const now = this.now();
+    const accounts = this.registry.accounts.filter((account) => {
+      const weekly = account.rateLimits.limits?.secondary;
+      return (
+        account.authenticated &&
+        !account.connectionError &&
+        !account.rateLimits.refreshError &&
+        weekly &&
+        Number.isFinite(weekly.usedPercent) &&
+        weekly.usedPercent >= 0 &&
+        weekly.usedPercent < 100
+      );
+    });
+    const changedMembers =
+      accounts.length !== this.warmSchedule.size ||
+      accounts.some((account) => !this.warmSchedule.has(account.accountId));
+    const changedWindow = accounts.find((account) => {
+      const resetAt = fiveHourReset(account);
+      return (
+        Number.isFinite(resetAt) &&
+        resetAt > now &&
+        resetAt !== this.warmSchedule.get(account.accountId)?.resetAt
+      );
+    });
+    // Expiration alone does not move the grid: an idle account waits for its assigned slot.
+    if (!changedMembers && !changedWindow) return;
+    // Registry order survives restart, including while old, clustered windows await their slots.
+    const ordered = accounts;
+    const anchor =
+      (!changedMembers && changedWindow) ||
+      ordered.find(
+        (account) => Number.isFinite(fiveHourReset(account)) && fiveHourReset(account) > now,
+      ) ||
+      ordered[0];
+    this.warmSchedule.clear();
+    if (!anchor) return;
+    const anchorIndex = ordered.indexOf(anchor);
+    const anchorAt =
+      Number.isFinite(fiveHourReset(anchor)) && fiveHourReset(anchor) > now
+        ? fiveHourReset(anchor)
+        : now;
+    const spacing = FIVE_HOURS_MS / ordered.length;
+    const tolerance = Math.min(WARM_SLOT_TOLERANCE_MS, spacing / 4);
+    for (const [index, account] of ordered.entries()) {
+      const resetAt = Number.isFinite(fiveHourReset(account)) ? fiveHourReset(account) : null;
+      const readyAt = Math.max(now, resetAt ?? now);
+      const phase = anchorAt + (index - anchorIndex) * spacing;
+      const at = phase + Math.ceil((readyAt - tolerance - phase) / FIVE_HOURS_MS) * FIVE_HOURS_MS;
+      this.warmSchedule.set(account.accountId, { at: Math.max(readyAt, at), resetAt });
+    }
+  }
   /** Shared quotas block every model; both exhausted windows must reset before reuse. */
   private quotaResetAt(account: SavedAccount): number | undefined {
     const resets = [account.rateLimits.limits?.primary, account.rateLimits.limits?.secondary]
@@ -255,13 +318,14 @@ export class ClaudeAccounts extends EventEmitter {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     if (this.options.poll === false || this.closed) return;
+    this.planWarmups();
     const now = this.now();
     const scheduled = this.registry.accounts
       .filter((account) => !account.rateLimits.refreshing)
       .map((account) => {
         const resetAt = this.quotaResetAt(account);
         const checkedAt = account.rateLimits.updatedAt ?? now;
-        const at =
+        let at =
           resetAt !== undefined && resetAt > now
             ? resetAt
             : account.rateLimits.refreshError
@@ -269,6 +333,16 @@ export class ClaudeAccounts extends EventEmitter {
               : resetAt !== undefined && resetAt > checkedAt
                 ? resetAt
                 : checkedAt + POLL_MS;
+        const slot = this.warmSchedule.get(account.accountId);
+        if (
+          !this.warming &&
+          this.registry.warmLimits !== false &&
+          slot &&
+          this.options.canWarm?.(account.accountId) !== false
+        ) {
+          const retryAt = (this.warmedAt.get(account.accountId) ?? -Infinity) + WARM_RETRY_MS;
+          at = Math.min(at, Math.max(slot.at, retryAt, now));
+        }
         return { id: account.accountId, at };
       });
     if (!scheduled.length) return;
@@ -296,6 +370,7 @@ export class ClaudeAccounts extends EventEmitter {
     );
     try {
       await Promise.all(accounts.map((account) => this.refreshAccount(account)));
+      await this.warmAccounts(accounts);
       await this.preferEarlierReset();
     } finally {
       this.schedulePoll();
@@ -382,12 +457,14 @@ export class ClaudeAccounts extends EventEmitter {
     if (this.closed) throw new AppError("unavailable", "Claude account service is closing", 503);
     const accounts = accountId ? [this.account(accountId)] : [...this.registry.accounts];
     await Promise.all(accounts.map((account) => this.refreshAccount(account)));
+    await this.warmAccounts(accounts);
     await this.preferEarlierReset();
     return this.status();
   }
   private refreshAccount(account: SavedAccount): Promise<void> {
     const pending = this.refreshes.get(account.accountId);
     if (pending) return pending;
+    if (this.warming && account.rateLimits.refreshing) return this.warming;
     if (this.importConnectionBlocked(account)) {
       account.rateLimits = { ...account.rateLimits, refreshing: false, refreshError: true };
       this.emitChanged();
@@ -409,28 +486,9 @@ export class ClaudeAccounts extends EventEmitter {
           account.rateLimits = unknownLimits();
           return;
         }
-        let usage = await this.readUsage(launched);
+        const usage = await this.readUsage(launched);
         if (!unchanged()) return;
-        if (await this.warm(account, launched, usage)) {
-          const warmed = await this.readUsage(launched).catch(() => undefined);
-          if (!unchanged()) return;
-          if (warmed) usage = warmed;
-        }
-        const { modelLimits, ...limits } = usage;
-        const previousModels = Object.fromEntries(
-          Object.entries(account.modelLimits ?? {}).filter(
-            ([, window]) =>
-              window && typeof window.resetsAt === "number" && window.resetsAt > this.now(),
-          ),
-        );
-        account.modelLimits = { ...previousModels, ...modelLimits };
-        account.rateLimits = {
-          limits,
-          updatedAt: this.now(),
-          refreshing: false,
-          refreshError: false,
-        };
-        account.connectionError = null;
+        this.applyUsage(account, usage);
       } catch {
         if (!unchanged()) return;
         account.rateLimits = { ...account.rateLimits, refreshing: false, refreshError: true };
@@ -446,6 +504,75 @@ export class ClaudeAccounts extends EventEmitter {
     });
     this.refreshes.set(account.accountId, request);
     return request;
+  }
+  private applyUsage(account: SavedAccount, usage: NativeClaudeUsage): void {
+    const { modelLimits, ...limits } = usage;
+    const previousModels = Object.fromEntries(
+      Object.entries(account.modelLimits ?? {}).filter(
+        ([, window]) =>
+          window && typeof window.resetsAt === "number" && window.resetsAt > this.now(),
+      ),
+    );
+    account.modelLimits = { ...previousModels, ...modelLimits };
+    account.rateLimits = { limits, updatedAt: this.now(), refreshing: false, refreshError: false };
+    account.connectionError = null;
+  }
+  /** Plan only after the batch of usage reads, so parallel refreshes cannot warm every idle account. */
+  private async warmAccounts(refreshed: SavedAccount[]): Promise<void> {
+    if (this.warming) {
+      await this.warming;
+      return;
+    }
+    const operation = (async () => {
+      this.planWarmups();
+      for (const account of refreshed) {
+        const slot = this.warmSchedule.get(account.accountId);
+        if (this.closed || this.registry.warmLimits === false) return;
+        if (
+          !slot ||
+          slot.at > this.now() ||
+          account.rateLimits.refreshing ||
+          account.rateLimits.refreshError ||
+          this.options.canWarm?.(account.accountId) === false ||
+          this.now() - (this.warmedAt.get(account.accountId) ?? -Infinity) < WARM_RETRY_MS
+        )
+          continue;
+        const usage = account.rateLimits.limits;
+        if (!usage) continue;
+        const launched = this.launch(account);
+        const fingerprint = JSON.stringify([account.configDir, account.proxy]);
+        account.rateLimits.refreshing = true;
+        this.emitChanged();
+        try {
+          if (await this.warm(account, launched, usage)) {
+            const warmed = await this.readUsage(launched).catch(() => undefined);
+            if (
+              warmed &&
+              this.registry.accounts.includes(account) &&
+              fingerprint === JSON.stringify([account.configDir, account.proxy])
+            ) {
+              this.applyUsage(account, warmed);
+              this.planWarmups();
+            }
+          }
+        } finally {
+          account.rateLimits.refreshing = false;
+          await this.edit(async () => {
+            await this.save();
+            this.emitChanged();
+          });
+        }
+      }
+    })();
+    this.warming = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.warming === operation) {
+        this.warming = undefined;
+        this.schedulePoll();
+      }
+    }
   }
   async confirmQuotaExhausted(id: string, model?: string): Promise<boolean> {
     await this.initialize();
@@ -1004,17 +1131,25 @@ export class ClaudeAccounts extends EventEmitter {
     launched: ClaudeLaunchAccount,
     usage: NativeClaudeUsage,
   ): Promise<boolean> {
-    if (this.registry.warmLimits === false) return false;
+    if (this.registry.warmLimits === false || this.options.canWarm?.(account.accountId) === false)
+      return false;
     const now = this.now();
     // A present weekly window proves a subscription; API-key accounts report no limits at all.
     if (!usage.secondary || (usage.primary?.resetsAt ?? 0) > now) return false;
     if ((usage.secondary.usedPercent ?? 0) >= 100) return false;
     if (now - (this.warmedAt.get(account.accountId) ?? 0) < WARM_RETRY_MS) return false;
     this.warmedAt.set(account.accountId, now);
+    const fingerprint = JSON.stringify([account.configDir, account.proxy]);
     try {
       await this.nativeCommand(
         ["-p", "ok", "--model", "haiku", "--tools", "", "--no-session-persistence"],
         launched,
+        () =>
+          !this.closed &&
+          this.registry.warmLimits !== false &&
+          this.registry.accounts.includes(account) &&
+          fingerprint === JSON.stringify([account.configDir, account.proxy]) &&
+          this.options.canWarm?.(account.accountId) !== false,
       );
       return true;
     } catch {
@@ -1070,12 +1205,17 @@ export class ClaudeAccounts extends EventEmitter {
     const output = await this.nativeCommand(["--version"]);
     return /\b\d+\.\d+\.\d+(?:-[\w.]+)?\b/.exec(output)?.[0] ?? null;
   }
-  private async nativeCommand(args: string[], account?: ClaudeLaunchAccount): Promise<string> {
+  private async nativeCommand(
+    args: string[],
+    account?: ClaudeLaunchAccount,
+    canStart?: () => boolean,
+  ): Promise<string> {
     const connection =
       account && account.proxy !== undefined
         ? await this.environment(account.proxy, account.defaultConfig ? "" : account.configDir)
         : undefined;
     try {
+      if (canStart && !canStart()) throw new Error("Account became busy before warm-up started");
       return await new Promise<string>((resolve, reject) => {
         let output = "",
           bytes = 0,
@@ -1137,7 +1277,12 @@ export class ClaudeAccounts extends EventEmitter {
     for (const login of this.logins.values())
       if (!["completed", "failed", "cancelled"].includes(login.status.state))
         await this.cancelLogin(login.status.id);
-    await Promise.allSettled([...this.refreshes.values(), this.updates, this.rotation]);
+    await Promise.allSettled([
+      ...this.refreshes.values(),
+      this.warming,
+      this.updates,
+      this.rotation,
+    ]);
   }
 }
 

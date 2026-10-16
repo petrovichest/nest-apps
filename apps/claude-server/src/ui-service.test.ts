@@ -36,6 +36,7 @@ type Delivery = {
   effort?: string;
 };
 class FakeAccounts extends EventEmitter {
+  readonly accountActivityChanged = vi.fn();
   autoSwitch = true;
   available = true;
   readonly confirm = vi.fn(async () => true);
@@ -359,6 +360,71 @@ async function waitForQueue(service: UiService, id: string, count: number): Prom
 }
 
 describe("Claude UI durable session facade", () => {
+  it("checks warm-up activity per account, including attention and unreleased results", async () => {
+    const { manager, directory, start } = await fixture();
+    manager.accounts = new FakeAccounts();
+    manager.accepting = true;
+    const id = randomUUID();
+    const secondId = randomUUID();
+    manager.owners.set(id, { ...snapshot(id, directory), accountId: "a" });
+    manager.owners.set(secondId, {
+      ...snapshot(secondId, directory),
+      accountId: "b",
+      state: "running",
+      awaitingResult: true,
+    });
+    const service = await start("manual");
+    const rpc = vi.spyOn(manager, "snapshot");
+    expect(service.accountIdle("a")).toBe(true);
+    expect(service.accountIdle("b")).toBe(false);
+
+    manager.emit(id, "state", { state: "interrupted", awaitingResult: true });
+    await expect.poll(() => service.accountIdle("a")).toBe(false);
+    manager.emit(id, "state", { state: "idle", awaitingResult: false });
+    await expect.poll(() => service.accountIdle("a")).toBe(true);
+    const requestId = randomUUID();
+    manager.emit(id, "request", { requestId, kind: "toolApproval", toolName: "Bash", input: {} });
+    await expect.poll(() => service.accountIdle("a")).toBe(false);
+    manager.emit(id, "request.cancelled", { requestId });
+    await expect.poll(() => service.accountIdle("a")).toBe(true);
+    expect(service.accountIdle("b")).toBe(false);
+    expect(rpc).not.toHaveBeenCalled();
+    expect(manager.accounts.accountActivityChanged).toHaveBeenCalled();
+  });
+
+  it("blocks warming disconnected accounts until their owner is observed again", async () => {
+    const { manager, directory, start } = await fixture();
+    manager.accounts = new FakeAccounts();
+    manager.accepting = true;
+    const id = randomUUID();
+    manager.owners.set(id, { ...snapshot(id, directory), accountId: "a" });
+    const service = await start();
+    expect(service.accountIdle("a")).toBe(true);
+    manager.connections.get(id)!.at(-1)!.close();
+    expect(service.accountIdle("a")).toBe(false);
+    expect(service.accountIdle("b")).toBe(true);
+    await service.attach(id);
+    expect(service.accountIdle("a")).toBe(true);
+    const activityChanges = manager.accounts.accountActivityChanged.mock.calls.length;
+    manager.emit(id, "state", { state: "closed", awaitingResult: false });
+    await expect
+      .poll(() => manager.accounts!.accountActivityChanged.mock.calls.length)
+      .toBeGreaterThan(activityChanges);
+    manager.connections.get(id)!.at(-1)!.close();
+    expect(service.accountIdle("a")).toBe(true);
+  });
+
+  it("keeps the selected account free for a queued message before its owner starts", async () => {
+    const { manager, start, reserve } = await fixture();
+    manager.accounts = new FakeAccounts();
+    const service = await start();
+    const id = await reserve(service);
+    await service.enqueue(id, { clientMessageId: randomUUID(), input: "Queued work", images: [] });
+    manager.accepting = true;
+    expect(service.accountIdle("a")).toBe(false);
+    expect(service.accountIdle("b")).toBe(true);
+  });
+
   it("renames a new session with the generated title from the configured title model", async () => {
     const { manager, reserve } = await fixture();
     manager.accepting = true;

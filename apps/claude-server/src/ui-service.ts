@@ -126,6 +126,9 @@ export class UiService extends EventEmitter {
   sequence = 0;
   private views = new Map<string, NativeView>();
   private owners = new Map<string, RunnerSnapshot>();
+  /** Disconnected owners cannot be assumed idle until their subscription is restored. */
+  private unobservedAccounts = new Map<string, string | undefined>();
+  private warmupReady = false;
   private subscriptions = new Map<string, RunnerConnection>();
   private attaching = new Map<string, Promise<void>>();
   private dispatches = new Map<string, Promise<void>>();
@@ -202,13 +205,28 @@ export class UiService extends EventEmitter {
         data.threads[id]!.nativeHistory = typeof session.title === "string";
       }
     });
-    for (const session of sessions)
-      if (session.managed && session.state !== "unavailable")
-        await this.attach(String(session.sessionId)).catch(() => undefined);
-      else if (session.managed && this.manager.accounts) {
-        const saved = await this.manager.savedSnapshot(String(session.sessionId));
-        if (saved) await this.observeQuotaFailure(String(session.sessionId), saved);
+    for (const session of sessions) {
+      if (!session.managed) continue;
+      const id = String(session.sessionId);
+      if (this.manager.accounts) {
+        const descriptor = await this.manager.descriptor(id);
+        this.unobservedAccounts.set(
+          id,
+          descriptor?.accountId ??
+            (descriptor
+              ? this.manager.accounts.accountIdForConfigDir(descriptor.configDir)
+              : undefined),
+        );
       }
+      if (session.state !== "unavailable") await this.attach(id).catch(() => undefined);
+      else if (this.manager.accounts) {
+        const saved = await this.manager.savedSnapshot(id);
+        if (saved?.state === "closed") this.unobservedAccounts.delete(id);
+        if (saved) await this.observeQuotaFailure(id, saved);
+      }
+    }
+    this.warmupReady = true;
+    this.manager.accounts?.accountActivityChanged();
     if (options.probeModels !== false && !this.store.data.models.length)
       await this.probeModels().catch(() => undefined);
     if (!this.manager.accounts && (options.pollRateLimits ?? options.probeModels !== false)) {
@@ -236,6 +254,31 @@ export class UiService extends EventEmitter {
       )
         this.recoverQuota(thread.id);
       else if (thread.queue.length) this.schedule(thread.id);
+  }
+  /** Uses subscription state only; a warm-up must never delay a user's message with extra RPC. */
+  accountIdle(accountId: string): boolean {
+    if (!this.warmupReady || this.closed || !this.manager.accepting) return false;
+    if ([...this.unobservedAccounts.values()].some((id) => !id || id === accountId)) return false;
+    for (const owner of this.owners.values()) {
+      const id = owner.accountId;
+      if (
+        (!id || id === accountId) &&
+        (owner.awaitingResult ||
+          owner.pendingRequests.length ||
+          !["idle", "interrupted", "failed", "closed"].includes(owner.state))
+      )
+        return false;
+    }
+    // Queued deliveries cover the gap before the owner's running event arrives.
+    const selectedId = this.manager.accounts?.status().currentAccountId;
+    return !Object.values(this.store.data.threads).some((thread) => {
+      if (thread.subagent || !thread.queue.length) return false;
+      const ownerId = this.owners.get(thread.id)?.accountId;
+      return thread.queue.some((message) => {
+        const targetId = message.deliveryMode === "steer" ? ownerId : selectedId;
+        return !targetId || targetId === accountId;
+      });
+    });
   }
   /** Runs a short-lived CLI that never receives a prompt or persists a session. */
   private async withProbe<T>(use: (process: ClaudeProcess) => Promise<T>): Promise<T> {
@@ -837,7 +880,10 @@ export class UiService extends EventEmitter {
         .then(async () => {
           if ("snapshot" in message) {
             const owner = message.snapshot;
+            owner.accountId ??= this.unobservedAccounts.get(id);
             this.owners.set(id, owner);
+            this.unobservedAccounts.delete(id);
+            this.manager.accounts?.accountActivityChanged();
             this.quotaEvents.set(id, this.quotaEvidence(owner.currentEvents));
             await this.applyPermissions(id);
             const history = await readHistory(this.manager.config.configDir, id).catch(() => null);
@@ -866,7 +912,10 @@ export class UiService extends EventEmitter {
     connection.once("close", () => {
       if (this.subscriptions.get(id) === connection) {
         this.subscriptions.delete(id);
+        const owner = this.owners.get(id);
+        if (owner?.state !== "closed") this.unobservedAccounts.set(id, owner?.accountId);
         this.owners.delete(id);
+        this.manager.accounts?.accountActivityChanged();
       }
       if (!this.closed) this.publish({ type: "thread.upserted", thread: this.summary(id) });
     });
@@ -962,6 +1011,11 @@ export class UiService extends EventEmitter {
       }
       this.schedule(id);
     }
+    if (
+      ["state", "request", "request.cancelled"].includes(event.kind) ||
+      (event.kind === "native" && record(event.data).type === "result")
+    )
+      this.manager.accounts?.accountActivityChanged();
   }
   private async touch(id: string): Promise<void> {
     await this.store.update((data) => {
