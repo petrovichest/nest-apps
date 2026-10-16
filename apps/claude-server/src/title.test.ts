@@ -1,16 +1,19 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ClaudeLaunchAccount } from "./accounts";
+import { createClaudeProxyEnvironment } from "./proxy";
 import { claudeTitleGenerator } from "./title";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const task of cleanup.splice(0)) await task();
+  vi.unstubAllEnvs();
 });
 
 /** A stand-in for the Claude CLI that records how it was called and prints a canned answer. */
-async function fakeClaude(answer: string) {
+async function fakeClaude(answer: string, exitCode = 0) {
   const directory = await mkdtemp(join(tmpdir(), "claudenest-title-test-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const record = join(directory, "call.json");
@@ -22,8 +25,9 @@ const chunks = [];
 process.stdin.on("data", (chunk) => chunks.push(chunk));
 process.stdin.on("end", () => {
   const input = Buffer.concat(chunks).toString();
-  require("node:fs").writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), input }));
+  require("node:fs").writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), input, configDir: process.env.CLAUDE_CONFIG_DIR }));
   process.stdout.write(${JSON.stringify(answer)});
+  process.exitCode = ${exitCode};
 });
 `,
   );
@@ -31,13 +35,87 @@ process.stdin.on("end", () => {
   return {
     bin,
     call: async () =>
-      JSON.parse(await readFile(record, "utf8")) as { args: string[]; input: string },
+      JSON.parse(await readFile(record, "utf8")) as {
+        args: string[];
+        input: string;
+        configDir?: string;
+      },
   };
 }
 
 const PNG = "data:image/png;base64,aW1hZ2U=";
 
 describe("claudeTitleGenerator", () => {
+  it("resolves the current account and its proxy for every title", async () => {
+    const claude = await fakeClaude('{"structured_output":{"title":"Fix titles"}}');
+    let account: ClaudeLaunchAccount = {
+      accountId: "first",
+      configDir: "/accounts/first",
+      proxy: null,
+    };
+    const accounts = { launchAccount: vi.fn(async () => account) };
+    const close = vi.fn(async () => {});
+    const proxyEnvironment = vi.fn<typeof createClaudeProxyEnvironment>(async (...args) => {
+      const connection = await createClaudeProxyEnvironment(...args);
+      return { env: connection.env, close };
+    });
+    const generate = claudeTitleGenerator({
+      claudeBin: claude.bin,
+      configDir: "/original/exhausted-account",
+      accounts,
+      proxyEnvironment,
+    });
+    await expect(generate("Fix titles")).resolves.toBe("Fix titles");
+    expect((await claude.call()).configDir).toBe("/accounts/first");
+    expect(proxyEnvironment).toHaveBeenLastCalledWith(null, "/accounts/first");
+    account = {
+      accountId: "second",
+      configDir: "/accounts/second",
+      proxy: {
+        protocol: "http",
+        host: "proxy.example",
+        port: 8080,
+        url: "http://proxy.example:8080",
+      },
+    };
+    await expect(generate("Fix titles")).resolves.toBe("Fix titles");
+    expect((await claude.call()).configDir).toBe("/accounts/second");
+    expect(proxyEnvironment).toHaveBeenLastCalledWith(account.proxy, account.configDir);
+    expect(accounts.launchAccount).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps native default config discovery when the original account is selected", async () => {
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "/inherited/account");
+    const claude = await fakeClaude('{"structured_output":{"title":"Fix titles"}}');
+    const accounts = {
+      launchAccount: async () => ({
+        accountId: "original",
+        configDir: "/home/example/.claude",
+        defaultConfig: true,
+        proxy: null,
+      }),
+    };
+    await claudeTitleGenerator({ claudeBin: claude.bin, accounts })("Fix titles");
+    expect((await claude.call()).configDir).toBeUndefined();
+  });
+
+  it("closes the account proxy when the CLI fails", async () => {
+    const claude = await fakeClaude("", 1);
+    const close = vi.fn(async () => {});
+    const accounts = {
+      launchAccount: async () => ({ accountId: "selected", configDir: "/selected", proxy: null }),
+    };
+    await expect(
+      claudeTitleGenerator({
+        claudeBin: claude.bin,
+        accounts,
+        proxyEnvironment: async () => ({ env: {}, close }),
+      })("Fix titles"),
+    ).rejects.toThrow("Claude title generation failed");
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("sends a text-only request through the plain JSON format", async () => {
     const claude = await fakeClaude('{"structured_output":{"title":"  Fix   login  "}}');
     const title = await claudeTitleGenerator({ claudeBin: claude.bin })("Fix the login", "sonnet");

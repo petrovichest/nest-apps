@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ClaudeAccounts } from "./accounts";
+import { createClaudeProxyEnvironment, type ClaudeProxyEnvironment } from "./proxy";
 
 const TITLE_TIMEOUT_MS = 60_000;
 const TITLE_INPUT_LIMIT = 8_000;
@@ -35,6 +37,8 @@ export function claudeTitleGenerator(options: {
   claudeBin: string;
   configDir?: string;
   model?: string;
+  accounts?: Pick<ClaudeAccounts, "launchAccount">;
+  proxyEnvironment?: typeof createClaudeProxyEnvironment;
 }): TitleGenerator {
   return async (text, model, images = []) => {
     const cwd = await mkdtemp(join(tmpdir(), "claudenest-title-"));
@@ -45,7 +49,17 @@ export function claudeTitleGenerator(options: {
     const pictures = imageBlocks(images);
     // Only the streaming input format can carry images, and it needs streaming output as well.
     const streaming = pictures.length > 0;
+    let connection: ClaudeProxyEnvironment | undefined;
     try {
+      // Resolve per request so manual and automatic account switches apply to titles too.
+      const account = await options.accounts?.launchAccount();
+      if (account?.defaultConfig) delete env.CLAUDE_CONFIG_DIR;
+      else if (account) env.CLAUDE_CONFIG_DIR = account.configDir;
+      if (account && account.proxy !== undefined)
+        connection = await (options.proxyEnvironment ?? createClaudeProxyEnvironment)(
+          account.proxy,
+          account.defaultConfig ? "" : account.configDir,
+        );
       const output = await run(
         options.claudeBin,
         [
@@ -70,7 +84,7 @@ export function claudeTitleGenerator(options: {
         ],
         {
           cwd,
-          env,
+          env: connection?.env ?? env,
           input: streaming
             ? `${JSON.stringify({
                 type: "user",
@@ -90,6 +104,7 @@ export function claudeTitleGenerator(options: {
       if (!clean) throw new Error("Empty Claude title");
       return clean;
     } finally {
+      await connection?.close().catch(() => undefined);
       await rm(cwd, { recursive: true, force: true });
     }
   };

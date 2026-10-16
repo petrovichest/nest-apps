@@ -12,7 +12,7 @@ const manager = new SessionManager(config, undefined, accounts);
 await manager.initialize();
 const ui = new UiService(
   manager,
-  claudeTitleGenerator({ claudeBin: config.claudeBin, configDir: config.configDir }),
+  claudeTitleGenerator({ claudeBin: config.claudeBin, configDir: config.configDir, accounts }),
 );
 await ui.initialize();
 const app = await buildApp(manager, ui);
