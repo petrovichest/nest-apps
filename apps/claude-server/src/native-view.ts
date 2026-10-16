@@ -798,7 +798,8 @@ export class NativeView {
     const notification =
       command?.commandMode === "task-notification" ||
       (input && object(input.origin) && input.origin.kind === "task-notification");
-    if (event.isMeta === true || notification) metadata.isMeta = true;
+    // Live SDK events carry the transcript's isMeta (skill text, injected reminders) as isSynthetic.
+    if (event.isMeta === true || event.isSynthetic === true || notification) metadata.isMeta = true;
     if (event.turnCompanion === true) metadata.turnCompanion = true;
     if (Object.keys(metadata).length) {
       this.sourceMetadata.set(id, { ...this.sourceMetadata.get(id), ...metadata });

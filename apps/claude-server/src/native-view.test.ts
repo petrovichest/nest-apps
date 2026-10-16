@@ -1075,6 +1075,20 @@ describe("native Claude view", () => {
     }
   });
 
+  it("keeps live synthetic input such as expanded skill text out of the user messages", () => {
+    const view = new NativeView("session", "/project");
+    view.apply(user);
+    view.apply(assistant);
+    const before = view.turns();
+    view.apply({
+      ...user,
+      uuid: "skill-text",
+      isSynthetic: true,
+      message: { role: "user", content: [{ type: "text", text: "Base directory for this skill" }] },
+    });
+    expect(view.turns()).toEqual(before);
+  });
+
   it("drops a formerly rendered companion input when canonical metadata becomes available", () => {
     const view = new NativeView("session", "/project");
     const companion = { ...user, uuid: "companion-source", message: { content: "Transport note" } };
