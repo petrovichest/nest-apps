@@ -376,6 +376,33 @@ describe("durable Claude UI voice jobs", () => {
     },
   );
 
+  it.each(["send", "steer", "queue"])(
+    "sends pasted text of a draft as metadata, not as its model-facing wrapper, in %s mode",
+    async (mode) => {
+      const state = await fixture();
+      await state.store.update((data) => {
+        data.threads[state.threadId]!.draft = {
+          ...draft("hello world"),
+          inlinePastes: [{ id: "paste", start: 6, end: 11 }],
+          pasteBlocks: [{ id: "block", text: "long pasted content" }],
+        };
+      });
+      const job = await state.jobs.create(
+        state.threadId,
+        Buffer.from("audio"),
+        "audio/webm",
+        uploadQuery(mode),
+        1000,
+      );
+      await vi.waitFor(() => expect(state.store.data.voice[job!.id]!.applied).toBe(true));
+      expect(state.enqueue.mock.calls[0]![1]).toMatchObject({
+        input: "voice world",
+        inlinePastes: [{ id: "paste", start: 6, end: 11 }],
+        pasteBlocks: [{ id: "block", text: "long pasted content" }],
+      });
+    },
+  );
+
   it("steers the revised draft with its attachments when typing continues during transcription", async () => {
     const result = deferred<string>();
     const state = await fixture(vi.fn(() => result.promise));

@@ -4,8 +4,9 @@ import { join } from "node:path";
 
 import {
   formatAnnotatedMessage,
+  pastedText,
   replacePasteRanges,
-  serializePastedMessage,
+  trimPastedMessage,
 } from "@codexnest/protocol";
 import type { QueueMessageRequest, ThreadDraft, VoiceTranscriptionJob } from "@codexnest/protocol";
 
@@ -442,11 +443,9 @@ export class UiVoiceJobs {
       } else {
         record.sendDraftUpdatedAt = currentRevision;
         record.sendInput = {
-          input: formatAnnotatedMessage(
-            serializePastedMessage(inserted.input, inserted),
-            inserted.annotations,
-            data.uiLanguage,
-          ),
+          // Like a typed message: pastes travel as metadata, enqueue() serializes them for Claude.
+          input: formatAnnotatedMessage(inserted.input, inserted.annotations, data.uiLanguage),
+          ...pastedText(trimPastedMessage(inserted.input, inserted)),
           images: inserted.images.map((image) => image.url),
           ...(inserted.files?.length ? { files: inserted.files } : {}),
           clientMessageId: `voice:${record.job.id}`,
