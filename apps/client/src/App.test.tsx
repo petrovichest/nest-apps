@@ -908,6 +908,120 @@ describe("App routing and navigation", () => {
     expect(api.updateThread).not.toHaveBeenCalled();
   });
 
+  describe("active list exit animation", () => {
+    const finished = {
+      ...baseThread,
+      id: "finished",
+      title: "Готовая сессия",
+      state: "completed" as const,
+      unread: true,
+      updatedAt: 123,
+    };
+    const running = {
+      ...baseThread,
+      id: "running",
+      title: "Выполняется",
+      state: "running" as const,
+    };
+
+    function openActiveList(threads: ThreadSummary[]) {
+      localStorage.setItem("codexnest.sessionListMode", "active");
+      const api = mockConnection(snapshot(threads));
+      const view = renderApp("/threads/running");
+      const context = connection.mock.results.at(-1)!.value;
+      const update = (next: ThreadSummary[]) => {
+        context.state.snapshot = snapshot(next);
+        view.rerender(
+          <MemoryRouter initialEntries={["/threads/running"]} useTransitions={false}>
+            <ThemedApp
+              settings={{ baseUrl: "https://pi.local", token: "secret" }}
+              onDisconnected={() => undefined}
+            />
+          </MemoryRouter>,
+        );
+      };
+      return { api, update };
+    }
+
+    function endAnimation(element: Element, animationName: string) {
+      const event = new Event("animationend", { bubbles: true });
+      Object.defineProperty(event, "animationName", { value: animationName });
+      act(() => {
+        element.dispatchEvent(event);
+      });
+    }
+
+    it("keeps a finished session in place while it dissolves and removes it when the slot closes", () => {
+      const { update } = openActiveList([finished, running]);
+
+      update([{ ...finished, unread: false }, running]);
+
+      const branch = screen.getByText("Готовая сессия").closest(".thread-branch")!;
+      expect(branch).toHaveClass("leaving");
+      expect(branch.querySelector(".status")).toHaveClass("status-completed-unread");
+
+      endAnimation(branch.querySelector(".thread-branch-row")!, "thread-leave-dissolve");
+      expect(screen.getByText("Готовая сессия")).toBeInTheDocument();
+
+      endAnimation(branch, "thread-leave-collapse");
+      expect(screen.queryByText("Готовая сессия")).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /Выполняется/ })).toBeInTheDocument();
+    });
+
+    it("removes a dissolving session even when the animation never reports its end", () => {
+      vi.useFakeTimers();
+      try {
+        const { update } = openActiveList([finished, running]);
+        update([{ ...finished, unread: false }, running]);
+        expect(screen.getByText("Готовая сессия")).toBeInTheDocument();
+
+        act(() => {
+          vi.advanceTimersByTime(1_300);
+        });
+        expect(screen.queryByText("Готовая сессия")).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("removes a finished session at once when the user prefers reduced motion", () => {
+      vi.mocked(window.matchMedia).mockImplementation(
+        (query) =>
+          ({
+            matches: query.includes("prefers-reduced-motion"),
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+          }) as unknown as MediaQueryList,
+      );
+      const { update } = openActiveList([finished, running]);
+
+      update([{ ...finished, unread: false }, running]);
+
+      expect(screen.queryByText("Готовая сессия")).not.toBeInTheDocument();
+    });
+
+    it("does not animate sessions that leave the list for another reason", () => {
+      const { update } = openActiveList([finished, running]);
+
+      update([{ ...finished, archived: true }, running]);
+
+      expect(screen.queryByText("Готовая сессия")).not.toBeInTheDocument();
+    });
+
+    it("keeps the actions of a dissolving row open instead of reflowing its title", async () => {
+      const { api } = openActiveList([finished, running]);
+
+      fireEvent.click(screen.getByLabelText("Действия с сессией «Готовая сессия»"));
+      const finish = screen.getByRole("button", { name: "Закончить сессию «Готовая сессия»" });
+      fireEvent.click(finish);
+      fireEvent.click(finish);
+
+      await waitFor(() => expect(api.markRead).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(finish).toBeEnabled());
+      expect(finish.closest("details")).toHaveAttribute("open");
+    });
+  });
+
   it("renders a flat unlimited cross-project active feed in recency order", () => {
     localStorage.setItem("codexnest.sessionListMode", "active");
     const secondProject = testProject("second-project", "Второй");
@@ -2976,6 +3090,24 @@ describe("App routing and navigation", () => {
 
     fireEvent.click(screen.getByRole("heading", { level: 1, name: "Новая задача в истории" }));
     expect(threadMenu.open).toBe(false);
+  });
+
+  it("keeps a popup open when the clicked element is replaced while the click bubbles", () => {
+    mockConnection(snapshot([baseThread]));
+
+    renderApp("/threads/newer");
+    const threadMenu = screen
+      .getByLabelText("Действия с задачей")
+      .closest("details") as HTMLDetailsElement;
+    fireEvent.click(threadMenu.querySelector("summary")!);
+    expect(threadMenu.open).toBe(true);
+
+    // React swaps a button's icon for a spinner during the click, before it reaches the document.
+    const icon = threadMenu.querySelector("button svg")!;
+    icon.closest("button")!.addEventListener("click", () => icon.remove(), { once: true });
+    fireEvent.click(icon);
+
+    expect(threadMenu.open).toBe(true);
   });
 
   it("copies a project path and reports clipboard fallback failures", async () => {

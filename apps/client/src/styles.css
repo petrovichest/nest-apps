@@ -709,6 +709,67 @@
   --sidebar-button-hover-ink: var(--danger);
 }
 
+/* A finished session dissolves in the Active list, then its slot closes. */
+.thread-branch.leaving {
+  --thread-leave-duration: 900ms;
+  --thread-leave-collapse-at: 0.5;
+
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 1fr;
+  animation:
+    thread-leave-collapse calc(var(--thread-leave-duration) * (1 - var(--thread-leave-collapse-at)))
+      cubic-bezier(0.4, 0, 0.2, 1)
+      calc(var(--thread-leave-duration) * var(--thread-leave-collapse-at)) forwards,
+    thread-leave-clip calc(var(--thread-leave-duration) * 0.2) ease-out
+      calc(var(--thread-leave-duration) * var(--thread-leave-collapse-at)) both;
+}
+
+.thread-branch.leaving > .thread-branch-row {
+  min-height: 0;
+  animation: thread-leave-dissolve calc(var(--thread-leave-duration) * 0.55) var(--motion-ease)
+    calc(var(--thread-leave-duration) * 0.12) forwards;
+}
+
+.thread-branch.leaving .thread-finish-action {
+  animation: thread-leave-check calc(var(--thread-leave-duration) * 0.2) ease-out forwards;
+}
+
+@keyframes thread-leave-dissolve {
+  to {
+    filter: blur(7px);
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes thread-leave-check {
+  35% {
+    transform: scale(0.8);
+  }
+
+  to {
+    transform: scale(1.14);
+  }
+}
+
+@keyframes thread-leave-collapse {
+  to {
+    grid-template-rows: 0fr;
+  }
+}
+
+/* The bottom edge clips only once the slot starts closing, so the row's shadow is never cut. */
+@keyframes thread-leave-clip {
+  from {
+    clip-path: inset(-80px -80px -48px -80px);
+  }
+
+  to {
+    clip-path: inset(-80px -80px 0 -80px);
+  }
+}
+
 .thread-branch-spacer {
   width: 28px;
   height: var(--control-touch-height);

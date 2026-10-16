@@ -9,6 +9,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useReducer,
   useRef,
   useState,
 } from "react";
@@ -96,6 +97,8 @@ const PROJECT_DRAG_SCROLL_EDGE = 48;
 const PROJECT_DRAG_SCROLL_SPEED = 12;
 const THREAD_PREVIEW_LIMIT = 5;
 const THREAD_TITLE_SCROLL_PX_PER_SECOND = 45;
+// Keep in sync with --thread-leave-duration in styles.css.
+const THREAD_LEAVE_DURATION_MS = 900;
 const SIDEBAR_TREE_STATE_KEY_PREFIX = `${application.storagePrefix}.sidebarTree.v1:`;
 const SESSION_LIST_MODE_KEY = `${application.storagePrefix}.sessionListMode`;
 
@@ -371,10 +374,13 @@ export function App({
   useEffect(() => {
     function closePopupsOutside(event: MouseEvent) {
       if (!(event.target instanceof Node)) return;
+      // The path is fixed when the click starts, so a target that React has already replaced
+      // (a button swapping its icon for a spinner) still counts as inside its popup.
+      const path = event.composedPath();
       document
         .querySelectorAll<HTMLDetailsElement>("details[data-dismiss-on-outside-click][open]")
         .forEach((popup) => {
-          if (!popup.contains(event.target as Node)) popup.open = false;
+          if (!path.includes(popup)) popup.open = false;
         });
     }
 
@@ -906,6 +912,13 @@ function Sidebar({
     serverBaseUrl,
     byParent: new Map(),
   });
+  // Finished sessions stay in the Active list as they were until their exit animation ends.
+  const leavingThreadsRef = useRef<Map<string, ThreadSummary>>(new Map());
+  const previousFeedRef = useRef<ThreadSummary[]>([]);
+  const [, refreshLeavingThreads] = useReducer((count: number) => count + 1, 0);
+  const releaseLeavingThread = useCallback((threadId: string) => {
+    if (leavingThreadsRef.current.delete(threadId)) refreshLeavingThreads();
+  }, []);
   const [legacyRateLimits, setLegacyRateLimits] = useState<CodexRateLimitsResponse | null>(null);
   const [legacyRateLimitsUpdatedAt, setLegacyRateLimitsUpdatedAt] = useState<number | null>(null);
   const [manualRateLimitsLoading, setManualRateLimitsLoading] = useState(false);
@@ -936,6 +949,8 @@ function Sidebar({
   }, [sharedRateLimits]);
   if (activeFeedRunningOrderRef.current.serverBaseUrl !== serverBaseUrl) {
     activeFeedRunningOrderRef.current = { serverBaseUrl, byParent: new Map() };
+    leavingThreadsRef.current.clear();
+    previousFeedRef.current = [];
   }
   const snapshot = state.snapshot;
   const snapshotReady = snapshot !== null;
@@ -951,17 +966,45 @@ function Sidebar({
   const archivedRoots = roots.filter((thread) => thread.archived);
   const groups = groupedThreads(snapshot?.projects ?? [], activeRoots);
   const orderedGroups = projectListDirection === "bottom-up" ? [...groups].reverse() : groups;
-  const activeFeedRoots = pinnedThreadsFirst(
-    sortActiveFeedThreads(
-      activeRoots.filter(
-        (thread) =>
-          thread.pinned || isActiveFeedEligible(thread) || pendingForkSourceIds.has(thread.id),
+  const dissolveFinished = sessionListMode === "active" && canAnimateThreadLeave();
+  const leavingThreads = leavingThreadsRef.current;
+  const activeRootsById = new Map(activeRoots.map((thread) => [thread.id, thread]));
+  for (const threadId of [...leavingThreads.keys()]) {
+    const live = activeRootsById.get(threadId);
+    if (!dissolveFinished || !live || isActiveFeedEligible(live)) leavingThreads.delete(threadId);
+  }
+  const buildActiveFeed = () =>
+    pinnedThreadsFirst(
+      sortActiveFeedThreads(
+        activeRoots
+          .map((thread) => leavingThreads.get(thread.id) ?? thread)
+          .filter(
+            (thread) =>
+              thread.pinned || isActiveFeedEligible(thread) || pendingForkSourceIds.has(thread.id),
+          ),
+        childrenByParent,
+        null,
+        activeFeedRunningOrderRef.current.byParent,
       ),
-      childrenByParent,
-      null,
-      activeFeedRunningOrderRef.current.byParent,
-    ),
-  );
+    );
+  let activeFeedRoots = buildActiveFeed();
+  if (dissolveFinished) {
+    const listedIds = new Set(activeFeedRoots.map((thread) => thread.id));
+    for (const previous of previousFeedRef.current) {
+      const live = activeRootsById.get(previous.id);
+      if (
+        !listedIds.has(previous.id) &&
+        isActiveFeedEligible(previous) &&
+        live &&
+        isFinishedThread(live)
+      ) {
+        leavingThreads.set(previous.id, previous);
+      }
+    }
+    if (leavingThreads.size) activeFeedRoots = buildActiveFeed();
+  }
+  // Rows already on their way out must not be detected as leaving again once released.
+  previousFeedRef.current = activeFeedRoots.filter((thread) => !leavingThreads.has(thread.id));
   const pinnedFeedRoots = activeFeedRoots.filter((thread) => thread.pinned);
   const unpinnedFeedRoots = activeFeedRoots.filter((thread) => !thread.pinned);
   const pinnedGroupExpanded =
@@ -1145,6 +1188,9 @@ function Sidebar({
         key={thread.id}
         onNavigate={onClose}
         runningOrderByParent={activeFeedRunningOrderRef.current.byParent}
+        leaving={leavingThreadsRef.current.has(thread.id)}
+        dissolveOnFinish={dissolveFinished}
+        onLeft={releaseLeavingThread}
         projectLabel={
           (thread.projectId ? projectNames.get(thread.projectId) : null) ?? t("Без проекта")
         }
@@ -2107,6 +2153,9 @@ function ActiveThreadBranch({
   onNavigate,
   projectLabel,
   runningOrderByParent,
+  leaving = false,
+  dissolveOnFinish = false,
+  onLeft,
 }: {
   onNewSession(projectId: string): void;
   thread: ThreadSummary;
@@ -2114,6 +2163,9 @@ function ActiveThreadBranch({
   onNavigate(): void;
   projectLabel?: string;
   runningOrderByParent: Map<string | null, string[]>;
+  leaving?: boolean;
+  dissolveOnFinish?: boolean;
+  onLeft?(threadId: string): void;
 }) {
   const { state } = useConnection();
   const [expanded, setExpanded] = useState(false);
@@ -2130,19 +2182,38 @@ function ActiveThreadBranch({
     runningOrderByParent,
   );
 
+  // The animation normally reports its own end; the timer covers a hidden or detached sidebar.
+  useEffect(() => {
+    if (!leaving || !onLeft) return;
+    const timer = window.setTimeout(() => onLeft(thread.id), THREAD_LEAVE_DURATION_MS + 400);
+    return () => window.clearTimeout(timer);
+  }, [leaving, onLeft, thread.id]);
+
   return (
-    <div className="thread-branch">
+    <div
+      className={`thread-branch${leaving ? " leaving" : ""}`}
+      onAnimationEnd={(event) => {
+        if (
+          leaving &&
+          event.target === event.currentTarget &&
+          event.animationName === "thread-leave-collapse"
+        ) {
+          onLeft?.(thread.id);
+        }
+      }}
+    >
       <ThreadLink
         thread={thread}
         onNavigate={onNavigate}
         secondaryLabel={projectLabel}
         onNewSession={onNewSession}
+        dissolveOnFinish={dissolveOnFinish}
         subagentCount={children.length}
         subagentsExpanded={expanded}
         subagentsId={childrenId}
         onToggleSubagents={() => setExpanded((value) => !value)}
       />
-      {((expanded && children.length > 0) || forkOperations.length > 0) && (
+      {!leaving && ((expanded && children.length > 0) || forkOperations.length > 0) && (
         <div className="thread-branch-children" id={childrenId}>
           {forkOperations.map((operation) => (
             <ForkOperationRow
@@ -2262,6 +2333,7 @@ function ThreadLink({
   onNavigate,
   secondaryLabel,
   onNewSession,
+  dissolveOnFinish = false,
   subagentCount = 0,
   subagentsExpanded = false,
   subagentsId,
@@ -2271,6 +2343,7 @@ function ThreadLink({
   onNavigate(): void;
   secondaryLabel?: string;
   onNewSession?(projectId: string): void;
+  dissolveOnFinish?: boolean;
   subagentCount?: number;
   subagentsExpanded?: boolean;
   subagentsId?: string;
@@ -2357,7 +2430,10 @@ function ThreadLink({
     setFinishing(true);
     try {
       await api.markRead(thread.id, { observedUpdatedAt: thread.updatedAt });
-      closeActions(menuRef.current?.contains(document.activeElement));
+      // A row that is about to dissolve keeps its buttons until it is gone.
+      if (!dissolveOnFinish || thread.pinned) {
+        closeActions(menuRef.current?.contains(document.activeElement));
+      }
     } catch (caught) {
       setFinishError(
         caught instanceof Error
@@ -2607,6 +2683,21 @@ function pinnedThreadsFirst(threads: ThreadSummary[]): ThreadSummary[] {
     ...threads.filter((thread) => thread.pinned),
     ...threads.filter((thread) => !thread.pinned),
   ];
+}
+
+function canAnimateThreadLeave(): boolean {
+  return (
+    typeof window.matchMedia === "function" &&
+    !window.matchMedia("(prefers-reduced-motion: reduce)").matches &&
+    document.visibilityState !== "hidden"
+  );
+}
+
+function isFinishedThread(thread: ThreadSummary): boolean {
+  return (
+    !thread.unread &&
+    (thread.state === "completed" || thread.state === "failed" || thread.state === "interrupted")
+  );
 }
 
 function isActiveChildFeedEligible(thread: ThreadSummary): boolean {
