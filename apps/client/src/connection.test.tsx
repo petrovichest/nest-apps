@@ -19,6 +19,11 @@ const loadPendingVoiceRecording = vi.hoisted(() => vi.fn(() => Promise.resolve(n
 const putPendingVoiceRecording = vi.hoisted(() =>
   vi.fn<(recording: PendingVoiceRecording) => Promise<boolean>>(() => Promise.resolve(true)),
 );
+const discardConsumedLocalDraft = vi.hoisted(() =>
+  vi.fn<(settings: unknown, threadId: string, updatedAt: number | null) => Promise<void>>(() =>
+    Promise.resolve(),
+  ),
+);
 const observeNativeNotificationEvent = vi.hoisted(() => vi.fn());
 const observeNativeNotificationSnapshot = vi.hoisted(() => vi.fn());
 const setNativeNotificationAppActive = vi.hoisted(() => vi.fn());
@@ -52,6 +57,7 @@ vi.mock("./offline-store", async (importOriginal) => ({
   deletePendingVoiceRecording,
   loadPendingVoiceRecording,
   putPendingVoiceRecording,
+  discardConsumedLocalDraft,
   listOutboxMessages,
   putOutboxMessage,
   deleteOutboxMessage,
@@ -687,7 +693,7 @@ describe("ConnectionProvider", () => {
           draftUpdatedAt: null,
           draft: { input: "", images: [], goalMode: false, annotations: [] },
           localDraftUpdatedAt: 1,
-          serverDraftUpdatedAt: null,
+          serverDraftUpdatedAt: 7,
           createdAt: 1,
           attempts: 1,
           lastError: "offline",
@@ -711,6 +717,10 @@ describe("ConnectionProvider", () => {
       expect(url.searchParams.get("dismissUserInput")).toBe(
         mode === "queue" ? JSON.stringify(dismissUserInput) : null,
       );
+      // A sent voice message consumes the draft behind it; a draft-mode recording only adds to it.
+      if (mode === "queue")
+        expect(discardConsumedLocalDraft).toHaveBeenCalledWith(expect.anything(), "thread", 7);
+      else expect(discardConsumedLocalDraft).not.toHaveBeenCalled();
       view.unmount();
     },
   );

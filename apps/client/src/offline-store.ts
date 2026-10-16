@@ -301,6 +301,17 @@ export async function deleteLocalDraft(
   await deleteValue(DRAFT_STORE, scopedKey(connectionCacheKey(settings), threadId));
 }
 
+/** The server took a confirmed draft into a voice message; a copy edited since is another draft. */
+export async function discardConsumedLocalDraft(
+  settings: ConnectionSettings,
+  threadId: string,
+  confirmedUpdatedAt: number | null,
+): Promise<void> {
+  const current = await loadLocalDraft(settings, threadId);
+  if (current && current.updatedAt === confirmedUpdatedAt)
+    await deleteValue(DRAFT_STORE, current.key);
+}
+
 export async function loadNewSessionDraft(
   settings: ConnectionSettings,
   projectId: string,

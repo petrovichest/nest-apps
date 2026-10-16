@@ -42,6 +42,7 @@ import {
   deleteOutboxMessage,
   deletePendingVoiceRecording,
   confirmLocalDraft,
+  discardConsumedLocalDraft,
   listOutboxMessages,
   listPendingVoiceRecordings,
   loadPendingVoiceRecording,
@@ -1065,6 +1066,15 @@ export function ConnectionProvider({
               : {}),
           });
           if (accepted) dispatch({ type: "voice.accepted", job: accepted });
+          // Like a typed send, which drops the local copy with its outbox entry: the page may
+          // miss the "voice job removed" event, and the copy would then be saved back to the
+          // server draft the voice message has just emptied.
+          if (!prepared.userInput && prepared.mode !== "draft")
+            await discardConsumedLocalDraft(
+              settings,
+              prepared.threadId,
+              prepared.serverDraftUpdatedAt ?? null,
+            );
           await deletePendingVoiceRecording(prepared.id);
           recoveredVoiceRecordingIds.current.delete(prepared.id);
           untrackPendingVoiceRecording(prepared.id);

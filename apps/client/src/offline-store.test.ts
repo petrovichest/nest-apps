@@ -2,10 +2,13 @@ import { Blob as NodeBlob } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  discardConsumedLocalDraft,
   listPendingVoiceRecordings,
+  loadLocalDraft,
   loadNewSessionDraft,
   loadPendingVoiceRecording,
   putPendingVoiceRecording,
+  saveLocalDraft,
   saveNewSessionDraft,
   connectionCacheKey,
   type PendingVoiceRecording,
@@ -118,6 +121,18 @@ describe("offline store recordings", () => {
     // A failed upload rewrites the record it read back.
     expect(await putPendingVoiceRecording({ ...loaded!, attempts: 1 })).toBe(true);
     expect(await listPendingVoiceRecordings(settings)).toHaveLength(1);
+  });
+
+  it("drops the local draft a voice message consumed, but not one edited since", async () => {
+    installIndexedDb({ refuseBlobs: false });
+    await saveLocalDraft(settings, "thread", draft, 5);
+    await discardConsumedLocalDraft(settings, "thread", 5);
+    expect(await loadLocalDraft(settings, "thread")).toBeNull();
+    await saveLocalDraft(settings, "thread", { ...draft, input: "typed meanwhile" }, 6);
+    await discardConsumedLocalDraft(settings, "thread", 5);
+    expect(await loadLocalDraft(settings, "thread")).toMatchObject({ updatedAt: 6 });
+    await discardConsumedLocalDraft(settings, "thread", null);
+    expect(await loadLocalDraft(settings, "thread")).toMatchObject({ updatedAt: 6 });
   });
 
   it("saves and restores a new-session preparation with its recording", async () => {
