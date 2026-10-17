@@ -34,7 +34,7 @@ describe("ClaudeAccountsSettings", () => {
     expect(within(card).getByText(url)).toBeInTheDocument();
     fireEvent.click(within(card).getByRole("button", { name: "Скопировать прокси" }));
     await waitFor(() => expect(copyText).toHaveBeenCalledExactlyOnceWith(url));
-    expect(within(card).getByRole("button", { name: "Скопировано" })).toBeInTheDocument();
+    expect(await within(card).findByRole("button", { name: "Скопировано" })).toBeInTheDocument();
     fireEvent.click(within(card).getByRole("button", { name: "Настроить" }));
     const dialog = screen.getByRole("dialog");
     const input = within(dialog).getByLabelText("Прокси");
