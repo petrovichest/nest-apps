@@ -654,6 +654,37 @@ describe("evenly spaced Claude warm-ups", () => {
     );
   });
 
+  it("keeps assigned warm-up slots when independent usage polls jitter the reset timestamps", async () => {
+    const state = await group(3);
+    state.entries.forEach((_, index) =>
+      state.setUsage(index, usage(0, 30, NOW + (60 + index * 10) * minute)),
+    );
+    const readUsage = state.options.readUsage!;
+    let jitter = 0;
+    state.options.readUsage = async (account) => {
+      const result = structuredClone(await readUsage(account));
+      if (result.primary?.resetsAt) result.primary.resetsAt += jitter;
+      return result;
+    };
+    await state.refreshAt(0);
+    jitter = 319;
+    await state.accounts.refresh(state.entries[1]!.id);
+    jitter = -339;
+    await state.accounts.refresh(state.entries[2]!.id);
+    state.setUsage(0, state.idle());
+    await state.refreshAt(60);
+    expect(state.warmed).toEqual([{ id: state.entries[0]!.id, at: NOW + 60 * minute }]);
+
+    state.setUsage(1, state.idle());
+    state.setUsage(2, state.idle());
+    jitter = 581;
+    await state.refreshAt(80);
+    expect(state.warmed).toHaveLength(1);
+    await state.refreshAt(160 + 1 / 60);
+    await state.refreshAt(260 + 2 / 60);
+    expect(state.warmed.map((warm) => warm.id)).toEqual(state.entries.map((entry) => entry.id));
+  });
+
   it("starts only one of four idle accounts during concurrent refreshes", async () => {
     const state = await group(4);
     state.entries.forEach((_, index) => state.setUsage(index, state.idle()));

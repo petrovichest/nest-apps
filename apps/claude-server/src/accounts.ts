@@ -267,10 +267,13 @@ export class ClaudeAccounts extends EventEmitter {
       accounts.some((account) => !this.warmSchedule.has(account.accountId));
     const changedWindow = accounts.find((account) => {
       const resetAt = fiveHourReset(account);
+      const previousResetAt = this.warmSchedule.get(account.accountId)?.resetAt;
       return (
         Number.isFinite(resetAt) &&
         resetAt > now &&
-        resetAt !== this.warmSchedule.get(account.accountId)?.resetAt
+        // Usage reads estimate the same deadline a few hundred milliseconds differently.
+        // Keep the original observation so small changes cannot accumulate into grid drift.
+        (previousResetAt == null || Math.abs(resetAt - previousResetAt) > WARM_SLOT_TOLERANCE_MS)
       );
     });
     // Expiration alone does not move the grid: an idle account waits for its assigned slot.
