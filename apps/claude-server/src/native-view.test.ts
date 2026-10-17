@@ -226,6 +226,48 @@ describe("native Claude view", () => {
     expect(view.turns()).toHaveLength(1);
     expect(view.turns()[0]!.items[0]).toMatchObject({ id: "command-1", text: "/grilling тема" });
   });
+
+  it.each([
+    { content: "<local-command-stdout>Compacted </local-command-stdout>" },
+    {
+      content: [{ type: "text", text: "<local-command-stdout>Compacted </local-command-stdout>" }],
+    },
+  ])(
+    "hides compact confirmations in live events and replay without splitting the command turn",
+    ({ content }) => {
+      const view = new NativeView("session", "/project");
+      const command = { ...user, message: { content: "/compact" } };
+      const output = { ...user, uuid: "compact-output", message: { content } };
+      const result = { type: "result", duration_ms: 76_000 };
+      view.apply(command);
+      expect(view.apply(output)).toEqual([]);
+      expect(view.currentTurnId).toBe("user-1");
+      view.apply(result);
+      for (const preserveInputs of [false, true]) {
+        view.reset([command, output, result], { preserveInputs });
+        expect(view.turns()).toHaveLength(1);
+        expect(view.turns()[0]).toMatchObject({ status: "completed", durationMs: 76_000 });
+        expect(view.turns()[0]!.items).toMatchObject([{ type: "userMessage", text: "/compact" }]);
+        expect(view.turns()[0]!.items).toHaveLength(1);
+        expect(view.currentTurnId).toBeNull();
+      }
+    },
+  );
+
+  it("keeps local command failures and user text quoting a compact confirmation visible", () => {
+    const texts = [
+      "<local-command-stderr>Error: Compaction failed</local-command-stderr>",
+      "<local-command-stdout>Error: Compaction failed</local-command-stdout>",
+      "Why does <local-command-stdout>Compacted </local-command-stdout> appear?",
+    ];
+    const view = normalizeNativeEvents(
+      texts.map((text, index) => ({ ...user, uuid: `input-${index}`, message: { content: text } })),
+      { sessionId: "session", cwd: "/project" },
+    );
+    expect(view.turns.map((turn) => turn.items[0])).toEqual(
+      texts.map((text) => expect.objectContaining({ type: "userMessage", text })),
+    );
+  });
   it("projects ExitPlanMode as a completed plan from its plan file even after ClaudeNest declines it", () => {
     const planTool = (id: string, file: string, content: string) => [
       {

@@ -19,3 +19,8 @@ export function typedCommand(text: string): string {
   if (!name.startsWith("/") || rest.trim()) return text;
   return args ? `${name} ${args}` : name;
 }
+
+/** Claude records successful /compact output as unflagged user input, not a chat message. */
+export function isCompactConfirmation(text: string): boolean {
+  return /^\s*<local-command-stdout>\s*Compacted\s*<\/local-command-stdout>\s*$/.test(text);
+}

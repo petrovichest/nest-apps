@@ -8,7 +8,7 @@ import {
   type TurnPlanStep,
   type TurnView,
 } from "@codexnest/protocol";
-import { typedCommand } from "./command-prompt.js";
+import { isCompactConfirmation, typedCommand } from "./command-prompt.js";
 import { nativeResultInterrupted, subagentThreadId } from "./types.js";
 
 type Json = Record<string, unknown>;
@@ -845,6 +845,13 @@ export class NativeView {
       (input && object(input.origin) && input.origin.kind === "task-notification");
     // Live SDK events carry the transcript's isMeta (skill text, injected reminders) as isSynthetic.
     if (event.isMeta === true || event.isSynthetic === true || notification) metadata.isMeta = true;
+    if (
+      event.type === "user" &&
+      event.claudenest_delivery === undefined &&
+      object(event.message) &&
+      isCompactConfirmation(textContent(event.message.content))
+    )
+      metadata.isMeta = true;
     if (event.turnCompanion === true) metadata.turnCompanion = true;
     if (Object.keys(metadata).length) {
       this.sourceMetadata.set(id, { ...this.sourceMetadata.get(id), ...metadata });

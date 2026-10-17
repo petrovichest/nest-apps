@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import type { ThreadSearchOccurrence, TurnView } from "@codexnest/protocol";
-import { typedCommand } from "./command-prompt.js";
+import { isCompactConfirmation, typedCommand } from "./command-prompt.js";
 
 type Json = Record<string, unknown>;
 const BEFORE = 60;
@@ -46,6 +46,7 @@ function messageText(entry: Json): string {
             .map((part) => part.text as string)
             .join("\n")
         : "";
+  if (entry.type === "user" && isCompactConfirmation(text)) return "";
   return typedCommand(text)
     .replace(/<claudenest_attachments>[\s\S]*?<\/claudenest_attachments>/g, "")
     .trim();

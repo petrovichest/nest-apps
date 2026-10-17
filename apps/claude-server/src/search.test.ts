@@ -40,3 +40,29 @@ it("searches and quotes a slash command the way it was typed, not Claude Code's 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("excludes compact confirmations from search while keeping errors and user quotes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "claude-search-"));
+  try {
+    const path = join(directory, "history.jsonl");
+    const output = "<local-command-stdout>Compacted </local-command-stdout>";
+    await writeFile(
+      path,
+      [
+        { type: "user", message: { content: output } },
+        { type: "user", message: { content: [{ type: "text", text: output }] } },
+        {
+          type: "user",
+          message: { content: "<local-command-stderr>Compaction failed</local-command-stderr>" },
+        },
+        { type: "user", message: { content: `Why does ${output} appear?` } },
+      ]
+        .map((event) => JSON.stringify(event))
+        .join("\n"),
+    );
+    expect(await transcriptMatch(path, "Compacted")).toBe(`Why does ${output} appear?`);
+    expect(await transcriptMatch(path, "Compaction failed")).toContain("Compaction failed");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
