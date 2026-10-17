@@ -566,6 +566,94 @@ describe("SettingsPage", () => {
     );
   });
 
+  it("restores, saves and clears the default reasoning effort for Codex", async () => {
+    const updateTaskDefaults = vi
+      .fn()
+      .mockResolvedValueOnce({ reasoningEffort: "high" })
+      .mockResolvedValueOnce({});
+    connection.mockReturnValue({
+      api: {
+        readPermissionSettings: vi.fn().mockResolvedValue({ preset: "auto" }),
+        updateTaskDefaults,
+      },
+      state: {
+        snapshot: {
+          taskDefaults: { reasoningEffort: "medium" },
+          models: [
+            {
+              id: "gpt",
+              displayName: "GPT",
+              isDefault: true,
+              reasoningEfforts: [{ value: "medium" }, { value: "high" }],
+            },
+          ],
+        },
+      },
+    });
+
+    renderPage();
+    openSection("Codex");
+    const effort = screen.getByRole("combobox", { name: "Reasoning по умолчанию" });
+    const save = screen.getByRole("button", { name: "Сохранить настройки новых задач" });
+    expect(effort).toHaveValue("medium");
+    expect(save).toBeDisabled();
+    fireEvent.change(effort, { target: { value: "high" } });
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(updateTaskDefaults).toHaveBeenCalledWith({ reasoningEffort: "high" }),
+    );
+    await waitFor(() => expect(save).toBeDisabled());
+    expect(effort).toHaveValue("high");
+
+    fireEvent.change(effort, { target: { value: "" } });
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(updateTaskDefaults).toHaveBeenLastCalledWith({ reasoningEffort: null }),
+    );
+    await waitFor(() => expect(save).toBeDisabled());
+    expect(effort).toHaveValue("");
+  });
+
+  it("clears an unsupported reasoning default when switching models", async () => {
+    const updateTaskDefaults = vi.fn().mockResolvedValue({ model: "other" });
+    connection.mockReturnValue({
+      api: {
+        readPermissionSettings: vi.fn().mockResolvedValue({ preset: "auto" }),
+        updateTaskDefaults,
+      },
+      state: {
+        snapshot: {
+          taskDefaults: { reasoningEffort: "high" },
+          models: [
+            {
+              id: "gpt",
+              displayName: "GPT",
+              isDefault: true,
+              reasoningEfforts: [{ value: "high" }],
+            },
+            { id: "other", displayName: "Other", reasoningEfforts: [{ value: "low" }] },
+          ],
+        },
+      },
+    });
+
+    renderPage();
+    openSection("Codex");
+    fireEvent.change(screen.getByRole("combobox", { name: "Модель сессии" }), {
+      target: { value: "other" },
+    });
+    const effort = screen.getByRole("combobox", { name: "Reasoning по умолчанию" });
+    expect(effort).toHaveValue("");
+    expect(Array.from((effort as HTMLSelectElement).options, (option) => option.value)).toEqual([
+      "",
+      "low",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить настройки новых задач" }));
+    await waitFor(() =>
+      expect(updateTaskDefaults).toHaveBeenCalledWith({ model: "other", reasoningEffort: null }),
+    );
+  });
+
   it("restores a priority default and saves explicit Fast off", async () => {
     const updateTaskDefaults = vi.fn().mockResolvedValue({});
     const api = {

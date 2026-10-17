@@ -9317,12 +9317,19 @@ function validateTaskDefaults(value: unknown): UpdateTaskDefaultsRequest {
   const body = requireRecord<UpdateTaskDefaultsRequest>(value);
   if (
     Object.keys(body).some(
-      (key) => !["model", "titleModel", "serviceTier", "personality"].includes(key),
+      (key) =>
+        !["model", "titleModel", "serviceTier", "personality", "reasoningEffort"].includes(key),
     )
   ) {
     throw new ProjectValidationError("Unknown task default");
   }
-  for (const key of ["model", "titleModel", "serviceTier", "personality"] as const) {
+  for (const key of [
+    "model",
+    "titleModel",
+    "serviceTier",
+    "personality",
+    "reasoningEffort",
+  ] as const) {
     if (
       body[key] !== undefined &&
       body[key] !== null &&
@@ -9505,11 +9512,22 @@ function mergeTaskDefaults(
   const personality = patch.personality;
   if (personality === null) delete next.personality;
   else if (personality !== undefined) next.personality = personality;
+  if (patch.reasoningEffort === null) delete next.reasoningEffort;
+  else if (patch.reasoningEffort !== undefined) next.reasoningEffort = patch.reasoningEffort;
 
   const model =
     (next.model ? models.find((candidate) => candidate.id === next.model) : undefined) ??
     models.find((candidate) => candidate.isDefault) ??
     models[0];
+  if (
+    next.reasoningEffort &&
+    !model?.reasoningEfforts.some((option) => option.value === next.reasoningEffort)
+  ) {
+    if (patch.reasoningEffort !== undefined && patch.reasoningEffort !== null) {
+      throw new ProjectValidationError("Reasoning effort is not supported by the selected model");
+    }
+    if (patch.model !== undefined && model) delete next.reasoningEffort;
+  }
   if (next.personality && !model?.supportsPersonality) {
     if (patch.personality !== undefined && patch.personality !== null) {
       throw new ProjectValidationError("Personality is not supported by the selected model");

@@ -241,6 +241,32 @@ describe("model capacity waiting", () => {
 describe("initialSessionSettings", () => {
   const taskDefaults = { serviceTier: "fast", personality: "friendly" };
 
+  it("prefers the configured reasoning default over the last session choice", () => {
+    const model: ModelOption = {
+      id: "gpt",
+      displayName: "GPT",
+      description: "",
+      isDefault: true,
+      reasoningEfforts: [
+        { value: "low", description: null, isDefault: true },
+        { value: "high", description: null, isDefault: false },
+      ],
+      serviceTiers: [],
+      supportsPersonality: false,
+    };
+    expect(initialSessionSettings("low", [model], { reasoningEffort: "high" })).toEqual({
+      ...DEFAULT_SESSION_SETTINGS,
+      reasoningEffort: "high",
+    });
+    expect(initialSessionSettings("low", [model], {})).toEqual({
+      ...DEFAULT_SESSION_SETTINGS,
+      reasoningEffort: "low",
+    });
+    expect(initialSessionSettings("low", [model], { reasoningEffort: "unavailable" })).toEqual(
+      DEFAULT_SESSION_SETTINGS,
+    );
+  });
+
   it("keeps Fast off when model metadata is missing", () => {
     expect(initialSessionSettings("high", [], taskDefaults)).toEqual({
       ...DEFAULT_SESSION_SETTINGS,

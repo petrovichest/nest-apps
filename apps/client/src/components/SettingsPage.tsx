@@ -696,40 +696,38 @@ export function SettingsPage({
                   ))}
                 </select>
               </SettingsRow>
-              {application.isClaude && (
-                <SettingsRow
-                  description={t("Уровень reasoning, выбранный для новых сессий.")}
-                  label={t("Reasoning по умолчанию")}
-                  labelFor="settings-reasoning-effort"
+              <SettingsRow
+                description={t("Уровень reasoning, выбранный для новых сессий.")}
+                label={t("Reasoning по умолчанию")}
+                labelFor="settings-reasoning-effort"
+              >
+                <select
+                  disabled={!selectedTaskModel || taskDefaultsSaving}
+                  id="settings-reasoning-effort"
+                  value={taskDefaults.reasoningEffort ?? ""}
+                  onChange={(event) =>
+                    setTaskDefaults((current) => ({
+                      ...current,
+                      reasoningEffort: event.target.value || undefined,
+                    }))
+                  }
                 >
-                  <select
-                    disabled={taskDefaultsSaving}
-                    id="settings-reasoning-effort"
-                    value={taskDefaults.reasoningEffort ?? ""}
-                    onChange={(event) =>
-                      setTaskDefaults((current) => ({
-                        ...current,
-                        reasoningEffort: event.target.value || undefined,
-                      }))
-                    }
-                  >
-                    <option value="">{t("По умолчанию")}</option>
-                    {taskDefaults.reasoningEffort &&
-                      !(selectedTaskModel?.reasoningEfforts ?? []).some(
-                        (option) => option.value === taskDefaults.reasoningEffort,
-                      ) && (
-                        <option value={taskDefaults.reasoningEffort}>
-                          {taskDefaults.reasoningEffort} — {t("Недоступна")}
-                        </option>
-                      )}
-                    {(selectedTaskModel?.reasoningEfforts ?? []).map((option) => (
-                      <option value={option.value} key={option.value}>
-                        {option.value}
+                  <option value="">{t("По умолчанию")}</option>
+                  {taskDefaults.reasoningEffort &&
+                    !(selectedTaskModel?.reasoningEfforts ?? []).some(
+                      (option) => option.value === taskDefaults.reasoningEffort,
+                    ) && (
+                      <option value={taskDefaults.reasoningEffort}>
+                        {taskDefaults.reasoningEffort} — {t("Недоступна")}
                       </option>
-                    ))}
-                  </select>
-                </SettingsRow>
-              )}
+                    )}
+                  {(selectedTaskModel?.reasoningEfforts ?? []).map((option) => (
+                    <option value={option.value} key={option.value}>
+                      {option.value}
+                    </option>
+                  ))}
+                </select>
+              </SettingsRow>
               {!application.isClaude && (
                 <SettingsRow
                   description={t("Ускоряет ответы Codex и увеличивает расход лимитов.")}
@@ -969,6 +967,12 @@ function taskDefaultsForModel(
   const effectiveModel = selectedModel ?? defaultModel;
   if (!effectiveModel) return value;
   const next = { ...value };
+  if (
+    next.reasoningEffort &&
+    !effectiveModel.reasoningEfforts.some((option) => option.value === next.reasoningEffort)
+  ) {
+    delete next.reasoningEffort;
+  }
   if (next.personality && !effectiveModel.supportsPersonality) delete next.personality;
   return next;
 }

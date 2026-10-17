@@ -4932,6 +4932,90 @@ describe("session forks", () => {
 });
 
 describe("task defaults", () => {
+  it("persists a reasoning default and applies it to new sessions and their turns", async () => {
+    const { app, bridge, headers, projection, store } = await createForkHarness();
+    try {
+      await projection.setDefaultReasoningEffort("low");
+      const saved = await app.inject({
+        method: "PUT",
+        url: "/api/v1/settings/task-defaults",
+        headers,
+        payload: { reasoningEffort: "high" },
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toEqual({ reasoningEffort: "high" });
+      expect(projection.snapshot().taskDefaults).toEqual({ reasoningEffort: "high" });
+      expect(projection.summary("thread")?.settings.reasoningEffort).toBe("low");
+      await store.flushed();
+      const reopened = new StateStore(store.path);
+      await reopened.load();
+      expect(reopened.view().taskDefaults?.reasoningEffort).toBe("high");
+
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/threads",
+        headers,
+        payload: { clientCreationId: "reasoning-default" },
+      });
+      expect(created.statusCode).toBe(201);
+      expect(created.json().thread.settings.reasoningEffort).toBe("high");
+      const started = await app.inject({
+        method: "POST",
+        url: "/api/v1/threads/created/turns",
+        headers,
+        payload: { input: "Use my default effort", clientMessageId: "reasoning-default-turn" },
+      });
+      expect(started.statusCode).toBe(201);
+      expect(
+        bridge.request.mock.calls.findLast(([method]) => method === "turn/start")?.[1],
+      ).toMatchObject({
+        effort: "high",
+        collaborationMode: { settings: { reasoning_effort: "high" } },
+      });
+
+      const cleared = await app.inject({
+        method: "PUT",
+        url: "/api/v1/settings/task-defaults",
+        headers,
+        payload: { reasoningEffort: null },
+      });
+      expect(cleared.statusCode).toBe(200);
+      expect(cleared.json()).toEqual({});
+      expect(projection.summary("created")?.settings.reasoningEffort).toBe("high");
+      expect(projection.newSessionSettings.reasoningEffort).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("validates reasoning defaults against the selected model", async () => {
+    const { app, headers, projection } = await createForkHarness();
+    try {
+      const save = (payload: Record<string, unknown>) =>
+        app.inject({
+          method: "PUT",
+          url: "/api/v1/settings/task-defaults",
+          headers,
+          payload,
+        });
+      for (const reasoningEffort of ["low", "", 42]) {
+        expect((await save({ reasoningEffort })).statusCode).toBe(400);
+      }
+      expect((await save({ model: "gpt-b", reasoningEffort: "low" })).json()).toEqual({
+        model: "gpt-b",
+        reasoningEffort: "low",
+      });
+      expect((await save({ titleModel: "gpt-a" })).json().reasoningEffort).toBe("low");
+      expect((await save({ model: "gpt-a" })).json()).toEqual({
+        model: "gpt-a",
+        titleModel: "gpt-a",
+      });
+      expect(projection.newSessionSettings.reasoningEffort).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("uses the title model for first-turn naming without changing the session model", async () => {
     const harness = await createForkHarness();
     await harness.projection.markUnmaterialized("thread");

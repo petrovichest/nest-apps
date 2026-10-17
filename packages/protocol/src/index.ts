@@ -821,7 +821,7 @@ export type TaskDefaults = {
   /** Fast mode default for new sessions, stored as "fast" when enabled. */
   serviceTier?: string;
   personality?: string;
-  /** Claude only: reasoning effort preselected for new sessions. */
+  /** Reasoning effort preselected for new sessions. */
   reasoningEffort?: string;
 };
 

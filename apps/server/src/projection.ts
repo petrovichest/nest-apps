@@ -327,7 +327,7 @@ export class AppProjection extends EventEmitter {
   get newSessionSettings(): SessionSettings {
     const state = this.store.view();
     const defaults = state.taskDefaults ?? {};
-    const reasoningEffort = state.defaultReasoningEffort;
+    const reasoningEffort = defaults.reasoningEffort ?? state.defaultReasoningEffort;
     const explicitModel = defaults.model
       ? this.models.find((candidate) => candidate.id === defaults.model)
       : undefined;

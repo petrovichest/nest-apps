@@ -2226,7 +2226,7 @@ function isVoiceTranscription(value: unknown, key: string): value is VoiceTransc
 
 function isTaskDefaults(value: unknown): value is TaskDefaults {
   if (!isRecord(value)) return false;
-  return ["model", "titleModel", "serviceTier", "personality"].every(
+  return ["model", "titleModel", "serviceTier", "personality", "reasoningEffort"].every(
     (key) => value[key] === undefined || (typeof value[key] === "string" && value[key].trim()),
   );
 }
