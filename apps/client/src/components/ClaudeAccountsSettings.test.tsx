@@ -32,7 +32,9 @@ describe("ClaudeAccountsSettings", () => {
     render(<ClaudeAccountsSettings />);
     const card = await screen.findByRole("article", { name: "person@example.com" });
     expect(within(card).getByText(url)).toBeInTheDocument();
-    fireEvent.click(within(card).getByRole("button", { name: "Скопировать прокси" }));
+    await act(async () => {
+      fireEvent.click(within(card).getByRole("button", { name: "Скопировать прокси" }));
+    });
     await waitFor(() => expect(copyText).toHaveBeenCalledExactlyOnceWith(url));
     expect(await within(card).findByRole("button", { name: "Скопировано" })).toBeInTheDocument();
     fireEvent.click(within(card).getByRole("button", { name: "Настроить" }));
