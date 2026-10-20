@@ -609,7 +609,11 @@ describe("evenly spaced Claude warm-ups", () => {
       expect(args?.[0]).toBe("-p");
       const entry = entries.find((item) => item.configDir === options!.env!.CLAUDE_CONFIG_DIR)!;
       warmed.push({ id: entry.id, at: state.options.now!() });
-      state.limits.set(entry.configDir, usage(1, 30, state.options.now!() + period));
+      state.limits.set(entry.configDir, {
+        ...state.limits.get(entry.configDir),
+        primary: usage(1, 30, state.options.now!() + period).primary,
+        secondary: state.limits.get(entry.configDir)?.secondary ?? usage().secondary,
+      });
       events.emit("warm");
       const child = new LoginChild();
       queueMicrotask(() => child.close());
@@ -627,6 +631,66 @@ describe("evenly spaced Claude warm-ups", () => {
     };
     return { ...state, entries, warmed, events, setUsage, idle, refreshAt };
   }
+
+  it("prioritizes weekly remainder per hour until reset over the largest remainder", async () => {
+    const state = await group(2);
+    state.setUsage(0, {
+      ...state.idle(20),
+      secondary: { ...usage().secondary!, usedPercent: 20, resetsAt: NOW + 120 * 60 * minute },
+    });
+    state.setUsage(1, {
+      ...state.idle(70),
+      secondary: { ...usage().secondary!, usedPercent: 70, resetsAt: NOW + 2 * 60 * minute },
+    });
+    await state.refreshAt(0);
+    expect(state.warmed).toEqual([{ id: state.entries[1]!.id, at: NOW }]);
+    // Recovering the urgent account's weekly quota cannot displace the other idle account.
+    state.setUsage(1, usage(1, 0, NOW + period));
+    await state.refreshAt(150);
+    expect(state.warmed[1]).toEqual({ id: state.entries[0]!.id, at: NOW + 150 * minute });
+  });
+
+  it("orders equal weekly deadlines by remaining quota without changing the spacing", async () => {
+    const state = await group(3);
+    [90, 20, 50].forEach((used, index) => state.setUsage(index, state.idle(used)));
+    await state.refreshAt(0);
+    await state.refreshAt(100);
+    await state.refreshAt(200);
+    expect(state.warmed).toEqual(
+      [1, 2, 0].map((index, turn) => ({
+        id: state.entries[index]!.id,
+        at: NOW + turn * 100 * minute,
+      })),
+    );
+  });
+
+  it("starts an available window while other accounts still have running quota windows", async () => {
+    const state = await group(3);
+    state.setUsage(0, usage(10, 20, NOW + 60 * minute));
+    state.setUsage(1, {
+      ...state.idle(49),
+      primary: { ...usage().primary!, usedPercent: 0, resetsAt: null },
+    });
+    state.setUsage(2, usage(10, 0, NOW + 160 * minute));
+    await state.refreshAt(0);
+    expect(state.warmed).toEqual([{ id: state.entries[1]!.id, at: NOW }]);
+  });
+
+  it("spaces overdue warm-ups after a long period with all accounts busy", async () => {
+    const state = await group(3);
+    let busy = true;
+    state.options.canWarm = () => !busy;
+    state.entries.forEach((_, index) => state.setUsage(index, state.idle()));
+    await state.refreshAt(0);
+    busy = false;
+    await state.refreshAt(400);
+    expect(state.warmed).toHaveLength(1);
+    await state.refreshAt(500);
+    await state.refreshAt(600);
+    expect(state.warmed.map((warm) => warm.at)).toEqual(
+      [400, 500, 600].map((offset) => NOW + offset * minute),
+    );
+  });
 
   it("spreads clustered resets into equal gaps and preserves them over the next cycle", async () => {
     const state = await group(3);
@@ -706,18 +770,18 @@ describe("evenly spaced Claude warm-ups", () => {
     state.setUsage(1, state.idle());
     state.setUsage(2, state.idle(100));
     await state.refreshAt(0);
-    expect(state.warmed).toHaveLength(1);
+    expect(state.warmed).toEqual([{ id: state.entries[1]!.id, at: NOW }]);
     await state.refreshAt(149);
     expect(state.warmed).toHaveLength(1);
     await state.refreshAt(150);
-    expect(state.warmed[1]).toEqual({ id: state.entries[1]!.id, at: NOW + 150 * minute });
+    expect(state.warmed[1]).toEqual({ id: state.entries[0]!.id, at: NOW + 150 * minute });
     state.setUsage(2, state.idle(0));
     await state.refreshAt(160);
-    await state.refreshAt(199);
+    await state.refreshAt(249);
     expect(state.warmed).toHaveLength(2);
-    await state.refreshAt(200);
+    await state.refreshAt(250);
     expect(state.warmed.map((warm) => warm.at)).toEqual(
-      [0, 150, 200].map((offset) => NOW + offset * minute),
+      [0, 150, 250].map((offset) => NOW + offset * minute),
     );
   });
 
@@ -769,16 +833,16 @@ describe("evenly spaced Claude warm-ups", () => {
     expect(state.warmed[1]).toEqual({ id: state.entries[1]!.id, at: NOW + 160 * minute });
   });
 
-  it("adapts future slots when a user starts a window ahead of schedule", async () => {
+  it("reuses a vacated slot without postponing idle accounts when a user starts a window early", async () => {
     const state = await group(3);
     state.entries.forEach((_, index) => state.setUsage(index, state.idle()));
     await state.refreshAt(0);
     state.setUsage(1, usage(10, 30, NOW + 320 * minute));
     await state.refreshAt(20);
-    await state.refreshAt(100);
+    await state.refreshAt(99);
     expect(state.warmed).toHaveLength(1);
-    await state.refreshAt(120);
-    expect(state.warmed[1]).toEqual({ id: state.entries[2]!.id, at: NOW + 120 * minute });
+    await state.refreshAt(100);
+    expect(state.warmed[1]).toEqual({ id: state.entries[2]!.id, at: NOW + 100 * minute });
   });
 
   it("retains bounded retries when a warm-up fails", async () => {
@@ -799,6 +863,7 @@ describe("evenly spaced Claude warm-ups", () => {
 
   it("lets real work select an idle subscription before its warm-up slot", async () => {
     const state = await group(4);
+    state.options.canWarm = () => false;
     state.setUsage(0, usage(100, 30, NOW + 60 * minute));
     state.setUsage(1, state.idle(30));
     state.setUsage(2, state.idle(5));

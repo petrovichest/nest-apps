@@ -262,46 +262,78 @@ export class ClaudeAccounts extends EventEmitter {
         weekly.usedPercent < 100
       );
     });
-    const changedMembers =
-      accounts.length !== this.warmSchedule.size ||
-      accounts.some((account) => !this.warmSchedule.has(account.accountId));
-    const changedWindow = accounts.find((account) => {
-      const resetAt = fiveHourReset(account);
-      const previousResetAt = this.warmSchedule.get(account.accountId)?.resetAt;
-      return (
-        Number.isFinite(resetAt) &&
-        resetAt > now &&
-        // Usage reads estimate the same deadline a few hundred milliseconds differently.
-        // Keep the original observation so small changes cannot accumulate into grid drift.
-        (previousResetAt == null || Math.abs(resetAt - previousResetAt) > WARM_SLOT_TOLERANCE_MS)
-      );
-    });
-    // Expiration alone does not move the grid: an idle account waits for its assigned slot.
-    if (!changedMembers && !changedWindow) return;
-    // Registry order survives restart, including while old, clustered windows await their slots.
-    const ordered = accounts;
-    const anchor =
-      (!changedMembers && changedWindow) ||
-      ordered.find(
-        (account) => Number.isFinite(fiveHourReset(account)) && fiveHourReset(account) > now,
-      ) ||
-      ordered[0];
-    this.warmSchedule.clear();
-    if (!anchor) return;
-    const anchorIndex = ordered.indexOf(anchor);
-    const anchorAt =
-      Number.isFinite(fiveHourReset(anchor)) && fiveHourReset(anchor) > now
-        ? fiveHourReset(anchor)
-        : now;
-    const spacing = FIVE_HOURS_MS / ordered.length;
-    const tolerance = Math.min(WARM_SLOT_TOLERANCE_MS, spacing / 4);
-    for (const [index, account] of ordered.entries()) {
-      const resetAt = Number.isFinite(fiveHourReset(account)) ? fiveHourReset(account) : null;
-      const readyAt = Math.max(now, resetAt ?? now);
-      const phase = anchorAt + (index - anchorIndex) * spacing;
-      const at = phase + Math.ceil((readyAt - tolerance - phase) / FIVE_HOURS_MS) * FIVE_HOURS_MS;
-      this.warmSchedule.set(account.accountId, { at: Math.max(readyAt, at), resetAt });
+    if (!accounts.length) {
+      this.warmSchedule.clear();
+      return;
     }
+    const previous = this.warmSchedule;
+    const changedMembers =
+      accounts.length !== previous.size ||
+      accounts.some((account) => !previous.has(account.accountId));
+    const spacing = FIVE_HOURS_MS / accounts.length;
+    const tolerance = Math.min(WARM_SLOT_TOLERANCE_MS, spacing / 4);
+    const readyAt = (account: SavedAccount) => {
+      const resetAt = fiveHourReset(account);
+      return Number.isFinite(resetAt) ? resetAt : -Infinity;
+    };
+    let at = Math.min(
+      ...accounts.map((account) => previous.get(account.accountId)?.at ?? Infinity),
+    );
+    if (changedMembers) {
+      // Native windows also recover the most recent start after a server restart.
+      const lastStart = Math.max(
+        ...this.warmedAt.values(),
+        ...accounts
+          .map(readyAt)
+          .map((resetAt) => resetAt - FIVE_HOURS_MS)
+          .filter((start) => start <= now),
+      );
+      at = Math.max(now, Math.min(...accounts.map(readyAt)), lastStart + spacing);
+    }
+    // Only a started window consumes a slot. Reads, expiry and early user requests must not
+    // repeatedly postpone the next waiting account. Late starts still leave a full gap.
+    for (const account of accounts) {
+      const slot = previous.get(account.accountId);
+      const resetAt = readyAt(account);
+      if (
+        slot &&
+        slot.at <= now &&
+        resetAt > now &&
+        (slot.resetAt == null || Math.abs(resetAt - slot.resetAt) > tolerance)
+      )
+        at = Math.max(at, Math.min(now, Math.max(slot.at, resetAt - FIVE_HOURS_MS)) + spacing);
+    }
+    const urgency = (account: SavedAccount) => {
+      const weekly = account.rateLimits.limits!.secondary!;
+      // An unknown weekly deadline gets a full week; a stale deadline cannot divide by zero.
+      const remainingTime = Number.isFinite(weekly.resetsAt)
+        ? Math.max(60_000, weekly.resetsAt! - now)
+        : 7 * 24 * 60 * 60_000;
+      return (100 - weekly.usedPercent) / remainingTime;
+    };
+    const remaining = accounts.sort((a, b) => urgency(b) - urgency(a));
+    const schedule = new Map<string, { at: number; resetAt: number | null }>();
+    while (remaining.length) {
+      let index = remaining.findIndex((account) => readyAt(account) <= at + tolerance);
+      if (index === -1) {
+        const firstReady = Math.min(...remaining.map(readyAt));
+        at += Math.ceil((firstReady - tolerance - at) / spacing) * spacing;
+        index = remaining.findIndex((account) => readyAt(account) <= at + tolerance);
+      }
+      const account = remaining.splice(index, 1)[0]!;
+      const resetAt = Number.isFinite(readyAt(account)) ? readyAt(account) : null;
+      const observed = previous.get(account.accountId)?.resetAt;
+      schedule.set(account.accountId, {
+        at: Math.max(at, resetAt ?? -Infinity),
+        // Keep the original observation so sub-second endpoint jitter cannot accumulate.
+        resetAt:
+          resetAt != null && observed != null && Math.abs(resetAt - observed) <= tolerance
+            ? observed
+            : resetAt,
+      });
+      at += spacing;
+    }
+    this.warmSchedule = schedule;
   }
   /** Shared quotas block every model; both exhausted windows must reset before reuse. */
   private quotaResetAt(account: SavedAccount): number | undefined {
@@ -528,7 +560,12 @@ export class ClaudeAccounts extends EventEmitter {
     }
     const operation = (async () => {
       this.planWarmups();
-      for (const account of refreshed) {
+      const ordered = [...refreshed].sort(
+        (a, b) =>
+          (this.warmSchedule.get(a.accountId)?.at ?? Infinity) -
+          (this.warmSchedule.get(b.accountId)?.at ?? Infinity),
+      );
+      for (const account of ordered) {
         const slot = this.warmSchedule.get(account.accountId);
         if (this.closed || this.registry.warmLimits === false) return;
         if (
