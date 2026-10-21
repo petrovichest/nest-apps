@@ -6,6 +6,7 @@ import { pastedText, samePastedText, type PastedText } from "@codexnest/protocol
 import { PasteBlocks } from "./PasteBlocks";
 import { AnnotationBubbles } from "./AnnotationBubbles";
 import { PasteTextarea, usePasteEditor } from "./PasteEditor";
+import { createPortal } from "react-dom";
 import {
   type ClipboardEvent,
   type KeyboardEvent,
@@ -345,6 +346,10 @@ export function Composer({
     [],
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const attachmentPickerRef = useRef<HTMLDivElement>(null);
+  const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const [pendingAttachmentCount, setPendingAttachmentCount] = useState(0);
   const restoreTextareaAfterProjectChangeRef = useRef(false);
   const viewportBaselineRef = useRef(viewportHeight());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -393,6 +398,7 @@ export function Composer({
     preserveRecordingOnSessionChange,
     onTranscribe,
     sessionIdentity,
+    addSelectedFiles,
     t,
     transcriptionConfig,
   });
@@ -413,6 +419,7 @@ export function Composer({
     preserveRecordingOnSessionChange,
     onTranscribe,
     sessionIdentity,
+    addSelectedFiles,
     t,
     transcriptionConfig,
   };
@@ -484,6 +491,104 @@ export function Composer({
   const localSpeechBusy = speechState !== "idle";
   const speechBusy =
     localSpeechBusy || voiceUploadPending || voiceInputLocked || Boolean(transcriptionStatus);
+  useEffect(() => {
+    if (!attachmentPickerOpen) return;
+    const picker = attachmentPickerRef.current;
+    if (speechBusy) {
+      setAttachmentPickerOpen(false);
+      return;
+    }
+    if (document.activeElement === picker?.querySelector(".composer-add-image")) {
+      picker.querySelector<HTMLButtonElement>(".composer-attachment-menu button")?.focus();
+    }
+    const dismiss = (event: Event) => {
+      if (event.target instanceof Node && !picker?.contains(event.target)) {
+        setAttachmentPickerOpen(false);
+      }
+    };
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (picker?.contains(document.activeElement)) {
+        picker.querySelector<HTMLButtonElement>(".composer-add-image")?.focus();
+      }
+      setAttachmentPickerOpen(false);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("focusin", dismiss);
+    document.addEventListener("keydown", escape, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("focusin", dismiss);
+      document.removeEventListener("keydown", escape, true);
+    };
+  }, [attachmentPickerOpen, speechBusy]);
+
+  useEffect(() => {
+    const target = formRef.current?.closest<HTMLElement>(".conversation-pane") ?? formRef.current;
+    if (!target) return;
+    let depth = 0;
+    const reset = () => {
+      depth = 0;
+      setDraggingFiles(false);
+    };
+    const isFileDrag = (event: DragEvent) => event.dataTransfer?.types.includes("Files");
+    const enter = (event: DragEvent) => {
+      if (!isFileDrag(event) || speechBusy) return;
+      depth += 1;
+      setDraggingFiles(true);
+    };
+    const leave = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) setDraggingFiles(false);
+    };
+    const over = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = speechBusy ? "none" : "copy";
+    };
+    const drop = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      reset();
+      if (speechBusy || !event.dataTransfer) return;
+      if (
+        Array.from(event.dataTransfer.items).some((item) => item.webkitGetAsEntry?.()?.isDirectory)
+      ) {
+        setAttachmentError(latestPropsRef.current.t("Чтобы прикрепить папку, упакуйте её в архив"));
+        return;
+      }
+      void latestPropsRef.current.addSelectedFiles(Array.from(event.dataTransfer.files));
+    };
+    const preventNavigation = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      if (event.type === "drop") reset();
+      else if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+    };
+    target.addEventListener("dragenter", enter);
+    target.addEventListener("dragleave", leave);
+    target.addEventListener("dragover", over);
+    target.addEventListener("drop", drop);
+    window.addEventListener("dragover", preventNavigation);
+    window.addEventListener("drop", preventNavigation);
+    window.addEventListener("dragend", reset);
+    window.addEventListener("blur", reset);
+    reset();
+    return () => {
+      target.removeEventListener("dragenter", enter);
+      target.removeEventListener("dragleave", leave);
+      target.removeEventListener("dragover", over);
+      target.removeEventListener("drop", drop);
+      window.removeEventListener("dragover", preventNavigation);
+      window.removeEventListener("drop", preventNavigation);
+      window.removeEventListener("dragend", reset);
+      window.removeEventListener("blur", reset);
+    };
+  }, [sessionIdentity, speechBusy]);
   const transcriptionBusy = speechState === "transcribing" || Boolean(transcriptionStatus);
   const hasContent =
     !!draftPastes.pasteBlocks?.length ||
@@ -792,6 +897,8 @@ export function Composer({
     attachmentImagesRef.current.clear();
     attachmentFilesRef.current.clear();
     setViewer(null);
+    setAttachmentPickerOpen(false);
+    setPendingAttachmentCount(0);
     setAttachmentError(null);
     setSpeechError(null);
     setSpeechState("idle");
@@ -967,9 +1074,10 @@ export function Composer({
 
   async function addSelectedFiles(selected: readonly File[]) {
     if (!selected.length) return;
+    const latest = latestPropsRef.current;
     const existingBytes =
-      files.reduce((total, file) => total + file.size, 0) +
-      images.reduce((total, image) => total + inlineImageBytes(image.url), 0);
+      latest.files.reduce((total, file) => total + file.size, 0) +
+      latest.images.reduce((total, image) => total + inlineImageBytes(image.url), 0);
     if (selected.some((file) => file.size > MAX_ATTACHMENT_BYTES)) {
       setAttachmentError(t("Размер одного файла не должен превышать 100 МБ"));
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -985,12 +1093,40 @@ export function Composer({
     }
     const imageFiles = selected.filter((file) => file.type.startsWith("image/"));
     const otherFiles = selected.filter((file) => !file.type.startsWith("image/"));
-    await Promise.all([addImages(imageFiles), addFiles(otherFiles)]);
+    if (otherFiles.length && !latest.onUploadFiles) {
+      setAttachmentError(t("В этом поле можно прикреплять только изображения"));
+      return;
+    }
+    const operationIdentity = latest.sessionIdentity;
+    setPendingAttachmentCount((count) => count + 1);
+    try {
+      await Promise.all([addImages(imageFiles), addFiles(otherFiles)]);
+    } finally {
+      if (aliveRef.current && latestPropsRef.current.sessionIdentity === operationIdentity) {
+        setPendingAttachmentCount((count) => Math.max(0, count - 1));
+      }
+    }
   }
 
-  function pasteImages(event: ClipboardEvent<HTMLTextAreaElement>) {
-    const files = clipboardImageFiles(event.clipboardData);
-    if (files.length) void addImages(files);
+  function pasteFiles(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (speechBusy) return;
+    const files = clipboardFiles(event.clipboardData);
+    if (files.length) void addSelectedFiles(files);
+  }
+
+  function chooseFiles(imagesOnly: boolean) {
+    const input = fileInputRef.current;
+    if (!input) return;
+    input.accept = imagesOnly || !onUploadFiles ? "image/*" : "";
+    input.value = "";
+    setAttachmentPickerOpen(false);
+    try {
+      if (typeof input.showPicker === "function") input.showPicker();
+      else input.click();
+    } catch {
+      // Cross-origin embedded clients can disallow showPicker while allowing file-input clicks.
+      input.click();
+    }
   }
 
   function captureInsertionPoint() {
@@ -1437,6 +1573,15 @@ export function Composer({
         if (canSubmit) onSubmit("queue");
       }}
     >
+      {draggingFiles &&
+        formRef.current &&
+        createPortal(
+          <div className="composer-drop-target" role="status">
+            <FileIcon />
+            <span>{t("Отпустите файлы, чтобы прикрепить")}</span>
+          </div>,
+          formRef.current.closest(".conversation-pane") ?? formRef.current,
+        )}
       <div className={`composer-cards${compactCards ? " compact" : ""}`}>
         <div
           id={`${cardsId}-annotations`}
@@ -1643,6 +1788,12 @@ export function Composer({
         />
       )}
       <div className="composer-base">
+        {pendingAttachmentCount > 0 && (
+          <div className="composer-attachment-status" role="status">
+            <span className="spinner" aria-hidden="true" />
+            <span>{t("Прикрепляем файлы…")}</span>
+          </div>
+        )}
         {composerError && (
           <div
             className={`composer-error${voiceTranscriptionErrorVisible ? " voice-transcription-error" : ""}`}
@@ -1727,7 +1878,7 @@ export function Composer({
             }}
             onPaste={(event) => {
               initialCaretPendingRef.current = false;
-              pasteImages(event);
+              pasteFiles(event);
             }}
             onSelect={captureInsertionPoint}
             onKeyDown={keyboardSubmit}
@@ -1749,15 +1900,35 @@ export function Composer({
                 hidden
                 onChange={(event) => void addSelectedFiles(Array.from(event.target.files ?? []))}
               />
-              <button
-                aria-label={onUploadFiles ? t("Добавить файлы") : t("Добавить изображения")}
-                className="composer-add-image"
-                type="button"
-                disabled={speechBusy}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <PlusIcon />
-              </button>
+              <div className="composer-attachment-picker" ref={attachmentPickerRef}>
+                <button
+                  aria-label={onUploadFiles ? t("Добавить файлы") : t("Добавить изображения")}
+                  aria-expanded={attachmentPickerOpen}
+                  aria-haspopup="dialog"
+                  className="composer-add-image"
+                  type="button"
+                  disabled={speechBusy}
+                  onClick={() => setAttachmentPickerOpen((open) => !open)}
+                >
+                  <PlusIcon />
+                </button>
+                {attachmentPickerOpen && (
+                  <div
+                    className="composer-attachment-menu"
+                    role="dialog"
+                    aria-label={t("Вложения")}
+                  >
+                    {onUploadFiles && (
+                      <button type="button" onClick={() => chooseFiles(false)}>
+                        <FileIcon /> {t("Добавить файлы")}
+                      </button>
+                    )}
+                    <button type="button" onClick={() => chooseFiles(true)}>
+                      <ImageIcon /> {t("Добавить изображения")}
+                    </button>
+                  </div>
+                )}
+              </div>
               {creating && projects.length > 0 && (
                 <label className="project-picker">
                   <span className="sr-only">{t("Проект")}</span>
@@ -1949,15 +2120,15 @@ function readImage(file: File): Promise<string> {
   });
 }
 
-function clipboardImageFiles(data: DataTransfer): File[] {
+function clipboardFiles(data: DataTransfer): File[] {
   const itemFiles = Array.from(data.items)
-    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .filter((item) => item.kind === "file")
     .flatMap((item) => {
       const file = item.getAsFile();
       return file ? [file] : [];
     });
   if (itemFiles.length) return itemFiles;
-  return Array.from(data.files).filter((file) => file.type.startsWith("image/"));
+  return Array.from(data.files);
 }
 
 function pastedImageName(mimeType: string, index: number): string {

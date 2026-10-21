@@ -841,6 +841,215 @@ describe("Composer", () => {
     expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
   });
 
+  describe("file attachments", () => {
+    it("opens an attachment menu, selects file types, and falls back when showPicker is blocked", () => {
+      const view = render(<Composer {...composerCards({ onUploadFiles: vi.fn() })} />);
+      const input = view.container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      const showPicker = vi.fn();
+      Object.defineProperty(input, "showPicker", { configurable: true, value: showPicker });
+      const click = vi.spyOn(input, "click").mockImplementation(() => undefined);
+      const trigger = screen.getByRole("button", { name: "Добавить файлы" });
+      trigger.focus();
+      fireEvent.click(trigger);
+      const menu = screen.getByRole("dialog", { name: "Вложения" });
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      expect(within(menu).getByRole("button", { name: "Добавить файлы" })).toHaveFocus();
+      fireEvent.click(within(menu).getByRole("button", { name: "Добавить изображения" }));
+      expect(input.accept).toBe("image/*");
+      expect(showPicker).toHaveBeenCalledOnce();
+      expect(screen.queryByRole("dialog", { name: "Вложения" })).toBeNull();
+
+      showPicker.mockImplementation(() => {
+        throw new DOMException("Blocked", "SecurityError");
+      });
+      fireEvent.click(trigger);
+      fireEvent.click(
+        within(screen.getByRole("dialog", { name: "Вложения" })).getByRole("button", {
+          name: "Добавить файлы",
+        }),
+      );
+      expect(input.accept).toBe("");
+      expect(click).toHaveBeenCalledOnce();
+    });
+
+    it("dismisses the menu with Escape and an outside pointer without stopping a task", () => {
+      const stop = vi.fn();
+      render(
+        <Composer {...composerCards({ onUploadFiles: vi.fn(), running: true, onStop: stop })} />,
+      );
+      const trigger = screen.getByRole("button", { name: "Добавить файлы" });
+      trigger.focus();
+      fireEvent.click(trigger);
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      expect(screen.queryByRole("dialog", { name: "Вложения" })).toBeNull();
+      expect(trigger).toHaveFocus();
+      expect(stop).not.toHaveBeenCalled();
+      fireEvent.click(trigger);
+      fireEvent.pointerDown(document.body);
+      expect(screen.queryByRole("dialog", { name: "Вложения" })).toBeNull();
+    });
+
+    it("drops mixed files anywhere in the conversation and shows the pending upload without sending", async () => {
+      const attachment = cardFile(0);
+      let finish!: (files: (typeof attachment)[]) => void;
+      const upload = vi.fn(
+        () =>
+          new Promise<(typeof attachment)[]>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const props = composerCards({ onUploadFiles: upload });
+      render(
+        <div className="conversation-pane">
+          <div data-testid="history">
+            <span>Ответ</span>
+          </div>
+          <Composer {...props} />
+        </div>,
+      );
+      const history = screen.getByTestId("history");
+      const png = new File(["image"], "screen.png", { type: "image/png" });
+      const txt = new File(["notes"], "notes.txt", { type: "text/plain" });
+      const dataTransfer = { types: ["Files"], items: [], files: [png, txt], dropEffect: "none" };
+      fireEvent.dragEnter(history, { dataTransfer });
+      expect(screen.getByText("Отпустите файлы, чтобы прикрепить")).toBeInTheDocument();
+      fireEvent.dragEnter(history.firstChild!, { dataTransfer });
+      fireEvent.dragLeave(history, { dataTransfer });
+      expect(screen.getByText("Отпустите файлы, чтобы прикрепить")).toBeInTheDocument();
+      expect(fireEvent.dragOver(history, { dataTransfer })).toBe(false);
+      expect(dataTransfer.dropEffect).toBe("copy");
+      expect(fireEvent.drop(history, { dataTransfer })).toBe(false);
+      expect(screen.queryByText("Отпустите файлы, чтобы прикрепить")).toBeNull();
+      expect(upload).toHaveBeenCalledWith([txt], 0);
+      expect(screen.getByText("Прикрепляем файлы…")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(props.onImagesChange).toHaveBeenCalledWith(
+          [expect.objectContaining({ name: "screen.png" })],
+          0,
+        ),
+      );
+      await act(async () => {
+        finish([attachment]);
+      });
+      expect(props.onFilesChange).toHaveBeenCalledWith([attachment], 0);
+      expect(screen.queryByText("Прикрепляем файлы…")).toBeNull();
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it("keeps text drags untouched and prevents navigation for file drops outside the chat", () => {
+      const upload = vi.fn();
+      const view = render(<Composer {...composerCards({ onUploadFiles: upload })} />);
+      const form = view.container.querySelector("form")!;
+      const text = { types: ["text/plain"], files: [], items: [] };
+      expect(fireEvent.dragOver(form, { dataTransfer: text })).toBe(true);
+      expect(fireEvent.drop(form, { dataTransfer: text })).toBe(true);
+      expect(screen.queryByText("Отпустите файлы, чтобы прикрепить")).toBeNull();
+      const dataTransfer = {
+        types: ["Files"],
+        files: [new File(["notes"], "notes.txt")],
+        items: [],
+      };
+      fireEvent.dragEnter(form, { dataTransfer });
+      expect(fireEvent.drop(document.body, { dataTransfer })).toBe(false);
+      expect(screen.queryByText("Отпустите файлы, чтобы прикрепить")).toBeNull();
+      expect(upload).not.toHaveBeenCalled();
+    });
+
+    it("rejects directories and clears the drop hint when a drag is cancelled", () => {
+      const upload = vi.fn();
+      const view = render(<Composer {...composerCards({ onUploadFiles: upload })} />);
+      const form = view.container.querySelector("form")!;
+      const dataTransfer = {
+        types: ["Files"],
+        files: [],
+        items: [{ webkitGetAsEntry: () => ({ isDirectory: true }) }],
+      };
+      fireEvent.dragEnter(form, { dataTransfer });
+      fireEvent.dragEnd(window);
+      expect(screen.queryByText("Отпустите файлы, чтобы прикрепить")).toBeNull();
+      fireEvent.drop(form, { dataTransfer });
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Чтобы прикрепить папку, упакуйте её в архив",
+      );
+      expect(upload).not.toHaveBeenCalled();
+    });
+
+    it("blocks file drops during voice input and removes handlers on unmount", () => {
+      const upload = vi.fn();
+      const view = render(
+        <Composer {...composerCards({ onUploadFiles: upload, voiceInputLocked: true })} />,
+      );
+      const form = view.container.querySelector("form")!;
+      const dataTransfer = {
+        types: ["Files"],
+        files: [new File(["notes"], "notes.txt")],
+        items: [],
+        dropEffect: "copy",
+      };
+      expect(screen.getByRole("button", { name: "Добавить файлы" })).toBeDisabled();
+      fireEvent.dragEnter(form, { dataTransfer });
+      expect(screen.queryByText("Отпустите файлы, чтобы прикрепить")).toBeNull();
+      expect(fireEvent.dragOver(form, { dataTransfer })).toBe(false);
+      expect(dataTransfer.dropEffect).toBe("none");
+      fireEvent.drop(form, { dataTransfer });
+      expect(upload).not.toHaveBeenCalled();
+      view.unmount();
+      expect(fireEvent.drop(document.body, { dataTransfer })).toBe(true);
+    });
+
+    it.each(["drop", "paste"])(
+      "enforces the per-file limit for %s before reading or uploading",
+      (source) => {
+        const upload = vi.fn();
+        const props = composerCards({ onUploadFiles: upload });
+        const view = render(<Composer {...props} />);
+        const file = new File(["image"], "large.png", { type: "image/png" });
+        Object.defineProperty(file, "size", { value: 100 * 1024 * 1024 + 1 });
+        const data = { types: ["Files"], files: [file], items: [] };
+        if (source === "drop")
+          fireEvent.drop(view.container.querySelector("form")!, { dataTransfer: data });
+        else fireEvent.paste(screen.getByRole("textbox"), { clipboardData: data });
+        expect(screen.getByRole("alert")).toHaveTextContent(
+          "Размер одного файла не должен превышать 100 МБ",
+        );
+        expect(upload).not.toHaveBeenCalled();
+        expect(props.onImagesChange).not.toHaveBeenCalled();
+      },
+    );
+
+    it("enforces the total size against the current draft after rerender", () => {
+      const upload = vi.fn();
+      const props = composerCards({ onUploadFiles: upload });
+      const view = render(<Composer {...props} />);
+      view.rerender(<Composer {...props} files={[{ ...cardFile(0), size: 200 * 1024 * 1024 }]} />);
+      const file = new File(["notes"], "large.txt", { type: "text/plain" });
+      Object.defineProperty(file, "size", { value: 60 * 1024 * 1024 });
+      fireEvent.drop(view.container.querySelector("form")!, {
+        dataTransfer: { types: ["Files"], files: [file], items: [] },
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Общий размер вложений не должен превышать 250 МБ",
+      );
+      expect(upload).not.toHaveBeenCalled();
+    });
+
+    it("pastes ordinary files, reports upload errors, and clears the pending indicator", async () => {
+      const upload = vi.fn().mockRejectedValue(new Error("File attachment is unavailable"));
+      render(<Composer {...composerCards({ onUploadFiles: upload })} />);
+      const file = new File(["notes"], "notes.txt", { type: "text/plain" });
+      expect(
+        fireEvent.paste(screen.getByRole("textbox"), {
+          clipboardData: { files: [], items: [{ kind: "file", getAsFile: () => file }] },
+        }),
+      ).toBe(true);
+      await waitFor(() =>
+        expect(screen.getByRole("alert")).toHaveTextContent("Прикреплённый файл больше недоступен"),
+      );
+      expect(upload).toHaveBeenCalledWith([file], 0);
+      expect(screen.queryByText("Прикрепляем файлы…")).toBeNull();
+    });
+  });
+
   describe("attachment category filters", () => {
     it.each([0, 1, 2, 3])(
       "collapses cards only when their total exceeds two (%s cards)",
