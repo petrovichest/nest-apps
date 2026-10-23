@@ -14,6 +14,36 @@ const assistant = {
   uuid: "assistant-uuid",
   message: { id: "message-1", model: "sonnet", content: [{ type: "text", text: "Hello back" }] },
 };
+
+describe("confirmed owner interruption", () => {
+  it("keeps an interrupted historical turn and partial commentary across later turns", () => {
+    const view = new NativeView("session", "/work");
+    const partial = {
+      type: "assistant",
+      message: {
+        id: "partial",
+        content: [
+          { type: "text", text: "Working" },
+          { type: "tool_use", id: "build", name: "Bash", input: { command: "build" } },
+        ],
+      },
+    };
+    view.reset([user, partial, { ...user, uuid: "next-user" }, assistant], {
+      interruptedTurns: { "user-1": 1234 },
+    });
+    expect(view.turns()).toMatchObject([
+      { id: "user-1", status: "interrupted", completedAt: 1234 },
+      { id: "next-user", status: "completed" },
+    ]);
+    expect(view.turns()[0]?.items.find((item) => item.type === "agentMessage")).toMatchObject({
+      phase: "commentary",
+    });
+    expect(view.turns()[0]?.items.find((item) => item.type === "command")).toMatchObject({
+      status: "failed",
+    });
+    expect(view.currentTurnId).toBeNull();
+  });
+});
 const taskPrompt =
   '<task-notification>\n<task-id>background-1</task-id>\n<summary>Background command "Wait for CI run to finish" completed (exit code 0)</summary>\n</task-notification>';
 const taskNotification = {

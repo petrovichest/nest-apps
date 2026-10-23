@@ -146,6 +146,7 @@ export class NativeView {
   private contextTokens?: number | null;
   /** The model's window, reported by a finished turn; absent until one has been seen. */
   private contextWindow?: number;
+  private interruptedTurns: Record<string, number> = {};
 
   constructor(
     readonly sessionId: string,
@@ -226,11 +227,21 @@ export class NativeView {
     return launches;
   }
 
-  /** Finishes an in-progress subagent turn once its parent tool call has ended. */
-  settle(status: "completed" | "failed" | "interrupted"): ServerEvent[] {
-    const turn = this.active;
-    if (turn?.status !== "inProgress") return [];
-    this.complete(turn, status, null);
+  /** Reconciles a terminal owner, including an offline history's inferred completion. */
+  settle(
+    status: "completed" | "failed" | "interrupted",
+    turnId?: string,
+    at: number | null = null,
+  ): ServerEvent[] {
+    const turn = turnId ? this.byId.get(turnId) : this.active;
+    if (!turn || (!turnId && turn.status !== "inProgress")) return [];
+    if (status === "interrupted" && turnId && at !== null) {
+      this.interruptedTurns[turnId] = at;
+      for (const item of turn.items)
+        if (item.type === "agentMessage" && item.phase === "final_answer")
+          item.phase = "commentary";
+    }
+    this.complete(turn, status, at);
     return [{ type: "turn.replaced", threadId: this.sessionId, turn: structuredClone(turn) }];
   }
 
@@ -311,7 +322,15 @@ export class NativeView {
     return [{ type: "turn.replaced", threadId: this.sessionId, turn: structuredClone(turn) }];
   }
 
-  reset(events: readonly Json[], options: { live?: boolean; preserveInputs?: boolean } = {}): void {
+  reset(
+    events: readonly Json[],
+    options: {
+      live?: boolean;
+      preserveInputs?: boolean;
+      interruptedTurns?: Record<string, number>;
+    } = {},
+  ): void {
+    this.interruptedTurns = { ...options.interruptedTurns };
     if (!options.preserveInputs) this.sourceMetadata.clear();
     // SDK events omit transcript metadata, but retain the transcript entry UUID.
     // Index it before replay so canonical block indices and internal input flags win.
@@ -588,6 +607,14 @@ export class NativeView {
         return changes;
       let turn = this.userTurns.get(id);
       if (!turn) {
+        const interruptedAt = this.active && this.interruptedTurns[this.active.id];
+        if (
+          this.active?.status === "inProgress" &&
+          interruptedAt !== undefined &&
+          event.claudenest_delivery !== "steer" &&
+          (timestamp(event.timestamp) ?? Infinity) >= interruptedAt
+        )
+          this.complete(this.active, "interrupted", interruptedAt);
         const steering =
           this.active?.status === "inProgress" &&
           (event.claudenest_delivery === "steer" || this.continuingTurns.has(this.active.id));
@@ -894,11 +921,17 @@ export class NativeView {
     status: "completed" | "failed" | "interrupted",
     at: number | null,
   ): void {
+    const interruptedAt = this.interruptedTurns[turn.id];
+    if (status === "completed" && interruptedAt !== undefined) {
+      status = "interrupted";
+      at = interruptedAt;
+    }
     turn.status = status;
     turn.completedAt = at ?? turn.completedAt;
     if (at !== null && turn.startedAt !== null) turn.durationMs = Math.max(0, at - turn.startedAt);
     for (const item of turn.items)
-      if (item.status === "inProgress") item.status = status === "failed" ? "failed" : "completed";
+      if (item.status === "inProgress")
+        item.status = status === "failed" || interruptedAt !== undefined ? "failed" : "completed";
     const messages = turn.items.filter((item) => item.type === "agentMessage");
     if (messages.length && status === "completed")
       (

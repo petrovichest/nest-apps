@@ -870,7 +870,19 @@ describe("additive protocol-1 features", () => {
         ),
       )
       .toBe(true);
-    expect(runner.snapshot()).toMatchObject({ state: "failed", pendingRequests: [] });
+    expect(runner.snapshot()).toMatchObject({
+      state: "failed",
+      pendingRequests: [],
+      interrupted: true,
+    });
+    await expect
+      .poll(
+        async () =>
+          JSON.parse(
+            await readFile(join(runner.descriptor.stateDirectory, "runner-state.json"), "utf8"),
+          ).interrupted,
+      )
+      .toBe(true);
     fake.emit("request", {
       request_id: "late-question",
       request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: {} },

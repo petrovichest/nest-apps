@@ -85,6 +85,8 @@ export interface RunnerSnapshot {
   quotaFailure?: NativeQuotaFailure;
   state: RunnerState;
   awaitingResult?: boolean;
+  /** Work was outstanding when the native process failed or its owner closed. */
+  interrupted?: boolean;
   sequence: number;
   pendingRequests: PendingRequest[];
   currentEvents: Record<string, unknown>[];

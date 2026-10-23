@@ -205,6 +205,16 @@ replay commands automatically: continue native history explicitly with a new
 message ID. An acceptance receipt records command admission, not exactly-once
 external tool execution or guaranteed native persistence before a crash.
 
+If an owner fails or its service is confirmed dead, ClaudeNest marks the unfinished
+turn interrupted and restores chat input. This correction survives history refresh
+and API restart without editing the native transcript. Losing a socket alone does
+not end work. Explicit Stop allows 15 seconds for native interruption, then terminates
+only that session service if the original task is still active. A replacement owner
+or newer turn is protected. Empty failed units are cleared before the next explicit
+message resumes the same history. Remaining privileged child processes are reported
+as a cleanup blocker rather than silently bypassed. Interrupted commands and uncertain
+delivery receipts are never replayed automatically.
+
 ## API
 
 All `/api/` HTTP calls require `Authorization: Bearer TOKEN`. Public static assets

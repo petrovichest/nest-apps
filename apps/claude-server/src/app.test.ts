@@ -61,6 +61,10 @@ async function fixture() {
   const launcher: SessionLauncher = {
     available: async () => {},
     active: async (id) => owners.has(id),
+    stop: async (id) => {
+      await owners.get(id)?.runner.close();
+      owners.delete(id);
+    },
     start: async (descriptor: RunnerDescriptor) => {
       starts++;
       const transport = new FakeClaude();

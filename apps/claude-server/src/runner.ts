@@ -111,6 +111,7 @@ export class SessionRunner {
   private readonly unacknowledgedInputs = new Set<string>();
   private readonly steeredInputs = new Set<string>();
   private awaitingResult = false;
+  private interrupted = false;
   private publishedAwaitingResult?: boolean;
   private nativeTaskRunning = false;
   private interruptRequested = false;
@@ -215,6 +216,7 @@ export class SessionRunner {
       ...(this.quotaFailure ? { quotaFailure: this.quotaFailure } : {}),
       state: this.state,
       awaitingResult: this.awaitingResult,
+      interrupted: this.interrupted,
       sequence: this.sequence,
       pendingRequests: [...this.pending.values()],
       currentEvents: [
@@ -245,6 +247,7 @@ export class SessionRunner {
 
   private async doClose(): Promise<void> {
     const failed = this.state === "failed";
+    this.interrupted ||= this.awaitingResult;
     if (!failed) this.setState("closed");
     for (const receipt of this.receipts.values()) {
       if (receipt.status === "accepted") receipt.status = "unknown";
@@ -821,6 +824,7 @@ export class SessionRunner {
 
   private fail(error: Error): void {
     if (this.state === "closed") return;
+    this.interrupted ||= this.awaitingResult;
     this.terminalError = error.message;
     for (const receipt of this.receipts.values()) {
       if (receipt.status === "accepted") {

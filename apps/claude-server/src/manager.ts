@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, realpath, stat, unlink } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Config } from "./config";
@@ -25,6 +25,7 @@ export interface SessionLauncher {
   available(): Promise<void>;
   start(descriptor: RunnerDescriptor, descriptorPath: string): Promise<void>;
   active(sessionId: string): Promise<boolean>;
+  stop(sessionId: string): Promise<void>;
 }
 
 export class SystemdLauncher implements SessionLauncher {
@@ -54,12 +55,70 @@ export class SystemdLauncher implements SessionLauncher {
         ],
         { timeout: 5_000 },
       );
-      return ["active", "activating", "reloading"].includes(stdout.trim());
+      return ["active", "activating", "reloading", "deactivating"].includes(stdout.trim());
     } catch {
       throw new AppError("unavailable", "Cannot verify the session service state", 503);
     }
   }
+  private async cleanFailedUnit(sessionId: string): Promise<void> {
+    const unit = `claudenest-session-${sessionId}.service`;
+    const { stdout } = await exec(
+      "systemctl",
+      ["--user", "show", unit, "-p", "ActiveState", "-p", "ControlGroup"],
+      { timeout: 5_000 },
+    );
+    const properties = Object.fromEntries(
+      stdout
+        .trim()
+        .split("\n")
+        .map((line) => line.split("=")),
+    );
+    if (properties.ActiveState !== "failed") return;
+    if (properties.ControlGroup) {
+      const processes = await readFile(
+        join("/sys/fs/cgroup", properties.ControlGroup, "cgroup.procs"),
+        "utf8",
+      ).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      });
+      if (processes.trim())
+        throw new AppError(
+          "unavailable",
+          "Session service still contains processes; privileged child processes may require cleanup",
+          503,
+        );
+    }
+    await exec("systemctl", ["--user", "reset-failed", unit], { timeout: 5_000 });
+  }
+  async stop(sessionId: string): Promise<void> {
+    const unit = `claudenest-session-${sessionId}.service`;
+    // Native interruption already had its grace period. Target this unit only.
+    try {
+      await exec("systemctl", ["--user", "stop", "--no-block", unit], { timeout: 5_000 });
+    } catch (error) {
+      if (await this.active(sessionId)) throw error;
+    }
+    if (await this.active(sessionId)) {
+      try {
+        await exec("systemctl", ["--user", "kill", "--signal=SIGKILL", "--kill-whom=all", unit], {
+          timeout: 5_000,
+        });
+      } catch (error) {
+        if (await this.active(sessionId)) throw error;
+      }
+    }
+    const deadline = Date.now() + 5_000;
+    while (await this.active(sessionId)) {
+      if (Date.now() >= deadline)
+        throw new AppError("unavailable", "Session service is still stopping", 503);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await this.cleanFailedUnit(sessionId);
+  }
   async start(descriptor: RunnerDescriptor, descriptorPath: string): Promise<void> {
+    if (await this.active(descriptor.sessionId)) return;
+    await this.cleanFailedUnit(descriptor.sessionId);
     // ExecStart has systemd's own $ expansion even without a shell.
     const literal = (value: string) => value.replaceAll("$", "$$");
     try {
@@ -111,6 +170,7 @@ export class SessionManager {
     id: string,
   ) => { bindingId: string; mcpConfig: Record<string, unknown> } | undefined;
   private locks = new Map<string, Promise<unknown>>();
+  private stopping = new Set<string>();
   private closing = false;
   private paused = false;
   private lease?: NodeJS.Timeout;
@@ -195,6 +255,8 @@ export class SessionManager {
   }
 
   private async launch(descriptor: RunnerDescriptor): Promise<RunnerConnection> {
+    if (this.stopping.has(descriptor.sessionId))
+      throw new AppError("unavailable", "Session is stopping", 503);
     if (!(await this.launcher.active(descriptor.sessionId))) {
       try {
         const existing = await RunnerConnection.open(descriptor.socketPath, 500);
@@ -208,9 +270,17 @@ export class SessionManager {
       }
     }
     await writeJsonAtomic(this.descriptorPath(descriptor.sessionId), descriptor);
+    if (this.stopping.has(descriptor.sessionId))
+      throw new AppError("unavailable", "Session is stopping", 503);
     await this.launcher.start(descriptor, this.descriptorPath(descriptor.sessionId));
+    if (this.stopping.has(descriptor.sessionId)) {
+      await this.launcher.stop(descriptor.sessionId);
+      throw new AppError("unavailable", "Session is stopping", 503);
+    }
     const until = Date.now() + 120_000;
     while (Date.now() < until) {
+      if (this.stopping.has(descriptor.sessionId))
+        throw new AppError("unavailable", "Session is stopping", 503);
       try {
         const connection = await this.connect(descriptor.sessionId);
         const snapshot = await connection.request<RunnerSnapshot>("snapshot");
@@ -471,16 +541,45 @@ export class SessionManager {
     id: string,
     method: "interrupt" | "respond" | "release" | "setModel" | "setPermissionMode",
     params: unknown,
+    timeoutMs = 30_000,
   ): Promise<unknown> {
     this.assertAccepting();
     assertUuid(id, "sessionId");
     id = id.toLowerCase();
-    return this.withLock(id, async () => (await this.connect(id)).request(method, params));
+    return this.withLock(id, async () =>
+      (await this.connect(id)).request(method, params, timeoutMs),
+    );
   }
 
   async snapshot(id: string): Promise<RunnerSnapshot> {
     assertUuid(id, "sessionId");
     return (await this.connect(id.toLowerCase())).request<RunnerSnapshot>("snapshot");
+  }
+
+  /** Explicit user stop only; serialize against admission and protect a replacement owner. */
+  async stop(id: string, runnerInstanceId?: string): Promise<void> {
+    assertUuid(id, "sessionId");
+    this.stopping.add(id);
+    try {
+      const saved = await this.savedSnapshot(id);
+      if (runnerInstanceId && saved && saved.runnerInstanceId !== runnerInstanceId)
+        throw new AppError("conflict", "Session owner changed; stop the current task again", 409);
+      // Closing pending RPC frees admission locks; service termination must not wait
+      // behind an unresponsive command or a launch readiness timeout.
+      this.connections.get(id)?.close();
+      this.connections.delete(id);
+      await this.launcher.stop(id);
+      await this.locks.get(id)?.catch(() => undefined);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(
+        "unavailable",
+        "Could not stop the session service; check its remaining processes and service permissions",
+        503,
+      );
+    } finally {
+      this.stopping.delete(id);
+    }
   }
 
   /** Read-only recovery evidence when the API missed a terminal owner event. */

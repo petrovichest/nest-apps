@@ -37,8 +37,14 @@ class FakeLauncher implements SessionLauncher {
   starts = 0;
   loseNextLaunchAcknowledgement = false;
   configureNextTransport?: (transport: FakeClaude) => void;
+  startHook?: () => Promise<void>;
   readonly unavailableOwners = new Set<string>();
   async available(): Promise<void> {}
+  async stop(id: string): Promise<void> {
+    await this.owners.get(id)?.runner.close();
+    this.owners.delete(id);
+    this.unavailableOwners.delete(id);
+  }
   async active(id: string): Promise<boolean> {
     const owner = this.owners.get(id);
     if (owner?.runner.snapshot().state === "closed") await owner.runner.close();
@@ -48,6 +54,7 @@ class FakeLauncher implements SessionLauncher {
     );
   }
   async start(descriptor: RunnerDescriptor): Promise<void> {
+    await this.startHook?.();
     this.starts++;
     const transport = new FakeClaude();
     this.configureNextTransport?.(transport);
@@ -114,6 +121,44 @@ async function fixture() {
 }
 
 describe("Claude backend manager integration", () => {
+  it("cleans a launch which was already in flight when the user stopped the session", async () => {
+    const { backend, launcher, input } = await fixture();
+    const manager = await backend();
+    let entered!: () => void, release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    launcher.startHook = async () => {
+      entered();
+      await gate;
+    };
+    const starting = manager.create(input).catch((error) => error);
+    await ready;
+    const stopping = manager.stop(input.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    await stopping;
+    expect(await starting).toBeInstanceOf(Error);
+    expect(await launcher.active(input.sessionId)).toBe(false);
+    expect(launcher.owners.get(input.sessionId)?.transport.sends).toEqual(undefined);
+  });
+  it("does not wait behind a hung native control RPC when explicitly stopping its owner", async () => {
+    const { backend, launcher, input } = await fixture();
+    const manager = await backend();
+    await manager.create(input);
+    const owner = launcher.owners.get(input.sessionId)!;
+    vi.spyOn(owner.transport, "interrupt").mockImplementation(() => new Promise(() => undefined));
+    const interrupt = manager
+      .command(input.sessionId, "interrupt", { requestId: randomUUID() })
+      .catch((error) => error);
+    await expect.poll(() => owner.transport.interrupt).toHaveBeenCalled();
+    await manager.stop(input.sessionId, owner.runner.snapshot().runnerInstanceId);
+    expect(await interrupt).toBeInstanceOf(Error);
+    expect(await launcher.active(input.sessionId)).toBe(false);
+  });
   it("preserves the original native default configuration in a persisted runner descriptor", async () => {
     const { backend, launcher, input, config } = await fixture();
     const account: ClaudeLaunchAccount = {

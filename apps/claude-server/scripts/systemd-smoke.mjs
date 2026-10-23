@@ -33,7 +33,9 @@ async function api(path, body, method = body === undefined ? "GET" : "POST") {
     method,
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(
+      path.startsWith("threads/") && path.endsWith("/interrupt") ? 25_000 : 5_000,
+    ),
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error?.message || "Smoke API failed");
@@ -113,6 +115,7 @@ if (process.argv.includes('agents')) { console.log('[]'); process.exit(0); }
 const flag = process.argv.includes('--resume') ? '--resume' : '--session-id';
 const sessionId = process.argv[process.argv.indexOf(flag)+1];
 let active;
+let stuck = false;
 const output = value => process.stdout.write(JSON.stringify(value)+'\\n');
 const nativeDir = join(process.env.CLAUDE_CONFIG_DIR,'projects','fixture');
 mkdirSync(nativeDir,{recursive:true});
@@ -126,11 +129,12 @@ input.on('line',line=>{
   const value=JSON.parse(line);
   if (value.type==='control_request') {
     output({type:'control_response',response:{subtype:'success',request_id:value.request_id,response:{}}});
-    if(value.request.subtype==='interrupt') setTimeout(complete,20);
+    if(value.request.subtype==='interrupt' && !stuck) setTimeout(complete,20);
   } else if(value.type==='user') {
     active=value.uuid; history(value); output(value);
+    stuck=value.message.content==='stuck';
     if(value.message.content==='permission') output({type:'control_request',request_id:'permission-1',request:{subtype:'can_use_tool',tool_name:'Bash',input:{command:'fixture'}}});
-    else setTimeout(complete,500);
+    else if(!stuck) setTimeout(complete,500);
   } else if(value.type==='control_response') setTimeout(complete,500);
 });
 input.on('close',()=>process.exit(0));
@@ -191,9 +195,66 @@ try {
   assert.equal((await snapshot(id, "idle")).runnerPid, before.runnerPid);
   const native = await api(`sessions/${id}/history`);
   assert.equal(native.messages.filter((event) => event.type === "user").length, 1);
+
+  const crashed = await create("stuck");
+  await snapshot(crashed, "running");
+  await stop();
+  await start(releaseB);
+  assert.equal((await api(`threads/${crashed}`)).turns.at(-1).status, "inProgress");
+  const crashedUnit = `claudenest-session-${crashed}.service`;
+  await exec("systemctl", ["--user", "kill", "--signal=SIGKILL", "--kill-whom=all", crashedUnit]);
+  await until(async () => (await api(`threads/${crashed}`)).summary.currentTurnId === null);
+  assert.equal((await api(`threads/${crashed}`)).turns.at(-1).status, "interrupted");
+  await api(`threads/${crashed}/interrupt`, {});
+  await exec("systemctl", ["--user", "reset-failed", crashedUnit]).catch(() => undefined);
+  // Retain a failed transient unit, as happened after the real OOM.
+  await exec("systemd-run", [
+    "--user",
+    "--quiet",
+    "--service-type=exec",
+    `--unit=${crashedUnit}`,
+    "--property=CollectMode=inactive",
+    "--",
+    "/bin/false",
+  ]);
+  await until(
+    async () =>
+      (
+        await exec("systemctl", ["--user", "show", crashedUnit, "-p", "ActiveState", "--value"])
+      ).stdout.trim() === "failed",
+  );
+  await api(`sessions/${crashed}/messages`, { requestId: randomUUID(), prompt: "complete" });
+  await snapshot(crashed, "idle");
+  assert.equal(
+    (await api(`sessions/${crashed}/history`)).messages.filter((event) => event.type === "user")
+      .length,
+    2,
+  );
+
+  const hung = await create("stuck");
+  await snapshot(hung, "running");
+  await stop();
+  await start(releaseB);
+  const stopStarted = Date.now();
+  await api(`threads/${hung}/interrupt`, {});
+  assert.ok(Date.now() - stopStarted >= 14_900);
+  assert.equal((await api(`threads/${hung}`)).turns.at(-1).status, "interrupted");
+  await stop();
+  await start(releaseB);
+  const recovered = await api(`threads/${hung}`);
+  assert.equal(recovered.summary.currentTurnId, null);
+  assert.equal(recovered.turns.at(-1).status, "interrupted");
+  await api(`sessions/${hung}/messages`, { requestId: randomUUID(), prompt: "complete" });
+  await snapshot(hung, "idle");
+  assert.equal(
+    (await api(`sessions/${hung}/history`)).messages.filter((event) => event.type === "user")
+      .length,
+    2,
+  );
+
   for (const sessionId of sessions) await api(`sessions/${sessionId}/release`, {});
   process.stdout.write(
-    "Systemd smoke passed: stable owner/CLI PIDs, pending approval, offline completion, new release, rollback, native history.\n",
+    "Systemd smoke passed: stable owner/CLI PIDs, approvals, restart/rollback, crash recovery, failed-unit relaunch, bounded Stop, native history.\n",
   );
 } finally {
   for (const unit of [...units, ...sessions.map((id) => `claudenest-session-${id}.service`)]) {

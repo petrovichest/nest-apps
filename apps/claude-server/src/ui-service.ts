@@ -132,6 +132,7 @@ export class UiService extends EventEmitter {
   private subscriptions = new Map<string, RunnerConnection>();
   private attaching = new Map<string, Promise<void>>();
   private dispatches = new Map<string, Promise<void>>();
+  private stops = new Map<string, Promise<void>>();
   private permissionUpdates = new Map<string, Promise<void>>();
   private approving = new Set<string>();
   /** Bumped whenever the effective permission mode of any session may change. */
@@ -224,6 +225,7 @@ export class UiService extends EventEmitter {
         if (saved?.state === "closed") this.unobservedAccounts.delete(id);
         if (saved) await this.observeQuotaFailure(id, saved);
       }
+      if (!this.subscriptions.has(id)) await this.reconcileDeadOwner(id).catch(() => undefined);
     }
     this.warmupReady = true;
     this.manager.accounts?.accountActivityChanged();
@@ -240,7 +242,7 @@ export class UiService extends EventEmitter {
           void this.manager
             .descriptor(thread.id)
             .then((descriptor) => (descriptor ? this.attach(thread.id) : undefined))
-            .catch(() => undefined);
+            .catch(() => this.reconcileDeadOwner(thread.id).catch(() => undefined));
         if (thread.queue.length) this.schedule(thread.id);
         if (thread.quotaRecovery && ["pending", "resuming"].includes(thread.quotaRecovery.state))
           this.recoverQuota(thread.id);
@@ -831,7 +833,7 @@ export class UiService extends EventEmitter {
       if (error.code === "ENOENT") return null;
       throw error;
     });
-    view.reset(history?.messages ?? []);
+    view.reset(history?.messages ?? [], { interruptedTurns: thread.interruptedTurns });
     this.views.set(id, view);
     await this.syncSubagents(id);
     return view;
@@ -890,7 +892,9 @@ export class UiService extends EventEmitter {
             view.reset([...(history?.messages ?? []), ...owner.currentEvents], {
               live: ["running", "waiting"].includes(owner.state),
               preserveInputs: true,
+              interruptedTurns: this.thread(id).interruptedTurns,
             });
+            if (["failed", "closed"].includes(owner.state)) await this.settleStoppedTurn(id, owner);
             if (owner.supportedModels?.length)
               await this.store.update((data) => {
                 data.models = owner.supportedModels!;
@@ -914,8 +918,11 @@ export class UiService extends EventEmitter {
         this.subscriptions.delete(id);
         const owner = this.owners.get(id);
         if (owner?.state !== "closed") this.unobservedAccounts.set(id, owner?.accountId);
+        for (const request of owner?.pendingRequests ?? [])
+          this.publish({ type: "attention.removed", attentionId: `${id}:${request.requestId}` });
         this.owners.delete(id);
         this.manager.accounts?.accountActivityChanged();
+        if (!this.closed) void this.reconcileDeadOwner(id).catch(() => undefined);
       }
       if (!this.closed) this.publish({ type: "thread.upserted", thread: this.summary(id) });
     });
@@ -975,6 +982,7 @@ export class UiService extends EventEmitter {
       const data = record(event.data);
       owner.state = data.state as RunnerSnapshot["state"];
       if (typeof data.awaitingResult === "boolean") owner.awaitingResult = data.awaitingResult;
+      if (["failed", "closed"].includes(owner.state)) await this.settleStoppedTurn(id, owner);
       this.publish({ type: "thread.upserted", thread: this.summary(id) });
       this.schedule(id);
     } else if (event.kind === "request") {
@@ -1152,11 +1160,83 @@ export class UiService extends EventEmitter {
     this.recoveries.set(id, task);
   }
 
-  /** Cancel both waiting recovery and any continuation admitted concurrently. */
-  async interrupt(id: string): Promise<void> {
+  /** Persist presentation repair without rewriting history or replaying commands. */
+  private async settleStoppedTurn(id: string, owner?: RunnerSnapshot): Promise<void> {
+    if (owner && ["failed", "closed"].includes(owner.state)) {
+      for (const request of owner.pendingRequests)
+        this.publish({ type: "attention.removed", attentionId: `${id}:${request.requestId}` });
+      owner.pendingRequests = [];
+    }
+    const view = await this.view(id);
+    const turnId =
+      view.currentTurnId ??
+      (owner?.awaitingResult || owner?.interrupted ? view.turns().at(-1)?.id : undefined);
+    if (!turnId) return;
+    let at = this.thread(id).interruptedTurns?.[turnId];
+    if (at === undefined) {
+      at = Date.now();
+      const interruptedAt = at;
+      await this.store.update((data) => {
+        const thread = data.threads[id]!;
+        thread.interruptedTurns ??= {};
+        thread.interruptedTurns[turnId] ??= interruptedAt;
+        delete thread.awaitingPlanResponse;
+      });
+    }
+    for (const update of view.settle("interrupted", turnId, at)) this.publish(update);
+    this.publish({ type: "thread.upserted", thread: this.summary(id) });
+  }
+
+  private async reconcileDeadOwner(id: string): Promise<boolean> {
+    if (this.closed || this.thread(id).subagent || this.subscriptions.has(id)) return false;
+    const saved = await this.manager.savedSnapshot(id);
+    if (!saved) return false;
+    const view = this.views.get(id);
+    if (!view?.currentTurnId && !saved.awaitingResult && !saved.interrupted) return false;
+    if (!view?.currentTurnId && this.thread(id).interruptedTurns?.[view?.turns().at(-1)?.id ?? ""])
+      return true;
+    // A lost socket is not evidence of death; failures to inspect state stay unavailable.
+    if (await this.manager.launcher.active(id)) return false;
+    if (this.closed || this.subscriptions.has(id) || this.owners.has(id)) return false;
+    await this.settleStoppedTurn(id, saved);
+    this.unobservedAccounts.delete(id);
+    this.manager.accounts?.accountActivityChanged();
+    return true;
+  }
+
+  /** Explicit stop is idempotent for dead owners and bounded for unresponsive ones. */
+  interrupt(id: string): Promise<void> {
+    const existing = this.stops.get(id);
+    if (existing) return existing;
+    const task = this.interruptOnce(id).finally(() => this.stops.delete(id));
+    this.stops.set(id, task);
+    return task;
+  }
+  private async interruptOnce(id: string): Promise<void> {
     const thread = this.thread(id);
     if (thread.subagent)
       throw new AppError("conflict", "A subagent is controlled by its parent session", 409);
+    const deadline = Date.now() + 15_000;
+    const bounded = async <T>(operation: Promise<T>): Promise<T> => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          operation,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("Stop grace period expired")),
+              Math.max(0, deadline - Date.now()),
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const instance =
+      this.owners.get(id)?.runnerInstanceId ??
+      (await this.manager.savedSnapshot(id))?.runnerInstanceId;
+    const turnId = this.views.get(id)?.currentTurnId;
     const activeRecovery =
       thread.quotaRecovery &&
       ["pending", "waiting", "resuming"].includes(thread.quotaRecovery.state);
@@ -1167,13 +1247,65 @@ export class UiService extends EventEmitter {
         recovery.cancelledByUser = true;
       });
       this.publish({ type: "thread.upserted", thread: this.summary(id) });
-      await this.recoveries.get(id);
+      await bounded(this.recoveries.get(id) ?? Promise.resolve()).catch(() => undefined);
     }
-    const owner = await this.manager.snapshot(id).catch(() => undefined);
-    if (owner && ["running", "waiting"].includes(owner.state))
-      await this.manager.command(id, "interrupt", { requestId: randomUUID() });
-    else if (!activeRecovery) throw new AppError("conflict", "Session is not running", 409);
-    this.publish({ type: "thread.upserted", thread: this.summary(id) });
+    try {
+      let owner = await bounded(this.manager.snapshot(id));
+      if (instance && owner.runnerInstanceId !== instance)
+        throw new AppError("conflict", "Session owner changed; stop the current task again", 409);
+      if (turnId && this.views.get(id)?.currentTurnId !== turnId) return;
+      if (["running", "waiting", "starting"].includes(owner.state))
+        await bounded(
+          this.manager.command(
+            id,
+            "interrupt",
+            { requestId: randomUUID() },
+            Math.max(1, deadline - Date.now()),
+          ),
+        );
+      while (Date.now() < deadline) {
+        if (turnId && this.views.get(id)?.currentTurnId !== turnId) return;
+        if (
+          !owner.awaitingResult &&
+          ["idle", "interrupted", "failed", "closed"].includes(owner.state)
+        ) {
+          await this.settleStoppedTurn(id, owner);
+          return;
+        }
+        await bounded(new Promise((resolve) => setTimeout(resolve, 100)));
+        owner = await bounded(this.manager.snapshot(id));
+        if (instance && owner.runnerInstanceId !== instance)
+          throw new AppError("conflict", "Session owner changed; stop the current task again", 409);
+      }
+    } catch (error) {
+      if (
+        error instanceof AppError &&
+        error.code === "conflict" &&
+        error.message.includes("owner changed")
+      )
+        throw error;
+      if (!(await this.manager.launcher.active(id))) {
+        await this.reconcileDeadOwner(id);
+        return;
+      }
+      const current = await bounded(this.manager.snapshot(id)).catch(() => undefined);
+      if (current && instance && current.runnerInstanceId !== instance)
+        throw new AppError("conflict", "Session owner changed; stop the current task again", 409);
+      if (
+        current &&
+        !current.awaitingResult &&
+        ["idle", "interrupted", "failed", "closed"].includes(current.state)
+      ) {
+        await this.settleStoppedTurn(id, current);
+        return;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+    }
+    if (turnId && this.views.get(id)?.currentTurnId !== turnId) return;
+    await this.manager.stop(id, instance);
+    const saved = await this.manager.savedSnapshot(id);
+    await this.settleStoppedTurn(id, saved);
   }
   async createProject(path: string): Promise<Project> {
     const cwd = await realpath(path);
@@ -1520,7 +1652,8 @@ export class UiService extends EventEmitter {
     this.publish({ type: "thread.upserted", thread: this.summary(id) });
   }
   schedule(id: string): void {
-    if (this.closed || !this.manager.accepting || this.dispatches.has(id)) return;
+    if (this.closed || !this.manager.accepting || this.dispatches.has(id) || this.stops.has(id))
+      return;
     if (
       this.thread(id).quotaRecovery &&
       ["pending", "waiting", "resuming"].includes(this.thread(id).quotaRecovery!.state)
@@ -2028,6 +2161,7 @@ export class UiService extends EventEmitter {
       ...this.dispatches.values(),
       ...this.permissionUpdates.values(),
       ...this.recoveries.values(),
+      ...this.stops.values(),
     ]);
     await this.store.flush();
   }

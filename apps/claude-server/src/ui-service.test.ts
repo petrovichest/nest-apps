@@ -86,6 +86,8 @@ class FakeManager {
   }> = [];
   recoveryHook?: () => Promise<void>;
   readonly owners = new Map<string, RunnerSnapshot>();
+  readonly savedOwners = new Map<string, RunnerSnapshot>();
+  readonly stops: string[] = [];
   readonly connections = new Map<string, FakeConnection[]>();
   readonly external: Array<Record<string, unknown>> = [];
   readonly creates: Delivery[] = [];
@@ -199,6 +201,17 @@ class FakeManager {
     const owner = this.owners.get(id);
     if (!owner) throw new AppError("not_found", "No owner", 404);
     return structuredClone(owner);
+  }
+  async savedSnapshot(id: string): Promise<RunnerSnapshot | undefined> {
+    const owner = this.owners.get(id) ?? this.savedOwners.get(id);
+    return owner ? structuredClone(owner) : undefined;
+  }
+  async stop(id: string): Promise<void> {
+    this.stops.push(id);
+    const owner = this.owners.get(id);
+    if (owner) this.savedOwners.set(id, { ...structuredClone(owner), state: "closed" });
+    this.owners.delete(id);
+    for (const connection of this.connections.get(id) ?? []) connection.close();
   }
   async recoverQuota(
     id: string,
@@ -360,6 +373,147 @@ async function waitForQueue(service: UiService, id: string, count: number): Prom
 }
 
 describe("Claude UI durable session facade", () => {
+  it.each(["closed", "failed"] as const)(
+    "repairs a %s owner across reloads without replaying its work",
+    async (terminalState) => {
+      const { manager, config, directory, start, reserve } = await fixture();
+      const service = await start(),
+        id = await reserve(service),
+        turnId = randomUUID();
+      const events = [
+        { type: "user", uuid: turnId, message: { content: "Original task" } },
+        {
+          type: "assistant",
+          message: { id: "partial", content: [{ type: "text", text: "Still working" }] },
+        },
+      ];
+      const history = join(config.configDir, "projects", "crash");
+      await mkdir(history, { recursive: true });
+      await writeFile(
+        join(history, `${id}.jsonl`),
+        events.map((event) => JSON.stringify(event)).join("\n") + "\n",
+      );
+      const owner = {
+        ...snapshot(id, directory),
+        state: "running" as const,
+        awaitingResult: true,
+        currentEvents: events,
+      };
+      manager.owners.set(id, owner);
+      await service.attach(id);
+      expect((await service.detail(id)).turns.at(-1)?.status).toBe("inProgress");
+      manager.savedOwners.set(id, {
+        ...owner,
+        state: terminalState,
+        awaitingResult: terminalState === "closed",
+        interrupted: terminalState === "failed",
+        currentEvents: [],
+      });
+      manager.owners.delete(id);
+      for (const connection of manager.connections.get(id) ?? []) connection.close();
+      await expect
+        .poll(async () => (await service.detail(id)).turns.at(-1)?.status)
+        .toBe("interrupted");
+      expect(service.summary(id)).toMatchObject({ state: "interrupted", currentTurnId: null });
+      expect(
+        (await service.detail(id)).turns.at(-1)?.items.find((item) => item.type === "agentMessage"),
+      ).toMatchObject({ phase: "commentary" });
+      await service.interrupt(id);
+      await service.interrupt(id);
+      await service.close();
+      manager.external.push({ sessionId: id, cwd: directory, managed: true, state: "unavailable" });
+      const restarted = await start();
+      expect((await restarted.refresh(id)).turns.at(-1)?.status).toBe("interrupted");
+      expect(restarted.summary(id).currentTurnId).toBeNull();
+      expect(manager.creates).toEqual([]);
+      expect(manager.sends).toEqual([]);
+      expect(manager.steers).toEqual([]);
+      expect(manager.stops).toEqual([]);
+    },
+  );
+
+  it("keeps a live turn intact when only its owner socket disconnects", async () => {
+    const { manager, directory, start, reserve } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const owner = {
+      ...snapshot(id, directory),
+      state: "running" as const,
+      awaitingResult: true,
+      currentEvents: [{ type: "user", uuid: randomUUID(), message: { content: "Long task" } }],
+    };
+    manager.owners.set(id, owner);
+    await service.attach(id);
+    for (const connection of manager.connections.get(id) ?? []) connection.close();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((await service.detail(id)).turns.at(-1)?.status).toBe("inProgress");
+    expect(service.thread(id).interruptedTurns).toBeUndefined();
+    expect(manager.stops).toEqual([]);
+  });
+
+  it("settles a terminal owner state even when no native result arrives", async () => {
+    const { manager, directory, start, reserve } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    manager.owners.set(id, {
+      ...snapshot(id, directory),
+      state: "running",
+      awaitingResult: true,
+      currentEvents: [{ type: "user", uuid: randomUUID(), message: { content: "Task" } }],
+    });
+    await service.attach(id);
+    manager.emit(id, "state", { state: "closed", awaitingResult: true });
+    await expect.poll(() => service.summary(id).currentTurnId).toBeNull();
+    expect((await service.detail(id)).turns.at(-1)?.status).toBe("interrupted");
+  });
+
+  it("forces only the explicitly stopped session after fifteen seconds without a native result", async () => {
+    const { manager, directory, start, reserve } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    manager.owners.set(id, {
+      ...snapshot(id, directory),
+      state: "running",
+      awaitingResult: true,
+      currentEvents: [{ type: "user", uuid: randomUUID(), message: { content: "Stuck task" } }],
+    });
+    await service.attach(id);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const stopping = service.interrupt(id);
+      await vi.advanceTimersByTimeAsync(14_900);
+      expect(manager.stops).toEqual([]);
+      await vi.advanceTimersByTimeAsync(200);
+      await stopping;
+      expect(manager.stops).toEqual([id]);
+      expect(service.summary(id)).toMatchObject({ state: "interrupted", currentTurnId: null });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not force a session which returns its native interruption result during grace", async () => {
+    const { manager, directory, start, reserve } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    manager.owners.set(id, {
+      ...snapshot(id, directory),
+      state: "running",
+      awaitingResult: true,
+      currentEvents: [{ type: "user", uuid: randomUUID(), message: { content: "Task" } }],
+    });
+    await service.attach(id);
+    const stopping = service.interrupt(id);
+    await expect
+      .poll(() => manager.commands.some((command) => command.method === "interrupt"))
+      .toBe(true);
+    manager.emit(id, "native", { type: "result", subtype: "interrupted" });
+    manager.emit(id, "state", { state: "interrupted", awaitingResult: false });
+    await stopping;
+    expect(manager.stops).toEqual([]);
+    expect(service.summary(id).currentTurnId).toBeNull();
+  });
+
   it("checks warm-up activity per account, including attention and unreleased results", async () => {
     const { manager, directory, start } = await fixture();
     manager.accounts = new FakeAccounts();

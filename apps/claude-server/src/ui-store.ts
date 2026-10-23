@@ -36,6 +36,8 @@ export interface UiThread {
   draft: ThreadDraft | null;
   queue: QueuedMessage[];
   nativeHistory?: boolean;
+  /** Confirmed owner loss or forced stop; native conversation files stay untouched. */
+  interruptedTurns?: Record<string, number>;
   /** Browser tools are offered to the session; the extension binding is attached separately. */
   browserEnabled?: true;
   browserBinding?: BrowserBindingState;
