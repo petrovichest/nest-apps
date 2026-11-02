@@ -29,7 +29,9 @@ describe("ClaudeAccountsSettings", () => {
     const url = "https://user:p%40ss%3Aword@proxy.example:8443";
     const proxy = { ...account().proxy, url };
     const api = mockApi(status({ accounts: [account({ proxy })] }));
-    render(<ClaudeAccountsSettings />);
+    await act(async () => {
+      render(<ClaudeAccountsSettings />);
+    });
     const card = await screen.findByRole("article", { name: "person@example.com" });
     expect(within(card).getByText(url)).toBeInTheDocument();
     await act(async () => {
