@@ -692,6 +692,43 @@ describe("evenly spaced Claude warm-ups", () => {
     );
   });
 
+  it.each(["idle", "expired", "unavailable"])(
+    "reserves successful warm-up slots while usage is %s",
+    async (reported) => {
+      const state = await group(4);
+      let busy = true;
+      state.options.canWarm = () => !busy;
+      const stale = reported === "expired" ? usage(100, 30, NOW - minute) : state.idle();
+      state.entries.forEach((_, index) => state.setUsage(index, stale));
+      await state.refreshAt(0);
+      const readUsage = state.options.readUsage!;
+      state.options.readUsage = async (account) => {
+        if (reported === "unavailable") {
+          const entry = state.entries.find((entry) => entry.configDir === account.configDir)!;
+          if (state.warmed.some((warm) => warm.id === entry.id && warm.at === state.options.now!()))
+            throw new Error("Usage is temporarily unavailable after warming");
+          return readUsage(account);
+        }
+        return structuredClone(stale);
+      };
+      busy = false;
+      await state.refreshAt(400);
+      expect(state.warmed).toEqual([{ id: state.entries[0]!.id, at: NOW + 400 * minute }]);
+      await state.refreshAt(401);
+      await state.refreshAt(474);
+      expect(state.warmed).toHaveLength(1);
+      await state.refreshAt(475);
+      await state.refreshAt(550);
+      await state.refreshAt(625);
+      expect(state.warmed).toEqual(
+        state.entries.map((entry, index) => ({
+          id: entry.id,
+          at: NOW + (400 + index * 75) * minute,
+        })),
+      );
+    },
+  );
+
   it("spreads clustered resets into equal gaps and preserves them over the next cycle", async () => {
     const state = await group(3);
     state.entries.forEach((_, index) =>

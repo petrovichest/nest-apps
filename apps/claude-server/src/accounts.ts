@@ -134,7 +134,7 @@ export class ClaudeAccounts extends EventEmitter {
   private updates: Promise<unknown> = Promise.resolve();
   private rotation: Promise<unknown> = Promise.resolve();
   private refreshes = new Map<string, Promise<void>>();
-  private warmedAt = new Map<string, number>();
+  private warmAttempts = new Map<string, { at: number; succeeded: boolean }>();
   private warmSchedule = new Map<string, { at: number; resetAt: number | null }>();
   private warming?: Promise<void>;
   private logins = new Map<string, Login>();
@@ -274,7 +274,12 @@ export class ClaudeAccounts extends EventEmitter {
     const tolerance = Math.min(WARM_SLOT_TOLERANCE_MS, spacing / 4);
     const readyAt = (account: SavedAccount) => {
       const resetAt = fiveHourReset(account);
-      return Number.isFinite(resetAt) ? resetAt : -Infinity;
+      const attempt = this.warmAttempts.get(account.accountId);
+      // Reserve a successful window even while the usage endpoint still reports it as idle.
+      return Math.max(
+        Number.isFinite(resetAt) ? resetAt : -Infinity,
+        attempt?.succeeded ? attempt.at + FIVE_HOURS_MS : -Infinity,
+      );
     };
     let at = Math.min(
       ...accounts.map((account) => previous.get(account.accountId)?.at ?? Infinity),
@@ -282,7 +287,7 @@ export class ClaudeAccounts extends EventEmitter {
     if (changedMembers) {
       // Native windows also recover the most recent start after a server restart.
       const lastStart = Math.max(
-        ...this.warmedAt.values(),
+        ...Array.from(this.warmAttempts.values(), (attempt) => attempt.at),
         ...accounts
           .map(readyAt)
           .map((resetAt) => resetAt - FIVE_HOURS_MS)
@@ -375,7 +380,8 @@ export class ClaudeAccounts extends EventEmitter {
           slot &&
           this.options.canWarm?.(account.accountId) !== false
         ) {
-          const retryAt = (this.warmedAt.get(account.accountId) ?? -Infinity) + WARM_RETRY_MS;
+          const retryAt =
+            (this.warmAttempts.get(account.accountId)?.at ?? -Infinity) + WARM_RETRY_MS;
           at = Math.min(at, Math.max(slot.at, retryAt, now));
         }
         return { id: account.accountId, at };
@@ -574,7 +580,7 @@ export class ClaudeAccounts extends EventEmitter {
           account.rateLimits.refreshing ||
           account.rateLimits.refreshError ||
           this.options.canWarm?.(account.accountId) === false ||
-          this.now() - (this.warmedAt.get(account.accountId) ?? -Infinity) < WARM_RETRY_MS
+          this.now() - (this.warmAttempts.get(account.accountId)?.at ?? -Infinity) < WARM_RETRY_MS
         )
           continue;
         const usage = account.rateLimits.limits;
@@ -1179,8 +1185,9 @@ export class ClaudeAccounts extends EventEmitter {
     // A present weekly window proves a subscription; API-key accounts report no limits at all.
     if (!usage.secondary || (usage.primary?.resetsAt ?? 0) > now) return false;
     if ((usage.secondary.usedPercent ?? 0) >= 100) return false;
-    if (now - (this.warmedAt.get(account.accountId) ?? 0) < WARM_RETRY_MS) return false;
-    this.warmedAt.set(account.accountId, now);
+    if (now - (this.warmAttempts.get(account.accountId)?.at ?? 0) < WARM_RETRY_MS) return false;
+    const attempt = { at: now, succeeded: false };
+    this.warmAttempts.set(account.accountId, attempt);
     const fingerprint = JSON.stringify([account.configDir, account.proxy]);
     try {
       await this.nativeCommand(
@@ -1193,6 +1200,8 @@ export class ClaudeAccounts extends EventEmitter {
           fingerprint === JSON.stringify([account.configDir, account.proxy]) &&
           this.options.canWarm?.(account.accountId) !== false,
       );
+      attempt.succeeded = true;
+      this.planWarmups();
       return true;
     } catch {
       return false;
