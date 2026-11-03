@@ -568,6 +568,27 @@ describe("Claude UI durable session facade", () => {
     expect(service.accountIdle("a")).toBe(true);
   });
 
+  it("releases a dead owner's account for warm-ups when its last turn already ended", async () => {
+    const { manager, directory, start } = await fixture();
+    manager.accounts = new FakeAccounts();
+    manager.accepting = true;
+    const id = randomUUID();
+    manager.savedOwners.set(id, {
+      ...snapshot(id, directory),
+      accountId: "b",
+      state: "interrupted",
+    });
+    manager.external.push({ sessionId: id, cwd: directory, managed: true, state: "unavailable" });
+    vi.spyOn(manager, "descriptor").mockImplementation(async (sessionId) =>
+      sessionId === id
+        ? ({ sessionId, cwd: directory, configDir: "/b", accountId: "b" } as RunnerDescriptor)
+        : undefined,
+    );
+    const service = await start();
+    expect(service.accountIdle("b")).toBe(true);
+    expect(manager.stops).toEqual([]);
+  });
+
   it("keeps the selected account free for a queued message before its owner starts", async () => {
     const { manager, start, reserve } = await fixture();
     manager.accounts = new FakeAccounts();

@@ -1192,16 +1192,20 @@ export class UiService extends EventEmitter {
     const saved = await this.manager.savedSnapshot(id);
     if (!saved) return false;
     const view = this.views.get(id);
-    if (!view?.currentTurnId && !saved.awaitingResult && !saved.interrupted) return false;
-    if (!view?.currentTurnId && this.thread(id).interruptedTurns?.[view?.turns().at(-1)?.id ?? ""])
-      return true;
+    const idle = !view?.currentTurnId && !saved.awaitingResult && !saved.interrupted;
+    const settled =
+      idle ||
+      (!view?.currentTurnId &&
+        Boolean(this.thread(id).interruptedTurns?.[view?.turns().at(-1)?.id ?? ""]));
+    // A settled dead owner has nothing to stop, but must still release its account for warm-ups.
+    if (settled && !this.unobservedAccounts.has(id)) return !idle;
     // A lost socket is not evidence of death; failures to inspect state stay unavailable.
     if (await this.manager.launcher.active(id)) return false;
     if (this.closed || this.subscriptions.has(id) || this.owners.has(id)) return false;
-    await this.settleStoppedTurn(id, saved);
+    if (!settled) await this.settleStoppedTurn(id, saved);
     this.unobservedAccounts.delete(id);
     this.manager.accounts?.accountActivityChanged();
-    return true;
+    return !idle;
   }
 
   /** Explicit stop is idempotent for dead owners and bounded for unresponsive ones. */
