@@ -403,6 +403,13 @@ export function App({
     <div
       className={`app-frame${drawerDragging ? " drawer-dragging" : ""}`}
       data-sidebar-side={sidebarSide}
+      data-claude-auth-required={
+        (application.isClaude &&
+          snapshot?.claudeAccounts?.accounts.some(
+            (account) => account.email && !account.authenticated,
+          )) ||
+        undefined
+      }
       ref={frameRef}
       style={{ "--sidebar-preferred-width": `${sidebarWidth}px` } as CSSProperties}
     >
@@ -965,6 +972,9 @@ function Sidebar({
   }
   const snapshot = state.snapshot;
   const snapshotReady = snapshot !== null;
+  const claudeAuthRequired =
+    application.isClaude &&
+    snapshot?.claudeAccounts?.accounts.some((account) => account.email && !account.authenticated);
   const allThreads = snapshot?.threads ?? [];
   const pendingForkSourceIds = new Set(
     forkOperationsFromSnapshot(snapshot)
@@ -1663,8 +1673,15 @@ function Sidebar({
   return (
     <aside className={`sidebar ${drawer ? "open" : ""}`} id="sidebar-navigation" ref={containerRef}>
       <div className="sidebar-controls">
-        <NavLink className="sidebar-control-action" to="/settings" onClick={onClose}>
-          <SlidersIcon />
+        <NavLink
+          className="sidebar-control-action"
+          to={claudeAuthRequired ? "/settings?section=codex" : "/settings"}
+          onClick={onClose}
+          title={claudeAuthRequired ? t("Нужен вход в аккаунт Claude") : undefined}
+        >
+          <span className="account-status-icon" aria-hidden="true">
+            <SlidersIcon />
+          </span>
           {t("Настройки")}
         </NavLink>
         {application.capabilities.appUpdates && (

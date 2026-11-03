@@ -108,6 +108,7 @@ const ENGLISH: Record<string, string> = {
   Авторизован: "Signed in",
   Используется: "In use",
   "Нужен вход": "Sign-in required",
+  "Нужен вход в аккаунт Claude": "A Claude account needs sign-in",
   "Войдите заново, чтобы вернуть аккаунт в работу.": "Sign in again to use this account.",
   "Недельный лимит": "Weekly quota exhausted",
   "Лимит на 5 часов": "5-hour quota exhausted",
