@@ -1,5 +1,15 @@
-import { useCallback, useEffect, useId, useRef, useState, type ClipboardEventHandler } from "react";
-import { Link, useParams } from "react-router";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ClipboardEventHandler,
+  type ReactNode,
+} from "react";
+import { Link, useParams, useSearchParams } from "react-router";
 import type {
   KanbanAction,
   KanbanBoard as Board,
@@ -17,12 +27,17 @@ import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n, type Translate } from "../i18n";
 import { Dialog } from "./Dialog";
 import {
+  ArrowRightIcon,
   CheckIcon,
-  FolderIcon,
+  ChevronRightIcon,
+  GitBranchIcon,
   ImageIcon,
+  KanbanIcon,
   MicrophoneIcon,
+  MoreIcon,
   PlusIcon,
   RefreshIcon,
+  SendIcon,
   StopIcon,
   XIcon,
 } from "./Icons";
@@ -64,6 +79,52 @@ function stageLabel(stage: KanbanStage, t: Translate): string {
   return stage.role ? t(defaults[stage.role]) : stage.name;
 }
 
+type LaneLayout = { widths: Record<string, number>; collapsed: Record<string, boolean> };
+
+const LAYOUT_KEY = `${application.storagePrefix}.kanbanLayout`;
+const LANE_MIN_WIDTH = 200;
+const LANE_MAX_WIDTH = 640;
+const clampLane = (value: number) =>
+  Math.round(Math.min(LANE_MAX_WIDTH, Math.max(LANE_MIN_WIDTH, value)));
+
+/** Column widths and collapsed columns belong to this device, not to the shared board. */
+function readLayout(projectId: string): LaneLayout {
+  try {
+    const all = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "{}") as Record<
+      string,
+      Partial<LaneLayout>
+    >;
+    return { widths: { ...all[projectId]?.widths }, collapsed: { ...all[projectId]?.collapsed } };
+  } catch {
+    return { widths: {}, collapsed: {} };
+  }
+}
+
+function writeLayout(projectId: string, layout: LaneLayout) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "{}") as Record<string, LaneLayout>;
+    all[projectId] = layout;
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(all));
+  } catch {
+    // Without storage the layout lasts until the page is reloaded.
+  }
+}
+
+/** The same markers as sessions in the navigation; completed runs need no marker on a card. */
+function runStatusClass(run: KanbanRun): string | null {
+  if (run.status === "running" || run.status === "preparing") return "status-running";
+  if (run.status === "queued") return "status-queued";
+  if (run.status === "waiting") return "status-needsAttention";
+  if (run.status === "failed") return "status-failed";
+  return null;
+}
+
+function latestRun(board: Board, cardId: string): KanbanRun | undefined {
+  return board.runs
+    .filter((run) => run.cardIds.includes(cardId) && run.kind !== "classify")
+    .sort((a, b) => b.createdAt - a.createdAt)[0];
+}
+
 export function KanbanBoard({
   projects,
   transcriptionConfig = null,
@@ -74,6 +135,7 @@ export function KanbanBoard({
   onOpenNavigation(): void;
 }) {
   const { projectId = "" } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const project = projects.find((item) => item.id === projectId);
   const { api } = useConnection();
   const { t, language } = useI18n();
@@ -85,10 +147,16 @@ export function KanbanBoard({
   const [cardId, setCardId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [category, setCategory] = useState("");
+  const [layout, setLayout] = useState<LaneLayout>(() => readLayout(projectId));
+  const [mobileStageId, setMobileStageId] = useState<string | null>(null);
   const alive = useRef(true);
   const requestGeneration = useRef(0);
+  const resize = useRef<{ id: string; x: number; width: number } | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const panelTitle = useRef<HTMLHeadingElement>(null);
   const locale = useRef({ language, t });
   locale.current = { language, t };
+  const threadParam = searchParams.get("thread");
 
   const displayError = useCallback((caught: unknown) => {
     const { language: currentLanguage, t: translate } = locale.current;
@@ -115,6 +183,8 @@ export function KanbanBoard({
     setCategory("");
     setBusy(false);
     setDialog(null);
+    setMobileStageId(null);
+    setLayout(readLayout(projectId));
     async function refresh() {
       if (inFlight || document.visibilityState === "hidden") return;
       inFlight = true;
@@ -151,6 +221,24 @@ export function KanbanBoard({
     };
   }, [api, projectId, project, receive, displayError]);
 
+  // A session's board link names the session; its card opens once the board arrives.
+  useEffect(() => {
+    if (!board || !threadParam) return;
+    const run = board.runs.find((item) => item.threadId === threadParam);
+    if (run?.cardIds[0]) setCardId(run.cardIds[0]);
+    setSearchParams(
+      (params) => {
+        params.delete("thread");
+        return params;
+      },
+      { replace: true },
+    );
+  }, [board, threadParam, setSearchParams]);
+
+  useEffect(() => {
+    if (cardId) panelTitle.current?.focus();
+  }, [cardId]);
+
   async function mutate(operation: () => Promise<Board>): Promise<boolean> {
     if (busy) return false;
     const generation = requestGeneration.current;
@@ -179,15 +267,34 @@ export function KanbanBoard({
     );
   const move = (id: string, stageId: string) =>
     mutate(() => api.updateKanbanCard(projectId, id, { stageId }));
+  const updateLayout = (change: (current: LaneLayout) => LaneLayout) => {
+    const next = change(layout);
+    setLayout(next);
+    writeLayout(projectId, next);
+  };
+  const setLaneWidth = (id: string, width: number | null) =>
+    updateLayout((current) => {
+      const widths = { ...current.widths };
+      if (width === null) delete widths[id];
+      else widths[id] = clampLane(width);
+      return { ...current, widths };
+    });
+  const setLaneCollapsed = (id: string, collapsed: boolean) =>
+    updateLayout((current) => ({
+      ...current,
+      collapsed: { ...current.collapsed, [id]: collapsed },
+    }));
+  const openCard = (id: string, from: HTMLElement) => {
+    opener.current = from;
+    setCardId(id);
+  };
+  const closeCard = useCallback(() => {
+    setCardId(null);
+    const target = opener.current;
+    if (target?.isConnected) requestAnimationFrame(() => target.focus());
+  }, []);
+
   const card = board?.cards.find((item) => item.id === cardId) ?? null;
-  const readyIds =
-    board?.cards
-      .filter(
-        (item) =>
-          selected.has(item.id) &&
-          board.stages.find((stage) => stage.id === item.stageId)?.role === "ready",
-      )
-      .map((item) => item.id) ?? [];
   const cardRuns = card
     ? board!.runs
         .filter((run) => run.cardIds.includes(card.id) && run.kind !== "classify")
@@ -195,56 +302,166 @@ export function KanbanBoard({
     : [];
   const cardActive = cardRuns.some((run) => activeStatuses.has(run.status));
   const role = board?.stages.find((stage) => stage.id === card?.stageId)?.role;
+  const execution = cardRuns.find((run) => run.kind === "execute");
 
-  return (
-    <section className="kanban-page">
-      <WorkspaceHeader
-        title={t("Доска задач")}
-        subtitle={project?.displayName ?? t("Проект не найден")}
-        leadingIcon={<FolderIcon />}
-        onOpenNavigation={onOpenNavigation}
-        actions={
-          project ? (
-            <button
-              className="icon-button"
-              aria-label={t("Добавить задачу")}
-              onClick={() => setDialog("create")}
-            >
-              <PlusIcon />
-            </button>
-          ) : undefined
-        }
-      />
-      {!project ? (
-        <div className="center-state">
-          <p>{t("Проект не найден")}</p>
+  useEffect(() => {
+    if (!card || dialog) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || busy) return;
+      if ((event.target as Element | null)?.closest?.("details[open]")) return;
+      closeCard();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [card, dialog, busy, closeCard]);
+
+  const sessionLink = (run: KanbanRun, className: string, children: ReactNode) =>
+    run.threadId && run.provider === application.provider ? (
+      <Link className={className} to={`/threads/${encodeURIComponent(run.threadId)}`}>
+        {children}
+      </Link>
+    ) : run.sessionUrl ? (
+      <a className={className} href={run.sessionUrl}>
+        {children}
+      </a>
+    ) : null;
+
+  function renderCard(item: KanbanCard, stage: KanbanStage) {
+    const latest = latestRun(board!, item.id);
+    const statusClass = latest ? runStatusClass(latest) : null;
+    const categoryName = board!.categories.find((value) => value.id === item.categoryId)?.name;
+    const meta: ReactNode[] = [];
+    if (categoryName) meta.push(<span key="category">{categoryName}</span>);
+    if (item.classification === "pending")
+      meta.push(
+        <span key="classification" className="working-text">
+          {t("Определяем категорию…")}
+        </span>,
+      );
+    if (item.classification === "failed")
+      meta.push(
+        <span key="classification" className="kanban-card-state failed">
+          {t("Категория не определена")}
+        </span>,
+      );
+    if (latest && statusClass)
+      meta.push(
+        <span key="state" className={`kanban-card-state ${latest.status}`}>
+          {runLabel(latest, t)}
+        </span>,
+      );
+    return (
+      <article
+        key={item.id}
+        className={`kanban-card${statusClass ? " has-status" : ""}`}
+        draggable={!busy}
+        onDragStart={(event) => {
+          event.dataTransfer.setData("application/x-nest-kanban-card", item.id);
+          event.dataTransfer.effectAllowed = "move";
+        }}
+      >
+        <div className="kanban-card-top">
+          {stage.role === "ready" && (
+            <input
+              type="checkbox"
+              aria-label={t("Выбрать задачу {{title}}", { title: item.title })}
+              checked={selected.has(item.id)}
+              onChange={(event) =>
+                setSelected((current) => {
+                  const next = new Set(current);
+                  if (event.target.checked) next.add(item.id);
+                  else next.delete(item.id);
+                  return next;
+                })
+              }
+            />
+          )}
+          <button
+            className="kanban-card-open"
+            aria-expanded={cardId === item.id}
+            onClick={(event) => openCard(item.id, event.currentTarget)}
+          >
+            {item.title}
+          </button>
         </div>
-      ) : (
-        <>
-          <div className="kanban-toolbar">
-            <label className="kanban-category-filter">
-              <span className="sr-only">{t("Категория")}</span>
-              <select
-                aria-label={t("Категория")}
-                value={category}
-                onChange={(event) => setCategory(event.target.value)}
-              >
-                <option value="">{t("Все категории")}</option>
-                {board?.categories.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button onClick={() => setDialog("stage")} disabled={!board || busy}>
-              <PlusIcon />
-              {t("Добавить стадию")}
-            </button>
-            <span className="kanban-toolbar-spacer" />
+        {item.description !== item.title && (
+          <p className="kanban-card-excerpt">{item.description}</p>
+        )}
+        {(meta.length > 0 || item.image) && (
+          <div className="kanban-card-meta">
+            {meta.map((node, index) => (
+              <Fragment key={index}>
+                {index > 0 && (
+                  <span className="kanban-card-separator" aria-hidden="true">
+                    ·
+                  </span>
+                )}
+                {node}
+              </Fragment>
+            ))}
+            {item.image && (
+              <span className="kanban-card-images" role="img" aria-label={t("Есть изображение")}>
+                <ImageIcon />
+              </span>
+            )}
+          </div>
+        )}
+        {item.error && <p className="kanban-card-error">{item.error}</p>}
+        {statusClass && <span className={`kanban-card-status ${statusClass}`} aria-hidden="true" />}
+      </article>
+    );
+  }
+
+  function renderLane(stage: KanbanStage, active: boolean) {
+    const board_ = board!;
+    const name = stageLabel(stage, t);
+    const cards = board_.cards.filter(
+      (item) => item.stageId === stage.id && (!category || item.categoryId === category),
+    );
+    const collapsed = layout.collapsed[stage.id] ?? stage.role === "done";
+    const width = layout.widths[stage.id];
+    const readyIds =
+      stage.role === "ready"
+        ? cards.filter((item) => selected.has(item.id)).map((item) => item.id)
+        : [];
+    return (
+      <section
+        key={stage.id}
+        id={`kanban-lane-${stage.id}`}
+        className={`kanban-lane${collapsed ? " collapsed" : ""}${width ? " sized" : ""}`}
+        aria-label={name}
+        data-active={active || undefined}
+        style={width ? ({ "--kanban-lane-width": `${width}px` } as CSSProperties) : undefined}
+        onDragOver={(event) => {
+          if (!busy && event.dataTransfer.types.includes("application/x-nest-kanban-card"))
+            event.preventDefault();
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          const id = event.dataTransfer.getData("application/x-nest-kanban-card");
+          if (!busy && board_.cards.some((item) => item.id === id)) void move(id, stage.id);
+        }}
+      >
+        {collapsed && (
+          <button
+            className="kanban-lane-strip"
+            aria-expanded="false"
+            aria-label={t("Развернуть стадию «{{name}}», задач: {{count}}", {
+              name,
+              count: cards.length,
+            })}
+            onClick={() => setLaneCollapsed(stage.id, false)}
+          >
+            <span className="kanban-lane-strip-name">{name}</span>
+            <span className="kanban-lane-count">{cards.length}</span>
+          </button>
+        )}
+        <header className="kanban-lane-head">
+          <h2>{name}</h2>
+          <span className="kanban-lane-count">{cards.length}</span>
+          <span className="kanban-lane-head-actions">
             {readyIds.length > 0 && (
               <button
-                className="primary"
                 disabled={busy}
                 onClick={() =>
                   void action("integrate", readyIds).then((ok) => {
@@ -252,153 +469,456 @@ export function KanbanBoard({
                   })
                 }
               >
-                {t("Объединить выбранные ({{count}})", { count: readyIds.length })}
+                {t("Объединить ({{count}})", { count: readyIds.length })}
               </button>
             )}
-            <button className="primary kanban-add-button" onClick={() => setDialog("create")}>
-              <PlusIcon />
-              {t("Добавить задачу")}
-            </button>
-          </div>
-          {error && (
-            <div className="kanban-error" role="alert">
-              <span>{error}</span>
-              <button disabled={busy} onClick={() => void mutate(() => api.readKanban(projectId))}>
-                <RefreshIcon />
-                {t("Повторить")}
+            <details className="thread-action-menu kanban-lane-menu" data-dismiss-on-outside-click>
+              <summary
+                className="icon-button"
+                aria-label={t("Действия со стадией «{{name}}»", { name })}
+              >
+                <MoreIcon />
+              </summary>
+              <div className="action-menu-popover">
+                <button
+                  onClick={(event) => {
+                    event.currentTarget.closest("details")?.removeAttribute("open");
+                    setLaneCollapsed(stage.id, true);
+                  }}
+                >
+                  <ChevronRightIcon /> {t("Свернуть")}
+                </button>
+              </div>
+            </details>
+          </span>
+        </header>
+        {stage.description && <p className="kanban-lane-description">{stage.description}</p>}
+        <div className="kanban-lane-cards">
+          {cards.map((item) => renderCard(item, stage))}
+          {stage.role === "todo" && board_.cards.length === 0 && (
+            <div className="kanban-empty">
+              <p>{t("Здесь появятся задачи. Добавьте первую текстом, голосом или картинкой.")}</p>
+              <button onClick={() => setDialog("create")}>
+                <PlusIcon />
+                {t("Добавить задачу")}
               </button>
             </div>
           )}
-          {loading && !board ? (
-            <div className="center-state">
-              <span className="spinner" />
-              <p className="working-text">{t("Загружаем доску…")}</p>
-            </div>
-          ) : (
-            board && (
+        </div>
+        {!collapsed && (
+          <div
+            className="kanban-resize"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t("Ширина стадии «{{name}}»", { name })}
+            aria-valuemin={LANE_MIN_WIDTH}
+            aria-valuemax={LANE_MAX_WIDTH}
+            aria-valuenow={width}
+            tabIndex={0}
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              const lane = event.currentTarget.parentElement!;
+              resize.current = {
+                id: stage.id,
+                x: event.clientX,
+                width: lane.getBoundingClientRect().width,
+              };
+              event.currentTarget.setPointerCapture?.(event.pointerId);
+              event.preventDefault();
+            }}
+            onPointerMove={(event) => {
+              const drag = resize.current;
+              if (drag) setLaneWidth(drag.id, drag.width + event.clientX - drag.x);
+            }}
+            onPointerUp={() => {
+              resize.current = null;
+            }}
+            onPointerCancel={() => {
+              resize.current = null;
+            }}
+            onDoubleClick={() => setLaneWidth(stage.id, null)}
+            onKeyDown={(event) => {
+              const current =
+                width ?? event.currentTarget.parentElement!.getBoundingClientRect().width;
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.preventDefault();
+                setLaneWidth(stage.id, current + (event.key === "ArrowRight" ? 16 : -16));
+              } else if (event.key === "Home") {
+                event.preventDefault();
+                setLaneWidth(stage.id, null);
+              }
+            }}
+          />
+        )}
+      </section>
+    );
+  }
+
+  const activeStageId =
+    board?.stages.find((stage) => stage.id === mobileStageId)?.id ?? board?.stages[0]?.id;
+  const categoryCount = board?.categories.length ?? 0;
+
+  return (
+    <div className={`thread-workspace kanban-workspace${card ? " has-panel" : ""}`}>
+      <section className="conversation-pane kanban-pane">
+        <WorkspaceHeader
+          title={t("Доска задач")}
+          subtitle={project?.displayName ?? t("Проект не найден")}
+          leadingIcon={<KanbanIcon />}
+          onOpenNavigation={onOpenNavigation}
+          actions={
+            project ? (
               <>
-                {board.cards.length === 0 && (
-                  <p className="kanban-empty">
-                    {t("Добавьте задачу текстом или голосом. Агент сам назначит категорию.")}
-                  </p>
-                )}
-                <div className="kanban-columns" aria-label={t("Стадии задач")}>
-                  {board.stages.map((stage) => {
-                    const cards = board.cards.filter(
-                      (item) =>
-                        item.stageId === stage.id && (!category || item.categoryId === category),
-                    );
-                    return (
-                      <section
-                        key={stage.id}
-                        className="kanban-column"
-                        aria-label={stageLabel(stage, t)}
-                        onDragOver={(event) => {
-                          if (
-                            !busy &&
-                            event.dataTransfer.types.includes("application/x-nest-kanban-card")
-                          )
-                            event.preventDefault();
-                        }}
-                        onDrop={(event) => {
-                          event.preventDefault();
-                          const id = event.dataTransfer.getData("application/x-nest-kanban-card");
-                          if (!busy && board.cards.some((item) => item.id === id))
-                            void move(id, stage.id);
-                        }}
-                      >
-                        <header className="kanban-column-header">
-                          <h2>{stageLabel(stage, t)}</h2>
-                          <span>{cards.length}</span>
-                        </header>
-                        {stage.description && (
-                          <p className="kanban-stage-description">{stage.description}</p>
+                {categoryCount > 0 && (
+                  <>
+                    <select
+                      className="kanban-filter"
+                      aria-label={t("Категория")}
+                      value={category}
+                      onChange={(event) => setCategory(event.target.value)}
+                    >
+                      <option value="">{t("Все категории")}</option>
+                      {board?.categories.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                    <details
+                      className="thread-action-menu kanban-filter-menu"
+                      data-dismiss-on-outside-click
+                    >
+                      <summary className="icon-button" aria-label={t("Категории")}>
+                        <MoreIcon />
+                      </summary>
+                      <div className="action-menu-popover">
+                        {[{ id: "", name: t("Все категории") }, ...(board?.categories ?? [])].map(
+                          (item) => (
+                            <button
+                              key={item.id}
+                              aria-pressed={category === item.id}
+                              onClick={(event) => {
+                                event.currentTarget.closest("details")?.removeAttribute("open");
+                                setCategory(item.id);
+                              }}
+                            >
+                              {category === item.id ? <CheckIcon /> : <span aria-hidden="true" />}
+                              {item.name}
+                            </button>
+                          ),
                         )}
-                        <div className="kanban-column-cards">
-                          {cards.map((item) => {
-                            const latest = board.runs
-                              .filter(
-                                (run) => run.cardIds.includes(item.id) && run.kind !== "classify",
-                              )
-                              .sort((a, b) => b.createdAt - a.createdAt)[0];
-                            const categoryName = board.categories.find(
-                              (value) => value.id === item.categoryId,
-                            )?.name;
-                            return (
-                              <article
-                                key={item.id}
-                                className={`kanban-card${item.error ? " has-error" : ""}`}
-                                draggable={!busy}
-                                onDragStart={(event) => {
-                                  event.dataTransfer.setData(
-                                    "application/x-nest-kanban-card",
-                                    item.id,
-                                  );
-                                  event.dataTransfer.effectAllowed = "move";
-                                }}
-                              >
-                                <div className="kanban-card-top">
-                                  {stage.role === "ready" && (
-                                    <input
-                                      type="checkbox"
-                                      aria-label={t("Выбрать задачу {{title}}", {
-                                        title: item.title,
-                                      })}
-                                      checked={selected.has(item.id)}
-                                      onChange={(event) =>
-                                        setSelected((current) => {
-                                          const next = new Set(current);
-                                          if (event.target.checked) next.add(item.id);
-                                          else next.delete(item.id);
-                                          return next;
-                                        })
-                                      }
-                                    />
-                                  )}
-                                  <button
-                                    className="kanban-card-title"
-                                    onClick={() => setCardId(item.id)}
-                                  >
-                                    {item.title}
-                                  </button>
-                                </div>
-                                {item.description !== item.title && (
-                                  <p className="kanban-card-excerpt">{item.description}</p>
-                                )}
-                                <div className="kanban-card-meta">
-                                  {categoryName && (
-                                    <span className="kanban-category">{categoryName}</span>
-                                  )}
-                                  {item.classification === "pending" && (
-                                    <span className="working-text">
-                                      {t("Определяем категорию…")}
-                                    </span>
-                                  )}
-                                  {item.classification === "failed" && (
-                                    <span className="kanban-status is-error">
-                                      {t("Категория не определена")}
-                                    </span>
-                                  )}
-                                  {latest && (
-                                    <span className={`kanban-status ${latest.status}`}>
-                                      <span aria-hidden="true" />
-                                      {runLabel(latest, t)}
-                                    </span>
-                                  )}
-                                </div>
-                                <RepositoryStatus card={item} compact />
-                                {item.error && <p className="kanban-card-error">{item.error}</p>}
-                              </article>
-                            );
-                          })}
-                        </div>
-                      </section>
-                    );
-                  })}
-                </div>
+                      </div>
+                    </details>
+                  </>
+                )}
+                <button
+                  className="kanban-add-button"
+                  aria-label={t("Добавить задачу")}
+                  onClick={() => setDialog("create")}
+                >
+                  <PlusIcon />
+                  <span>{t("Добавить задачу")}</span>
+                </button>
               </>
-            )
-          )}
+            ) : undefined
+          }
+        />
+        {!project ? (
+          <div className="center-state">
+            <p>{t("Проект не найден")}</p>
+          </div>
+        ) : loading && !board ? (
+          <div className="center-state">
+            <span className="spinner" />
+            <p className="working-text">{t("Загружаем доску…")}</p>
+          </div>
+        ) : (
+          <div className="kanban-scroll">
+            <div className="kanban-board">
+              {error && (
+                <div className="kanban-error" role="alert">
+                  <span>{error}</span>
+                  <button
+                    disabled={busy}
+                    onClick={() => void mutate(() => api.readKanban(projectId))}
+                  >
+                    <RefreshIcon />
+                    {t("Повторить")}
+                  </button>
+                </div>
+              )}
+              {board && (
+                <>
+                  <div className="kanban-stage-bar">
+                    <div
+                      className="kanban-stage-tabs"
+                      role="tablist"
+                      aria-label={t("Стадии задач")}
+                      onKeyDown={(event) => {
+                        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                        const index = board.stages.findIndex((stage) => stage.id === activeStageId);
+                        const next =
+                          board.stages[
+                            (index + (event.key === "ArrowRight" ? 1 : -1) + board.stages.length) %
+                              board.stages.length
+                          ];
+                        if (!next) return;
+                        event.preventDefault();
+                        setMobileStageId(next.id);
+                        document.getElementById(`kanban-tab-${next.id}`)?.focus();
+                      }}
+                    >
+                      {board.stages.map((stage) => (
+                        <button
+                          key={stage.id}
+                          id={`kanban-tab-${stage.id}`}
+                          role="tab"
+                          aria-selected={stage.id === activeStageId}
+                          aria-controls={`kanban-lane-${stage.id}`}
+                          tabIndex={stage.id === activeStageId ? 0 : -1}
+                          onClick={() => setMobileStageId(stage.id)}
+                        >
+                          {stageLabel(stage, t)}
+                          <span className="kanban-lane-count">
+                            {
+                              board.cards.filter(
+                                (item) =>
+                                  item.stageId === stage.id &&
+                                  (!category || item.categoryId === category),
+                              ).length
+                            }
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      className="icon-button"
+                      aria-label={t("Добавить стадию")}
+                      disabled={busy}
+                      onClick={() => setDialog("stage")}
+                    >
+                      <PlusIcon />
+                    </button>
+                  </div>
+                  <div className="kanban-lanes">
+                    {board.stages.map((stage) => renderLane(stage, stage.id === activeStageId))}
+                    <button
+                      className="kanban-add-stage"
+                      aria-label={t("Добавить стадию")}
+                      disabled={busy}
+                      onClick={() => setDialog("stage")}
+                    >
+                      <PlusIcon />
+                      {t("Стадия")}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+      {card && board && (
+        <>
+          <aside
+            className="session-inspector open kanban-panel"
+            aria-labelledby="kanban-card-title"
+          >
+            <div className="inspector-heading">
+              <strong>{t("Задача")}</strong>
+              <button
+                className="icon-button"
+                aria-label={t("Закрыть")}
+                onClick={closeCard}
+                disabled={busy}
+              >
+                <XIcon />
+              </button>
+            </div>
+            <div className="kanban-panel-body">
+              <h2 id="kanban-card-title" ref={panelTitle} tabIndex={-1}>
+                {card.title}
+              </h2>
+              {card.description !== card.title && (
+                <p className="kanban-panel-description">{card.description}</p>
+              )}
+              {card.image && (
+                <CardImage key={`${projectId}:${card.id}`} projectId={projectId} cardId={card.id} />
+              )}
+              <div className="kanban-panel-fields">
+                <label>
+                  {t("Стадия")}
+                  <select
+                    disabled={busy}
+                    value={card.stageId}
+                    onChange={(event) => void move(card.id, event.target.value)}
+                  >
+                    {board.stages.map((stage) => (
+                      <option key={stage.id} value={stage.id}>
+                        {stageLabel(stage, t)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  {t("Категория")}
+                  <select
+                    disabled={busy}
+                    value={card.categoryId ?? ""}
+                    onChange={(event) =>
+                      void mutate(() =>
+                        api.updateKanbanCard(projectId, card.id, {
+                          categoryId: event.target.value || null,
+                        }),
+                      )
+                    }
+                  >
+                    <option value="">{t("Без категории")}</option>
+                    {board.categories.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {card.error && (
+                <p className="kanban-card-error" role="alert">
+                  {card.error}
+                </p>
+              )}
+              {error && (
+                <p className="kanban-card-error" role="alert">
+                  {error}
+                </p>
+              )}
+              <div className="kanban-panel-actions">
+                {card.classification === "failed" && (
+                  <button
+                    className="primary"
+                    disabled={busy}
+                    onClick={() => void action("retry-classification", [card.id])}
+                  >
+                    <RefreshIcon />
+                    {t("Повторить категоризацию")}
+                  </button>
+                )}
+                {card.classification === "ready" &&
+                  !cardActive &&
+                  role !== "done" &&
+                  role !== "ready" &&
+                  role !== "review" &&
+                  !(role === "working" && execution) && (
+                    <button
+                      className="primary"
+                      disabled={busy}
+                      onClick={() => void action("execute", [card.id])}
+                    >
+                      <SendIcon />
+                      {t("Запустить агента")}
+                    </button>
+                  )}
+                {role === "working" &&
+                  execution &&
+                  sessionLink(
+                    execution,
+                    "kanban-panel-link primary",
+                    <>
+                      <ArrowRightIcon />
+                      {t("Открыть сессию")}
+                    </>,
+                  )}
+                {role === "review" && (
+                  <button
+                    className="primary"
+                    disabled={busy || cardActive}
+                    onClick={() => void action("accept", [card.id])}
+                  >
+                    <CheckIcon />
+                    {t("Принять")}
+                  </button>
+                )}
+                {role === "ready" && (
+                  <button
+                    className="primary"
+                    disabled={busy || cardActive}
+                    onClick={() => void action("integrate", [card.id])}
+                  >
+                    <GitBranchIcon />
+                    {t("Объединить")}
+                  </button>
+                )}
+                {(role === "review" || role === "ready") && (
+                  <>
+                    <button disabled={busy || cardActive} onClick={() => setDialog("rework")}>
+                      {t("На доработку")}
+                    </button>
+                    <button
+                      disabled={busy || cardActive}
+                      onClick={() => void action("review", [card.id])}
+                    >
+                      {t("Проверить агентом")}
+                    </button>
+                  </>
+                )}
+              </div>
+              {cardRuns.length > 0 && (
+                <section className="kanban-panel-section">
+                  <h3>{t("Сессии задачи")}</h3>
+                  <ul className="kanban-session-list">
+                    {cardRuns.map((run) => {
+                      const content = (
+                        <>
+                          <span
+                            className={`kanban-session-status ${runStatusClass(run) ?? ""}`}
+                            aria-hidden="true"
+                          />
+                          <span className="kanban-session-text">
+                            <span>
+                              {run.kind === "review"
+                                ? t("Проверка")
+                                : run.kind === "integrate"
+                                  ? t("Объединение")
+                                  : t("Выполнение")}
+                            </span>
+                            <small>
+                              {run.provider === "claude" ? "ClaudeNest" : "CodexNest"} ·{" "}
+                              {runLabel(run, t)}
+                            </small>
+                          </span>
+                        </>
+                      );
+                      return (
+                        <li key={run.id}>
+                          {sessionLink(run, "kanban-session", content) ?? (
+                            <div className="kanban-session">
+                              {content}
+                              <small className="kanban-muted">
+                                {t("Ожидает запуска приложения")}
+                              </small>
+                            </div>
+                          )}
+                          {run.error && <p className="kanban-card-error">{run.error}</p>}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              )}
+              {card.repositories.length > 0 && (
+                <section className="kanban-panel-section">
+                  <h3>{t("Репозитории")}</h3>
+                  <RepositoryStatus card={card} />
+                </section>
+              )}
+            </div>
+          </aside>
+          <button
+            className="inspector-backdrop"
+            aria-label={t("Закрыть задачу")}
+            onClick={closeCard}
+            disabled={busy}
+          />
         </>
       )}
       {dialog === "create" && (
@@ -450,155 +970,7 @@ export function KanbanBoard({
           }}
         />
       )}
-      {card && board && dialog !== "rework" && (
-        <Dialog
-          titleId="kanban-card-title"
-          className="kanban-detail-dialog"
-          closeOnBackdrop={!busy}
-          closeOnEscape={!busy}
-          onClose={() => setCardId(null)}
-        >
-          <div className="dialog-header">
-            <h2 id="kanban-card-title">{card.title}</h2>
-            <button
-              className="icon-button"
-              aria-label={t("Закрыть")}
-              onClick={() => setCardId(null)}
-              disabled={busy}
-            >
-              <XIcon />
-            </button>
-          </div>
-          <p className="kanban-detail-description">{card.description}</p>
-          {card.image && (
-            <CardImage key={`${projectId}:${card.id}`} projectId={projectId} cardId={card.id} />
-          )}
-          <div className="kanban-detail-fields">
-            <label>
-              {t("Стадия")}
-              <select
-                disabled={busy}
-                value={card.stageId}
-                onChange={(event) => void move(card.id, event.target.value)}
-              >
-                {board.stages.map((stage) => (
-                  <option key={stage.id} value={stage.id}>
-                    {stageLabel(stage, t)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              {t("Категория")}
-              <select
-                disabled={busy}
-                value={card.categoryId ?? ""}
-                onChange={(event) =>
-                  void mutate(() =>
-                    api.updateKanbanCard(projectId, card.id, {
-                      categoryId: event.target.value || null,
-                    }),
-                  )
-                }
-              >
-                <option value="">{t("Без категории")}</option>
-                {board.categories.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <RepositoryStatus card={card} />
-          {card.error && (
-            <p className="kanban-card-error" role="alert">
-              {card.error}
-            </p>
-          )}
-          {error && (
-            <p className="kanban-card-error" role="alert">
-              {error}
-            </p>
-          )}
-          <div className="kanban-detail-actions">
-            {card.classification === "failed" && (
-              <button
-                disabled={busy}
-                onClick={() => void action("retry-classification", [card.id])}
-              >
-                {t("Повторить категоризацию")}
-              </button>
-            )}
-            {card.classification === "ready" &&
-              !cardActive &&
-              role !== "done" &&
-              role !== "ready" &&
-              role !== "review" && (
-                <button
-                  className="primary"
-                  disabled={busy}
-                  onClick={() => void action("execute", [card.id])}
-                >
-                  {t("Отправить агенту")}
-                </button>
-              )}
-            {(role === "review" || role === "ready") && (
-              <>
-                {role === "review" && (
-                  <button
-                    disabled={busy || cardActive}
-                    onClick={() => void action("accept", [card.id])}
-                  >
-                    <CheckIcon />
-                    {t("Принять")}
-                  </button>
-                )}
-                <button
-                  disabled={busy || cardActive}
-                  onClick={() => void action("review", [card.id])}
-                >
-                  {t("Проверить агентом")}
-                </button>
-                <button disabled={busy || cardActive} onClick={() => setDialog("rework")}>
-                  {t("На доработку")}
-                </button>
-              </>
-            )}
-          </div>
-          {cardRuns.length > 0 && (
-            <div className="kanban-session-list">
-              <h3>{t("Сессии задачи")}</h3>
-              {cardRuns.map((run) => (
-                <div className="kanban-session" key={run.id}>
-                  <div>
-                    <span className={`kanban-status ${run.status}`}>{runLabel(run, t)}</span>
-                    <span>
-                      {run.provider === "claude" ? "ClaudeNest" : "CodexNest"} ·{" "}
-                      {run.kind === "review"
-                        ? t("Проверка")
-                        : run.kind === "integrate"
-                          ? t("Объединение")
-                          : t("Выполнение")}
-                    </span>
-                  </div>
-                  {run.threadId && run.provider === application.provider ? (
-                    <Link to={`/threads/${encodeURIComponent(run.threadId)}`}>
-                      {t("Открыть сессию")}
-                    </Link>
-                  ) : run.sessionUrl ? (
-                    <a href={run.sessionUrl}>{t("Открыть сессию")}</a>
-                  ) : (
-                    <span className="kanban-muted">{t("Ожидает запуска приложения")}</span>
-                  )}
-                  {run.error && <p className="kanban-card-error">{run.error}</p>}
-                </div>
-              ))}
-            </div>
-          )}
-        </Dialog>
-      )}
-    </section>
+    </div>
   );
 }
 
@@ -638,7 +1010,7 @@ function CardImage({ projectId, cardId }: { projectId: string; cardId: string })
   );
 }
 
-function RepositoryStatus({ card, compact = false }: { card: KanbanCard; compact?: boolean }) {
+function RepositoryStatus({ card }: { card: KanbanCard }) {
   const { t } = useI18n();
   if (!card.repositories?.length) return null;
   const published = card.repositories.filter((repo) => repo.status === "published").length;
@@ -655,7 +1027,7 @@ function RepositoryStatus({ card, compact = false }: { card: KanbanCard; compact
               ? t("Ошибка")
               : t("В работе");
   return (
-    <div className={`kanban-repositories${compact ? " compact" : ""}`}>
+    <>
       {card.repositories.length > 1 && published > 0 && published < card.repositories.length && (
         <p className="kanban-muted">
           {t("Отправлено {{done}} из {{total}}", {
@@ -664,15 +1036,30 @@ function RepositoryStatus({ card, compact = false }: { card: KanbanCard; compact
           })}
         </p>
       )}
-      {card.repositories.map((repo) => (
-        <div key={repo.id}>
-          <span title={repo.path}>{repo.path.split(/[\\/]/).filter(Boolean).at(-1)}</span>
-          <code title={repo.targetBranch}>{repo.targetBranch}</code>
-          {!compact && <span>{status(repo.status)}</span>}
-          {!compact && repo.error && <p className="kanban-card-error">{repo.error}</p>}
-        </div>
-      ))}
-    </div>
+      <table className="kanban-repositories">
+        <thead>
+          <tr>
+            <th scope="col">{t("Репозиторий")}</th>
+            <th scope="col">{t("Ветка")}</th>
+            <th scope="col">{t("Состояние")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {card.repositories.map((repo) => (
+            <tr key={repo.id}>
+              <td title={repo.path}>{repo.path.split(/[\\/]/).filter(Boolean).at(-1)}</td>
+              <td>
+                <code>{repo.targetBranch}</code>
+              </td>
+              <td className={repo.status === "failed" ? "kanban-card-error" : undefined}>
+                {status(repo.status)}
+                {repo.error && <span className="kanban-repository-error">{repo.error}</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }
 

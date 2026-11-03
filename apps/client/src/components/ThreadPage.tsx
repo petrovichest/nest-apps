@@ -111,6 +111,7 @@ import {
   ArchiveIcon,
   ArrowDownIcon,
   BrowserIcon,
+  KanbanIcon,
   CheckIcon,
   ChevronDownIcon,
   ClockIcon,
@@ -3855,6 +3856,12 @@ export function ThreadPage({
       </div>
     );
 
+  // The board opens on this session's card when the session belongs to a task.
+  const boardPath = project
+    ? `/projects/${encodeURIComponent(project.id)}/kanban${
+        summary ? `?thread=${encodeURIComponent(threadId)}` : ""
+      }`
+    : null;
   const workspaceSummary =
     summary ??
     preparationRef.current.thread ??
@@ -4094,6 +4101,16 @@ export function ThreadPage({
                     </div>
                   </details>
                 )}
+                {boardPath && !isSubagent && (
+                  <button
+                    aria-label={t("Доска задач")}
+                    className="icon-button"
+                    onClick={() => navigate(boardPath)}
+                    type="button"
+                  >
+                    <KanbanIcon />
+                  </button>
+                )}
                 {application.capabilities.browserIntegration &&
                   !isSubagent &&
                   !workspaceSummary.archived && (
@@ -4117,6 +4134,16 @@ export function ThreadPage({
                     </summary>
                     <div className="action-menu-popover">
                       <SessionReferenceCopy key={threadId} api={api} threadId={threadId} />
+                      {boardPath && (
+                        <button
+                          onClick={(event) => {
+                            event.currentTarget.closest("details")?.removeAttribute("open");
+                            navigate(boardPath);
+                          }}
+                        >
+                          <KanbanIcon /> {t("Доска задач")}
+                        </button>
+                      )}
                       <button
                         onClick={(event) => void togglePin(event.currentTarget.closest("details"))}
                         disabled={pinUpdating}

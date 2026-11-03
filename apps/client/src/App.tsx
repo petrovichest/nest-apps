@@ -43,6 +43,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   BrowserIcon,
+  KanbanIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -1937,7 +1938,7 @@ function Sidebar({
                               navigate(`/projects/${encodeURIComponent(group.project!.id)}/kanban`);
                             }}
                           >
-                            <FolderIcon /> {t("Доска задач")}
+                            <KanbanIcon /> {t("Доска задач")}
                           </button>
                           <button
                             type="button"
@@ -2392,6 +2393,7 @@ function ThreadLink({
   const { api, dispatch, state } = useConnection();
   const { language, t } = useI18n();
   const location = useLocation();
+  const navigate = useNavigate();
   const titleRef = useRef<HTMLSpanElement>(null);
   const menuRef = useRef<HTMLDetailsElement>(null);
   const keyboardActionsRef = useRef(true);
@@ -2485,7 +2487,12 @@ function ThreadLink({
     }
   }
 
-  const actionCount = Number(Boolean(project)) + Number(canPin) + Number(canFinish);
+  const boardProject =
+    thread.relation.kind === "session" && thread.projectId
+      ? state.snapshot?.projects.find((candidate) => candidate.id === thread.projectId)
+      : undefined;
+  const actionCount =
+    Number(Boolean(project)) + Number(Boolean(boardProject)) + Number(canPin) + Number(canFinish);
   const hasActions = actionCount > 0;
   const hasBrowserStatus =
     thread.browserStatus === "connected" || thread.browserStatus === "disconnected";
@@ -2505,6 +2512,24 @@ function ThreadLink({
           type="button"
         >
           <PlusIcon />
+        </button>
+      )}
+      {boardProject && (
+        <button
+          aria-label={t("Открыть доску задач проекта {{project}}", {
+            project: boardProject.displayName,
+          })}
+          className="thread-row-action thread-board-action"
+          onClick={() => {
+            closeActions();
+            onNavigate();
+            navigate(
+              `/projects/${encodeURIComponent(boardProject.id)}/kanban?thread=${encodeURIComponent(thread.id)}`,
+            );
+          }}
+          type="button"
+        >
+          <KanbanIcon />
         </button>
       )}
       {canPin && (

@@ -95,9 +95,11 @@
     .timeline,
     .session-inspector,
     .artifact-viewer,
-    .input-availability-notice
+    .input-availability-notice,
+    .kanban-board,
+    .kanban-error
   )
-  :is(button, summary):not(:where(.paste-card-toggle)),
+  :is(button, summary):not(:where(.paste-card-toggle, .kanban-card-open)),
 .thread-workspace :is(.new-session-retry, .team-session-upgrade, .scroll-to-bottom),
 .chat-dialog button,
 .chat-image-viewer .image-viewer-control {
@@ -212,7 +214,7 @@
   color: var(--danger);
 }
 
-.thread-workspace :is(.timeline, .session-inspector, .workspace-header) .icon-button,
+.thread-workspace :is(.timeline, .session-inspector, .workspace-header, .kanban-board) .icon-button,
 .chat-dialog .icon-button {
   border-radius: 50%;
 }
@@ -1072,7 +1074,7 @@ a.native-subagent-row:hover strong {
   color: var(--danger);
 }
 
-.thread-workspace .timeline :is(input[type="checkbox"], input[type="radio"]) {
+.thread-workspace :is(.timeline, .kanban-board) :is(input[type="checkbox"], input[type="radio"]) {
   appearance: none;
   position: relative;
   display: inline-grid;
@@ -1095,12 +1097,14 @@ a.native-subagent-row:hover strong {
   border-radius: 50%;
 }
 
-.thread-workspace .timeline :is(input[type="checkbox"], input[type="radio"]):checked {
+.thread-workspace
+  :is(.timeline, .kanban-board)
+  :is(input[type="checkbox"], input[type="radio"]):checked {
   background: var(--chat-check);
   box-shadow: none;
 }
 
-.thread-workspace .timeline input[type="checkbox"]:checked::after {
+.thread-workspace :is(.timeline, .kanban-board) input[type="checkbox"]:checked::after {
   content: "";
   width: 5px;
   height: 9px;
@@ -1774,6 +1778,16 @@ a.native-subagent-row:hover strong {
     padding-inline: var(--space-2-5);
   }
 
+  /* Branches open from the capsule edge: more header actions never push them
+     under the navigation. */
+  .thread-workspace:not(.pending-fork-workspace) .workspace-actions {
+    position: relative;
+  }
+
+  .thread-workspace:not(.pending-fork-workspace) .fork-children-menu {
+    position: static;
+  }
+
   /* The composer still extends 8px beyond each side of the transcript. */
   .thread-workspace:not(.pending-fork-workspace) .composer {
     padding-inline: var(--space-5);
@@ -1934,11 +1948,13 @@ a.native-subagent-row:hover strong {
 }
 
 @media (forced-colors: active) {
-  .thread-workspace .timeline :is(input[type="checkbox"], input[type="radio"]) {
+  .thread-workspace :is(.timeline, .kanban-board) :is(input[type="checkbox"], input[type="radio"]) {
     appearance: auto;
   }
 
-  .thread-workspace .timeline :is(input[type="checkbox"], input[type="radio"])::after {
+  .thread-workspace
+    :is(.timeline, .kanban-board)
+    :is(input[type="checkbox"], input[type="radio"])::after {
     content: none;
   }
 

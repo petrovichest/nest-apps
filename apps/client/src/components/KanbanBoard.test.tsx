@@ -78,9 +78,12 @@ let api: {
   kanbanAction: ReturnType<typeof vi.fn>;
   transcribe: ReturnType<typeof vi.fn>;
 };
-function show(config: TranscriptionConfigResponse | null = null) {
+function show(
+  config: TranscriptionConfigResponse | null = null,
+  path = "/projects/project/kanban",
+) {
   return render(
-    <MemoryRouter initialEntries={["/projects/project/kanban"]}>
+    <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route
           path="/projects/:projectId/kanban"
@@ -107,6 +110,7 @@ beforeEach(() => {
     transcribe: vi.fn(),
   };
   connection.mockReturnValue({ api });
+  localStorage.clear();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -251,7 +255,7 @@ describe("KanbanBoard", () => {
     );
     show();
     fireEvent.click(await screen.findByLabelText("Выбрать задачу Task two"));
-    fireEvent.click(screen.getByRole("button", { name: "Объединить выбранные (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Объединить (1)" }));
     await waitFor(() =>
       expect(api.kanbanAction).toHaveBeenCalledWith("project", {
         action: "integrate",
@@ -279,7 +283,7 @@ describe("KanbanBoard", () => {
     api.readKanban.mockResolvedValue(seed);
     show();
     fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
-    expect(screen.getByRole("link", { name: "Открыть сессию" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /Выполнение/ })).toHaveAttribute(
       "href",
       "http://localhost:4311/threads/original",
     );
@@ -324,6 +328,105 @@ describe("KanbanBoard", () => {
     await act(async () => finish({ text: "spoken" }));
     expect(input).toHaveValue("one spoken two!");
     expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
+  });
+
+  it("opens the card of a linked session and closes its panel with Escape", async () => {
+    const seed = board([card("one", "working"), card("two")]);
+    seed.runs.push({
+      id: "run",
+      kind: "execute",
+      cardIds: ["one"],
+      provider: "codex",
+      threadId: "session-one",
+      sessionUrl: "/threads/session-one",
+      status: "running",
+      workspacePath: "/tmp/task",
+      error: null,
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    api.readKanban.mockResolvedValue(seed);
+    show(null, "/projects/project/kanban?thread=session-one");
+    const panel = await screen.findByRole("complementary", { name: "Task one" });
+    expect(within(panel).getByRole("link", { name: "Открыть сессию" })).toHaveAttribute(
+      "href",
+      "/threads/session-one",
+    );
+    expect(within(panel).queryByRole("button", { name: "Запустить агента" })).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("complementary")).toBeNull();
+  });
+
+  it("shows the agent state on a card only while it needs attention", async () => {
+    const seed = board([card("one", "working"), card("two", "review")]);
+    seed.runs.push(
+      {
+        id: "waiting",
+        kind: "execute",
+        cardIds: ["one"],
+        provider: "codex",
+        threadId: "a",
+        sessionUrl: null,
+        status: "waiting",
+        workspacePath: null,
+        error: null,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: "done",
+        kind: "execute",
+        cardIds: ["two"],
+        provider: "codex",
+        threadId: "b",
+        sessionUrl: null,
+        status: "completed",
+        workspacePath: null,
+        error: null,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    );
+    api.readKanban.mockResolvedValue(seed);
+    show();
+    const waiting = (await screen.findByRole("button", { name: "Task one" })).closest("article")!;
+    expect(waiting).toHaveTextContent("Ждёт ответа");
+    expect(waiting.querySelector(".kanban-card-status.status-needsAttention")).not.toBeNull();
+    const finished = screen.getByRole("button", { name: "Task two" }).closest("article")!;
+    expect(finished).not.toHaveTextContent("Завершено");
+    expect(finished.querySelector(".kanban-card-status")).toBeNull();
+  });
+
+  it("keeps collapsed and resized columns on this device", async () => {
+    const view = show();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Развернуть стадию «Готово», задач: 0" }),
+    );
+    const menu = screen.getByLabelText("Действия со стадией «К выполнению»").closest("details")!;
+    fireEvent.click(within(menu).getByRole("button", { name: "Свернуть" }));
+    expect(
+      screen.getByRole("button", { name: "Развернуть стадию «К выполнению», задач: 1" }),
+    ).toBeInTheDocument();
+    const width = screen.getByRole("separator", { name: "Ширина стадии «В работе»" });
+    fireEvent.keyDown(width, { key: "ArrowRight" });
+    fireEvent.keyDown(width, { key: "ArrowRight" });
+    expect(width).toHaveAttribute("aria-valuenow", "216");
+    view.unmount();
+    show();
+    expect(
+      await screen.findByRole("button", { name: "Развернуть стадию «К выполнению», задач: 1" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Развернуть стадию «Готово»/ })).toBeNull();
+    expect(screen.getByRole("separator", { name: "Ширина стадии «В работе»" })).toHaveAttribute(
+      "aria-valuenow",
+      "216",
+    );
+    fireEvent.keyDown(screen.getByRole("separator", { name: "Ширина стадии «В работе»" }), {
+      key: "Home",
+    });
+    expect(screen.getByRole("separator", { name: "Ширина стадии «В работе»" })).not.toHaveAttribute(
+      "aria-valuenow",
+    );
   });
 
   it("does not refresh a hidden or unmounted board", async () => {

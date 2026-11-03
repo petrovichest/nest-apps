@@ -1,8 +1,14 @@
 # Project boards
 
 Each project has a board shared by the local CodexNest and ClaudeNest instances.
-Open **Kanban** from the project's menu. Both applications must run as the same
-operating-system user and resolve the project to the same directory.
+Open **Task board** from the project's menu, a session's actions or the board icon
+in the session header. From a task's session the board opens with that task.
+Both applications must run as the same operating-system user and resolve the
+project to the same directory.
+
+Column widths can be dragged and columns collapsed; Done starts collapsed. These
+choices are remembered on each device. On a phone the board shows one stage at a
+time. Task details open in a side panel.
 
 Create a card with **+**, type or dictate its description, and send it. An agent
 assigns a category without asking questions. Questions about the work itself

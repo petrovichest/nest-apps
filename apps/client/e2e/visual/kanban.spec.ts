@@ -111,6 +111,7 @@ for (const width of [390, 1440]) {
           board.cards.push({
             ...board.cards[0],
             id: "image-task",
+            stageId: "todo",
             title: creation!.description,
             description: creation!.description,
             image: { name: creation!.image!.name, size: png.length, mediaType: "image/png" },
@@ -138,18 +139,34 @@ for (const width of [390, 1440]) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
         true,
       );
-      await expect(page.locator(".kanban-column").first()).toHaveCSS(
+      // Lanes have no surface; cards use the floating tone of the navigation panel.
+      await expect(page.locator(".kanban-lane").first()).toHaveCSS(
+        "background-color",
+        "rgba(0, 0, 0, 0)",
+      );
+      await expect(page.locator(".kanban-card").first()).toHaveCSS(
         "background-color",
         theme === "light" ? "rgb(248, 249, 246)" : "rgb(36, 39, 34)",
       );
+      if (width < 821)
+        await expect(page.getByRole("tab", { name: /К выполнению/ })).toHaveAttribute(
+          "aria-selected",
+          "true",
+        );
+      else
+        await expect(
+          page.getByRole("button", { name: "Развернуть стадию «Готово», задач: 1" }),
+        ).toBeVisible();
       await page.screenshot({ path: info.outputPath(`kanban-${width}-${theme}.png`) });
       await page.getByRole("button", { name: "Сохранить настройки фильтров", exact: true }).click();
-      const dialog = page.getByRole("dialog", { name: "Сохранить настройки фильтров" });
-      await expect(dialog).toBeVisible();
-      await dialog.getByRole("combobox", { name: "Стадия", exact: true }).selectOption("review");
-      await expect(dialog.getByRole("button", { name: "Принять", exact: true })).toBeVisible();
+      const panel = page.getByRole("complementary", { name: "Сохранить настройки фильтров" });
+      await expect(panel).toBeVisible();
+      await expect(panel.getByRole("button", { name: "Запустить агента" })).toBeVisible();
+      await panel.getByRole("combobox", { name: "Стадия", exact: true }).selectOption("review");
+      await expect(panel.getByRole("button", { name: "Принять", exact: true })).toBeVisible();
       await page.screenshot({ path: info.outputPath(`kanban-card-${width}-${theme}.png`) });
-      await dialog.getByRole("button", { name: "Закрыть", exact: true }).click();
+      await panel.getByRole("button", { name: "Закрыть", exact: true }).click();
+      await expect(panel).toBeHidden();
       await page.getByRole("button", { name: "Добавить задачу", exact: true }).first().click();
       await expect(page.getByRole("dialog", { name: "Добавить задачу" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Начать запись", exact: true })).toBeVisible();
@@ -170,7 +187,7 @@ for (const width of [390, 1440]) {
         url: `data:image/png;base64,${png.toString("base64")}`,
       });
       await page.getByRole("button", { name: "Исправить по скриншоту", exact: true }).click();
-      const saved = page.getByRole("dialog", { name: "Исправить по скриншоту" });
+      const saved = page.getByRole("complementary", { name: "Исправить по скриншоту" });
       await expect(saved.getByText("screenshot.png", { exact: true })).toBeVisible();
       const thumbnail = saved.getByRole("button", {
         name: "Открыть изображение Изображение 1",

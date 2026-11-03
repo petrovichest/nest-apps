@@ -161,6 +161,13 @@ export const BrowserIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const KanbanIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="3" y="4" width="18" height="16" rx="4" />
+    <path d="M8 8.5v6M12 8.5v8.5M16 8.5v3.5" />
+  </Icon>
+);
+
 export const BellIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M18 9a6 6 0 0 0-12 0v2.5c0 1.9-.6 3.2-1.6 4.5a.9.9 0 0 0 .7 1.5h13.8a.9.9 0 0 0 .7-1.5c-1-1.3-1.6-2.6-1.6-4.5ZM10 21h4" />

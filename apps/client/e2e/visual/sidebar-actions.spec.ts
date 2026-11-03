@@ -540,7 +540,7 @@ for (const count of [0, 1, 12]) {
 test.describe("touch sidebar actions", () => {
   test.use({ hasTouch: true, viewport: PHONE_VIEWPORT });
 
-  test("fits all three actions in the session row and keeps finish confirmation actionable", async ({
+  test("fits all four actions in the session row and keeps finish confirmation actionable", async ({
     page,
   }) => {
     await installVisualFixture(page, { theme: "dark", finishableSidebar: true });
@@ -555,7 +555,7 @@ test.describe("touch sidebar actions", () => {
     const status = await row.locator(".status").boundingBox();
     await row.getByLabel("Действия с сессией «Полировка мастерской»").tap();
     const actions = row.locator(".thread-row-actions");
-    await expect(actions.locator("button")).toHaveCount(3);
+    await expect(actions.locator("button")).toHaveCount(4);
     const bounds = (await actions.boundingBox())!;
     const title = (await row.locator(".thread-link-title").boundingBox())!;
     expect(await row.boundingBox()).toEqual(before);
