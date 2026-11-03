@@ -119,7 +119,8 @@ async function verifyRelease(target) {
   }
 }
 async function waitHealthy(target, recoveryState = "ready") {
-  for (let attempt = 0; attempt < 60; attempt++) {
+  // Startup reattaches every live session owner and grows with them; 30 s was already too short.
+  for (let attempt = 0; attempt < 360; attempt++) {
     try {
       const value = await api("health");
       if (value.recoveryState === recoveryState && value.releasePath === target) return;
