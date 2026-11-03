@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { KanbanBoard, KanbanRun } from "@codexnest/protocol";
 import { atomicJson } from "./store.js";
 
@@ -58,7 +58,36 @@ export function shellQuote(value: string): string {
   return "'" + value.replaceAll("'", "'\"'\"'") + "'";
 }
 
-export function agentPrompt(
+/** Keep the board's operating protocol out of the visible user message. */
+export async function agentPrompt(
+  board: KanbanBoard,
+  run: KanbanRun,
+  helper: string,
+  capability: string,
+  comment?: string,
+): Promise<string> {
+  const instructions = agentInstructions(board, run, helper, capability, comment);
+  // Classification sessions are short-lived and archived; they do not execute tasks.
+  if (run.kind === "classify") return instructions;
+
+  const instructionsPath = join(dirname(capability), `${run.id}.md`);
+  await writeFile(instructionsPath, instructions, { mode: 0o600 });
+  const operation = {
+    execute: "Execute the task",
+    review: "Review the task result",
+    integrate: "Integrate the accepted task results",
+  }[run.kind];
+  const cards = board.cards.filter((card) => run.cardIds.includes(card.id));
+  return [
+    `# Project board: ${operation}`,
+    ...cards.map((card) => `## ${card.title}\n\n${card.description}`),
+    ...(comment ? [`## Operator instruction\n\n${comment}`] : []),
+    `Project: ${board.projectPath}`,
+    `Before starting, read the board workflow instructions at ${JSON.stringify(instructionsPath)}. Follow them throughout this operation, including workspace preparation and reporting the result through the board helper. A chat reply alone does not complete the board operation.`,
+  ].join("\n\n");
+}
+
+function agentInstructions(
   board: KanbanBoard,
   run: KanbanRun,
   helper: string,

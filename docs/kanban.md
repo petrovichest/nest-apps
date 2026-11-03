@@ -20,6 +20,12 @@ new-session defaults. The session belongs to the original project but works in
 an isolated workspace. A card cannot run twice at the same time, including across
 the two applications.
 
+The session's opening message shows the task title, description and any operator
+comment. Internal board commands and workflow rules are kept in a local
+instructions file referenced by that message; the agent must read it before
+starting. The same applies to review, integration and rework messages in both
+applications.
+
 One card can involve several repositories. Each gets its own worktree, task
 branch, starting commit and target branch. The target comes from the assignment;
 the executor asks in its session when it cannot determine the intended branch.

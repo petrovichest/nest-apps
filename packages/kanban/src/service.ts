@@ -597,7 +597,7 @@ export class KanbanService {
         run,
         document.runs[runId]!.token,
       );
-      const prompt = agentPrompt(
+      const prompt = await agentPrompt(
         document.board,
         run,
         this.helper,

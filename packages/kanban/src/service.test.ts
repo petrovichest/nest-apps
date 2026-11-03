@@ -110,6 +110,7 @@ async function fixture(available?: () => boolean) {
   await mkdir(project);
   const launches = { codex: [] as string[], claude: [] as string[] };
   const resumes = { codex: [] as string[], claude: [] as string[] };
+  const prompts = new Map<string, string>();
   const services = {} as Record<"codex" | "claude", KanbanService>;
   for (const provider of ["codex", "claude"] as const) {
     const service = new KanbanService({
@@ -118,6 +119,7 @@ async function fixture(available?: () => boolean) {
       adapter: {
         ...(available ? { available } : {}),
         launch: async (input) => {
+          prompts.set(input.id, input.prompt);
           launches[provider].push(input.id);
           return {
             threadId: `${provider}-${input.id}`,
@@ -125,6 +127,7 @@ async function fixture(available?: () => boolean) {
           };
         },
         resume: async (input) => {
+          prompts.set(input.id, input.prompt);
           resumes[provider].push(input.threadId);
         },
       },
@@ -185,10 +188,45 @@ async function fixture(available?: () => boolean) {
     ).toBe(true);
     return value.id;
   }
-  return { directory, project, services, launches, resumes, running, command, card };
+  return { directory, project, services, launches, resumes, prompts, running, command, card };
 }
 
 describe("shared provider board service", () => {
+  it.each(["codex", "claude"] as const)(
+    "delivers readable assignments and fresh workflow files for %s launch and rework",
+    async (provider) => {
+      const f = await fixture();
+      const id = await f.card("Attach an image when creating a task");
+      const service = f.services[provider];
+      await service.action(f.project, {
+        action: "execute",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+      });
+      const executor = await f.running("execute", id, service);
+      const instructionsPath = (run: KanbanRun) =>
+        join(service.store.directory, "capabilities", `${run.id}.md`);
+      expect(f.prompts.get(executor.id)).toContain("Attach an image when creating a task");
+      expect(f.prompts.get(executor.id)).toContain(JSON.stringify(instructionsPath(executor)));
+      expect(await readFile(instructionsPath(executor), "utf8")).toContain("prepare-repository");
+      expect((await f.command(executor, "report", { outcome: "completed" }))?.ok).toBe(true);
+
+      await service.action(f.project, {
+        action: "rework",
+        cardIds: [id],
+        comment: "Also support clipboard images",
+        clientActionId: randomUUID(),
+      });
+      const rework = await f.running("execute", id, service);
+      expect(rework.id).not.toBe(executor.id);
+      expect(rework.threadId).toBe(executor.threadId);
+      expect(f.prompts.get(rework.id)).toContain("Also support clipboard images");
+      expect(f.prompts.get(rework.id)).toContain(JSON.stringify(instructionsPath(rework)));
+      expect(await readFile(instructionsPath(rework), "utf8")).toContain(
+        "Operator instruction: Also support clipboard images",
+      );
+    },
+  );
   it("creates exactly one card for retried creation and agent classification is shared", async () => {
     const f = await fixture();
     const request = { description: "Fix layout", clientCreationId: randomUUID() };
