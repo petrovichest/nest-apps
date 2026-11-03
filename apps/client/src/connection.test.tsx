@@ -1521,6 +1521,37 @@ describe("ConnectionProvider", () => {
     view.unmount();
   });
 
+  it.each([false, true])(
+    "reconnects when the initial snapshot never arrives (socket open: %s)",
+    (opened) => {
+      vi.useFakeTimers();
+      vi.stubGlobal("fetch", vi.fn());
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      const view = render(
+        <ConnectionProvider settings={{ baseUrl: "https://codexnest.example", token: "token" }}>
+          <SnapshotProbe />
+        </ConnectionProvider>,
+      );
+      const first = FakeWebSocket.instances[0]!;
+      if (opened) act(() => first.open());
+      act(() => vi.advanceTimersByTime(15_000));
+      expect(first.readyState).toBe(FakeWebSocket.CLOSED);
+      act(() => vi.advanceTimersByTime(1_300));
+      const second = FakeWebSocket.instances[1]!;
+      act(() => {
+        second.open();
+        second.receive({ type: "snapshot", snapshot: snapshot(2) });
+        first.receive({ type: "snapshot", snapshot: snapshot(1) });
+      });
+      expect(screen.getByText("snapshot:2")).toBeInTheDocument();
+      // The initial watchdog must be cleared after a successful snapshot.
+      act(() => vi.advanceTimersByTime(15_000));
+      expect(second.readyState).toBe(FakeWebSocket.OPEN);
+      expect(second.sent.at(-1)).toBe(JSON.stringify({ type: "ping" }));
+      view.unmount();
+    },
+  );
+
   it("closes an unresponsive socket after a heartbeat and isolates its late events", () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn();

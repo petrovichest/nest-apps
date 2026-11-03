@@ -373,6 +373,27 @@ async function waitForQueue(service: UiService, id: string, count: number): Prom
 }
 
 describe("Claude UI durable session facade", () => {
+  it("persists a changed model catalog only once while reattaching owners", async () => {
+    const { manager, directory, start, reserve } = await fixture();
+    const service = await start();
+    const ids = await Promise.all([reserve(service), reserve(service), reserve(service)]);
+    const models = [{ value: "sonnet", displayName: "Sonnet", description: "" }];
+    for (const id of ids)
+      manager.owners.set(id, {
+        ...snapshot(id, directory),
+        supportedModels: structuredClone(models),
+      });
+    const update = vi.spyOn(service.store, "update");
+    await service.attach(ids[0]!);
+    await service.attach(ids[1]!);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(service.store.data.models).toEqual(models);
+    const changed = [...models, { value: "opus", displayName: "Opus", description: "" }];
+    manager.owners.get(ids[2]!)!.supportedModels = changed;
+    await service.attach(ids[2]!);
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(service.store.data.models).toEqual(changed);
+  });
   it.each(["closed", "failed"] as const)(
     "repairs a %s owner across reloads without replaying its work",
     async (terminalState) => {

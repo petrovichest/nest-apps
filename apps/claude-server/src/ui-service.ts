@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, realpath, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { Readable } from "node:stream";
+import { isDeepStrictEqual } from "node:util";
 import type { TitleGenerator } from "./title";
 import {
   copyPastedMessage,
@@ -895,7 +896,10 @@ export class UiService extends EventEmitter {
               interruptedTurns: this.thread(id).interruptedTurns,
             });
             if (["failed", "closed"].includes(owner.state)) await this.settleStoppedTurn(id, owner);
-            if (owner.supportedModels?.length)
+            if (
+              owner.supportedModels?.length &&
+              !isDeepStrictEqual(this.store.data.models, owner.supportedModels)
+            )
               await this.store.update((data) => {
                 data.models = owner.supportedModels!;
               });

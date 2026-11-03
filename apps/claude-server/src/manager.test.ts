@@ -121,6 +121,38 @@ async function fixture() {
 }
 
 describe("Claude backend manager integration", () => {
+  it("releases an abandoned startup pause without restarting session owners", async () => {
+    const { backend, config, launcher } = await fixture();
+    config.startPaused = true;
+    vi.useFakeTimers();
+    try {
+      const manager = await backend();
+      expect(manager.accepting).toBe(false);
+      await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+      expect(manager.accepting).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(manager.accepting).toBe(true);
+      expect(launcher.starts).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("replaces the startup lease when the updater renews its preparation", async () => {
+    const { backend, config } = await fixture();
+    config.startPaused = true;
+    vi.useFakeTimers();
+    try {
+      const manager = await backend();
+      await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+      await manager.prepare([1]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(manager.accepting).toBe(false);
+      await vi.advanceTimersByTimeAsync(120_000 - 1);
+      expect(manager.accepting).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("cleans a launch which was already in flight when the user stopped the session", async () => {
     const { backend, launcher, input } = await fixture();
     const manager = await backend();

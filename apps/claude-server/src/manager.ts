@@ -183,6 +183,12 @@ export class SessionManager {
   async initialize(): Promise<void> {
     await this.launcher.available();
     this.paused = this.config.startPaused ?? false;
+    // A failed updater can leave the rollback API paused before it starts listening.
+    // Cover startup too; prepare() only arms its lease after the API is reachable.
+    if (this.paused) {
+      this.lease = setTimeout(() => this.resume(), 5 * 60_000);
+      this.lease.unref();
+    }
   }
 
   /** Supplies the browser MCP configuration for owners launched from now on. */

@@ -61,6 +61,7 @@ import type { ConnectionSettings } from "./storage";
 
 const HEARTBEAT_IDLE_MS = 15_000;
 const HEARTBEAT_TIMEOUT_MS = 10_000;
+const CONNECTION_TIMEOUT_MS = 15_000;
 const LEGACY_CACHE_INSTANCE_ID = "legacy-cache";
 
 type DetailReadOptions = {
@@ -1465,6 +1466,7 @@ export function ConnectionProvider({
     let stopped = false;
     let socket: WebSocket | undefined;
     let retryTimer: number | undefined;
+    let connectionTimeout: number | undefined;
     let heartbeatTimer: number | undefined;
     let heartbeatTimeout: number | undefined;
     let retry = 0;
@@ -1497,6 +1499,11 @@ export function ConnectionProvider({
       const candidate = new WebSocket(api.webSocketUrl());
       const legacyInstanceId = `legacy:${generationRef.current}:${connectionEpoch.current}`;
       socket = candidate;
+      // Heartbeats start only after a frame arrives. Bound the handshake and
+      // initial snapshot too, so a silent connection cannot block input forever.
+      connectionTimeout = window.setTimeout(() => {
+        if (!stopped && socket === candidate) candidate.close();
+      }, CONNECTION_TIMEOUT_MS);
       candidate.addEventListener("open", () => {
         if (stopped || socket !== candidate) return;
         candidate.send(JSON.stringify({ type: "authenticate", token: settings.token }));
@@ -1517,6 +1524,8 @@ export function ConnectionProvider({
         scheduleHeartbeat(candidate);
         if (frame.type === "snapshot") {
           const snapshot = normalizeServerSnapshot(frame.snapshot, legacyInstanceId);
+          window.clearTimeout(connectionTimeout);
+          connectionTimeout = undefined;
           if (streamVersion.current) invalidateRequests();
           retry = 0;
           streamVersion.current = {
@@ -1560,6 +1569,8 @@ export function ConnectionProvider({
       candidate.addEventListener("close", () => {
         if (stopped || socket !== candidate) return;
         socket = undefined;
+        window.clearTimeout(connectionTimeout);
+        connectionTimeout = undefined;
         clearHeartbeat();
         invalidateRequests();
         threadEventVersions.current.clear();
@@ -1581,6 +1592,7 @@ export function ConnectionProvider({
     return () => {
       stopped = true;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      window.clearTimeout(connectionTimeout);
       clearHeartbeat();
       invalidateRequests();
       threadEventVersions.current.clear();
