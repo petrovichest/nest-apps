@@ -72,8 +72,8 @@ const ENGLISH: Record<string, string> = {
   "{{current}} из {{count}}": "{{current}} of {{count}}",
   "Аккаунтов: {{count}}": "Accounts: {{count}}",
   Автопереключение: "Auto-switch accounts",
-  "Сначала тратится аккаунт, у которого 5-часовой лимит сбросится раньше; при лимите — другой доступный.":
-    "Use the account whose 5-hour quota resets first; switch to another available one when a quota runs out.",
+  "Сначала тратится аккаунт, у которого 5-часовой лимит сбросится раньше; при лимите или потере авторизации — другой доступный.":
+    "Use the account whose 5-hour quota resets first; switch to another available account when limited or signed out.",
   "Прогрев лимитов": "Warm up limits",
   "Равномерно распределять сбросы 5-часовых лимитов, прогревая свободные аккаунты.":
     "Space out 5-hour quota resets by warming up idle accounts.",
@@ -104,6 +104,7 @@ const ENGLISH: Record<string, string> = {
   Авторизован: "Signed in",
   Используется: "In use",
   "Нужен вход": "Sign-in required",
+  "Войдите заново, чтобы вернуть аккаунт в работу.": "Sign in again to use this account.",
   "Недельный лимит": "Weekly quota exhausted",
   "Лимит на 5 часов": "5-hour quota exhausted",
   "Ошибка подключения": "Connection error",

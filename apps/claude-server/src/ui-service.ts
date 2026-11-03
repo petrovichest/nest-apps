@@ -469,7 +469,9 @@ export class UiService extends EventEmitter {
                     : ("resuming" as const),
               message:
                 thread.quotaRecovery.state === "waiting"
-                  ? "Нет аккаунта с доступной квотой. Ожидаем восстановления лимитов."
+                  ? thread.quotaRecovery.reason === "authentication"
+                    ? "Нет доступного аккаунта Claude. Войдите в аккаунт в настройках; задача продолжится автоматически."
+                    : "Нет аккаунта с доступной квотой. Ожидаем восстановления лимитов."
                   : thread.quotaRecovery.state === "failed"
                     ? (thread.quotaRecovery.error ??
                       "Не удалось продолжить сессию после переключения аккаунта.")
@@ -1042,12 +1044,12 @@ export class UiService extends EventEmitter {
         isMainNativeEvent(event) &&
         (event.type === "rate_limit_event" ||
           event.type === "result" ||
-          (event.type === "assistant" && event.error === "rate_limit")),
+          (event.type === "assistant" && typeof event.error === "string")),
     );
   }
 
   private async observeQuotaFailure(id: string, owner: RunnerSnapshot): Promise<void> {
-    if (!this.manager.accounts?.status().autoSwitch || this.thread(id).subagent) return;
+    if (!this.manager.accounts || this.thread(id).subagent) return;
     const failure =
       owner.quotaFailure ??
       (() => {
@@ -1066,6 +1068,9 @@ export class UiService extends EventEmitter {
       owner.accountId ??
       descriptor?.accountId ??
       (descriptor ? this.manager.accounts.accountIdForConfigDir(descriptor.configDir) : undefined);
+    if (failure.reason === "authentication" && failedAccountId)
+      await this.manager.accounts.invalidateAuth(failedAccountId, descriptor?.configDir);
+    if (!this.manager.accounts.status().autoSwitch) return;
     await this.store.update((data) => {
       const thread = data.threads[id]!;
       const continuationId = stableUuid(
@@ -1075,6 +1080,7 @@ export class UiService extends EventEmitter {
         ...new Set([...(thread.quotaContinuationIds ?? []), continuationId]),
       ];
       thread.quotaRecovery = {
+        ...(failure.reason ? { reason: failure.reason } : {}),
         failedRunnerInstanceId: owner.runnerInstanceId,
         terminalSequence: failure.terminalSequence,
         failedAccountId,

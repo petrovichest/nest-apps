@@ -138,29 +138,38 @@ describe("isolated Claude session runner", () => {
     expect(runner.snapshot().pendingRequests).toHaveLength(1);
   });
 
-  it("persists main quota evidence with its runner identity and terminal sequence", async () => {
-    const { fake, runner, client, descriptor } = await fixture();
-    const connection = await client();
-    await connection.request("send", { requestId: randomUUID(), text: "Finish task" });
-    fake.emit("event", {
-      type: "rate_limit_event",
-      rate_limit_info: {
-        status: "rejected",
-        rateLimitType: "five_hour",
-        resetsAt: Date.now() + 60_000,
-      },
-    });
-    fake.emit("event", { type: "assistant", error: "rate_limit" });
-    fake.emit("event", { type: "result", is_error: true });
-    expect(runner.snapshot().quotaFailure).toMatchObject({ confirmed: true });
-    await vi.waitFor(async () => {
-      const saved = JSON.parse(
-        await readFile(join(descriptor.stateDirectory, "runner-state.json"), "utf8"),
-      );
-      expect(saved.quotaFailure).toEqual(runner.snapshot().quotaFailure);
-      expect(saved.runnerInstanceId).toBe(runner.runnerInstanceId);
-    });
-  });
+  it.each(["quota", "authentication"])(
+    "persists main %s evidence with its runner identity and terminal sequence",
+    async (reason) => {
+      const { fake, runner, client, descriptor } = await fixture();
+      const connection = await client();
+      await connection.request("send", { requestId: randomUUID(), text: "Finish task" });
+      fake.emit("event", {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "rejected",
+          rateLimitType: "five_hour",
+          resetsAt: Date.now() + 60_000,
+        },
+      });
+      fake.emit("event", {
+        type: "assistant",
+        error: reason === "authentication" ? "authentication_failed" : "rate_limit",
+      });
+      fake.emit("event", { type: "result", is_error: true });
+      expect(runner.snapshot().quotaFailure).toMatchObject({
+        confirmed: true,
+        ...(reason === "authentication" ? { reason: "authentication" } : {}),
+      });
+      await vi.waitFor(async () => {
+        const saved = JSON.parse(
+          await readFile(join(descriptor.stateDirectory, "runner-state.json"), "utf8"),
+        );
+        expect(saved.quotaFailure).toEqual(runner.snapshot().quotaFailure);
+        expect(saved.runnerInstanceId).toBe(runner.runnerInstanceId);
+      });
+    },
+  );
   it("keeps the same Claude owner alive and permissions pending after backend disconnect", async () => {
     const { fake, runner, client, descriptor } = await fixture();
     const first = await client();

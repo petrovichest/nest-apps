@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "./config.js";
 import { ClaudeAccounts, type ClaudeLaunchAccount } from "./accounts.js";
-import { QUOTA_CONTINUATION_MESSAGE } from "./quota-recovery.js";
+import { AUTH_CONTINUATION_MESSAGE, QUOTA_CONTINUATION_MESSAGE } from "./quota-recovery.js";
 import { SessionManager, type SessionLauncher } from "./manager.js";
 import { SessionRunner, type RunnerTransport } from "./runner.js";
 import type { CommandReceipt, RunnerDescriptor } from "./types.js";
@@ -230,58 +230,66 @@ describe("Claude backend manager integration", () => {
     await manager.create(second);
     expect((await manager.descriptor(second.sessionId))?.browser).toBeUndefined();
   });
-  it("resumes the same UUID with the selected account proxy and a fresh continuation once", async () => {
-    const { backend, launcher, input, config } = await fixture();
-    const a: ClaudeLaunchAccount = { accountId: "a", configDir: config.configDir, proxy: null };
-    const b: ClaudeLaunchAccount = {
-      accountId: "b",
-      configDir: join(config.stateDir, "account-b"),
-      proxy: {
-        protocol: "socks5",
-        host: "proxy.example",
-        port: 1080,
-        url: "socks5h://proxy.example:1080",
-      },
-    };
-    let current = a;
-    const accounts = {
-      status: () => ({ autoSwitch: true }),
-      launchAccount: async () => current,
-      rotate: async () => {
-        current = b;
-        return b;
-      },
-      accountIdForConfigDir: () => "a",
-    } as unknown as ClaudeAccounts;
-    const manager = await backend(accounts);
-    await manager.create(input);
-    const old = launcher.owners.get(input.sessionId)!;
-    old.transport.emit("event", { type: "result", is_error: true });
-    const recovery = {
-      failedRunnerInstanceId: old.runner.runnerInstanceId,
-      failedAccountId: "a",
-      continuationId: randomUUID(),
-    };
-    expect(await manager.recoverQuota(input.sessionId, recovery, () => true)).toMatchObject({
-      state: "continued",
-    });
-    expect(old.transport.stops).toBe(1);
-    const replacement = launcher.owners.get(input.sessionId)!;
-    expect(replacement.runner.descriptor).toMatchObject({
-      sessionId: input.sessionId,
-      resume: true,
-      accountId: "b",
-      configDir: b.configDir,
-      proxy: b.proxy,
-    });
-    expect(replacement.transport.sends).toEqual([
-      { requestId: recovery.continuationId, text: QUOTA_CONTINUATION_MESSAGE },
-    ]);
-    await manager.recoverQuota(input.sessionId, recovery, () => true);
-    expect(launcher.starts).toBe(2);
-    expect(replacement.transport.sends).toHaveLength(1);
-    expect(old.transport.sends).toEqual([{ requestId: input.requestId, text: input.prompt }]);
-  });
+  it.each(["quota", "authentication"])(
+    "resumes %s on the same UUID with the selected proxy and a fresh continuation once",
+    async (reason) => {
+      const { backend, launcher, input, config } = await fixture();
+      const a: ClaudeLaunchAccount = { accountId: "a", configDir: config.configDir, proxy: null };
+      const b: ClaudeLaunchAccount = {
+        accountId: "b",
+        configDir: join(config.stateDir, "account-b"),
+        proxy: {
+          protocol: "socks5",
+          host: "proxy.example",
+          port: 1080,
+          url: "socks5h://proxy.example:1080",
+        },
+      };
+      let current = a;
+      const accounts = {
+        status: () => ({ autoSwitch: true }),
+        launchAccount: async () => current,
+        rotate: async () => {
+          current = b;
+          return b;
+        },
+        accountIdForConfigDir: () => "a",
+      } as unknown as ClaudeAccounts;
+      const manager = await backend(accounts);
+      await manager.create(input);
+      const old = launcher.owners.get(input.sessionId)!;
+      old.transport.emit("event", { type: "result", is_error: true });
+      const recovery = {
+        ...(reason === "authentication" ? { reason: "authentication" as const } : {}),
+        failedRunnerInstanceId: old.runner.runnerInstanceId,
+        failedAccountId: "a",
+        continuationId: randomUUID(),
+      };
+      expect(await manager.recoverQuota(input.sessionId, recovery, () => true)).toMatchObject({
+        state: "continued",
+      });
+      expect(old.transport.stops).toBe(1);
+      const replacement = launcher.owners.get(input.sessionId)!;
+      expect(replacement.runner.descriptor).toMatchObject({
+        sessionId: input.sessionId,
+        resume: true,
+        accountId: "b",
+        configDir: b.configDir,
+        proxy: b.proxy,
+      });
+      expect(replacement.transport.sends).toEqual([
+        {
+          requestId: recovery.continuationId,
+          text:
+            reason === "authentication" ? AUTH_CONTINUATION_MESSAGE : QUOTA_CONTINUATION_MESSAGE,
+        },
+      ]);
+      await manager.recoverQuota(input.sessionId, recovery, () => true);
+      expect(launcher.starts).toBe(2);
+      expect(replacement.transport.sends).toHaveLength(1);
+      expect(old.transport.sends).toEqual([{ requestId: input.requestId, text: input.prompt }]);
+    },
+  );
 
   it("reconciles an API crash between replacement launch and continuation delivery", async () => {
     const { backend, launcher, input, config } = await fixture();

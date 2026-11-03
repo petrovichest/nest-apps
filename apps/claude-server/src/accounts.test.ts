@@ -147,6 +147,48 @@ async function fixture(overrides: ClaudeAccountsOptions = {}, nativeDefault = fa
 }
 
 describe("native Claude account storage and login", () => {
+  it("excludes rejected credentials through refresh and restart until a verified login", async () => {
+    const { accounts, config, options, add, children, setEmail } = await fixture();
+    await accounts.refresh();
+    const first = accounts.status().accounts[0]!;
+    const second = await add("second@example.com");
+    await accounts.select(first.id);
+    await accounts.invalidateAuth(first.id, config.configDir);
+    expect(accounts.status().currentAccountId).toBe(second.id);
+    await accounts.refresh(); // Native auth status still reports loggedIn=true.
+    expect(accounts.status().accounts.find((a) => a.id === first.id)).toMatchObject({
+      authenticated: false,
+    });
+    expect((await accounts.rotate(second.id))?.accountId).not.toBe(first.id);
+    const restarted = new ClaudeAccounts(config, options);
+    cleanup.push(() => restarted.close());
+    await restarted.initialize();
+    expect(restarted.status().accounts.find((a) => a.id === first.id)?.authenticated).toBe(false);
+    await accounts.updateProxy(first.id, direct);
+    await accounts.refresh(first.id);
+    expect(accounts.status().accounts.find((a) => a.id === first.id)?.authenticated).toBe(false);
+    setEmail("first@example.com");
+    const login = await accounts.startLogin({ accountId: first.id });
+    children.at(-1)!.child.close();
+    await vi.waitFor(() => expect(accounts.login(login.id).state).toBe("completed"));
+    expect(accounts.status().accounts.find((a) => a.id === first.id)).toMatchObject({
+      authenticated: true,
+      connectionError: null,
+    });
+    await accounts.invalidateAuth(first.id, config.configDir); // Old owner's late result.
+    expect(accounts.status().accounts.find((a) => a.id === first.id)?.authenticated).toBe(true);
+  });
+  it("reports lost authorization with auto-switch disabled without selecting another account", async () => {
+    const { accounts, config } = await fixture();
+    const id = accounts.status().currentAccountId!;
+    await accounts.setAutoSwitch(false);
+    await accounts.invalidateAuth(id, config.configDir);
+    expect(accounts.status()).toMatchObject({
+      currentAccountId: id,
+      accounts: [{ authenticated: false }],
+    });
+    await expect(accounts.launchAccount()).rejects.toThrow("Sign in");
+  });
   it("warms an idle 5-hour window once and rereads the usage", async () => {
     const idle: NativeClaudeUsage = {
       primary: null,

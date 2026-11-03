@@ -35,6 +35,7 @@ const WARM_SLOT_TOLERANCE_MS = 60_000;
 const WARM_RETRY_MS = 15 * 60_000;
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
 const MAX_OUTPUT_BYTES = 256 * 1024;
+const AUTH_EXPIRED = "Claude authorization expired; sign in again";
 const IMPORTED_PROXY_ERROR =
   "The original Claude proxy needs configuration; choose a valid proxy or explicitly select direct connection";
 const unknownLimits = (): CodexRateLimitsState => ({
@@ -506,6 +507,9 @@ export class ClaudeAccounts extends EventEmitter {
     const pending = this.refreshes.get(account.accountId);
     if (pending) return pending;
     if (this.warming && account.rateLimits.refreshing) return this.warming;
+    // Native auth status can still report loggedIn for a token the API already rejected.
+    // Only a verified login replaces these credentials and clears this persisted error.
+    if (account.connectionError === AUTH_EXPIRED) return Promise.resolve();
     if (this.importConnectionBlocked(account)) {
       account.rateLimits = { ...account.rateLimits, refreshing: false, refreshError: true };
       this.emitChanged();
@@ -517,6 +521,7 @@ export class ClaudeAccounts extends EventEmitter {
     const fingerprint = JSON.stringify([account.configDir, account.proxy]);
     const unchanged = () =>
       this.registry.accounts.includes(account) &&
+      account.connectionError !== AUTH_EXPIRED &&
       JSON.stringify([account.configDir, account.proxy]) === fingerprint;
     const request = (async () => {
       try {
@@ -595,6 +600,8 @@ export class ClaudeAccounts extends EventEmitter {
             if (
               warmed &&
               this.registry.accounts.includes(account) &&
+              account.authenticated &&
+              account.connectionError !== AUTH_EXPIRED &&
               fingerprint === JSON.stringify([account.configDir, account.proxy])
             ) {
               this.applyUsage(account, warmed);
@@ -644,6 +651,27 @@ export class ClaudeAccounts extends EventEmitter {
           window.resetsAt > this.now(),
       )
     );
+  }
+  async invalidateAuth(id: string, configDir?: string): Promise<void> {
+    await this.initialize();
+    await this.edit(async () => {
+      const account = this.registry.accounts.find((item) => item.accountId === id);
+      // A late result from the old owner must not invalidate newly signed-in credentials.
+      if (!account || (configDir && account.configDir !== configDir)) return;
+      if (account.connectionError === AUTH_EXPIRED) return;
+      account.authenticated = false;
+      account.connectionError = AUTH_EXPIRED;
+      account.rateLimits = unknownLimits();
+      account.modelLimits = undefined;
+      if (this.registry.autoSwitch && this.registry.currentAccountId === id) {
+        const next = this.registry.accounts
+          .filter((item) => this.eligible(item))
+          .sort(spendFirst)[0];
+        if (next) this.registry.currentAccountId = next.accountId;
+      }
+      await this.save();
+      this.emitChanged();
+    });
   }
   async setAutoSwitch(enabled: boolean): Promise<ClaudeAccountsStatus> {
     await this.initialize();
@@ -716,7 +744,7 @@ export class ClaudeAccounts extends EventEmitter {
       const account = this.account(id);
       account.proxy = proxy;
       account.proxyConfigured = true;
-      account.connectionError = null;
+      if (account.connectionError !== AUTH_EXPIRED) account.connectionError = null;
       account.rateLimits = unknownLimits();
       account.modelLimits = undefined;
       await this.save();
@@ -729,7 +757,15 @@ export class ClaudeAccounts extends EventEmitter {
     const selected =
       this.registry.currentAccountId &&
       this.registry.accounts.find((item) => item.accountId === this.registry.currentAccountId);
-    if (selected) return this.launch(selected);
+    if (selected) {
+      if (selected.connectionError === AUTH_EXPIRED)
+        throw new AppError(
+          "unavailable",
+          "Sign in to an available Claude account in settings",
+          503,
+        );
+      return this.launch(selected);
+    }
     throw new AppError("unavailable", "Add and select a Claude account first", 503);
   }
   async rotate(
@@ -1138,6 +1174,7 @@ export class ClaudeAccounts extends EventEmitter {
     }
   }
   private async checkAuth(account: SavedAccount): Promise<void> {
+    if (account.connectionError === AUTH_EXPIRED) return;
     const auth = await this.readAuth(this.launch(account));
     this.applyAuth(account, auth);
   }

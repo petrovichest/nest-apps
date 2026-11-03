@@ -47,6 +47,7 @@ export interface UiThread {
   /** Native user UUIDs for internal continuation cues, hidden only in the UI. */
   quotaContinuationIds?: string[];
   quotaRecovery?: {
+    reason?: "authentication";
     failedRunnerInstanceId: string;
     terminalSequence: number;
     failedAccountId?: string;

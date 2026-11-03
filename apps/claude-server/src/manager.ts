@@ -18,7 +18,11 @@ import {
   type ClaudePermissionMode,
   type CommandReceipt,
 } from "./types";
-import { QUOTA_CONTINUATION_MESSAGE, quotaModel } from "./quota-recovery";
+import {
+  AUTH_CONTINUATION_MESSAGE,
+  QUOTA_CONTINUATION_MESSAGE,
+  quotaModel,
+} from "./quota-recovery";
 
 const exec = promisify(execFile);
 export interface SessionLauncher {
@@ -596,6 +600,7 @@ export class SessionManager {
   async recoverQuota(
     id: string,
     recovery: {
+      reason?: "authentication";
       failedRunnerInstanceId: string;
       failedAccountId?: string;
       model?: string;
@@ -724,7 +729,10 @@ export class SessionManager {
       }
       const receipt = await connection.request<CommandReceipt>("send", {
         requestId: recovery.continuationId,
-        text: QUOTA_CONTINUATION_MESSAGE,
+        text:
+          recovery.reason === "authentication"
+            ? AUTH_CONTINUATION_MESSAGE
+            : QUOTA_CONTINUATION_MESSAGE,
       });
       return { state: "continued", receipt };
     });

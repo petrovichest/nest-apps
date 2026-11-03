@@ -1,6 +1,9 @@
 import { nativeResultInterrupted, type ClaudeModel } from "./types";
 
+/** Quota names are retained for compatibility with persisted runner/recovery state. */
 export interface NativeQuotaFailure {
+  /** Missing means quota, for compatibility with existing runner snapshots. */
+  reason?: "authentication";
   /** Sequence of the failed main result, scoped to its runner instance. */
   terminalSequence: number;
   confirmed: boolean;
@@ -11,6 +14,11 @@ export const QUOTA_CONTINUATION_MESSAGE =
   "Продолжи последнюю незавершённую задачу из сохранённой истории. " +
   "Выполнение остановилось из-за лимита аккаунта. Учитывай уже выполненные действия " +
   "и результаты инструментов; не повторяй завершённые действия.";
+
+export const AUTH_CONTINUATION_MESSAGE = QUOTA_CONTINUATION_MESSAGE.replace(
+  "из-за лимита аккаунта",
+  "из-за истёкшей авторизации аккаунта",
+);
 
 export function quotaModel(model?: string, models: ClaudeModel[] = []): string | undefined {
   const resolved = models.find((item) => item.value === (model ?? "default"))?.resolvedModel;
@@ -42,7 +50,7 @@ function resetTime(value: unknown): number {
 export function nativeQuotaFailure(
   events: Record<string, unknown>[],
   now?: number,
-): { confirmed: boolean; resetAt?: number } | undefined {
+): Omit<NativeQuotaFailure, "terminalSequence"> | undefined {
   const terminal = events.at(-1);
   if (
     !terminal ||
@@ -61,6 +69,28 @@ export function nativeQuotaFailure(
       break;
     }
   const turn = events.slice(lastResult + 1).filter(isMainNativeEvent);
+  // Only native error envelopes count, never successful assistant/tool text quoting an error.
+  const authError = (value: unknown) =>
+    typeof value === "string" &&
+    /^(?:Failed to authenticate:\s*)?OAuth (?:session|token) (?:has )?expired\b|^Not logged in[^\n]*(?:\/login|claude auth login)/i.test(
+      value.trim(),
+    );
+  if (
+    turn.some((event) => {
+      if (event.type !== "assistant") return false;
+      if (event.error === "authentication_failed") return true;
+      if (typeof event.error !== "string" || !object(event.message)) return false;
+      const content = event.message.content;
+      return (
+        authError(content) ||
+        (Array.isArray(content) &&
+          content.some((block) => object(block) && block.type === "text" && authError(block.text)))
+      );
+    }) ||
+    authError(terminal.result) ||
+    (Array.isArray(terminal.errors) && terminal.errors.some(authError))
+  )
+    return { confirmed: true, reason: "authentication" };
   const failure = [...turn]
     .reverse()
     .find((event) => event.type === "assistant" && event.error === "rate_limit");

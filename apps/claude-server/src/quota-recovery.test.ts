@@ -20,6 +20,42 @@ const assistant = {
 const result = { type: "result", is_error: true, subtype: "error_during_execution" };
 
 describe("native quota failure classification", () => {
+  it("recognizes native authentication errors, including a result-only expired OAuth session", () => {
+    expect(
+      nativeQuotaFailure([{ type: "assistant", error: "authentication_failed" }, result]),
+    ).toEqual({
+      confirmed: true,
+      reason: "authentication",
+    });
+    expect(
+      nativeQuotaFailure([
+        {
+          ...result,
+          errors: ["Failed to authenticate: OAuth session expired and could not be refreshed"],
+        },
+      ]),
+    ).toEqual({
+      confirmed: true,
+      reason: "authentication",
+    });
+  });
+  it("does not rotate for quoted auth errors, tool/subagent failures, successful or interrupted results", () => {
+    const text = "Failed to authenticate: OAuth session expired and could not be refreshed";
+    for (const event of [
+      { type: "assistant", message: { content: text } },
+      { type: "user", message: { content: text } },
+      { type: "assistant", error: "authentication_failed", parent_tool_use_id: "tool" },
+      { type: "tool_result", content: text, is_error: true },
+    ])
+      expect(nativeQuotaFailure([event, result])).toBeUndefined();
+    const auth = { type: "assistant", error: "authentication_failed" };
+    expect(nativeQuotaFailure([auth, { ...result, is_error: false }])).toBeUndefined();
+    expect(nativeQuotaFailure([auth, { ...result, claudenest_interrupted: true }])).toBeUndefined();
+    expect(nativeQuotaFailure([auth, result, { type: "user" }, result])).toBeUndefined();
+    expect(
+      nativeQuotaFailure([{ ...result, errors: ["Tool failed: OAuth session expired"] }]),
+    ).toBeUndefined();
+  });
   it("resolves the default model and excludes synthetic error-model names", () => {
     expect(
       quotaModel("default", [

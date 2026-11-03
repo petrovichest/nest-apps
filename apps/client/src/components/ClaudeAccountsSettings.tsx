@@ -149,7 +149,7 @@ export function ClaudeAccountsSettings() {
             <label htmlFor={`${headingId}-auto`}>{t("Автопереключение")}</label>
             <p>
               {t(
-                "Сначала тратится аккаунт, у которого 5-часовой лимит сбросится раньше; при лимите — другой доступный.",
+                "Сначала тратится аккаунт, у которого 5-часовой лимит сбросится раньше; при лимите или потере авторизации — другой доступный.",
               )}
             </p>
           </div>
@@ -277,7 +277,9 @@ function AccountCard({
     weeklyExhausted ||
     fiveHourExhausted;
   const label = !account.authenticated
-    ? null
+    ? account.email
+      ? t("Нужен вход")
+      : null
     : weeklyExhausted
       ? t("Недельный лимит")
       : fiveHourExhausted
@@ -311,7 +313,7 @@ function AccountCard({
             {account.plan ? formatPlan(account.plan) : t("Тариф неизвестен")}
             {label && (
               <span
-                className={`claude-account-state${weeklyExhausted || fiveHourExhausted ? " warning" : current ? " current" : " authenticated"}`}
+                className={`claude-account-state${!account.authenticated || weeklyExhausted || fiveHourExhausted ? " warning" : current ? " current" : " authenticated"}`}
               >
                 {label}
               </span>
@@ -363,7 +365,11 @@ function AccountCard({
       </div>
       {!account.authenticated ? (
         <p className="claude-account-hint" role="status">
-          {t("Войдите в аккаунт, чтобы получить лимиты.")}
+          {t(
+            account.email
+              ? "Войдите заново, чтобы вернуть аккаунт в работу."
+              : "Войдите в аккаунт, чтобы получить лимиты.",
+          )}
         </p>
       ) : usageFailed ? (
         <div className="claude-account-feedback" role="status">
@@ -404,7 +410,7 @@ function AccountCard({
         )}
         {!account.authenticated && (
           <button type="button" disabled={busy} onClick={onLogin} aria-label={t("Войти в Claude")}>
-            {t("Войти")}
+            {t(account.email ? "Войти заново" : "Войти")}
           </button>
         )}
         <button

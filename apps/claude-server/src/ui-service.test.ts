@@ -36,6 +36,7 @@ type Delivery = {
   effort?: string;
 };
 class FakeAccounts extends EventEmitter {
+  readonly invalidateAuth = vi.fn(async () => {});
   readonly accountActivityChanged = vi.fn();
   autoSwitch = true;
   available = true;
@@ -832,47 +833,75 @@ describe("Claude UI durable session facade", () => {
     expect(manager.commands.filter((command) => command.method === "release")).toHaveLength(1);
     expect(manager.sends.map((delivery) => delivery.prompt)).toEqual(["Second task"]);
   });
-  it("recovers a confirmed quota once and blocks later queued input until continuation", async () => {
+  it.each(["quota", "authentication"])(
+    "recovers %s once and blocks later queued input until continuation",
+    async (reason) => {
+      const { manager, start, reserve } = await fixture();
+      manager.accounts = new FakeAccounts();
+      manager.accepting = true;
+      const service = await start(),
+        id = await reserve(service);
+      await service.enqueue(id, {
+        clientMessageId: randomUUID(),
+        input: "Original task",
+        images: [],
+      });
+      await waitForQueue(service, id, 0);
+      manager.accounts.available = false;
+      manager.emit(id, "native", {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "rejected",
+          rateLimitType: "five_hour",
+          resetsAt: Date.now() + 60_000,
+        },
+      });
+      manager.emit(id, "native", {
+        type: "assistant",
+        error: reason === "authentication" ? "authentication_failed" : "rate_limit",
+      });
+      manager.emit(id, "native", { type: "result", is_error: true });
+      manager.emit(id, "state", { state: "idle", awaitingResult: false });
+      await expect.poll(() => service.thread(id).quotaRecovery?.state).toBe("waiting");
+      if (reason === "authentication") {
+        expect(manager.accounts.invalidateAuth).toHaveBeenCalled();
+        expect(manager.accounts.confirm).not.toHaveBeenCalled();
+        expect(service.thread(id).quotaRecovery?.reason).toBe("authentication");
+      }
+      const token = service.thread(id).quotaRecovery!.continuationId;
+      await service.enqueue(id, {
+        clientMessageId: randomUUID(),
+        input: "Later user input",
+        images: [],
+      });
+      expect(service.thread(id).queue).toHaveLength(1);
+      expect(manager.sends).toHaveLength(0);
+      manager.accounts.available = true;
+      manager.accounts.emit("changed", manager.accounts.status());
+      await expect.poll(() => service.thread(id).quotaRecovery?.state).toBe("continued");
+      expect(manager.recoveries.map((item) => item.continuationId)).toEqual([token, token]);
+      expect(manager.creates).toHaveLength(1);
+      expect(manager.sends).toHaveLength(0);
+      await service.refresh(id);
+      expect(manager.recoveries).toHaveLength(2);
+    },
+  );
+
+  it("marks an expired account even with auto-switch off", async () => {
     const { manager, start, reserve } = await fixture();
     manager.accounts = new FakeAccounts();
+    manager.accounts.autoSwitch = false;
     manager.accepting = true;
     const service = await start(),
       id = await reserve(service);
-    await service.enqueue(id, {
-      clientMessageId: randomUUID(),
-      input: "Original task",
-      images: [],
-    });
+    await service.enqueue(id, { clientMessageId: randomUUID(), input: "Task", images: [] });
     await waitForQueue(service, id, 0);
-    manager.accounts.available = false;
-    manager.emit(id, "native", {
-      type: "rate_limit_event",
-      rate_limit_info: {
-        status: "rejected",
-        rateLimitType: "five_hour",
-        resetsAt: Date.now() + 60_000,
-      },
-    });
-    manager.emit(id, "native", { type: "assistant", error: "rate_limit" });
+    manager.emit(id, "native", { type: "assistant", error: "authentication_failed" });
     manager.emit(id, "native", { type: "result", is_error: true });
     manager.emit(id, "state", { state: "idle", awaitingResult: false });
-    await expect.poll(() => service.thread(id).quotaRecovery?.state).toBe("waiting");
-    const token = service.thread(id).quotaRecovery!.continuationId;
-    await service.enqueue(id, {
-      clientMessageId: randomUUID(),
-      input: "Later user input",
-      images: [],
-    });
-    expect(service.thread(id).queue).toHaveLength(1);
-    expect(manager.sends).toHaveLength(0);
-    manager.accounts.available = true;
-    manager.accounts.emit("changed", manager.accounts.status());
-    await expect.poll(() => service.thread(id).quotaRecovery?.state).toBe("continued");
-    expect(manager.recoveries.map((item) => item.continuationId)).toEqual([token, token]);
-    expect(manager.creates).toHaveLength(1);
-    expect(manager.sends).toHaveLength(0);
-    await service.refresh(id);
-    expect(manager.recoveries).toHaveLength(2);
+    await expect.poll(() => manager.accounts!.invalidateAuth.mock.calls.length).toBeGreaterThan(0);
+    expect(service.thread(id).quotaRecovery).toBeUndefined();
+    expect(manager.recoveries).toHaveLength(0);
   });
 
   it("preserves the same recovery token across API restart and cancels quota waiting", async () => {

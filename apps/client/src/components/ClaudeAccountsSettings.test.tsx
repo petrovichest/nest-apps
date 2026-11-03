@@ -25,6 +25,17 @@ afterEach(() => {
 });
 
 describe("ClaudeAccountsSettings", () => {
+  it("marks a known signed-out account as needing login and offers sign-in", async () => {
+    mockApi(status({ accounts: [account({ authenticated: false })] }));
+    render(<ClaudeAccountsSettings />);
+    const card = await screen.findByRole("article", { name: "person@example.com" });
+    expect(within(card).getByText("Нужен вход")).toBeInTheDocument();
+    expect(
+      within(card).getByText("Войдите заново, чтобы вернуть аккаунт в работу."),
+    ).toBeInTheDocument();
+    expect(within(card).getAllByRole("button", { name: "Войти в Claude" }).at(-1)).toBeEnabled();
+    expect(within(card).queryByText("Используется")).not.toBeInTheDocument();
+  });
   it("shows and copies a saved proxy and prefills its complete editable URL", async () => {
     const url = "https://user:p%40ss%3Aword@proxy.example:8443";
     const proxy = { ...account().proxy, url };
