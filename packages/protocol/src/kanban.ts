@@ -8,6 +8,9 @@ export type KanbanStage = {
   role: KanbanStageRole | null;
 };
 export type KanbanCategory = { id: string; name: string };
+export const KANBAN_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+export type KanbanImageInput = { name: string; url: string };
+export type KanbanImage = { name: string; mediaType: string; size: number };
 export type KanbanRepositorySummary = {
   id: string;
   path: string;
@@ -23,6 +26,7 @@ export type KanbanCard = {
   title: string;
   description: string;
   categoryId: string | null;
+  image?: KanbanImage;
   stageId: string;
   classification: "pending" | "ready" | "failed";
   scope: "task" | "board";
@@ -56,7 +60,11 @@ export type KanbanBoard = {
   createdAt: number;
   updatedAt: number;
 };
-export type CreateKanbanCardRequest = { description: string; clientCreationId: string };
+export type CreateKanbanCardRequest = {
+  description: string;
+  clientCreationId: string;
+  image?: KanbanImageInput;
+};
 export type UpdateKanbanCardRequest = {
   title?: string;
   description?: string;

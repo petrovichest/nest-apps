@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KanbanRun } from "@codexnest/protocol";
 import { atomicJson, type KanbanDocument } from "./store.js";
-import { KanbanService } from "./service.js";
+import { KanbanService, type KanbanLaunch } from "./service.js";
 
 const fake = vi.hoisted(() => ({
   candidates: new Map<string, unknown[]>(),
@@ -109,6 +109,8 @@ async function fixture(available?: () => boolean) {
   const project = join(directory, "project");
   await mkdir(project);
   const launches = { codex: [] as string[], claude: [] as string[] };
+  const inputs = { codex: [] as KanbanLaunch[], claude: [] as KanbanLaunch[] };
+  const resumedInputs: { images?: string[] }[] = [];
   const resumes = { codex: [] as string[], claude: [] as string[] };
   const prompts = new Map<string, string>();
   const services = {} as Record<"codex" | "claude", KanbanService>;
@@ -121,6 +123,7 @@ async function fixture(available?: () => boolean) {
         launch: async (input) => {
           prompts.set(input.id, input.prompt);
           launches[provider].push(input.id);
+          inputs[provider].push(input);
           return {
             threadId: `${provider}-${input.id}`,
             sessionUrl: `/threads/${provider}-${input.id}`,
@@ -129,6 +132,7 @@ async function fixture(available?: () => boolean) {
         resume: async (input) => {
           prompts.set(input.id, input.prompt);
           resumes[provider].push(input.threadId);
+          resumedInputs.push(input);
         },
       },
     });
@@ -188,7 +192,19 @@ async function fixture(available?: () => boolean) {
     ).toBe(true);
     return value.id;
   }
-  return { directory, project, services, launches, resumes, prompts, running, command, card };
+  return {
+    directory,
+    project,
+    services,
+    launches,
+    inputs,
+    resumedInputs,
+    resumes,
+    prompts,
+    running,
+    command,
+    card,
+  };
 }
 
 describe("shared provider board service", () => {
@@ -250,6 +266,83 @@ describe("shared provider board service", () => {
       title: "Layout",
       classification: "ready",
     });
+  });
+  it.each(["codex", "claude"] as const)(
+    "persists images outside board JSON and delivers them on %s launch and rework",
+    async (provider) => {
+      const f = await fixture();
+      const service = f.services[provider];
+      const sibling = f.services[provider === "codex" ? "claude" : "codex"];
+      const image = {
+        name: "../screenshot.png",
+        url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aB1sAAAAASUVORK5CYII=",
+      };
+      const request = { description: "Match screenshot", clientCreationId: randomUUID(), image };
+      const created = await service.createCard(f.project, request);
+      const id = created.cards[0]!.id;
+      expect(created.cards[0]!.image).toMatchObject({ name: image.name, mediaType: "image/png" });
+      expect(JSON.stringify(created)).not.toContain(image.url);
+      expect(await sibling.readImage(f.project, id)).toEqual(image);
+      expect((await sibling.createCard(f.project, request)).cards).toHaveLength(1);
+      await expect(
+        service.createCard(f.project, { ...request, image: { ...image, name: "different.png" } }),
+      ).rejects.toThrow("different content");
+      await expect(service.createCard(f.project, { ...request, image: undefined })).rejects.toThrow(
+        "different content",
+      );
+      const classify = await f.running("classify", id, service);
+      expect(f.inputs[provider].find((input) => input.id === classify.id)?.images).toEqual([
+        image.url,
+      ]);
+      await f.command(classify, "report", { title: "Screenshot", category: "UI", scope: "task" });
+      await service.action(f.project, {
+        action: "execute",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+      });
+      const execute = await f.running("execute", id, service);
+      expect(f.inputs[provider].find((input) => input.id === execute.id)?.images).toEqual([
+        image.url,
+      ]);
+      await f.command(execute, "report", { outcome: "completed" });
+      await sibling.action(f.project, {
+        action: "rework",
+        cardIds: [id],
+        comment: "Try again",
+        clientActionId: randomUUID(),
+      });
+      await until(
+        async () => f.resumedInputs,
+        (inputs) => inputs.length === 1,
+      );
+      expect(f.resumedInputs[0]?.images).toEqual([image.url]);
+    },
+  );
+  it("rejects invalid images without creating cards and scopes image reads to the project", async () => {
+    const f = await fixture();
+    const service = f.services.codex;
+    for (const image of [
+      null,
+      {},
+      { name: "bad.svg", url: "data:image/svg+xml;base64,PHN2Zy8+" },
+      { name: "bad.png", url: "https://example.com/image.png" },
+      { name: "bad.png", url: "data:image/png;base64,AAAA" },
+      { name: "large.png", url: `data:image/png;base64,${"A".repeat(14 * 1024 * 1024)}` },
+    ]) {
+      await expect(
+        service.createCard(f.project, {
+          description: "Invalid",
+          clientCreationId: randomUUID(),
+          image,
+        } as never),
+      ).rejects.toMatchObject({ status: 400 });
+    }
+    expect((await service.read(f.project)).cards).toHaveLength(0);
+    const id = await f.card("Text only");
+    await expect(service.readImage(f.project, id)).rejects.toMatchObject({ status: 404 });
+    const other = join(f.directory, "other");
+    await mkdir(other);
+    await expect(service.readImage(other, id)).rejects.toMatchObject({ status: 404 });
   });
   it("prevents concurrent execution across providers and routes rework to the original provider", async () => {
     const f = await fixture();

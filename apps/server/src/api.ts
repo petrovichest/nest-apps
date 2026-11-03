@@ -3940,7 +3940,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           cwd: job.cwd,
           title: job.title,
         });
-        await queue.enqueue(thread.id, job.prompt, [], `kanban:${job.id}:start`);
+        await queue.enqueue(thread.id, job.prompt, job.images ?? [], `kanban:${job.id}:start`);
         void queue.drain(thread.id).catch((error: unknown) => {
           app.log.warn({ err: safeError(error), threadId: thread.id }, "Kanban delivery failed");
         });
@@ -3948,7 +3948,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       },
       async resume(job) {
         if (!projection.summary(job.threadId)) throw new ProjectNotFoundError("Session not found");
-        await queue.enqueue(job.threadId, job.prompt, [], `kanban:${job.id}:resume`);
+        await queue.enqueue(job.threadId, job.prompt, job.images ?? [], `kanban:${job.id}:resume`);
         void queue.drain(job.threadId).catch((error: unknown) => {
           app.log.warn({ err: safeError(error), threadId: job.threadId }, "Kanban delivery failed");
         });

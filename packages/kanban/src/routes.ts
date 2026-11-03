@@ -23,14 +23,14 @@ export function registerKanbanRoutes(
       return { ...run, sessionUrl: new URL(run.sessionUrl, base).href };
     }),
   });
-  const run = async (
+  const handle = async <T>(
     request: FastifyRequest,
     reply: FastifyReply,
-    operation: () => Promise<KanbanBoard>,
+    operation: () => Promise<T>,
   ) => {
     try {
       service.wake();
-      return links(await operation(), request);
+      return await operation();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Kanban operation failed";
       const status =
@@ -49,12 +49,27 @@ export function registerKanbanRoutes(
       });
     }
   };
+  const run = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    operation: () => Promise<KanbanBoard>,
+  ) => handle(request, reply, async () => links(await operation(), request));
+  app.get<{ Params: { id: string; cardId: string } }>(
+    `${root}/cards/:cardId/image`,
+    async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
+      return handle(request, reply, () =>
+        service.readImage(projectPath(request.params.id), request.params.cardId),
+      );
+    },
+  );
   app.get<{ Params: { id: string } }>(root, async (request, reply) => {
     reply.header("Cache-Control", "no-store");
     return run(request, reply, () => service.read(projectPath(request.params.id)));
   });
   app.post<{ Params: { id: string }; Body: Parameters<KanbanService["createCard"]>[1] }>(
     `${root}/cards`,
+    { bodyLimit: 15 * 1024 * 1024 },
     async (request, reply) =>
       run(request, reply, () => service.createCard(projectPath(request.params.id), request.body)),
   );

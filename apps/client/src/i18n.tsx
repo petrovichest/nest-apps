@@ -25,6 +25,10 @@ const LEGACY_INSTALLATION_KEYS = [
 const ENGLISH: Record<string, string> = {
   "Отправлено {{done}} из {{total}}": "Published {{done}} of {{total}}",
   "Доска задач": "Task board",
+  "Прикрепить изображение": "Attach image",
+  "Выберите изображение PNG, JPEG, GIF или WebP до 10 МБ":
+    "Choose a PNG, JPEG, GIF or WebP image up to 10 MB",
+  "Не удалось прочитать изображение": "Could not read the image",
   "Добавить задачу": "Add task",
   "Добавить стадию": "Add stage",
   "Без категории": "Uncategorized",

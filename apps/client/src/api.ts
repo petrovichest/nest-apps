@@ -66,6 +66,7 @@ import type {
   VoiceTranscriptionJob,
   VoiceTranscriptionMode,
   KanbanBoard,
+  KanbanImageInput,
   CreateKanbanCardRequest,
   UpdateKanbanCardRequest,
   CreateKanbanStageRequest,
@@ -416,8 +417,18 @@ export class ApiClient {
     return this.request(`/api/v1/projects/${encodeURIComponent(projectId)}/kanban/cards`, {
       method: "POST",
       body,
+      timeoutMs: body.image ? null : undefined,
       retry: true,
     });
+  }
+
+  readKanbanImage(projectId: string, cardId: string): Promise<KanbanImageInput> {
+    return this.request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/kanban/cards/${encodeURIComponent(cardId)}/image`,
+      {
+        cache: "no-store",
+      },
+    );
   }
 
   updateKanbanCard(

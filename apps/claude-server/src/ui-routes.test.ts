@@ -123,6 +123,9 @@ describe("project boards", () => {
     expect(custom.json().stages.at(-1)).toMatchObject({ name: "Waiting for operator", role: null });
     expect(state.operations).toEqual([]);
     expect((await state.app.inject(`/api/v1/projects/${project.id}/kanban`)).statusCode).toBe(401);
+    expect(
+      (await state.app.inject(`/api/v1/projects/${project.id}/kanban/cards/card/image`)).statusCode,
+    ).toBe(401);
   });
 
   it("retains normal new-session defaults and project membership in a worktree", async () => {

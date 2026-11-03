@@ -63,6 +63,9 @@ describe("project boards", () => {
     const { app, bridge, headers } = await createTeamHarness({ projectPath: repository });
     try {
       expect((await app.inject("/api/v1/projects/project/kanban")).statusCode).toBe(401);
+      expect(
+        (await app.inject("/api/v1/projects/project/kanban/cards/card/image")).statusCode,
+      ).toBe(401);
       bridge.request.mockClear();
       const response = await app.inject({ url: "/api/v1/projects/project/kanban", headers });
       expect(response.statusCode).toBe(200);

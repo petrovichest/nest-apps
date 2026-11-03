@@ -70,6 +70,7 @@ const voice: TranscriptionConfigResponse = {
   },
 };
 let api: {
+  readKanbanImage: ReturnType<typeof vi.fn>;
   readKanban: ReturnType<typeof vi.fn>;
   createKanbanCard: ReturnType<typeof vi.fn>;
   updateKanbanCard: ReturnType<typeof vi.fn>;
@@ -97,6 +98,7 @@ function show(config: TranscriptionConfigResponse | null = null) {
 }
 beforeEach(() => {
   api = {
+    readKanbanImage: vi.fn(),
     readKanban: vi.fn().mockResolvedValue(board()),
     createKanbanCard: vi.fn().mockResolvedValue(board()),
     updateKanbanCard: vi.fn().mockResolvedValue(board()),
@@ -160,6 +162,79 @@ describe("KanbanBoard", () => {
     });
   });
 
+  it("previews an image, retains it on failed creation and retries with the same identity", async () => {
+    api.createKanbanCard.mockRejectedValueOnce(new Error("Cannot save task"));
+    show();
+    await screen.findByRole("button", { name: "Task one" });
+    fireEvent.click(screen.getAllByRole("button", { name: "Добавить задачу" })[0]);
+    const dialog = screen.getByRole("dialog", { name: "Добавить задачу" });
+    fireEvent.change(within(dialog).getByLabelText("Задача"), {
+      target: { value: "Fix screenshot" },
+    });
+    const file = new File(["image bytes"], "screenshot.png", { type: "image/png" });
+    fireEvent.change(within(dialog).getByLabelText("Прикрепить изображение"), {
+      target: { files: [file] },
+    });
+    await within(dialog).findByRole("img", { name: file.name });
+    const send = within(dialog).getByRole("button", { name: "Отправить" });
+    fireEvent.click(send);
+    await within(dialog).findByText("Cannot save task");
+    const request = api.createKanbanCard.mock.calls[0][1];
+    expect(request.image).toEqual({
+      name: file.name,
+      url: "data:image/png;base64,aW1hZ2UgYnl0ZXM=",
+    });
+    expect(within(dialog).getByRole("img", { name: file.name })).toBeInTheDocument();
+    fireEvent.click(send);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(api.createKanbanCard).toHaveBeenLastCalledWith("project", request);
+  });
+  it("pastes and removes images, and rejects unsupported or oversized files", async () => {
+    show();
+    await screen.findByRole("button", { name: "Task one" });
+    fireEvent.click(screen.getAllByRole("button", { name: "Добавить задачу" })[0]);
+    const dialog = screen.getByRole("dialog", { name: "Добавить задачу" });
+    const field = within(dialog).getByLabelText("Задача");
+    fireEvent.change(field, { target: { value: "Task" } });
+    const input = within(dialog).getByLabelText("Прикрепить изображение");
+    for (const file of [
+      new File(["svg"], "bad.svg", { type: "image/svg+xml" }),
+      new File([new Uint8Array(10 * 1024 * 1024 + 1)], "large.png", { type: "image/png" }),
+    ]) {
+      fireEvent.change(input, { target: { files: [file] } });
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent("до 10 МБ");
+    }
+    const file = new File(["image"], "paste.png", { type: "image/png" });
+    fireEvent.paste(field, {
+      clipboardData: { items: [{ type: file.type, getAsFile: () => file }] },
+    });
+    await within(dialog).findByRole("img", { name: file.name });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Удалить изображение paste.png" }));
+    expect(within(dialog).queryByRole("img")).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Отправить" }));
+    await waitFor(() => expect(api.createKanbanCard).toHaveBeenCalled());
+    expect(api.createKanbanCard.mock.calls[0][1]).not.toHaveProperty("image");
+  });
+  it("loads saved images only when opening a card, without refetching on board updates", async () => {
+    const seed = board();
+    seed.cards[0].image = { name: "screenshot.png", mediaType: "image/png", size: 5 };
+    api.readKanban.mockResolvedValue(seed);
+    api.readKanbanImage
+      .mockRejectedValueOnce(new Error("Offline"))
+      .mockResolvedValue({ name: "screenshot.png", url: "data:image/png;base64,aW1hZ2U=" });
+    show();
+    const open = await screen.findByRole("button", { name: "Task one" });
+    expect(api.readKanbanImage).not.toHaveBeenCalled();
+    fireEvent.click(open);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Не удалось загрузить изображение. Повторить" }),
+    );
+    await screen.findByText("screenshot.png");
+    expect(api.readKanbanImage).toHaveBeenLastCalledWith("project", "one");
+    fireEvent.focus(window);
+    await waitFor(() => expect(api.readKanban).toHaveBeenCalledTimes(2));
+    expect(api.readKanbanImage).toHaveBeenCalledTimes(2);
+  });
   it("moves a card with the keyboard without starting or stopping a session", async () => {
     show();
     fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
