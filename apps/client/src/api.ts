@@ -70,6 +70,7 @@ import type {
   CreateKanbanCardRequest,
   UpdateKanbanCardRequest,
   CreateKanbanStageRequest,
+  UpdateKanbanStageRequest,
   KanbanActionRequest,
 } from "@codexnest/protocol";
 
@@ -450,6 +451,31 @@ export class ApiClient {
       method: "POST",
       body,
     });
+  }
+
+  deleteKanbanCard(projectId: string, cardId: string): Promise<KanbanBoard> {
+    return this.request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/kanban/cards/${encodeURIComponent(cardId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  updateKanbanStage(
+    projectId: string,
+    stageId: string,
+    body: UpdateKanbanStageRequest,
+  ): Promise<KanbanBoard> {
+    return this.request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/kanban/stages/${encodeURIComponent(stageId)}`,
+      { method: "PATCH", body },
+    );
+  }
+
+  deleteKanbanStage(projectId: string, stageId: string): Promise<KanbanBoard> {
+    return this.request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/kanban/stages/${encodeURIComponent(stageId)}`,
+      { method: "DELETE" },
+    );
   }
 
   kanbanAction(projectId: string, body: KanbanActionRequest): Promise<KanbanBoard> {

@@ -14,6 +14,7 @@ import type {
   KanbanRunKind,
   KanbanStageRole,
   UpdateKanbanCardRequest,
+  UpdateKanbanStageRequest,
 } from "@codexnest/protocol";
 import { KANBAN_IMAGE_MAX_BYTES } from "@codexnest/protocol";
 import { agentCapability, agentPrompt, installAgentHelper } from "./agent.js";
@@ -22,6 +23,7 @@ import {
   KanbanError,
   KanbanStore,
   processAlive,
+  type CardRuntime,
   type KanbanDocument,
 } from "./store.js";
 import {
@@ -31,6 +33,7 @@ import {
   prepareIntegrationWorkspace,
   validateIntegrationWorkspace,
   publishIntegrationRepository,
+  removeTaskWorkspace,
   type RepositoryResult,
   type WorkspaceRepository,
   type IntegrationWorkspace,
@@ -72,6 +75,27 @@ const text = (value: unknown, label: string, maximum = 100_000): string => {
 };
 const role = (board: KanbanBoard, value: KanbanStageRole) =>
   board.stages.find((stage) => stage.role === value)!.id;
+const AUTO_ARCHIVE_MS = 7 * 24 * 60 * 60 * 1000;
+const stageRole = (board: KanbanBoard, stageId: string) =>
+  board.stages.find((stage) => stage.id === stageId)?.role ?? null;
+/** A card that changes stage moves to the top of its new column. */
+function setStage(data: KanbanDocument, card: KanbanCard, stageId: string): void {
+  if (card.stageId === stageId) return;
+  card.stageId = stageId;
+  if (stageRole(data.board, stageId) === "done") card.doneAt = Date.now();
+  else delete card.doneAt;
+  const cards = data.board.cards;
+  cards.splice(cards.indexOf(card), 1);
+  cards.unshift(card);
+}
+const expiredDone = (board: KanbanBoard, card: KanbanCard, cutoff: number) =>
+  card.archivedAt === undefined &&
+  stageRole(board, card.stageId) === "done" &&
+  (card.doneAt ?? card.updatedAt) < cutoff;
+const activeFor = (data: KanbanDocument, cardId: string) =>
+  data.board.runs.some(
+    (run) => run.kind !== "classify" && active(run) && run.cardIds.includes(cardId),
+  );
 const findCard = (data: KanbanDocument, id: string) => {
   const card = data.board.cards.find((card) => card.id === id);
   if (!card) throw new KanbanError("not_found", "Card not found", 404);
@@ -185,7 +209,17 @@ export class KanbanService {
     }
   }
   async read(projectPath: string): Promise<KanbanBoard> {
-    return (await this.store.read(projectPath)).board;
+    const { board } = await this.store.read(projectPath);
+    if (!board.cards.some((card) => expiredDone(board, card, Date.now() - AUTO_ARCHIVE_MS)))
+      return board;
+    // Done cards leave the board after a week; the write happens once per expiry.
+    const updated = await this.store.update(projectPath, (data) => {
+      const now = Date.now();
+      for (const card of data.board.cards)
+        if (expiredDone(data.board, card, now - AUTO_ARCHIVE_MS)) card.archivedAt = now;
+    });
+    this.changed(updated.board);
+    return updated.board;
   }
   private addRun(
     data: KanbanDocument,
@@ -260,7 +294,7 @@ export class KanbanService {
         await writeFile(join(directory, card.id), image.bytes, { mode: 0o600, flag: "wx" });
         card.image = { name: image.name, mediaType: image.mediaType, size: image.bytes.length };
       }
-      data.board.cards.push(card);
+      data.board.cards.unshift(card);
       data.cards[card.id] = {};
       data.creations[key] = { fingerprint, cardId: card.id };
       this.addRun(data, "classify", [card.id]);
@@ -302,6 +336,124 @@ export class KanbanService {
     this.changed(board);
     return board;
   }
+  async updateStage(
+    projectPath: string,
+    stageId: string,
+    patch: UpdateKanbanStageRequest,
+  ): Promise<KanbanBoard> {
+    if (
+      !patch ||
+      typeof patch !== "object" ||
+      Object.keys(patch).some((key) => !["name", "description", "beforeStageId"].includes(key))
+    )
+      throw new KanbanError("invalid_request", "Invalid stage patch", 400);
+    const name = patch.name === undefined ? undefined : text(patch.name, "Stage name", 100);
+    if (
+      patch.description !== undefined &&
+      (typeof patch.description !== "string" || patch.description.length > 5000)
+    )
+      throw new KanbanError("invalid_request", "Invalid stage description", 400);
+    const { board } = await this.store.update(projectPath, (data) => {
+      const stages = data.board.stages;
+      const stage = stages.find((item) => item.id === stageId);
+      if (!stage) throw new KanbanError("not_found", "Stage not found", 404);
+      if (name !== undefined) {
+        if (
+          stages.some(
+            (item) =>
+              item.id !== stage.id && item.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+          )
+        )
+          throw new KanbanError("conflict", "A stage with this name already exists");
+        stage.name = name;
+        if (stage.role) stage.renamed = true;
+      }
+      if (patch.description !== undefined) stage.description = patch.description.trim();
+      if (patch.beforeStageId !== undefined) {
+        if (stage.role)
+          throw new KanbanError("standard_stage", "Standard stages keep their order", 400);
+        const before =
+          patch.beforeStageId === null
+            ? null
+            : stages.find((item) => item.id === patch.beforeStageId);
+        if (before === undefined || before?.id === stage.id)
+          throw new KanbanError("invalid_request", "Place the stage next to another stage", 400);
+        stages.splice(stages.indexOf(stage), 1);
+        stages.splice(before ? stages.indexOf(before) : stages.length, 0, stage);
+      }
+    });
+    this.changed(board);
+    return board;
+  }
+  async deleteStage(projectPath: string, stageId: string): Promise<KanbanBoard> {
+    const { board } = await this.store.update(projectPath, (data) => {
+      const stage = data.board.stages.find((item) => item.id === stageId);
+      if (!stage) throw new KanbanError("not_found", "Stage not found", 404);
+      if (stage.role)
+        throw new KanbanError("standard_stage", "Standard stages cannot be deleted", 400);
+      const todo = role(data.board, "todo");
+      // Moved cards keep their order at the top of To do.
+      for (const card of data.board.cards.filter((item) => item.stageId === stage.id).reverse())
+        setStage(data, card, todo);
+      data.board.stages.splice(data.board.stages.indexOf(stage), 1);
+    });
+    this.changed(board);
+    return board;
+  }
+  /** Deletes an archived task, its worktrees and this application's sessions of it. */
+  async deleteCard(projectPath: string, cardId: string): Promise<KanbanBoard> {
+    const removal: {
+      value?: {
+        boardId: string;
+        image: boolean;
+        workspace?: CardRuntime["workspace"];
+        threads: string[];
+      };
+    } = {};
+    const { board } = await this.store.update(projectPath, (data) => {
+      const card = findCard(data, cardId);
+      if (card.archivedAt === undefined)
+        throw new KanbanError("not_archived", "Move the task to the archive before deleting it");
+      if (data.board.runs.some((run) => active(run) && run.cardIds.includes(card.id)))
+        throw new KanbanError("already_running", "The task has an active session");
+      const threads: string[] = [];
+      data.board.runs = data.board.runs.filter((run) => {
+        if (!run.cardIds.includes(card.id)) return true;
+        run.cardIds = run.cardIds.filter((id) => id !== card.id);
+        if (run.cardIds.length) return true;
+        if (run.threadId && run.provider === this.options.provider) threads.push(run.threadId);
+        delete data.runs[run.id];
+        return false;
+      });
+      removal.value = {
+        boardId: data.board.id,
+        image: Boolean(card.image),
+        workspace: data.cards[card.id]?.workspace,
+        threads,
+      };
+      data.board.cards.splice(data.board.cards.indexOf(card), 1);
+      delete data.cards[card.id];
+      for (const [key, creation] of Object.entries(data.creations))
+        if (creation.cardId === card.id) delete data.creations[key];
+    });
+    const cleanup = removal.value;
+    if (cleanup) {
+      const report = (error: unknown) => this.options.onError?.(error);
+      if (cleanup.image)
+        await rm(join(this.store.directory, "images", cleanup.boardId, cardId), {
+          force: true,
+        }).catch(report);
+      if (cleanup.workspace)
+        await removeTaskWorkspace(
+          cleanup.workspace,
+          join(this.store.directory, "workspaces"),
+        ).catch(report);
+      for (const threadId of cleanup.threads)
+        await Promise.resolve(this.options.adapter.archive?.(threadId)).catch(report);
+    }
+    this.changed(board);
+    return board;
+  }
   async updateCard(
     projectPath: string,
     cardId: string,
@@ -311,7 +463,10 @@ export class KanbanService {
       !patch ||
       typeof patch !== "object" ||
       Object.keys(patch).some(
-        (key) => !["title", "description", "stageId", "categoryId"].includes(key),
+        (key) =>
+          !["title", "description", "stageId", "categoryId", "beforeCardId", "archived"].includes(
+            key,
+          ),
       )
     )
       throw new KanbanError("invalid_request", "Invalid card patch", 400);
@@ -348,7 +503,44 @@ export class KanbanService {
             "Changed repositories must be published before Done",
           );
       }
-      card.stageId = stage.id;
+      setStage(data, card, stage.id);
+    }
+    if (patch.beforeCardId !== undefined) {
+      const before =
+        patch.beforeCardId === null
+          ? null
+          : data.board.cards.find((item) => item.id === patch.beforeCardId);
+      if (
+        before === undefined ||
+        before?.id === card.id ||
+        (before && (before.stageId !== card.stageId || before.archivedAt !== undefined))
+      )
+        throw new KanbanError("invalid_request", "Place the card next to a card of its stage", 400);
+      const cards = data.board.cards;
+      cards.splice(cards.indexOf(card), 1);
+      let index = 0;
+      if (before) index = cards.indexOf(before);
+      else
+        cards.forEach((item, position) => {
+          if (item.stageId === card.stageId) index = position + 1;
+        });
+      cards.splice(index, 0, card);
+    }
+    if (patch.archived !== undefined) {
+      if (typeof patch.archived !== "boolean")
+        throw new KanbanError("invalid_request", "Invalid archive state", 400);
+      if (patch.archived) {
+        if (activeFor(data, card.id))
+          throw new KanbanError(
+            "already_running",
+            "Stop the task's active session before moving it to the archive",
+          );
+        card.archivedAt ??= Date.now();
+      } else if (card.archivedAt !== undefined) {
+        delete card.archivedAt;
+        // A restored Done card stays on the board for another week.
+        if (card.doneAt !== undefined) card.doneAt = Date.now();
+      }
     }
     card.updatedAt = Date.now();
   }
@@ -414,6 +606,8 @@ export class KanbanService {
         return;
       }
       const cards = ids.map((id) => findCard(data, id));
+      if (cards.some((card) => card.archivedAt !== undefined))
+        throw new KanbanError("archived", "Restore the task from the archive first");
       if (
         data.board.runs.some(
           (run) =>
@@ -454,7 +648,7 @@ export class KanbanService {
           repository.status = "working";
           repository.error = null;
         }
-        card.stageId = role(data.board, "working");
+        setStage(data, card, role(data.board, "working"));
         const run = this.addRun(
           data,
           "execute",
@@ -510,7 +704,7 @@ export class KanbanService {
     if (!runtime.results)
       throw new KanbanError("no_result", "The executor has not submitted a result");
     runtime.acceptedResults = structuredClone(runtime.results);
-    card.stageId = role(data.board, runtime.results.length ? "ready" : "done");
+    setStage(data, card, role(data.board, runtime.results.length ? "ready" : "done"));
     for (const repository of card.repositories) repository.status = "accepted";
     card.error = null;
   }
@@ -529,7 +723,7 @@ export class KanbanService {
           if (run.kind === "execute")
             for (const id of run.cardIds) {
               const card = findCard(data, id);
-              card.stageId = role(data.board, "working");
+              setStage(data, card, role(data.board, "working"));
               card.error = null;
             }
         } else if (state === "needsAttention") run.status = "waiting";
@@ -967,7 +1161,7 @@ export class KanbanService {
         for (const id of run.cardIds) {
           const current = findCard(data, id);
           current.error = explanation;
-          if (outcome !== "waiting") current.stageId = role(data.board, "review");
+          if (outcome !== "waiting") setStage(data, current, role(data.board, "review"));
         }
         data.runs[run.id]!.report = payload;
       });
@@ -1021,7 +1215,7 @@ export class KanbanService {
         return "publish";
       }
       own.status = "completed";
-      current.stageId = role(data.board, "review");
+      setStage(data, current, role(data.board, "review"));
       return "review";
     });
     this.changed(board);
@@ -1031,6 +1225,7 @@ export class KanbanService {
     return data.board.cards.some(
       (card) =>
         card.id !== cardId &&
+        card.archivedAt === undefined &&
         data.cards[card.id]?.executionRunId &&
         card.stageId !== role(data.board, "done"),
     );
@@ -1124,7 +1319,7 @@ export class KanbanService {
     if (run.kind === "execute" && this.otherUnfinishedCard(current, run.cardIds[0]!)) {
       const { board } = await this.store.updateById(document.board.id, (data) => {
         const card = findCard(data, run.cardIds[0]!);
-        card.stageId = role(data.board, "review");
+        setStage(data, card, role(data.board, "review"));
         delete data.cards[card.id]!.acceptedResults;
         const own = data.board.runs.find((item) => item.id === run.id)!;
         own.status = "completed";
@@ -1253,7 +1448,7 @@ export class KanbanService {
           card.repositories.length &&
           card.repositories.every((item) => item.status === "published")
         ) {
-          card.stageId = role(data.board, "done");
+          setStage(data, card, role(data.board, "done"));
           card.error = null;
         }
       }

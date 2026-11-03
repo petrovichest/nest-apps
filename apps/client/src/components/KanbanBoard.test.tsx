@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   KanbanBoard as Board,
   KanbanCard,
+  KanbanRun,
   Project,
   TranscriptionConfigResponse,
 } from "@codexnest/protocol";
@@ -77,6 +78,9 @@ let api: {
   createKanbanStage: ReturnType<typeof vi.fn>;
   kanbanAction: ReturnType<typeof vi.fn>;
   transcribe: ReturnType<typeof vi.fn>;
+  deleteKanbanCard: ReturnType<typeof vi.fn>;
+  updateKanbanStage: ReturnType<typeof vi.fn>;
+  deleteKanbanStage: ReturnType<typeof vi.fn>;
 };
 function show(
   config: TranscriptionConfigResponse | null = null,
@@ -108,6 +112,9 @@ beforeEach(() => {
     createKanbanStage: vi.fn().mockResolvedValue(board()),
     kanbanAction: vi.fn().mockResolvedValue(board()),
     transcribe: vi.fn(),
+    deleteKanbanCard: vi.fn().mockResolvedValue(board()),
+    updateKanbanStage: vi.fn().mockResolvedValue(board()),
+    deleteKanbanStage: vi.fn().mockResolvedValue(board()),
   };
   connection.mockReturnValue({ api });
   localStorage.clear();
@@ -116,6 +123,33 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+
+function transfer() {
+  const data = new Map<string, string>();
+  return {
+    effectAllowed: "all",
+    get types() {
+      return [...data.keys()];
+    },
+    setData: (type: string, value: string) => data.set(type, value),
+    getData: (type: string) => data.get(type) ?? "",
+  };
+}
+function execution(cardId: string, status: KanbanRun["status"] = "completed"): KanbanRun {
+  return {
+    id: `run-${cardId}`,
+    kind: "execute",
+    cardIds: [cardId],
+    provider: "codex",
+    threadId: `thread-${cardId}`,
+    sessionUrl: null,
+    status,
+    workspacePath: null,
+    error: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
 
 describe("KanbanBoard", () => {
   it("localizes canonical server stages by role and preserves custom names", async () => {
@@ -427,6 +461,157 @@ describe("KanbanBoard", () => {
     expect(screen.getByRole("separator", { name: "Ширина стадии «В работе»" })).not.toHaveAttribute(
       "aria-valuenow",
     );
+  });
+
+  it("runs the step's action on drop and fades stages that refuse the card", async () => {
+    show();
+    const card = (await screen.findByRole("button", { name: "Task one" })).closest("article")!;
+    const dataTransfer = transfer();
+    fireEvent.dragStart(card, { dataTransfer });
+    expect(screen.getByRole("region", { name: "Проверка" })).toHaveClass("drop-disabled");
+    expect(screen.getByRole("region", { name: "В работе" })).not.toHaveClass("drop-disabled");
+    const working = screen.getByRole("region", { name: "В работе" });
+    fireEvent.dragOver(working, { dataTransfer });
+    expect(working.querySelector(".kanban-drop-slot")).not.toBeNull();
+    fireEvent.drop(working, { dataTransfer });
+    await waitFor(() =>
+      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+        action: "execute",
+        cardIds: ["one"],
+        clientActionId: expect.any(String),
+      }),
+    );
+    expect(api.updateKanbanCard).not.toHaveBeenCalled();
+  });
+
+  it("accepts a reviewed card dropped into Ready and keeps a running card in its stage", async () => {
+    const seed = board([card("one", "review"), card("two", "working")]);
+    seed.runs.push(execution("one"), execution("two", "running"));
+    api.readKanban.mockResolvedValue(seed);
+    show();
+    const running = (await screen.findByRole("button", { name: "Task two" })).closest("article")!;
+    fireEvent.dragStart(running, { dataTransfer: transfer() });
+    expect(screen.getByRole("region", { name: "К выполнению" })).toHaveClass("drop-disabled");
+    fireEvent.dragEnd(running);
+    const reviewed = screen.getByRole("button", { name: "Task one" }).closest("article")!;
+    const dataTransfer = transfer();
+    fireEvent.dragStart(reviewed, { dataTransfer });
+    const ready = screen.getByRole("region", { name: "К объединению" });
+    fireEvent.dragOver(ready, { dataTransfer });
+    fireEvent.drop(ready, { dataTransfer });
+    await waitFor(() =>
+      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+        action: "accept",
+        cardIds: ["one"],
+        clientActionId: expect.any(String),
+      }),
+    );
+  });
+
+  it("reorders cards with Alt and the arrow keys", async () => {
+    const seed = board([card("one"), card("two"), card("three")]);
+    api.readKanban.mockResolvedValue(seed);
+    api.updateKanbanCard.mockResolvedValue(seed);
+    show();
+    fireEvent.keyDown(await screen.findByRole("button", { name: "Task three" }), {
+      key: "ArrowUp",
+      altKey: true,
+    });
+    await waitFor(() =>
+      expect(api.updateKanbanCard).toHaveBeenCalledWith("project", "three", {
+        beforeCardId: "two",
+      }),
+    );
+    fireEvent.keyDown(screen.getByRole("button", { name: "Task one" }), {
+      key: "ArrowDown",
+      altKey: true,
+    });
+    await waitFor(() =>
+      expect(api.updateKanbanCard).toHaveBeenLastCalledWith("project", "one", {
+        beforeCardId: "three",
+      }),
+    );
+  });
+
+  it("archives, restores and permanently deletes a task", async () => {
+    show();
+    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    const panel = screen.getByRole("complementary", { name: "Task one" });
+    fireEvent.click(within(panel).getByRole("button", { name: "В архив" }));
+    await waitFor(() =>
+      expect(api.updateKanbanCard).toHaveBeenCalledWith("project", "one", { archived: true }),
+    );
+    const archived = board([{ ...card("one"), archivedAt: Date.UTC(2026, 10, 3) }]);
+    api.readKanban.mockResolvedValue(archived);
+    api.updateKanbanCard.mockResolvedValue(archived);
+    fireEvent.focus(window);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Task one" })).toBeNull());
+    fireEvent.click(screen.getAllByRole("button", { name: "Архив" })[0]!);
+    const archive = screen.getByRole("complementary", { name: "Архив" });
+    expect(archive).toHaveTextContent("Task one");
+    fireEvent.click(within(archive).getByRole("button", { name: "Вернуть" }));
+    await waitFor(() =>
+      expect(api.updateKanbanCard).toHaveBeenLastCalledWith("project", "one", {
+        archived: false,
+      }),
+    );
+    fireEvent.click(within(archive).getByRole("button", { name: "Удалить навсегда" }));
+    const dialog = screen.getByRole("dialog", { name: "Удалить задачу навсегда?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Удалить навсегда" }));
+    await waitFor(() => expect(api.deleteKanbanCard).toHaveBeenCalledWith("project", "one"));
+  });
+
+  it("edits a task title in place and cancels with Escape", async () => {
+    show();
+    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    const panel = screen.getByRole("complementary", { name: "Task one" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Task one" }));
+    const field = within(panel).getByLabelText("Название");
+    fireEvent.change(field, { target: { value: "Renamed task" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() =>
+      expect(api.updateKanbanCard).toHaveBeenCalledWith("project", "one", {
+        title: "Renamed task",
+      }),
+    );
+    fireEvent.click(within(panel).getByRole("button", { name: "Description one" }));
+    fireEvent.keyDown(within(panel).getByLabelText("Описание"), { key: "Escape" });
+    expect(screen.getByRole("complementary", { name: "Task one" })).toBeInTheDocument();
+    expect(api.updateKanbanCard).toHaveBeenCalledTimes(1);
+  });
+
+  it("edits, moves and deletes a custom stage", async () => {
+    const seed = board([card("one", "custom")]);
+    seed.stages.push({ id: "custom", name: "Deploy", description: "", role: null });
+    api.readKanban.mockResolvedValue(seed);
+    api.updateKanbanStage.mockResolvedValue(seed);
+    show();
+    await screen.findByRole("region", { name: "Deploy" });
+    const menu = screen.getByLabelText("Действия со стадией «Deploy»").closest("details")!;
+    expect(within(menu).queryByRole("button", { name: "Сдвинуть вправо" })).toBeNull();
+    fireEvent.click(within(menu).getByRole("button", { name: "Сдвинуть влево" }));
+    await waitFor(() =>
+      expect(api.updateKanbanStage).toHaveBeenCalledWith("project", "custom", {
+        beforeStageId: "done",
+      }),
+    );
+    fireEvent.click(within(menu).getByRole("button", { name: "Изменить" }));
+    const dialog = screen.getByRole("dialog", { name: "Изменить стадию" });
+    expect(within(dialog).getByLabelText("Название")).toHaveValue("Deploy");
+    fireEvent.change(within(dialog).getByLabelText("Описание (необязательно)"), {
+      target: { value: "Ship manually" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Сохранить" }));
+    await waitFor(() =>
+      expect(api.updateKanbanStage).toHaveBeenLastCalledWith("project", "custom", {
+        description: "Ship manually",
+      }),
+    );
+    fireEvent.click(within(menu).getByRole("button", { name: "Удалить" }));
+    const confirm = screen.getByRole("dialog", { name: "Удалить стадию «Deploy»?" });
+    expect(confirm).toHaveTextContent("Задачи из неё (1) переедут в «К выполнению».");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Удалить стадию" }));
+    await waitFor(() => expect(api.deleteKanbanStage).toHaveBeenCalledWith("project", "custom"));
   });
 
   it("does not refresh a hidden or unmounted board", async () => {

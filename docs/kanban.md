@@ -15,9 +15,21 @@ assigns a category without asking questions. Questions about the work itself
 appear in the execution session. There is no permanent board chat.
 
 The initial stages are **To do → In progress → Review → Ready to merge → Done**.
-Additional stages have a name and an optional description. Moving a card changes
-its stage; session controls remain in the session. A move to Done cannot bypass
-the publication checks.
+Additional stages have a name and an optional description; they can be renamed,
+moved and deleted (their tasks return to To do). Standard stages can be renamed
+but keep their order.
+
+Dragging a card performs the step it represents: into In progress it starts the
+agent, from Review into Ready to merge it accepts the result, back into In
+progress it requests rework, and into Done it integrates the task. Cards move
+freely to To do and custom stages, and reorder within a stage; new and moved
+cards go to the top. A card stays put while its agent works, and agent-owned
+stages refuse drops. A move to Done cannot bypass the publication checks.
+
+Idle tasks can be moved to the archive; Done tasks move there automatically after
+seven days. Restoring brings a task back. Deleting an archived task removes its
+working copy (task branches stay) and archives its sessions in the current
+application.
 
 ## Execution and review
 

@@ -86,6 +86,28 @@ export function registerKanbanRoutes(
     async (request, reply) =>
       run(request, reply, () => service.createStage(projectPath(request.params.id), request.body)),
   );
+  app.delete<{ Params: { id: string; cardId: string } }>(
+    `${root}/cards/:cardId`,
+    async (request, reply) =>
+      run(request, reply, () =>
+        service.deleteCard(projectPath(request.params.id), request.params.cardId),
+      ),
+  );
+  app.patch<{
+    Params: { id: string; stageId: string };
+    Body: Parameters<KanbanService["updateStage"]>[2];
+  }>(`${root}/stages/:stageId`, async (request, reply) =>
+    run(request, reply, () =>
+      service.updateStage(projectPath(request.params.id), request.params.stageId, request.body),
+    ),
+  );
+  app.delete<{ Params: { id: string; stageId: string } }>(
+    `${root}/stages/:stageId`,
+    async (request, reply) =>
+      run(request, reply, () =>
+        service.deleteStage(projectPath(request.params.id), request.params.stageId),
+      ),
+  );
   app.post<{ Params: { id: string }; Body: Parameters<KanbanService["action"]>[1] }>(
     `${root}/actions`,
     async (request, reply) =>

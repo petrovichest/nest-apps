@@ -73,6 +73,7 @@ vi.mock("./workspace.js", () => ({
       };
     },
   ),
+  removeTaskWorkspace: vi.fn(async () => {}),
   validateIntegrationWorkspace: vi.fn(async (workspace: { repositories: { id: string }[] }) =>
     workspace.repositories.map((repository) => ({ repository, sha: "c".repeat(40) })),
   ),
@@ -112,6 +113,7 @@ async function fixture(available?: () => boolean) {
   const inputs = { codex: [] as KanbanLaunch[], claude: [] as KanbanLaunch[] };
   const resumedInputs: { images?: string[] }[] = [];
   const resumes = { codex: [] as string[], claude: [] as string[] };
+  const archived = { codex: [] as string[], claude: [] as string[] };
   const prompts = new Map<string, string>();
   const services = {} as Record<"codex" | "claude", KanbanService>;
   for (const provider of ["codex", "claude"] as const) {
@@ -133,6 +135,9 @@ async function fixture(available?: () => boolean) {
           prompts.set(input.id, input.prompt);
           resumes[provider].push(input.threadId);
           resumedInputs.push(input);
+        },
+        archive: async (threadId) => {
+          archived[provider].push(threadId);
         },
       },
     });
@@ -185,7 +190,8 @@ async function fixture(available?: () => boolean) {
       description,
       clientCreationId: randomUUID(),
     });
-    const value = board.cards.at(-1)!;
+    // New cards are placed at the top of To do.
+    const value = board.cards[0]!;
     const run = await running("classify", value.id);
     expect(
       (await command(run, "report", { title: description, category: "General", scope }))?.ok,
@@ -200,6 +206,7 @@ async function fixture(available?: () => boolean) {
     inputs,
     resumedInputs,
     resumes,
+    archived,
     prompts,
     running,
     command,
@@ -714,4 +721,134 @@ describe("shared provider board service", () => {
       expect(launch).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps a manual order: new and moved cards go on top, cards move within their stage", async () => {
+    const f = await fixture();
+    const create = (description: string) =>
+      f.services.codex.createCard(f.project, { description, clientCreationId: randomUUID() });
+    await create("A");
+    await create("B");
+    let board = await create("C");
+    const [c, b, a] = board.cards.map((item) => item.id);
+    expect(board.cards.map((item) => item.title)).toEqual(["C", "B", "A"]);
+    board = await f.services.codex.updateCard(f.project, a!, { beforeCardId: c! });
+    expect(board.cards.map((item) => item.title)).toEqual(["A", "C", "B"]);
+    board = await f.services.codex.updateCard(f.project, c!, { beforeCardId: null });
+    expect(board.cards.map((item) => item.title)).toEqual(["A", "B", "C"]);
+    board = await f.services.codex.createStage(f.project, { name: "Deploy" });
+    const deploy = board.stages.at(-1)!.id;
+    board = await f.services.codex.updateCard(f.project, b!, { stageId: deploy });
+    expect(board.cards.map((item) => item.title)).toEqual(["B", "A", "C"]);
+    await expect(
+      f.services.codex.updateCard(f.project, a!, { beforeCardId: b! }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("archives idle cards only, restores them and moves week-old Done cards to the archive", async () => {
+    const f = await fixture();
+    const id = await f.card("Archive me");
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const executor = await f.running("execute", id);
+    await expect(
+      f.services.codex.updateCard(f.project, id, { archived: true }),
+    ).rejects.toMatchObject({ code: "already_running" });
+    expect((await f.command(executor, "report", { outcome: "completed" }))?.ok).toBe(true);
+    let board = await f.services.codex.updateCard(f.project, id, { archived: true });
+    expect(board.cards[0]!.archivedAt).toEqual(expect.any(Number));
+    await expect(
+      f.services.claude.action(f.project, {
+        action: "rework",
+        cardIds: [id],
+        comment: "More",
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "archived" });
+    board = await f.services.codex.updateCard(f.project, id, { archived: false });
+    expect(board.cards[0]!.archivedAt).toBeUndefined();
+
+    const old = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    await f.services.codex.store.update(f.project, (data) => {
+      const card = data.board.cards[0]!;
+      card.stageId = data.board.stages.find((stage) => stage.role === "done")!.id;
+      card.doneAt = old;
+    });
+    board = await f.services.claude.read(f.project);
+    expect(board.cards[0]!.archivedAt).toBeGreaterThan(old);
+    board = await f.services.codex.updateCard(f.project, id, { archived: false });
+    expect(board.cards[0]!.doneAt).toBeGreaterThan(old);
+    expect((await f.services.codex.read(f.project)).cards[0]!.archivedAt).toBeUndefined();
+  });
+
+  it("deletes only archived cards with their worktrees and this application's sessions", async () => {
+    const workspace = await import("./workspace.js");
+    const f = await fixture();
+    const id = await f.card("Delete me");
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const executor = await f.running("execute", id);
+    expect((await f.command(executor, "report", { outcome: "completed" }))?.ok).toBe(true);
+    const task = { id: "task", projectPath: f.project, rootPath: "/w/task", repositories: [] };
+    await f.services.codex.store.update(f.project, (data) => {
+      data.cards[id]!.workspace = task;
+    });
+    await expect(f.services.codex.deleteCard(f.project, id)).rejects.toMatchObject({
+      code: "not_archived",
+    });
+    await f.services.codex.updateCard(f.project, id, { archived: true });
+    const board = await f.services.codex.deleteCard(f.project, id);
+    expect(board.cards).toEqual([]);
+    expect(board.runs.filter((run) => run.cardIds.includes(id))).toEqual([]);
+    expect(workspace.removeTaskWorkspace).toHaveBeenCalledWith(
+      task,
+      join(f.services.codex.store.directory, "workspaces"),
+    );
+    expect(f.archived.codex).toContain(executor.threadId);
+    expect(Object.keys((await f.services.codex.store.read(f.project)).cards)).toEqual([]);
+  });
+
+  it("renames, describes, reorders and deletes stages without moving standard ones", async () => {
+    const f = await fixture();
+    await f.services.codex.createStage(f.project, { name: "Deploy" });
+    let board = await f.services.codex.createStage(f.project, { name: "Later" });
+    const todo = board.stages.find((stage) => stage.role === "todo")!.id;
+    const [deploy, later] = board.stages.slice(-2).map((stage) => stage.id);
+    board = await f.services.codex.updateStage(f.project, todo, {
+      name: "Backlog",
+      description: "Ideas",
+    });
+    expect(board.stages[0]).toMatchObject({ name: "Backlog", description: "Ideas", renamed: true });
+    board = await f.services.codex.updateStage(f.project, later!, { beforeStageId: todo });
+    expect(board.stages.map((stage) => stage.name).slice(0, 2)).toEqual(["Later", "Backlog"]);
+    await expect(
+      f.services.codex.updateStage(f.project, todo, { beforeStageId: null }),
+    ).rejects.toMatchObject({ code: "standard_stage" });
+    await expect(f.services.codex.deleteStage(f.project, todo)).rejects.toMatchObject({
+      code: "standard_stage",
+    });
+    await expect(
+      f.services.codex.updateStage(f.project, deploy!, { name: "later" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await f.services.codex.createCard(f.project, {
+      description: "Keep",
+      clientCreationId: randomUUID(),
+    });
+    board = await f.services.codex.createCard(f.project, {
+      description: "Ship",
+      clientCreationId: randomUUID(),
+    });
+    await f.services.codex.updateCard(f.project, board.cards[0]!.id, { stageId: deploy! });
+    board = await f.services.codex.deleteStage(f.project, deploy!);
+    expect(board.stages.some((stage) => stage.id === deploy)).toBe(false);
+    expect(board.cards.map((card) => [card.title, card.stageId])).toEqual([
+      ["Ship", todo],
+      ["Keep", todo],
+    ]);
+  });
 });

@@ -136,6 +136,41 @@ export async function createTaskWorkspace(options: {
   return createWorkspace(options.projectPath, options.workspaceRoot, options.taskId, "task");
 }
 
+/** Removes a deleted task's worktrees and mirror. Task branches stay in their repositories. */
+export async function removeTaskWorkspace(
+  workspace: TaskWorkspace,
+  workspaceRoot: string,
+): Promise<void> {
+  const parent = resolve(workspace.rootPath, "..");
+  if (
+    parent !== resolve(workspaceRoot, `task-${safeId(workspace.id)}`) ||
+    workspace.rootPath !== join(parent, "workspace")
+  )
+    throw new WorkspaceError(
+      "workspace_mismatch",
+      "The task workspace is outside the board storage",
+    );
+  const repositories = [...workspace.repositories].sort(
+    (a, b) => b.workspacePath.length - a.workspacePath.length,
+  );
+  for (const repository of repositories) {
+    if (!within(workspace.rootPath, repository.workspacePath)) continue;
+    if (!(await exists(repository.workspacePath))) continue;
+    if (
+      !(await gitSucceeds(repository.sourcePath, [
+        "worktree",
+        "remove",
+        "--force",
+        repository.workspacePath,
+      ]))
+    )
+      await rm(repository.workspacePath, { recursive: true, force: true });
+  }
+  for (const source of new Set(repositories.map((repository) => repository.sourcePath)))
+    await gitSucceeds(source, ["worktree", "prune"]);
+  await rm(parent, { recursive: true, force: true });
+}
+
 /** Find original repositories without traversing dependency/runtime/worktree directories. */
 export async function discoverRepositories(projectPath: string): Promise<RepositoryDiscovery[]> {
   const project = await canonicalDirectory(projectPath);

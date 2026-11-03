@@ -6,6 +6,8 @@ export type KanbanStage = {
   name: string;
   description: string;
   role: KanbanStageRole | null;
+  /** A standard stage keeps its translated name until the operator renames it. */
+  renamed?: boolean;
 };
 export type KanbanCategory = { id: string; name: string };
 export const KANBAN_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
@@ -32,6 +34,9 @@ export type KanbanCard = {
   scope: "task" | "board";
   repositories: KanbanRepositorySummary[];
   error: string | null;
+  /** Set while the card sits in Done; it moves to the archive after seven days. */
+  doneAt?: number;
+  archivedAt?: number;
   createdAt: number;
   updatedAt: number;
 };
@@ -70,6 +75,15 @@ export type UpdateKanbanCardRequest = {
   description?: string;
   categoryId?: string | null;
   stageId?: string;
+  /** Places the card before another card of its stage; null places it last. */
+  beforeCardId?: string | null;
+  archived?: boolean;
+};
+export type UpdateKanbanStageRequest = {
+  name?: string;
+  description?: string;
+  /** Custom stages only: place before another stage, or last with null. */
+  beforeStageId?: string | null;
 };
 export type CreateKanbanStageRequest = { name: string; description?: string };
 export type KanbanAction =

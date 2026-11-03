@@ -40,6 +40,9 @@ function fixture() {
     createCard: vi.fn(async () => board),
     readImage: vi.fn(async () => ({ name: "shot.png", url: "data:image/png;base64,aW1hZ2U=" })),
     createStage: vi.fn(async () => board),
+    updateStage: vi.fn(async () => board),
+    deleteStage: vi.fn(async () => board),
+    deleteCard: vi.fn(async () => board),
     action: vi.fn(async () => board),
   };
   const app = Fastify();
@@ -56,6 +59,25 @@ function fixture() {
   return { app, service };
 }
 describe("shared board HTTP routes", () => {
+  it("routes stage edits, stage removal and archived task deletion to the shared board", async () => {
+    const { app, service } = fixture();
+    const base = "/api/v1/projects/local-project-id/kanban";
+    const patch = { name: "Deploy", beforeStageId: null };
+    expect(
+      (await app.inject({ method: "PATCH", url: `${base}/stages/stage`, payload: patch }))
+        .statusCode,
+    ).toBe(200);
+    expect(service.updateStage).toHaveBeenCalledWith("/shared/project", "stage", patch);
+    expect((await app.inject({ method: "DELETE", url: `${base}/stages/stage` })).statusCode).toBe(
+      200,
+    );
+    expect(service.deleteStage).toHaveBeenCalledWith("/shared/project", "stage");
+    expect((await app.inject({ method: "DELETE", url: `${base}/cards/card` })).statusCode).toBe(
+      200,
+    );
+    expect(service.deleteCard).toHaveBeenCalledWith("/shared/project", "card");
+  });
+
   it("resolves local IDs and sibling session links without baking localhost into persisted state", async () => {
     const { app, service } = fixture();
     const response = await app.inject({

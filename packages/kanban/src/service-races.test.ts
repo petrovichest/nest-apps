@@ -197,7 +197,7 @@ async function fixture() {
       description,
       clientCreationId: randomUUID(),
     });
-    const id = current.cards.at(-1)!.id;
+    const id = current.cards[0]!.id;
     expect(
       (
         await command(await running("classify", id), "report", {

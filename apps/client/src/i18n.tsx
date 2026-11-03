@@ -36,6 +36,32 @@ const ENGLISH: Record<string, string> = {
   Репозитории: "Repositories",
   Репозиторий: "Repository",
   Ветка: "Branch",
+  Ещё: "More",
+  Изменить: "Edit",
+  Описание: "Description",
+  "В архив": "Move to archive",
+  Вернуть: "Restore",
+  "Удалить навсегда": "Delete permanently",
+  "Закрыть архив": "Close archive",
+  "В архиве пока пусто. Готовые задачи попадают сюда через неделю.":
+    "The archive is empty. Done tasks move here after a week.",
+  "Остановите агента в сессии, чтобы убрать задачу в архив":
+    "Stop the agent in its session to move the task to the archive",
+  "Удалить задачу навсегда?": "Delete the task permanently?",
+  "«{{title}}» исчезнет вместе с рабочей копией. Ветки задачи останутся в репозиториях, а её сессии в этом приложении уйдут в архив сессий.":
+    "“{{title}}” will be removed with its working copy. Its branches stay in the repositories, and its sessions in this app move to the session archive.",
+  "В рабочей копии есть неопубликованные изменения, они будут потеряны.":
+    "The working copy has unpublished changes; they will be lost.",
+  "Удалить стадию «{{name}}»?": "Delete stage “{{name}}”?",
+  "Задачи из неё ({{count}}) переедут в «К выполнению».":
+    "Its tasks ({{count}}) will move to To do.",
+  "В стадии нет задач.": "The stage has no tasks.",
+  "Удалить стадию": "Delete stage",
+  "Изменить стадию": "Edit stage",
+  "Сдвинуть влево": "Move left",
+  "Сдвинуть вправо": "Move right",
+  "Название стадии": "Stage name",
+  "Добавить описание": "Add a description",
   "Прикрепить изображение": "Attach image",
   "Выберите изображение PNG, JPEG, GIF или WebP до 10 МБ":
     "Choose a PNG, JPEG, GIF or WebP image up to 10 MB",
