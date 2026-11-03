@@ -11,6 +11,7 @@ import {
   type PastedText,
 } from "@codexnest/protocol";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { KanbanService, registerKanbanRoutes } from "@nest-apps/kanban";
 import { constants, createReadStream, type Stats } from "node:fs";
 import { access, lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -547,6 +548,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   const attachments = new AttachmentStore(store.path);
   const downloadTickets = new Map<string, DownloadTicket>();
   const projectThreadCreations = new Map<string, Promise<ThreadSummary>>();
+  let wakeKanban = () => {};
   const turnStartLocks = new Map<string, Promise<unknown>>();
   const firstSessionRecoveryLocks = new Map<string, Promise<unknown>>();
   const teamParentLocks = new Map<string, Promise<unknown>>();
@@ -960,6 +962,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   function getOrCreateProjectThread(
     projectId: string,
     clientCreationId: string,
+    workspace?: { cwd: string; title: string },
   ): Promise<ThreadSummary> {
     const key = `${projectId}:${clientCreationId}`;
     const current = projectThreadCreations.get(key);
@@ -984,7 +987,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       if (!previous) {
         const params = {
           clientCreationId,
-          cwd: project.path,
+          cwd: workspace?.cwd ?? project.path,
           ...threadSettings(settings, projection.availableModels),
           developerInstructions: SESSION_ARTIFACT_INSTRUCTIONS,
           dynamicTools: ROOT_DYNAMIC_TOOLS,
@@ -1003,13 +1006,27 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       const prepared = store.view().threadCreations![clientCreationId]!;
       const response = await bridge.request<unknown>("thread/start", prepared.params);
       const started = parseThreadStart(response);
+      if (workspace) started.thread.name = workspace.title;
       if (bridge.deliveryVersion === 1)
         requireDeliveryReceipt(response, clientCreationId, started.thread.id);
       projection.upsertThread(started.thread);
       if (bridge.deliveryVersion !== 1) await projection.markUnmaterialized(started.thread.id);
       await store.update((state) => {
         state.threadCreations![clientCreationId]!.threadId = started.thread.id;
+        if (workspace) {
+          const meta = (state.threadMeta[started.thread.id] ??= {
+            pinned: false,
+            lastReadUpdatedAt: 0,
+          });
+          meta.kanbanProjectId = projectId;
+        }
       });
+      if (workspace) {
+        await bridge.request("thread/name/set", {
+          threadId: started.thread.id,
+          name: workspace.title,
+        });
+      }
       await markRootToolsAvailable(store, started.thread.id);
       if (bridge.deliveryVersion !== 1) {
         await projection.materializeEmptySession(started.thread.id);
@@ -3061,6 +3078,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       await runRecovery().catch(() => undefined);
       teamContinuationsPaused = false;
       await queue.resume();
+      wakeKanban();
       const deferred = [...deferredServerRequests.values()];
       deferredServerRequests.clear();
       for (const [request, transport] of deferred) teamRequestHandler(request, transport);
@@ -3896,6 +3914,86 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     });
     projection.publishProject(project.id);
     return reply.code(201).send(project);
+  });
+
+  const pendingKanbanArchives = new Set<string>();
+  const archiveKanbanThread = async (threadId: string) => {
+    if (projection.summary(threadId)?.currentTurnId) {
+      pendingKanbanArchives.add(threadId);
+      return;
+    }
+    pendingKanbanArchives.delete(threadId);
+    await bridge.request("thread/archive", { threadId });
+    await projection.setArchived(threadId, true);
+  };
+  const kanban = new KanbanService({
+    provider: "codex",
+    ...((process.env.NODE_ENV === "test" || process.env.VITEST) && !process.env.KANBAN_DATA_DIR
+      ? { dataDir: join(dirname(store.path), "kanban") }
+      : {}),
+    adapter: {
+      available: () => bridge.state === "ready" && (!lifecycle || lifecycle.acceptsMutations),
+      async launch(job) {
+        const project = store.view().projects.find((item) => item.path === job.projectPath);
+        if (!project) throw new ProjectNotFoundError("Project not found");
+        const thread = await getOrCreateProjectThread(project.id, `kanban:${job.id}`, {
+          cwd: job.cwd,
+          title: job.title,
+        });
+        await queue.enqueue(thread.id, job.prompt, [], `kanban:${job.id}:start`);
+        void queue.drain(thread.id).catch((error: unknown) => {
+          app.log.warn({ err: safeError(error), threadId: thread.id }, "Kanban delivery failed");
+        });
+        return { threadId: thread.id, sessionUrl: `/threads/${encodeURIComponent(thread.id)}` };
+      },
+      async resume(job) {
+        if (!projection.summary(job.threadId)) throw new ProjectNotFoundError("Session not found");
+        await queue.enqueue(job.threadId, job.prompt, [], `kanban:${job.id}:resume`);
+        void queue.drain(job.threadId).catch((error: unknown) => {
+          app.log.warn({ err: safeError(error), threadId: job.threadId }, "Kanban delivery failed");
+        });
+      },
+      async threadState(threadId) {
+        return projection.summary(threadId)?.state ?? null;
+      },
+      async archive(threadId) {
+        await archiveKanbanThread(threadId);
+      },
+    },
+  });
+  wakeKanban = () => kanban.wake();
+  bridge.on("state", wakeKanban);
+  registerKanbanRoutes(
+    app,
+    kanban,
+    (id) => {
+      const project = store.view().projects.find((item) => item.id === id);
+      if (!project) throw new ProjectNotFoundError("Project not found");
+      return project.path;
+    },
+    "codex",
+  );
+  const kanbanThreadEvent = (_sequence: number, event: ServerEvent) => {
+    if (event.type === "thread.upserted") {
+      if (pendingKanbanArchives.has(event.thread.id) && !event.thread.currentTurnId) {
+        void archiveKanbanThread(event.thread.id).catch((error: unknown) => {
+          app.log.warn(
+            { err: safeError(error) },
+            "Kanban classification session could not be archived",
+          );
+        });
+      }
+      void kanban.notifyThread(event.thread.id, event.thread.state).catch((error: unknown) => {
+        app.log.warn({ err: safeError(error) }, "Kanban session state could not be saved");
+      });
+    }
+  };
+  projection.on("event", kanbanThreadEvent);
+  app.addHook("onReady", () => kanban.initialize());
+  app.addHook("onClose", async () => {
+    projection.off("event", kanbanThreadEvent);
+    bridge.off("state", wakeKanban);
+    await kanban.close();
   });
 
   app.post<{ Params: { id: string }; Body: MoveProjectRequest }>(

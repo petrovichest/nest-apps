@@ -16,6 +16,7 @@ import type {
   UpdateUserInputDraftRequest,
 } from "@codexnest/protocol";
 import type { UiService } from "./ui-service";
+import { registerClaudeKanban } from "./kanban";
 import { BrowserExtensionError, type BrowserExtensionServer } from "./browser-extension";
 import { mergeProjectDraft, pastedText, validPastedText } from "@codexnest/protocol";
 import { emptyDraft, validateDraft } from "./ui-service";
@@ -139,6 +140,7 @@ export async function registerUiRoutes(
   ui: UiService,
   browser?: BrowserExtensionServer,
 ): Promise<() => Promise<void>> {
+  await registerClaudeKanban(app, ui);
   const accounts = ui.manager.accounts;
   const voice = new ClaudeVoiceService({
     claudeBin: ui.manager.config.claudeBin,

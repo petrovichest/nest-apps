@@ -56,6 +56,66 @@ const directories: string[] = [];
 const execFileAsync = promisify(execFile);
 const TEAM_MARKER_TEXT =
   "Continue CodexNest Team orchestration using the attached managed-task results.";
+
+describe("project boards", () => {
+  it("authenticates board access and edits shared stages without model RPC", async () => {
+    const repository = await createApiTestRepository();
+    const { app, bridge, headers } = await createTeamHarness({ projectPath: repository });
+    try {
+      expect((await app.inject("/api/v1/projects/project/kanban")).statusCode).toBe(401);
+      bridge.request.mockClear();
+      const response = await app.inject({ url: "/api/v1/projects/project/kanban", headers });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().projectPath).toBe(repository);
+      expect(response.json().stages.map((stage: { role: string }) => stage.role)).toEqual([
+        "todo",
+        "working",
+        "review",
+        "ready",
+        "done",
+      ]);
+      const edited = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/kanban/stages",
+        headers,
+        payload: { name: "Ошибки", description: "Нужно решение оператора" },
+      });
+      expect(edited.statusCode).toBe(200);
+      expect(edited.json().stages.at(-1)).toMatchObject({
+        name: "Ошибки",
+        description: "Нужно решение оператора",
+        role: null,
+      });
+      expect(bridge.request).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps an isolated session in its originating project", async () => {
+    const { app, projection, store } = await createTeamHarness();
+    try {
+      await store.update((state) => {
+        state.threadMeta["isolated-card"] = {
+          pinned: false,
+          lastReadUpdatedAt: 0,
+          kanbanProjectId: "project",
+        };
+      });
+      projection.upsertThread({
+        ...testThread(),
+        id: "isolated-card",
+        cwd: "/separate/kanban/worktree",
+      });
+      expect(projection.summary("isolated-card")).toMatchObject({
+        projectId: "project",
+        cwd: "/separate/kanban/worktree",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+});
 afterEach(async () =>
   Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
@@ -1917,7 +1977,10 @@ describe("HTTP authentication", () => {
       rootPath: directory,
       path: directory,
       parentPath: null,
-      directories: [{ name: "workspace", path: workspace }],
+      directories: [
+        { name: "kanban", path: join(directory, "kanban") },
+        { name: "workspace", path: workspace },
+      ],
     });
 
     const createdDirectory = await app.inject({

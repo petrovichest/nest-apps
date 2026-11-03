@@ -241,6 +241,8 @@ export interface CapacityRetryState {
 export interface ThreadMetaState {
   pinned: boolean;
   lastReadUpdatedAt: number;
+  /** A board session keeps its project while its cwd is an isolated worktree. */
+  kanbanProjectId?: string;
   lastViewedUpdatedAt?: number;
   lastOutcome?: ThreadOutcome;
   outcomeUpdatedAt?: number;
@@ -1192,6 +1194,7 @@ function validateState(value: unknown): CodexNestState {
       !isRecord(meta) ||
       typeof meta.pinned !== "boolean" ||
       typeof meta.lastReadUpdatedAt !== "number" ||
+      (meta.kanbanProjectId !== undefined && typeof meta.kanbanProjectId !== "string") ||
       (meta.lastViewedUpdatedAt !== undefined && typeof meta.lastViewedUpdatedAt !== "number") ||
       (meta.lastOutcome !== undefined &&
         !["completed", "failed", "interrupted"].includes(String(meta.lastOutcome))) ||

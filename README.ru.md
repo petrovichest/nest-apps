@@ -191,7 +191,8 @@ stdio остаётся простым вариантом для разработ
 - `apps/server` — authenticated API/WebSocket server и мост к Codex;
 - `apps/client` — React/Vite UI и Android-проект Capacitor;
 - `apps/extension` — отдельно собираемое расширение для управления Chrome;
-- `packages/protocol` — публичный DTO-контракт клиента и сервера; и
+- `packages/protocol` — публичный DTO-контракт клиента и сервера;
+- `packages/kanban` — [общие доски проектов](./docs/kanban.md), рабочие папки и выполнение задач; и
 - `deploy` — installer, services, proxy, STT, update и recovery artifacts.
 
 Текущая реализация и тесты определяют поведение продукта. Сгенерированные типы

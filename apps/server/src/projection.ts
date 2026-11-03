@@ -3817,7 +3817,12 @@ export class AppProjection extends EventEmitter {
       meta.lastResult === undefined ? updatedAt : (meta.lastResult?.completedAt ?? 0);
     return {
       id: cached.thread.id,
-      projectId: projectForCwd(state.projects, cached.thread.cwd)?.id ?? null,
+      projectId:
+        (meta.kanbanProjectId
+          ? state.projects.find((project) => project.id === meta.kanbanProjectId)?.id
+          : undefined) ??
+        projectForCwd(state.projects, cached.thread.cwd)?.id ??
+        null,
       title: displayThreadTitle(cached.thread),
       preview: cached.thread.preview,
       cwd: cached.thread.cwd,

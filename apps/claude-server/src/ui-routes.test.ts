@@ -102,6 +102,55 @@ async function fixture(configure?: (manager: SessionManager) => Promise<void>) {
   return { app, ui, manager, config, directory, headers, reserve, operations };
 }
 
+describe("project boards", () => {
+  it("uses the same project board routes without starting a native session for reads", async () => {
+    const state = await fixture();
+    const { project } = await state.reserve();
+    const response = await state.app.inject({
+      url: `/api/v1/projects/${project.id}/kanban`,
+      headers: state.headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().projectPath).toBe(state.directory);
+    expect(response.json().stages).toHaveLength(5);
+    const custom = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${project.id}/kanban/stages`,
+      headers: state.headers,
+      payload: { name: "Waiting for operator" },
+    });
+    expect(custom.statusCode).toBe(200);
+    expect(custom.json().stages.at(-1)).toMatchObject({ name: "Waiting for operator", role: null });
+    expect(state.operations).toEqual([]);
+    expect((await state.app.inject(`/api/v1/projects/${project.id}/kanban`)).statusCode).toBe(401);
+  });
+
+  it("retains normal new-session defaults and project membership in a worktree", async () => {
+    const state = await fixture();
+    const { project } = await state.reserve();
+    await state.ui.store.update((data) => {
+      data.taskDefaults = { model: "test-model" };
+    });
+    const id = randomUUID();
+    const result = await state.ui.createThread(project.id, id, undefined, {
+      cwd: "/isolated/task/workspace",
+      title: "Board task",
+    });
+    expect(result.thread).toMatchObject({
+      projectId: project.id,
+      cwd: "/isolated/task/workspace",
+      title: "Board task",
+      settings: { collaborationMode: "default", model: "test-model" },
+    });
+    const replay = await state.ui.createThread(project.id, id, undefined, {
+      cwd: "/isolated/task/workspace",
+      title: "Board task",
+    });
+    expect(replay.thread.id).toBe(result.thread.id);
+    expect(state.operations).toEqual([]);
+  });
+});
+
 async function attachActive(state: Awaited<ReturnType<typeof fixture>>, id: string) {
   const owner: RunnerSnapshot = {
     sessionId: id,
@@ -688,6 +737,7 @@ process.stdin.on("end", () => {
 
   it("rejects unauthenticated global WebSockets and sends one authenticated snapshot plus ordered UI events", async () => {
     const { app, config, reserve, ui } = await fixture();
+    const applicationListeners = ui.listenerCount("frame");
     const origin = "http://localhost";
     await expect(
       app.injectWS("/api/v1/ui/events", { headers: { origin: "https://unrelated.example" } }),
@@ -723,7 +773,9 @@ process.stdin.on("end", () => {
     const closed = once(socket, "close");
     socket.close();
     await closed;
-    await expect.poll(() => ui.listenerCount("frame")).toBe(0);
+    await expect.poll(() => ui.listenerCount("frame")).toBe(applicationListeners);
+    await app.close();
+    expect(ui.listenerCount("frame")).toBe(0);
   });
 
   it("preserves shared project, blank-thread, draft conflict, and durable queue contracts", async () => {

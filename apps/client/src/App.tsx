@@ -62,6 +62,7 @@ import {
 import { NewSession } from "./components/NewSession";
 import { PendingForkPage } from "./components/PendingForkPage";
 import { ProjectDialog } from "./components/ProjectDialog";
+import { KanbanBoard } from "./components/KanbanBoard";
 import {
   SettingsPage,
   type ProjectListDirection,
@@ -468,6 +469,16 @@ export function App({
           />
         ) : (
           <Routes>
+            <Route
+              path="/projects/:projectId/kanban"
+              element={
+                <KanbanBoard
+                  projects={snapshot?.projects ?? []}
+                  transcriptionConfig={transcriptionConfig}
+                  onOpenNavigation={() => setDrawer(true)}
+                />
+              }
+            />
             <Route
               path="/"
               element={
@@ -1899,6 +1910,18 @@ function Sidebar({
                           <MoreIcon />
                         </summary>
                         <div className="project-action-popover">
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              const menu = event.currentTarget.closest("details");
+                              if (menu) menu.open = false;
+                              onManualNavigationIntent();
+                              onClose();
+                              navigate(`/projects/${encodeURIComponent(group.project!.id)}/kanban`);
+                            }}
+                          >
+                            <FolderIcon /> {t("Доска задач")}
+                          </button>
                           <button
                             type="button"
                             onClick={(event) =>

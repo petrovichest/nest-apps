@@ -1344,18 +1344,27 @@ export class UiService extends EventEmitter {
     projectId: string,
     clientCreationId: string,
     draft?: UpdateThreadDraftRequest,
+    workspace?: { cwd: string; title: string },
   ): Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> {
     assertUuid(clientCreationId, "clientCreationId");
-    const fingerprint = hash({ projectId, draft: draft ?? null });
+    const fingerprint = hash({
+      projectId,
+      draft: draft ?? null,
+      ...(workspace ? { workspace } : {}),
+    });
     const previous = this.creations.get(clientCreationId);
     if (previous) {
       if (previous.fingerprint !== fingerprint)
         throw new AppError("conflict", "Creation ID was reused with different input", 409);
       return previous.promise;
     }
-    const promise = this.createThreadOnce(projectId, clientCreationId, fingerprint, draft).finally(
-      () => this.creations.delete(clientCreationId),
-    );
+    const promise = this.createThreadOnce(
+      projectId,
+      clientCreationId,
+      fingerprint,
+      draft,
+      workspace,
+    ).finally(() => this.creations.delete(clientCreationId));
     this.creations.set(clientCreationId, { fingerprint, promise });
     return promise;
   }
@@ -1364,6 +1373,7 @@ export class UiService extends EventEmitter {
     clientCreationId: string,
     fingerprint: string,
     draft?: UpdateThreadDraftRequest,
+    workspace?: { cwd: string; title: string },
   ): Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> {
     const project = this.project(projectId),
       prior = this.store.data.creations[clientCreationId];
@@ -1393,7 +1403,7 @@ export class UiService extends EventEmitter {
       await this.store.update((data) => {
         if (!data.projects.some((item) => item.id === projectId))
           throw new AppError("conflict", "Project was removed during session creation", 409);
-        const thread = blankThread(id, project.path, projectId);
+        const thread = blankThread(id, workspace?.cwd ?? project.path, projectId, workspace?.title);
         const defaultEffort = data.taskDefaults.reasoningEffort;
         const defaultModel = this.modelOptions().find(
           (item) => item.id === (data.taskDefaults.model ?? "default"),

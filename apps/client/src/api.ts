@@ -65,6 +65,11 @@ import type {
   TaskDefaults,
   VoiceTranscriptionJob,
   VoiceTranscriptionMode,
+  KanbanBoard,
+  CreateKanbanCardRequest,
+  UpdateKanbanCardRequest,
+  CreateKanbanStageRequest,
+  KanbanActionRequest,
 } from "@codexnest/protocol";
 
 import type { ConnectionSettings } from "./storage";
@@ -399,6 +404,49 @@ export class ApiClient {
 
   deleteProject(id: string): Promise<void> {
     return this.request(`/api/v1/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  readKanban(projectId: string): Promise<KanbanBoard> {
+    return this.request(`/api/v1/projects/${encodeURIComponent(projectId)}/kanban`, {
+      cache: "no-store",
+    });
+  }
+
+  createKanbanCard(projectId: string, body: CreateKanbanCardRequest): Promise<KanbanBoard> {
+    return this.request(`/api/v1/projects/${encodeURIComponent(projectId)}/kanban/cards`, {
+      method: "POST",
+      body,
+      retry: true,
+    });
+  }
+
+  updateKanbanCard(
+    projectId: string,
+    cardId: string,
+    body: UpdateKanbanCardRequest,
+  ): Promise<KanbanBoard> {
+    return this.request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/kanban/cards/${encodeURIComponent(cardId)}`,
+      {
+        method: "PATCH",
+        body,
+      },
+    );
+  }
+
+  createKanbanStage(projectId: string, body: CreateKanbanStageRequest): Promise<KanbanBoard> {
+    return this.request(`/api/v1/projects/${encodeURIComponent(projectId)}/kanban/stages`, {
+      method: "POST",
+      body,
+    });
+  }
+
+  kanbanAction(projectId: string, body: KanbanActionRequest): Promise<KanbanBoard> {
+    return this.request(`/api/v1/projects/${encodeURIComponent(projectId)}/kanban/actions`, {
+      method: "POST",
+      body,
+      retry: true,
+    });
   }
 
   createProjectThread(

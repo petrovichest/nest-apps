@@ -188,7 +188,8 @@ The repository is an npm workspace:
 - `apps/server` — authenticated API/WebSocket server and Codex bridge;
 - `apps/client` — React/Vite UI and Capacitor Android project;
 - `apps/extension` — the separately packaged Chrome browser-control extension;
-- `packages/protocol` — the public client/server DTO contract; and
+- `packages/protocol` — the public client/server DTO contract;
+- `packages/kanban` — [shared project boards](./docs/kanban.md), workspaces, and task execution; and
 - `deploy` — installer, service, proxy, STT, update, and recovery artifacts.
 
 The current implementation and tests are authoritative for product behavior.
