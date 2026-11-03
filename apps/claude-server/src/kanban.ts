@@ -21,6 +21,7 @@ export async function registerClaudeKanban(app: FastifyInstance, ui: UiService):
         });
         await ui.enqueue(thread.id, {
           input: job.prompt,
+          ...(job.images?.length ? { images: job.images } : {}),
           clientMessageId: `kanban:${job.id}:start`,
         });
         return { threadId: thread.id, sessionUrl: `/threads/${encodeURIComponent(thread.id)}` };
@@ -28,6 +29,7 @@ export async function registerClaudeKanban(app: FastifyInstance, ui: UiService):
       async resume(job) {
         await ui.enqueue(job.threadId, {
           input: job.prompt,
+          ...(job.images?.length ? { images: job.images } : {}),
           clientMessageId: `kanban:${job.id}:resume`,
         });
       },

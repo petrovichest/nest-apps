@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ClipboardEventHandler } from "react";
 import { Link, useParams } from "react-router";
 import type {
   KanbanAction,
   KanbanBoard as Board,
   KanbanCard,
+  KanbanImageInput,
   KanbanRun,
   KanbanStage,
   Project,
   TranscriptionConfigResponse,
 } from "@codexnest/protocol";
+import { KANBAN_IMAGE_MAX_BYTES } from "@codexnest/protocol";
+import { MessageImageGallery, MessageImageProvider } from "./MessageImageGallery";
 import { application } from "../application";
 import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n, type Translate } from "../i18n";
@@ -16,6 +19,7 @@ import { Dialog } from "./Dialog";
 import {
   CheckIcon,
   FolderIcon,
+  ImageIcon,
   MicrophoneIcon,
   PlusIcon,
   RefreshIcon,
@@ -401,15 +405,20 @@ export function KanbanBoard({
         <TextDialog
           error={error}
           title={t("Добавить задачу")}
+          allowImage
           label={t("Задача")}
           submitLabel={t("Отправить")}
           transcriptionConfig={transcriptionConfig}
           busy={busy}
           onClose={() => setDialog(null)}
-          onSubmit={async (description, id) => {
+          onSubmit={async (description, id, image) => {
             if (
               await mutate(() =>
-                api.createKanbanCard(projectId, { description, clientCreationId: id }),
+                api.createKanbanCard(projectId, {
+                  description,
+                  clientCreationId: id,
+                  ...(image ? { image } : {}),
+                }),
               )
             )
               setDialog(null);
@@ -461,6 +470,9 @@ export function KanbanBoard({
             </button>
           </div>
           <p className="kanban-detail-description">{card.description}</p>
+          {card.image && (
+            <CardImage key={`${projectId}:${card.id}`} projectId={projectId} cardId={card.id} />
+          )}
           <div className="kanban-detail-fields">
             <label>
               {t("Стадия")}
@@ -590,6 +602,42 @@ export function KanbanBoard({
   );
 }
 
+function CardImage({ projectId, cardId }: { projectId: string; cardId: string }) {
+  const { api } = useConnection();
+  const { t } = useI18n();
+  const [image, setImage] = useState<KanbanImageInput | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setFailed(false);
+    void api.readKanbanImage(projectId, cardId).then(
+      (value) => {
+        if (active) setImage(value);
+      },
+      () => {
+        if (active) setFailed(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [api, projectId, cardId, attempt]);
+  if (failed)
+    return (
+      <button onClick={() => setAttempt((value) => value + 1)}>
+        {t("Не удалось загрузить изображение. Повторить")}
+      </button>
+    );
+  if (!image) return <p role="status">{t("Загружаем изображение…")}</p>;
+  return (
+    <MessageImageProvider text="" images={[image.url]}>
+      <MessageImageGallery />
+      <p className="kanban-muted">{image.name}</p>
+    </MessageImageProvider>
+  );
+}
+
 function RepositoryStatus({ card, compact = false }: { card: KanbanCard; compact?: boolean }) {
   const { t } = useI18n();
   if (!card.repositories?.length) return null;
@@ -713,6 +761,7 @@ function TextDialog({
   busy,
   error,
   transcriptionConfig,
+  allowImage = false,
   onClose,
   onSubmit,
 }: {
@@ -723,25 +772,65 @@ function TextDialog({
   error: string | null;
   transcriptionConfig: TranscriptionConfigResponse | null;
   onClose(): void;
-  onSubmit(value: string, id: string): Promise<void>;
+  allowImage?: boolean;
+  onSubmit(value: string, id: string, image?: KanbanImageInput): Promise<void>;
 }) {
   const { t } = useI18n();
   const [input, setInput] = useState("");
   const [voiceBusy, setVoiceBusy] = useState(false);
   const id = useId();
   const creationId = useRef(uuid());
+  const [image, setImage] = useState<KanbanImageInput>();
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
+  const reader = useRef<FileReader | null>(null);
+  const locked = busy || voiceBusy || imageBusy;
+  useEffect(
+    () => () => {
+      reader.current?.abort();
+    },
+    [],
+  );
+  function attachImage(file: File) {
+    if (locked) return;
+    setImageError(null);
+    if (
+      !/^image\/(png|jpeg|gif|webp)$/.test(file.type) ||
+      !file.size ||
+      file.size > KANBAN_IMAGE_MAX_BYTES
+    ) {
+      setImageError(t("Выберите изображение PNG, JPEG, GIF или WebP до 10 МБ"));
+      return;
+    }
+    const next = new FileReader();
+    reader.current = next;
+    setImageBusy(true);
+    next.onload = () => {
+      if (typeof next.result === "string") {
+        setImage({ name: file.name || "image", url: next.result });
+        creationId.current = uuid();
+      } else setImageError(t("Не удалось прочитать изображение"));
+      setImageBusy(false);
+    };
+    next.onerror = () => {
+      setImageError(t("Не удалось прочитать изображение"));
+      setImageBusy(false);
+    };
+    next.readAsDataURL(file);
+  }
   return (
     <Dialog
       titleId={id}
       className="kanban-text-dialog"
-      closeOnBackdrop={!busy && !voiceBusy}
-      closeOnEscape={!busy && !voiceBusy}
+      closeOnBackdrop={!locked}
+      closeOnEscape={!locked}
       onClose={onClose}
     >
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (!busy && !voiceBusy && input.trim()) void onSubmit(input.trim(), creationId.current);
+          if (!locked && input.trim()) void onSubmit(input.trim(), creationId.current, image);
         }}
       >
         <div className="dialog-header">
@@ -750,7 +839,7 @@ function TextDialog({
             type="button"
             className="icon-button"
             aria-label={t("Закрыть")}
-            disabled={busy || voiceBusy}
+            disabled={locked}
             onClick={onClose}
           >
             <XIcon />
@@ -763,20 +852,79 @@ function TextDialog({
             setInput(value);
             creationId.current = uuid();
           }}
-          disabled={busy}
+          disabled={busy || imageBusy}
+          onPaste={
+            allowImage
+              ? (event) => {
+                  const item = Array.from(event.clipboardData.items).find((item) =>
+                    item.type.startsWith("image/"),
+                  );
+                  const file = item?.getAsFile();
+                  if (file) {
+                    event.preventDefault();
+                    attachImage(file);
+                  }
+                }
+              : undefined
+          }
           config={transcriptionConfig}
           onBusyChange={setVoiceBusy}
         />
+        {allowImage && (
+          <div className="kanban-image-field">
+            <input
+              ref={imageInput}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              aria-label={t("Прикрепить изображение")}
+              hidden
+              disabled={locked}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) attachImage(file);
+              }}
+            />
+            <button type="button" disabled={locked} onClick={() => imageInput.current?.click()}>
+              <ImageIcon />
+              {imageBusy ? t("Загружаем изображение…") : t("Прикрепить изображение")}
+            </button>
+            {image && (
+              <div className="kanban-image-preview">
+                <img src={image.url} alt={image.name} />
+                <span>{image.name}</span>
+                <button
+                  type="button"
+                  className="icon-button"
+                  disabled={locked}
+                  aria-label={t("Удалить изображение {{name}}", { name: image.name })}
+                  onClick={() => {
+                    setImage(undefined);
+                    setImageError(null);
+                    creationId.current = uuid();
+                  }}
+                >
+                  <XIcon />
+                </button>
+              </div>
+            )}
+            {imageError && (
+              <p className="kanban-card-error" role="alert">
+                {imageError}
+              </p>
+            )}
+          </div>
+        )}
         {error && (
           <p className="kanban-card-error" role="alert">
             {error}
           </p>
         )}
         <div className="dialog-actions">
-          <button type="button" disabled={busy || voiceBusy} onClick={onClose}>
+          <button type="button" disabled={locked} onClick={onClose}>
             {t("Отмена")}
           </button>
-          <button className="primary" disabled={busy || voiceBusy || !input.trim()}>
+          <button className="primary" disabled={locked || !input.trim()}>
             {busy ? t("Отправляем…") : submitLabel}
           </button>
         </div>
@@ -793,6 +941,7 @@ function VoiceTextField({
   disabled,
   config,
   onBusyChange,
+  onPaste,
 }: {
   label: string;
   value: string;
@@ -800,6 +949,7 @@ function VoiceTextField({
   disabled: boolean;
   config: TranscriptionConfigResponse | null;
   onBusyChange(value: boolean): void;
+  onPaste?: ClipboardEventHandler<HTMLTextAreaElement>;
 }) {
   const { api } = useConnection();
   const { t, language } = useI18n();
@@ -962,6 +1112,7 @@ function VoiceTextField({
         <textarea
           id={id}
           ref={textarea}
+          onPaste={onPaste}
           value={value}
           onChange={(event) => {
             selection.current = {

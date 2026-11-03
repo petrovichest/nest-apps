@@ -37,6 +37,8 @@ function fixture() {
   const service = {
     wake: vi.fn(),
     read: vi.fn(async () => board),
+    createCard: vi.fn(async () => board),
+    readImage: vi.fn(async () => ({ name: "shot.png", url: "data:image/png;base64,aW1hZ2U=" })),
     createStage: vi.fn(async () => board),
     action: vi.fn(async () => board),
   };
@@ -68,6 +70,31 @@ describe("shared board HTTP routes", () => {
     ]);
     expect((await service.read()).runs[1]!.sessionUrl).toBe("/threads/claude");
     expect(response.headers["cache-control"]).toBe("no-store");
+  });
+  it("accepts image payloads above Fastify's default limit and reads images by project and card", async () => {
+    const { app, service } = fixture();
+    const image = { name: "shot.png", url: `data:image/png;base64,${"A".repeat(1_100_000)}` };
+    const payload = { description: "Match image", clientCreationId: "creation", image };
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/local-project-id/kanban/cards",
+      payload,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(service.createCard).toHaveBeenCalledWith("/shared/project", payload);
+    const result = await app.inject("/api/v1/projects/local-project-id/kanban/cards/card/image");
+    expect(result.statusCode).toBe(200);
+    expect(result.headers["cache-control"]).toBe("no-store");
+    expect(service.readImage).toHaveBeenCalledWith("/shared/project", "card");
+    service.readImage.mockRejectedValueOnce(
+      new KanbanError("not_found", "Task image not found", 404),
+    );
+    expect(
+      (await app.inject("/api/v1/projects/local-project-id/kanban/cards/missing/image")).statusCode,
+    ).toBe(404);
+    expect((await app.inject("/api/v1/projects/missing/kanban/cards/card/image")).statusCode).toBe(
+      404,
+    );
   });
   it("supports configured sibling URLs and reports actionable service errors", async () => {
     vi.stubEnv("KANBAN_CLAUDE_URL", "https://claude.private");

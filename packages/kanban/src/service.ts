@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
-import { mkdir, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type {
   CreateKanbanCardRequest,
@@ -8,12 +8,14 @@ import type {
   KanbanActionRequest,
   KanbanBoard,
   KanbanCard,
+  KanbanImageInput,
   KanbanProvider,
   KanbanRun,
   KanbanRunKind,
   KanbanStageRole,
   UpdateKanbanCardRequest,
 } from "@codexnest/protocol";
+import { KANBAN_IMAGE_MAX_BYTES } from "@codexnest/protocol";
 import { agentCapability, agentPrompt, installAgentHelper } from "./agent.js";
 import {
   atomicJson,
@@ -39,13 +41,14 @@ export type KanbanLaunch = {
   projectPath: string;
   cwd: string;
   prompt: string;
+  images?: string[];
   kind: KanbanRunKind;
   title: string;
 };
 export type KanbanProviderAdapter = {
   available?(): boolean;
   launch(input: KanbanLaunch): Promise<{ threadId: string; sessionUrl?: string }>;
-  resume(input: { threadId: string; prompt: string; id: string }): Promise<void>;
+  resume(input: { threadId: string; prompt: string; id: string; images?: string[] }): Promise<void>;
   archive?(threadId: string): Promise<void>;
   threadState?(threadId: string): Promise<string | null> | string | null;
 };
@@ -78,6 +81,37 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 const sameResults = (a: RepositoryResult[], b: RepositoryResult[]) =>
   JSON.stringify(a.map((item) => [item.repository.id, item.sha]).sort()) ===
   JSON.stringify(b.map((item) => [item.repository.id, item.sha]).sort());
+
+function decodeImage(input: KanbanImageInput) {
+  if (!input || typeof input !== "object")
+    throw new KanbanError("invalid_request", "Invalid task image", 400);
+  const name = text(input.name, "Image name", 255);
+  const match =
+    typeof input.url === "string" &&
+    /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(input.url);
+  if (!match || match[2]!.length > Math.ceil(KANBAN_IMAGE_MAX_BYTES / 3) * 4)
+    throw new KanbanError("invalid_request", "Use a PNG, JPEG, GIF or WebP image up to 10 MB", 400);
+  const bytes = Buffer.from(match[2]!, "base64");
+  if (
+    !bytes.length ||
+    bytes.length > KANBAN_IMAGE_MAX_BYTES ||
+    bytes.toString("base64") !== match[2]
+  )
+    throw new KanbanError("invalid_request", "Invalid task image data or size", 400);
+  const mediaType = match[1]!;
+  const valid =
+    mediaType === "image/png"
+      ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      : mediaType === "image/jpeg"
+        ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+        : mediaType === "image/gif"
+          ? /^GIF8[79]a$/.test(bytes.subarray(0, 6).toString())
+          : bytes.subarray(0, 4).toString() === "RIFF" &&
+            bytes.subarray(8, 12).toString() === "WEBP";
+  if (!valid)
+    throw new KanbanError("invalid_request", "Image content does not match its type", 400);
+  return { name, mediaType, bytes };
+}
 
 export class KanbanService {
   readonly store: KanbanStore;
@@ -188,11 +222,22 @@ export class KanbanService {
     const key = text(request.clientCreationId, "clientCreationId", 512);
     if (["__proto__", "constructor", "prototype"].includes(key))
       throw new KanbanError("invalid_request", "Invalid creation identifier", 400);
-    const { board } = await this.store.update(projectPath, (data) => {
+    const image = request.image === undefined ? undefined : decodeImage(request.image);
+    // Keep the original text-only fingerprint compatible with existing retries.
+    const fingerprint = image
+      ? createHash("sha256")
+          .update(JSON.stringify([description, image.name, image.mediaType]))
+          .update(image.bytes)
+          .digest("hex")
+      : description;
+    const { board } = await this.store.update(projectPath, async (data) => {
       const prior = data.creations[key];
       if (prior) {
-        if (prior.fingerprint !== description)
-          throw new KanbanError("conflict", "Creation identifier was reused with different text");
+        if (prior.fingerprint !== fingerprint)
+          throw new KanbanError(
+            "conflict",
+            "Creation identifier was reused with different content",
+          );
         return;
       }
       const now = Date.now();
@@ -209,13 +254,29 @@ export class KanbanService {
         createdAt: now,
         updatedAt: now,
       };
+      if (image) {
+        const directory = join(this.store.directory, "images", data.board.id);
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await writeFile(join(directory, card.id), image.bytes, { mode: 0o600, flag: "wx" });
+        card.image = { name: image.name, mediaType: image.mediaType, size: image.bytes.length };
+      }
       data.board.cards.push(card);
       data.cards[card.id] = {};
-      data.creations[key] = { fingerprint: description, cardId: card.id };
+      data.creations[key] = { fingerprint, cardId: card.id };
       this.addRun(data, "classify", [card.id]);
     });
     this.changed(board);
     return board;
+  }
+  async readImage(projectPath: string, cardId: string): Promise<KanbanImageInput> {
+    const data = await this.store.read(projectPath);
+    const card = findCard(data, cardId);
+    if (!card.image) throw new KanbanError("not_found", "Task image not found", 404);
+    const bytes = await readFile(join(this.store.directory, "images", data.board.id, card.id));
+    return {
+      name: card.image.name,
+      url: `data:${card.image.mediaType};base64,${bytes.toString("base64")}`,
+    };
   }
   async createStage(projectPath: string, request: CreateKanbanStageRequest): Promise<KanbanBoard> {
     const name = text(request.name, "Stage name", 100);
@@ -604,9 +665,20 @@ export class KanbanService {
         capability,
         document.runs[runId]!.comment,
       );
+      const images = await Promise.all(
+        document.board.cards
+          .filter((card) => run.cardIds.includes(card.id) && card.image)
+          .map(async (card) => (await this.readImage(document.board.projectPath, card.id)).url),
+      );
+      const imageInput = images.length ? { images } : {};
       const resume = document.runs[runId]!.resumeThreadId;
       const launched = resume
-        ? (await this.options.adapter.resume({ threadId: resume, prompt, id: run.id }),
+        ? (await this.options.adapter.resume({
+            threadId: resume,
+            prompt,
+            id: run.id,
+            ...imageInput,
+          }),
           {
             threadId: resume,
             sessionUrl:
@@ -617,6 +689,7 @@ export class KanbanService {
             projectPath: document.board.projectPath,
             cwd,
             prompt,
+            ...imageInput,
             kind: run.kind,
             title:
               run.kind === "integrate"

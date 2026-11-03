@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { KanbanBoard } from "@codexnest/protocol";
+import type { CreateKanbanCardRequest, KanbanBoard } from "@codexnest/protocol";
 import { installVisualFixture, waitForVisualReady } from "./fixtures";
 
 function seedBoard(): KanbanBoard {
@@ -84,6 +84,12 @@ for (const width of [390, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await installVisualFixture(page, { theme });
       const board = seedBoard();
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1cAAAAASUVORK5CYII=",
+        "base64",
+      );
+      let creation: CreateKanbanCardRequest | undefined;
+      let imageReads = 0;
       await page.route("**/api/v1/projects/project-nest/kanban**", async (route) => {
         const request = route.request();
         const headers = {
@@ -92,6 +98,25 @@ for (const width of [390, 1440]) {
           "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
         };
         if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+        if (request.url().endsWith("/image")) {
+          imageReads++;
+          return route.fulfill({
+            contentType: "application/json",
+            headers,
+            body: JSON.stringify(creation!.image),
+          });
+        }
+        if (request.method() === "POST") {
+          creation = request.postDataJSON();
+          board.cards.push({
+            ...board.cards[0],
+            id: "image-task",
+            title: creation!.description,
+            description: creation!.description,
+            image: { name: creation!.image!.name, size: png.length, mediaType: "image/png" },
+          });
+          board.revision++;
+        }
         if (request.method() === "PATCH") {
           const id = new URL(request.url()).pathname.split("/").at(-1);
           const card = board.cards.find((item) => item.id === id)!;
@@ -128,7 +153,41 @@ for (const width of [390, 1440]) {
       await page.getByRole("button", { name: "Добавить задачу", exact: true }).first().click();
       await expect(page.getByRole("dialog", { name: "Добавить задачу" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Начать запись", exact: true })).toBeVisible();
+      const create = page.getByRole("dialog", { name: "Добавить задачу" });
+      await create.getByLabel("Задача", { exact: true }).fill("Исправить по скриншоту");
+      const chooser = page.waitForEvent("filechooser");
+      await create.getByRole("button", { name: "Прикрепить изображение", exact: true }).click();
+      await (
+        await chooser
+      ).setFiles({ name: "screenshot.png", mimeType: "image/png", buffer: png });
+      await expect(create.getByRole("img", { name: "screenshot.png", exact: true })).toBeVisible();
+      expect(imageReads).toBe(0);
       await page.screenshot({ path: info.outputPath(`kanban-create-${width}-${theme}.png`) });
+      await create.getByRole("button", { name: "Отправить", exact: true }).click();
+      await expect(create).toBeHidden();
+      expect(creation!.image).toEqual({
+        name: "screenshot.png",
+        url: `data:image/png;base64,${png.toString("base64")}`,
+      });
+      await page.getByRole("button", { name: "Исправить по скриншоту", exact: true }).click();
+      const saved = page.getByRole("dialog", { name: "Исправить по скриншоту" });
+      await expect(saved.getByText("screenshot.png", { exact: true })).toBeVisible();
+      const thumbnail = saved.getByRole("button", {
+        name: "Открыть изображение Изображение 1",
+        exact: true,
+      });
+      await expect(thumbnail).toBeEnabled();
+      await thumbnail.click();
+      await expect(page.locator(".chat-image-viewer")).toBeVisible();
+      // Vite runs React StrictMode, which mounts data-loading effects twice.
+      expect(imageReads).toBeLessThanOrEqual(2);
+      const reads = imageReads;
+      const refreshed = page.waitForResponse(
+        (response) => response.url().endsWith("/kanban") && response.request().method() === "GET",
+      );
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await refreshed;
+      expect(imageReads).toBe(reads);
     });
   }
 }
