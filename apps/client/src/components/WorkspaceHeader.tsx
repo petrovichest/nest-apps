@@ -27,7 +27,9 @@ export function WorkspaceHeader({
           aria-label={t("Открыть список задач")}
           onClick={onOpenNavigation}
         >
-          <PanelLeftIcon />
+          <span className="account-status-icon" aria-hidden="true">
+            <PanelLeftIcon />
+          </span>
         </button>
         {leadingIcon && (
           <span aria-hidden="true" className="workspace-title-icon">
