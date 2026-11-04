@@ -607,6 +607,11 @@
   padding: var(--space-2) var(--space-5) var(--space-6);
 }
 
+/* The body scrolls: a long description keeps its height instead of running under the fields. */
+.kanban-panel-body > * {
+  flex-shrink: 0;
+}
+
 .kanban-panel-body h2 {
   margin: 0;
   color: var(--text-strong);

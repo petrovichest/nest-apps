@@ -492,6 +492,59 @@ describe("shared provider board service", () => {
     expect(stage(board, id)).toBe("waiting");
     expect(board.cards[0]!.error).toContain("stopped");
   });
+  it("returns a finished task to work when the operator writes to its session", async () => {
+    const f = await fixture();
+    const id = await f.card("Draw the price formula");
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const run = await f.running("execute", id);
+    await f.finish(run);
+    const thread = run.threadId!;
+    await f.services.codex.notifyThread(thread, "running");
+    let board = await f.services.codex.read(f.project);
+    expect(stage(board, id)).toBe("working");
+    const continued = board.runs.at(-1)!;
+    expect(continued).toMatchObject({ kind: "execute", status: "running", threadId: thread });
+    expect(f.resumes.codex).toEqual([]);
+    await f.services.codex.notifyThread(thread, "completed");
+    board = await f.services.codex.read(f.project);
+    expect(stage(board, id)).toBe("ready");
+    expect(runOf(board, continued.id)?.status).toBe("completed");
+
+    // After a publication the next turn is new work, not another publication.
+    await f.services.codex.action(f.project, {
+      action: "publish",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    board = await f.finish(await f.running("publish", id));
+    expect(stage(board, id)).toBe("done");
+    // The application restarted meanwhile.
+    await f.services.codex.close();
+    const restarted = new KanbanService({
+      provider: "codex",
+      dataDir: join(f.directory, "shared"),
+      adapter: {
+        launch: async () => {
+          throw new Error("Nothing to launch");
+        },
+        resume: async () => undefined,
+        awaitsAnswer: async () => null,
+      },
+    });
+    await restarted.initialize();
+    cleanups.push(() => restarted.close());
+    await restarted.notifyThread(thread, "running");
+    board = await restarted.read(f.project);
+    expect(stage(board, id)).toBe("working");
+    expect(board.runs.at(-1)).toMatchObject({ kind: "execute", status: "running" });
+    await restarted.notifyThread(thread, "completed");
+    board = await restarted.read(f.project);
+    expect(stage(board, id)).toBe("ready");
+  });
   it("does not take a continued session's previous outcome for the new turn", async () => {
     const f = await fixture();
     const id = await f.card("Continue");

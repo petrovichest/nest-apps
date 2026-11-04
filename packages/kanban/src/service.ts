@@ -1035,8 +1035,12 @@ export class KanbanService {
     // Remember the initial idle state until a real turn transition arrives.
     if (state === "idle" && this.launching.has(known.runId)) return;
     let classifierFailed = false;
+    let target = known;
     const { board, result: finished } = await this.store.updateById(known.boardId, (data) => {
-      const run = data.board.runs.find((run) => run.id === known.runId);
+      // A turn the operator started in the session may have registered a new run meanwhile.
+      target = this.threads.get(threadId) ?? target;
+      let run = data.board.runs.find((run) => run.id === target.runId);
+      if (run && !active(run)) run = this.continued(data, run, threadId, state);
       if (!run || !active(run)) return false;
       const runtime = data.runs[run.id]!;
       if (run.kind === "classify") {
@@ -1097,7 +1101,36 @@ export class KanbanService {
       await Promise.resolve(this.options.adapter.archive?.(threadId)).catch((error) =>
         this.options.onError?.(error),
       );
-    if (finished) await this.settle(known, threadId, state);
+    if (finished) await this.settle(target, threadId, state);
+  }
+  /**
+   * The operator wrote to a finished task's session: the new turn is the tasks' work again, so
+   * their cards return to In progress until it ends.
+   */
+  private continued(
+    data: KanbanDocument,
+    run: KanbanRun,
+    threadId: string,
+    state: string,
+  ): KanbanRun | undefined {
+    if (
+      run.kind === "classify" ||
+      !["running", "queued"].includes(state) ||
+      // The turn already ended while the board was busy.
+      this.observedStates.get(threadId) !== state
+    )
+      return undefined;
+    const ids = run.cardIds.filter((id) => {
+      const card = data.board.cards.find((card) => card.id === id);
+      return card && card.archivedAt === undefined && taskSession(data, id)?.run === run;
+    });
+    if (!ids.length) return undefined;
+    const next = this.addRun(data, "execute", ids, run.provider, undefined, threadId);
+    next.threadId = threadId;
+    next.sessionUrl = run.sessionUrl;
+    data.runs[next.id]!.started = true;
+    this.threads.set(threadId, { boardId: data.board.id, runId: next.id });
+    return next;
   }
   /** A finished turn: the agent either waits for the operator or is done with this step. */
   private async settle(
@@ -1164,6 +1197,20 @@ export class KanbanService {
                 this.pending.delete(promise);
               });
             this.pending.add(promise);
+          }
+          // A finished task's session stays known: the operator may continue it there.
+          for (const card of document.board.cards) {
+            const session = card.archivedAt === undefined && taskSession(document, card.id);
+            if (
+              session &&
+              session.threadId &&
+              session.run.provider === this.options.provider &&
+              !this.threads.has(session.threadId)
+            )
+              this.threads.set(session.threadId, {
+                boardId: document.board.id,
+                runId: session.run.id,
+              });
           }
           for (const run of document.board.runs) {
             if (run.provider !== this.options.provider) continue;

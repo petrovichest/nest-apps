@@ -367,3 +367,38 @@ for (const width of [390, 1440]) {
     });
   }
 }
+
+for (const width of [390, 1440]) {
+  test(`kanban panel keeps a long description above its fields at ${width}px`, async ({
+    page,
+  }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    await installVisualFixture(page, { theme: "light" });
+    const board = seedBoard();
+    board.cards[3]!.description = Array.from(
+      { length: 60 },
+      (_, index) => `Строка ${index + 1}: проверено вручную и автотестами.`,
+    ).join("\n");
+    await page.route("**/api/v1/projects/project-nest/kanban**", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify(board),
+      }),
+    );
+    await page.goto("/projects/project-nest/kanban");
+    if (width < 821) await page.getByRole("tab", { name: /Готовые/ }).click();
+    await page.getByRole("button", { name: "Добавить поиск по категориям", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Добавить поиск по категориям" });
+    const description = panel.locator(".kanban-panel-description");
+    const fields = panel.locator(".kanban-panel-fields");
+    await expect(fields).toBeAttached();
+    const text = await description.boundingBox();
+    expect(await description.evaluate((node) => node.scrollHeight <= node.clientHeight + 1)).toBe(
+      true,
+    );
+    expect(text!.y + text!.height).toBeLessThanOrEqual((await fields.boundingBox())!.y);
+    await fields.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: info.outputPath(`kanban-long-description-${width}.png`) });
+  });
+}
