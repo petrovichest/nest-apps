@@ -1350,7 +1350,7 @@ export class UiService extends EventEmitter {
     projectId: string,
     clientCreationId: string,
     draft?: UpdateThreadDraftRequest,
-    workspace?: { cwd: string; title: string },
+    workspace?: { cwd: string; title: string; model?: string },
   ): Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> {
     assertUuid(clientCreationId, "clientCreationId");
     const fingerprint = hash({
@@ -1379,7 +1379,7 @@ export class UiService extends EventEmitter {
     clientCreationId: string,
     fingerprint: string,
     draft?: UpdateThreadDraftRequest,
-    workspace?: { cwd: string; title: string },
+    workspace?: { cwd: string; title: string; model?: string },
   ): Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> {
     const project = this.project(projectId),
       prior = this.store.data.creations[clientCreationId];
@@ -1410,13 +1410,12 @@ export class UiService extends EventEmitter {
         if (!data.projects.some((item) => item.id === projectId))
           throw new AppError("conflict", "Project was removed during session creation", 409);
         const thread = blankThread(id, workspace?.cwd ?? project.path, projectId, workspace?.title);
+        const model = workspace?.model ?? data.taskDefaults.model;
         const defaultEffort = data.taskDefaults.reasoningEffort;
-        const defaultModel = this.modelOptions().find(
-          (item) => item.id === (data.taskDefaults.model ?? "default"),
-        );
+        const defaultModel = this.modelOptions().find((item) => item.id === (model ?? "default"));
         thread.settings = {
           collaborationMode: "default",
-          ...(data.taskDefaults.model ? { model: data.taskDefaults.model } : {}),
+          ...(model ? { model } : {}),
           ...(defaultEffort &&
           defaultModel?.reasoningEfforts.some((option) => option.value === defaultEffort)
             ? { reasoningEffort: defaultEffort }

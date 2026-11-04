@@ -3916,6 +3916,16 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     return reply.code(201).send(project);
   });
 
+  const pendingKanbanArchives = new Set<string>();
+  const archiveKanbanThread = async (threadId: string) => {
+    if (projection.summary(threadId)?.currentTurnId) {
+      pendingKanbanArchives.add(threadId);
+      return;
+    }
+    pendingKanbanArchives.delete(threadId);
+    await bridge.request("thread/archive", { threadId });
+    await projection.setArchived(threadId, true);
+  };
   const kanbanClassifiers = new Map<string, { state: string; checked: boolean }>();
   const kanban = new KanbanService({
     provider: "codex",
@@ -3935,7 +3945,8 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         if (!project) throw new ProjectNotFoundError("Project not found");
         if (job.kind === "classify") {
           // Like title/transcript helpers, classifiers never enter the user projection or queue.
-          const settings = projection.newSessionSettings;
+          const settings =
+            classificationSettings(projection.availableModels) ?? projection.newSessionSettings;
           const { thread } = parseThreadStart(
             await bridge.request("thread/start", {
               cwd: job.cwd,
@@ -4020,6 +4031,11 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   );
   const kanbanThreadEvent = (_sequence: number, event: ServerEvent) => {
     if (event.type === "thread.upserted") {
+      if (pendingKanbanArchives.has(event.thread.id) && !event.thread.currentTurnId) {
+        void archiveKanbanThread(event.thread.id).catch((error: unknown) => {
+          app.log.warn({ err: safeError(error) }, "Kanban session could not be archived");
+        });
+      }
       void kanban.notifyThread(event.thread.id, event.thread.state).catch((error: unknown) => {
         app.log.warn({ err: safeError(error) }, "Kanban session state could not be saved");
       });
@@ -8247,6 +8263,12 @@ function managedTaskOptions(
     model: model.id,
     reasoningEffort,
   };
+}
+
+/** Task classification is a short routine step, so it runs on the fast, inexpensive Luna tier. */
+function classificationSettings(models: ModelOption[]): SessionSettings | undefined {
+  const model = models.find((candidate) => candidate.id.includes("luna"));
+  return model ? { collaborationMode: "default", model: model.id } : undefined;
 }
 
 function managedChildModel(models: ModelOption[]): ModelOption {

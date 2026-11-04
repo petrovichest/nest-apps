@@ -218,6 +218,49 @@ describe("project boards", () => {
     }
   });
 
+  it("classifies board tasks on the first Luna model instead of new-session defaults", async () => {
+    const repository = await createApiTestRepository();
+    const { app, bridge, headers, projection, store } = await createTeamHarness({
+      projectPath: repository,
+    });
+    try {
+      bridge.includeLunaModels = true;
+      await projection.sync();
+      await store.update((state) => {
+        state.taskDefaults = { model: "gpt-a", serviceTier: "fast", reasoningEffort: "high" };
+      });
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/kanban/cards",
+        headers,
+        payload: { clientCreationId: "classify-luna", description: "Classify this task" },
+      });
+      expect(created.statusCode).toBe(200);
+      await vi.waitFor(() =>
+        expect(
+          bridge.request.mock.calls.find(
+            ([method, params]) => method === "thread/start" && params.ephemeral === true,
+          )?.[1],
+        ).toMatchObject({ model: "gpt-6-luna", serviceTier: null }),
+      );
+      const classifier = bridge.request.mock.calls.find(
+        ([method, params]) => method === "thread/start" && params.ephemeral === true,
+      )![1];
+      await vi.waitFor(() =>
+        expect(bridge.request).toHaveBeenCalledWith(
+          "turn/start",
+          expect.objectContaining({ model: "gpt-6-luna", serviceTier: null }),
+        ),
+      );
+      expect(classifier).not.toHaveProperty("reasoningEffort");
+      expect(
+        projection.snapshot().threads.some((thread) => thread.settings.model === "gpt-6-luna"),
+      ).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("keeps an isolated session in its originating project", async () => {
     const { app, projection, store } = await createTeamHarness();
     try {
@@ -10196,6 +10239,7 @@ class SettingsBridge extends EventEmitter {
   managedThreads: Thread[] = [];
   threadTurns = new Map<string, Turn[]>();
   includeManagedModel = true;
+  includeLunaModels = false;
   gptAServiceTiers = [{ id: "fast", name: "Fast" }];
   managedModelServiceTiers = [{ id: "fast", name: "Fast" }];
   skills = [
@@ -10277,6 +10321,12 @@ class SettingsBridge extends EventEmitter {
           testModel("gpt-b", "low", false, []),
           ...(this.includeManagedModel
             ? [testModel("gpt-5.6-sol", "high", true, this.managedModelServiceTiers)]
+            : []),
+          ...(this.includeLunaModels
+            ? [
+                testModel("gpt-6-luna", "medium", false, []),
+                testModel("gpt-5.6-luna", "medium", false, []),
+              ]
             : []),
         ],
         nextCursor: null,
