@@ -107,7 +107,7 @@ describe("shared board HTTP routes", () => {
     const result = await app.inject("/api/v1/projects/local-project-id/kanban/cards/card/image");
     expect(result.statusCode).toBe(200);
     expect(result.headers["cache-control"]).toBe("no-store");
-    expect(service.readImage).toHaveBeenCalledWith("/shared/project", "card");
+    expect(service.readImage).toHaveBeenCalledWith("/shared/project", "card", 0);
     service.readImage.mockRejectedValueOnce(
       new KanbanError("not_found", "Task image not found", 404),
     );

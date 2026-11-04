@@ -5,7 +5,18 @@ import { join } from "node:path";
 import type { KanbanBoard, KanbanStageRole } from "@codexnest/protocol";
 import type { IntegrationWorkspace, RepositoryResult, TaskWorkspace } from "./workspace.js";
 
+/** An image saved next to the board; file is relative to the board's image directory. */
+export type StoredImage = { name: string; mediaType: string; size: number; file: string };
+/** A recording waiting for transcription: typed text and pictures sent with it. */
+export type VoiceRuntime = {
+  mediaType: string;
+  durationMs: number;
+  text: string;
+  actionId?: string;
+  images?: StoredImage[];
+};
 export type CardRuntime = {
+  voice?: VoiceRuntime;
   workspace?: TaskWorkspace;
   executionRunId?: string;
   results?: RepositoryResult[];
@@ -16,6 +27,7 @@ export type RunRuntime = {
   ownerPid?: number;
   resumeThreadId?: string;
   comment?: string;
+  images?: StoredImage[];
   workspace?: TaskWorkspace;
   integration?: IntegrationWorkspace;
   integrations?: IntegrationWorkspace[];

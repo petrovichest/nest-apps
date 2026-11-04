@@ -3,6 +3,8 @@ import type { KanbanBoard, KanbanProvider } from "@codexnest/protocol";
 import type { KanbanService } from "./service.js";
 import { KanbanError } from "./store.js";
 
+const BODY_LIMIT = 200 * 1024 * 1024;
+
 /** Both applications resolve their own project IDs to the same canonical board path. */
 export function registerKanbanRoutes(
   app: FastifyInstance,
@@ -54,12 +56,17 @@ export function registerKanbanRoutes(
     reply: FastifyReply,
     operation: () => Promise<KanbanBoard>,
   ) => handle(request, reply, async () => links(await operation(), request));
-  app.get<{ Params: { id: string; cardId: string } }>(
+  app.get<{ Params: { id: string; cardId: string }; Querystring: { index?: string } }>(
     `${root}/cards/:cardId/image`,
     async (request, reply) => {
       reply.header("Cache-Control", "no-store");
+      const index = Number(request.query.index ?? 0);
       return handle(request, reply, () =>
-        service.readImage(projectPath(request.params.id), request.params.cardId),
+        service.readImage(
+          projectPath(request.params.id),
+          request.params.cardId,
+          Number.isSafeInteger(index) && index >= 0 ? index : -1,
+        ),
       );
     },
   );
@@ -69,7 +76,8 @@ export function registerKanbanRoutes(
   });
   app.post<{ Params: { id: string }; Body: Parameters<KanbanService["createCard"]>[1] }>(
     `${root}/cards`,
-    { bodyLimit: 15 * 1024 * 1024 },
+    // Text, several images and a recording travel in one request.
+    { bodyLimit: BODY_LIMIT },
     async (request, reply) =>
       run(request, reply, () => service.createCard(projectPath(request.params.id), request.body)),
   );
@@ -110,6 +118,7 @@ export function registerKanbanRoutes(
   );
   app.post<{ Params: { id: string }; Body: Parameters<KanbanService["action"]>[1] }>(
     `${root}/actions`,
+    { bodyLimit: BODY_LIMIT },
     async (request, reply) =>
       run(request, reply, () => service.action(projectPath(request.params.id), request.body)),
   );

@@ -10,8 +10,13 @@ Column widths can be dragged and columns collapsed; Done starts collapsed. These
 choices are remembered on each device. On a phone the board shows one stage at a
 time. Task details open in a side panel.
 
-Create a card with **+**, type or dictate its description, and send it. An agent
-assigns a category without asking questions. Questions about the work itself
+Create a card with **+**: type its description, attach up to ten images (choose,
+paste or drop them) and send it. Pressing the microphone and stopping the
+recording sends the task at once with the typed text and images; the application
+that received the recording transcribes it in the background, so the app can be
+closed. The header microphone records a task without opening the dialog. A failed
+transcription can be retried from the card. Rework comments in the task panel work
+the same way. An agent assigns a category without asking questions. Questions about the work itself
 appear in the execution session. There is no permanent board chat.
 
 The initial stages are **To do → In progress → Review → Ready to merge → Done**.

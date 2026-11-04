@@ -104,7 +104,10 @@ async function until<T>(read: () => Promise<T>, predicate: (value: T) => boolean
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
-async function fixture(available?: () => boolean) {
+async function fixture(
+  available?: () => boolean,
+  transcribe?: (audio: Buffer, contentType: string, durationMs: number) => Promise<string>,
+) {
   const directory = await mkdtemp(join(tmpdir(), "kanban-service-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const project = join(directory, "project");
@@ -119,6 +122,7 @@ async function fixture(available?: () => boolean) {
   for (const provider of ["codex", "claude"] as const) {
     const service = new KanbanService({
       provider,
+      ...(transcribe ? { transcribe } : {}),
       dataDir: join(directory, "shared"),
       adapter: {
         ...(available ? { available } : {}),
@@ -287,7 +291,10 @@ describe("shared provider board service", () => {
       const request = { description: "Match screenshot", clientCreationId: randomUUID(), image };
       const created = await service.createCard(f.project, request);
       const id = created.cards[0]!.id;
-      expect(created.cards[0]!.image).toMatchObject({ name: image.name, mediaType: "image/png" });
+      expect(created.cards[0]!.images?.[0]).toMatchObject({
+        name: image.name,
+        mediaType: "image/png",
+      });
       expect(JSON.stringify(created)).not.toContain(image.url);
       expect(await sibling.readImage(f.project, id)).toEqual(image);
       expect((await sibling.createCard(f.project, request)).cards).toHaveLength(1);
@@ -850,5 +857,124 @@ describe("shared provider board service", () => {
       ["Ship", todo],
       ["Keep", todo],
     ]);
+  });
+
+  const png = {
+    name: "shot.png",
+    url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1cAAAAASUVORK5CYII=",
+  };
+  const recording = (text: string) => ({
+    mediaType: "audio/webm;codecs=opus",
+    data: Buffer.from(text).toString("base64"),
+    durationMs: 1200,
+  });
+
+  it("creates a spoken task at once, transcribes it, then classifies and passes every image", async () => {
+    const transcribe = vi.fn(async () => "Spoken details");
+    const f = await fixture(undefined, transcribe);
+    let board = await f.services.codex.createCard(f.project, {
+      description: "Typed start",
+      clientCreationId: randomUUID(),
+      images: [png, { ...png, name: "second.png" }],
+      audio: recording("voice"),
+    });
+    const id = board.cards[0]!.id;
+    expect(board.cards[0]).toMatchObject({
+      description: "Typed start",
+      voice: { purpose: "create", status: "transcribing", provider: "codex" },
+    });
+    expect(board.cards[0]!.images?.map((image) => image.name)).toEqual(["shot.png", "second.png"]);
+    expect(board.runs.filter((run) => run.kind === "classify")).toEqual([]);
+    const classifier = await f.running("classify", id);
+    board = await f.services.claude.read(f.project);
+    expect(board.cards[0]).toMatchObject({ description: "Typed start\n\nSpoken details" });
+    expect(board.cards[0]!.voice).toBeUndefined();
+    expect(transcribe).toHaveBeenCalledWith(Buffer.from("voice"), "audio/webm;codecs=opus", 1200);
+    expect((await f.services.codex.readImage(f.project, id, 1)).name).toBe("second.png");
+    expect(
+      (await f.command(classifier, "report", { title: "Spoken", category: "General" }))?.ok,
+    ).toBe(true);
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    await f.running("execute", id);
+    expect(f.inputs.codex.at(-1)?.images).toHaveLength(2);
+  });
+
+  it("keeps a failed recording retryable and refuses recordings without speech recognition", async () => {
+    const transcribe = vi
+      .fn<(audio: Buffer, contentType: string, durationMs: number) => Promise<string>>()
+      .mockRejectedValueOnce(new Error("Recognizer offline"))
+      .mockResolvedValue("Second try");
+    const f = await fixture(undefined, transcribe);
+    let board = await f.services.codex.createCard(f.project, {
+      description: "",
+      clientCreationId: randomUUID(),
+      audio: recording("voice"),
+    });
+    const id = board.cards[0]!.id;
+    board = await until(
+      () => f.services.codex.read(f.project),
+      (current) => current.cards[0]?.voice?.status === "failed",
+    );
+    expect(board.cards[0]!.voice?.error).toBe("Recognizer offline");
+    await expect(
+      f.services.codex.action(f.project, {
+        action: "execute",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "voice_pending" });
+    await f.services.codex.action(f.project, {
+      action: "retry-transcription",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    await f.running("classify", id);
+    expect((await f.services.codex.read(f.project)).cards[0]!.title).toBe("Second try");
+
+    const plain = await fixture();
+    await expect(
+      plain.services.codex.createCard(plain.project, {
+        description: "",
+        clientCreationId: randomUUID(),
+        audio: recording("voice"),
+      }),
+    ).rejects.toMatchObject({ code: "transcription_unavailable" });
+  });
+
+  it("transcribes a spoken rework comment and resumes the original session with its images", async () => {
+    const transcribe = vi.fn(async () => "Also handle the empty state");
+    const f = await fixture(undefined, transcribe);
+    const id = await f.card("Fix the list");
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const executor = await f.running("execute", id);
+    expect((await f.command(executor, "report", { outcome: "completed" }))?.ok).toBe(true);
+    const board = await f.services.claude.action(f.project, {
+      action: "rework",
+      cardIds: [id],
+      comment: "Keep the header",
+      images: [png],
+      audio: recording("rework"),
+      clientActionId: randomUUID(),
+    });
+    expect(board.cards[0]!.voice).toMatchObject({ purpose: "rework", provider: "claude" });
+    const rework = await until(
+      () => f.services.codex.read(f.project),
+      (current) =>
+        current.runs.filter((run) => run.kind === "execute" && run.cardIds.includes(id)).length ===
+        2,
+    );
+    expect(rework.cards[0]!.voice).toBeUndefined();
+    const resumed = await f.running("execute", id);
+    expect(resumed.threadId).toBe(executor.threadId);
+    expect(f.prompts.get(resumed.id)).toContain("Keep the header\n\nAlso handle the empty state");
+    expect(f.resumedInputs.at(-1)?.images).toHaveLength(1);
   });
 });

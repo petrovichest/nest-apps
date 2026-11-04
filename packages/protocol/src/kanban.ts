@@ -13,6 +13,16 @@ export type KanbanCategory = { id: string; name: string };
 export const KANBAN_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 export type KanbanImageInput = { name: string; url: string };
 export type KanbanImage = { name: string; mediaType: string; size: number };
+export const KANBAN_IMAGE_LIMIT = 10;
+export const KANBAN_AUDIO_MAX_BYTES = 24 * 1024 * 1024;
+/** A recording sent with a task or a rework comment; the server transcribes it. */
+export type KanbanAudioInput = { mediaType: string; data: string; durationMs: number };
+export type KanbanVoiceState = {
+  purpose: "create" | "rework";
+  status: "transcribing" | "failed";
+  error: string | null;
+  provider: KanbanProvider;
+};
 export type KanbanRepositorySummary = {
   id: string;
   path: string;
@@ -28,7 +38,11 @@ export type KanbanCard = {
   title: string;
   description: string;
   categoryId: string | null;
+  /** Legacy single image; new cards use images. */
   image?: KanbanImage;
+  images?: KanbanImage[];
+  /** Present while a recording for this card is being transcribed or has failed. */
+  voice?: KanbanVoiceState;
   stageId: string;
   classification: "pending" | "ready" | "failed";
   scope: "task" | "board";
@@ -66,9 +80,12 @@ export type KanbanBoard = {
   updatedAt: number;
 };
 export type CreateKanbanCardRequest = {
+  /** May be empty when a recording carries the task. */
   description: string;
   clientCreationId: string;
   image?: KanbanImageInput;
+  images?: KanbanImageInput[];
+  audio?: KanbanAudioInput;
 };
 export type UpdateKanbanCardRequest = {
   title?: string;
@@ -87,10 +104,19 @@ export type UpdateKanbanStageRequest = {
 };
 export type CreateKanbanStageRequest = { name: string; description?: string };
 export type KanbanAction =
-  "execute" | "review" | "accept" | "rework" | "integrate" | "retry-classification";
+  | "execute"
+  | "review"
+  | "accept"
+  | "rework"
+  | "integrate"
+  | "retry-classification"
+  | "retry-transcription";
 export type KanbanActionRequest = {
   action: KanbanAction;
   cardIds: string[];
   comment?: string;
+  /** Rework only: pictures for the executor and a recording appended to the comment. */
+  images?: KanbanImageInput[];
+  audio?: KanbanAudioInput;
   clientActionId: string;
 };

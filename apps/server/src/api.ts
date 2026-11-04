@@ -3928,6 +3928,12 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   };
   const kanban = new KanbanService({
     provider: "codex",
+    ...(services.transcription
+      ? {
+          transcribe: (audio: Buffer, contentType: string) =>
+            services.transcription!.transcribe(audio, contentType),
+        }
+      : {}),
     ...((process.env.NODE_ENV === "test" || process.env.VITEST) && !process.env.KANBAN_DATA_DIR
       ? { dataDir: join(dirname(store.path), "kanban") }
       : {}),

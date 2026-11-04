@@ -140,7 +140,6 @@ export async function registerUiRoutes(
   ui: UiService,
   browser?: BrowserExtensionServer,
 ): Promise<() => Promise<void>> {
-  await registerClaudeKanban(app, ui);
   const accounts = ui.manager.accounts;
   const voice = new ClaudeVoiceService({
     claudeBin: ui.manager.config.claudeBin,
@@ -163,6 +162,7 @@ export async function registerUiRoutes(
     },
   });
   await voice.readSettings();
+  await registerClaudeKanban(app, ui, voice);
   const jobs = new UiVoiceJobs(ui, voice);
   await jobs.initialize();
   const syncTranscriptions = new AbortController();

@@ -3,10 +3,21 @@ import type { FastifyInstance } from "fastify";
 import type { ServerFrame } from "@codexnest/protocol";
 import { KanbanService, registerKanbanRoutes } from "@nest-apps/kanban";
 import type { UiService } from "./ui-service";
+import type { ClaudeVoiceService } from "./voice";
 
-export async function registerClaudeKanban(app: FastifyInstance, ui: UiService): Promise<void> {
+export async function registerClaudeKanban(
+  app: FastifyInstance,
+  ui: UiService,
+  voice?: Pick<ClaudeVoiceService, "transcribe">,
+): Promise<void> {
   const service = new KanbanService({
     provider: "claude",
+    ...(voice
+      ? {
+          transcribe: (audio: Buffer, contentType: string, durationMs: number) =>
+            voice.transcribe(audio, contentType, undefined, { audioDurationMs: durationMs }),
+        }
+      : {}),
     ...((process.env.NODE_ENV === "test" || process.env.VITEST) && !process.env.KANBAN_DATA_DIR
       ? { dataDir: join(dirname(ui.store.path), "kanban") }
       : {}),

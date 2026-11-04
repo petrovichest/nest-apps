@@ -6,12 +6,12 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type ClipboardEventHandler,
   type ReactNode,
 } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import type {
   KanbanAction,
+  KanbanAudioInput,
   KanbanBoard as Board,
   KanbanCard,
   KanbanImageInput,
@@ -20,7 +20,7 @@ import type {
   Project,
   TranscriptionConfigResponse,
 } from "@codexnest/protocol";
-import { KANBAN_IMAGE_MAX_BYTES } from "@codexnest/protocol";
+import { KANBAN_IMAGE_LIMIT, KANBAN_IMAGE_MAX_BYTES } from "@codexnest/protocol";
 import { MessageImageGallery, MessageImageProvider } from "./MessageImageGallery";
 import { application } from "../application";
 import { useConnection } from "../connection";
@@ -48,7 +48,6 @@ import {
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import {
   formatRecordingTime,
-  insertTranscriptAtSelection,
   microphoneUnavailableReason,
   recordingErrorMessage,
   recordingMimeType,
@@ -134,7 +133,7 @@ const cardActiveOn = (board: Board, cardId: string) =>
 /** A drop runs the same action as the button for that step; agent-owned stages refuse drops. */
 function dropRule(board: Board, card: KanbanCard, target: KanbanStage): DropRule | null {
   if (card.stageId === target.id) return "reorder";
-  if (cardActiveOn(board, card.id)) return null;
+  if (card.voice || cardActiveOn(board, card.id)) return null;
   const from = board.stages.find((stage) => stage.id === card.stageId)?.role ?? null;
   const executed = board.runs.some(
     (run) => run.kind === "execute" && run.cardIds.includes(card.id),
@@ -183,7 +182,7 @@ export function KanbanBoard({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [dialog, setDialog] = useState<"create" | "stage" | "rework" | null>(null);
+  const [dialog, setDialog] = useState<"create" | "stage" | null>(null);
   const [cardId, setCardId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [category, setCategory] = useState("");
@@ -200,6 +199,7 @@ export function KanbanBoard({
     beforeCardId: string | null;
   } | null>(null);
   const [stageDrag, setStageDrag] = useState<string | null>(null);
+  const [headerRetry, setHeaderRetry] = useState<Recording | null>(null);
   const [stageDropId, setStageDropId] = useState<string | null>(null);
   const alive = useRef(true);
   const requestGeneration = useRef(0);
@@ -336,6 +336,27 @@ export function KanbanBoard({
     );
   const move = (id: string, stageId: string) =>
     mutate(() => api.updateKanbanCard(projectId, id, { stageId }));
+  async function createTask(value: ComposerValue): Promise<boolean> {
+    let audio: KanbanAudioInput | undefined;
+    try {
+      if (value.recording) audio = await audioInput(value.recording);
+    } catch {
+      setError(t("Не удалось прочитать запись"));
+      return false;
+    }
+    return mutate(() =>
+      api.createKanbanCard(projectId, {
+        description: value.text,
+        clientCreationId: value.id,
+        ...(value.images.length ? { images: value.images } : {}),
+        ...(audio ? { audio } : {}),
+      }),
+    );
+  }
+  async function sendHeaderRecording(recording: Recording) {
+    const ok = await createTask({ id: `voice:${recording.id}`, text: "", images: [], recording });
+    setHeaderRetry(ok ? null : recording);
+  }
   const setDropTarget = (value: { stageId: string; beforeCardId: string | null } | null) => {
     dropRef.current = value;
     setDropTargetState((current) =>
@@ -365,8 +386,9 @@ export function KanbanBoard({
     else if (rule === "execute" || rule === "accept" || rule === "integrate")
       await action(rule, [item.id]);
     else if (rule === "rework") {
+      setArchiveOpen(false);
+      setCardId(item.id);
       setReworkId(item.id);
-      setDialog("rework");
     }
   }
   const moveStage = (stage: KanbanStage, direction: -1 | 1) => {
@@ -418,7 +440,6 @@ export function KanbanBoard({
   const cardActive = cardRuns.some((run) => activeStatuses.has(run.status));
   const role = board?.stages.find((stage) => stage.id === card?.stageId)?.role;
   const execution = cardRuns.find((run) => run.kind === "execute");
-  const reworkCard = board?.cards.find((item) => item.id === reworkId) ?? null;
   const editStage = board?.stages.find((stage) => stage.id === editStageId) ?? null;
   const archived = (board?.cards ?? [])
     .filter((item) => item.archivedAt !== undefined)
@@ -539,11 +560,32 @@ export function KanbanBoard({
 
   function renderCard(item: KanbanCard, stage: KanbanStage, lane: KanbanCard[]) {
     const latest = latestRun(board!, item.id);
-    const statusClass = latest ? runStatusClass(latest) : null;
+    const voice = item.voice;
+    const statusClass = voice
+      ? voice.status === "failed"
+        ? "status-failed"
+        : "status-queued"
+      : latest
+        ? runStatusClass(latest)
+        : null;
+    const imageCount = item.images?.length ?? (item.image ? 1 : 0);
     const categoryName = board!.categories.find((value) => value.id === item.categoryId)?.name;
     const meta: ReactNode[] = [];
     if (categoryName) meta.push(<span key="category">{categoryName}</span>);
-    if (item.classification === "pending")
+    if (voice)
+      meta.push(
+        <span
+          key="voice"
+          className={voice.status === "failed" ? "kanban-card-state failed" : "working-text"}
+        >
+          {voice.status === "failed"
+            ? t("Не удалось распознать запись")
+            : voice.purpose === "rework"
+              ? t("Распознаём комментарий…")
+              : t("Распознаём запись…")}
+        </span>,
+      );
+    else if (item.classification === "pending")
       meta.push(
         <span key="classification" className="working-text">
           {t("Определяем категорию…")}
@@ -555,7 +597,7 @@ export function KanbanBoard({
           {t("Категория не определена")}
         </span>,
       );
-    if (latest && statusClass)
+    if (latest && statusClass && !voice)
       meta.push(
         <span key="state" className={`kanban-card-state ${latest.status}`}>
           {runLabel(latest, t)}
@@ -624,13 +666,13 @@ export function KanbanBoard({
                 void dropCard(item, stage, lane[index + 2]?.id ?? null);
             }}
           >
-            {item.title}
+            {item.title || t("Голосовая задача")}
           </button>
         </div>
         {item.description !== item.title && (
           <p className="kanban-card-excerpt">{item.description}</p>
         )}
-        {(meta.length > 0 || item.image) && (
+        {(meta.length > 0 || imageCount > 0) && (
           <div className="kanban-card-meta">
             {meta.map((node, index) => (
               <Fragment key={index}>
@@ -642,9 +684,14 @@ export function KanbanBoard({
                 {node}
               </Fragment>
             ))}
-            {item.image && (
-              <span className="kanban-card-images" role="img" aria-label={t("Есть изображение")}>
+            {imageCount > 0 && (
+              <span
+                className="kanban-card-images"
+                role="img"
+                aria-label={t("Изображений: {{count}}", { count: imageCount })}
+              >
                 <ImageIcon />
+                {imageCount > 1 && imageCount}
               </span>
             )}
           </div>
@@ -978,6 +1025,11 @@ export function KanbanBoard({
                     </button>
                   </div>
                 </details>
+                <HeaderRecorder
+                  config={transcriptionConfig}
+                  busy={busy}
+                  onRecorded={(recording) => void sendHeaderRecording(recording)}
+                />
                 <button
                   className="kanban-add-button"
                   aria-label={t("Добавить задачу")}
@@ -1002,16 +1054,34 @@ export function KanbanBoard({
         ) : (
           <div className="kanban-scroll">
             <div className="kanban-board">
-              {error && (
+              {(error || headerRetry) && (
                 <div className="kanban-error" role="alert">
-                  <span>{error}</span>
-                  <button
-                    disabled={busy}
-                    onClick={() => void mutate(() => api.readKanban(projectId))}
-                  >
-                    <RefreshIcon />
-                    {t("Повторить")}
-                  </button>
+                  <span>{headerRetry ? (error ?? t("Запись не отправлена.")) : error}</span>
+                  {headerRetry ? (
+                    <span className="kanban-error-actions">
+                      <button disabled={busy} onClick={() => void sendHeaderRecording(headerRetry)}>
+                        <RefreshIcon />
+                        {t("Отправить запись ещё раз")}
+                      </button>
+                      <button
+                        disabled={busy}
+                        onClick={() => {
+                          setHeaderRetry(null);
+                          setError(null);
+                        }}
+                      >
+                        {t("Удалить запись")}
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      disabled={busy}
+                      onClick={() => void mutate(() => api.readKanban(projectId))}
+                    >
+                      <RefreshIcon />
+                      {t("Повторить")}
+                    </button>
+                  )}
                 </div>
               )}
               {board && (
@@ -1201,8 +1271,21 @@ export function KanbanBoard({
                   mutate(() => api.updateKanbanCard(projectId, card.id, { description }))
                 }
               />
-              {card.image && (
-                <CardImage key={`${projectId}:${card.id}`} projectId={projectId} cardId={card.id} />
+              {Boolean(card.images?.length || card.image) && (
+                <CardImages key={`${projectId}:${card.id}`} projectId={projectId} card={card} />
+              )}
+              {card.voice?.status === "transcribing" && (
+                <p className="working-text" role="status">
+                  {card.voice.purpose === "rework"
+                    ? t("Распознаём комментарий для доработки…")
+                    : t("Распознаём запись…")}
+                </p>
+              )}
+              {card.voice?.status === "failed" && (
+                <p className="kanban-card-error" role="alert">
+                  {t("Не удалось распознать запись")}
+                  {card.voice.error ? `: ${card.voice.error}` : ""}
+                </p>
               )}
               <div className="kanban-panel-fields">
                 <label>
@@ -1252,7 +1335,17 @@ export function KanbanBoard({
                 </p>
               )}
               <div className="kanban-panel-actions">
-                {card.classification === "failed" && (
+                {card.voice?.status === "failed" && (
+                  <button
+                    className="primary"
+                    disabled={busy}
+                    onClick={() => void action("retry-transcription", [card.id])}
+                  >
+                    <RefreshIcon />
+                    {t("Повторить распознавание")}
+                  </button>
+                )}
+                {card.classification === "failed" && !card.voice && (
                   <button
                     className="primary"
                     disabled={busy}
@@ -1310,11 +1403,9 @@ export function KanbanBoard({
                 {(role === "review" || role === "ready") && (
                   <>
                     <button
-                      disabled={busy || cardActive}
-                      onClick={() => {
-                        setReworkId(card.id);
-                        setDialog("rework");
-                      }}
+                      disabled={busy || cardActive || Boolean(card.voice)}
+                      aria-expanded={reworkId === card.id}
+                      onClick={() => setReworkId(reworkId === card.id ? null : card.id)}
                     >
                       {t("На доработку")}
                     </button>
@@ -1327,6 +1418,41 @@ export function KanbanBoard({
                   </>
                 )}
               </div>
+              {reworkId === card.id && !card.voice && (
+                <section className="kanban-panel-section">
+                  <h3>{t("Комментарий для доработки")}</h3>
+                  <TaskComposer
+                    key={card.id}
+                    label={t("Комментарий для доработки")}
+                    placeholder={t("Что исправить? Можно надиктовать и приложить картинки")}
+                    submitLabel={t("Отправить на доработку")}
+                    busy={busy}
+                    error={error}
+                    config={transcriptionConfig}
+                    onSubmit={async (value) => {
+                      let audio: KanbanAudioInput | undefined;
+                      try {
+                        if (value.recording) audio = await audioInput(value.recording);
+                      } catch {
+                        setError(t("Не удалось прочитать запись"));
+                        return false;
+                      }
+                      const ok = await mutate(() =>
+                        api.kanbanAction(projectId, {
+                          action: "rework",
+                          cardIds: [card.id],
+                          clientActionId: value.id,
+                          ...(value.text ? { comment: value.text } : {}),
+                          ...(value.images.length ? { images: value.images } : {}),
+                          ...(audio ? { audio } : {}),
+                        }),
+                      );
+                      if (ok) setReworkId(null);
+                      return ok;
+                    }}
+                  />
+                </section>
+              )}
               {cardRuns.length > 0 && (
                 <section className="kanban-panel-section">
                   <h3>{t("Сессии задачи")}</h3>
@@ -1512,42 +1638,38 @@ export function KanbanBoard({
         />
       )}
       {dialog === "create" && (
-        <TextDialog
-          error={error}
-          title={t("Добавить задачу")}
-          allowImage
-          label={t("Задача")}
-          submitLabel={t("Отправить")}
-          transcriptionConfig={transcriptionConfig}
-          busy={busy}
+        <Dialog
+          titleId="kanban-create-title"
+          className="chat-dialog kanban-text-dialog"
+          closeOnBackdrop={!busy}
+          closeOnEscape={!busy}
           onClose={() => setDialog(null)}
-          onSubmit={async (description, id, image) => {
-            if (
-              await mutate(() =>
-                api.createKanbanCard(projectId, {
-                  description,
-                  clientCreationId: id,
-                  ...(image ? { image } : {}),
-                }),
-              )
-            )
-              setDialog(null);
-          }}
-        />
-      )}
-      {dialog === "rework" && reworkCard && (
-        <TextDialog
-          error={error}
-          title={t("На доработку")}
-          label={t("Комментарий")}
-          submitLabel={t("Отправить на доработку")}
-          transcriptionConfig={transcriptionConfig}
-          busy={busy}
-          onClose={() => setDialog(null)}
-          onSubmit={async (comment) => {
-            if (await action("rework", [reworkCard.id], comment)) setDialog(null);
-          }}
-        />
+        >
+          <div className="dialog-header">
+            <h2 id="kanban-create-title">{t("Добавить задачу")}</h2>
+            <button
+              className="icon-button"
+              aria-label={t("Закрыть")}
+              disabled={busy}
+              onClick={() => setDialog(null)}
+            >
+              <XIcon />
+            </button>
+          </div>
+          <TaskComposer
+            label={t("Задача")}
+            placeholder={t("Опишите задачу, приложите картинки или надиктуйте")}
+            submitLabel={t("Отправить")}
+            busy={busy}
+            error={error}
+            config={transcriptionConfig}
+            onSubmit={async (value) => {
+              const ok = await createTask(value);
+              if (ok) setDialog(null);
+              return ok;
+            }}
+          />
+        </Dialog>
       )}
       {dialog === "stage" && (
         <StageDialog
@@ -1561,42 +1683,6 @@ export function KanbanBoard({
         />
       )}
     </div>
-  );
-}
-
-function CardImage({ projectId, cardId }: { projectId: string; cardId: string }) {
-  const { api } = useConnection();
-  const { t } = useI18n();
-  const [image, setImage] = useState<KanbanImageInput | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    let active = true;
-    setFailed(false);
-    void api.readKanbanImage(projectId, cardId).then(
-      (value) => {
-        if (active) setImage(value);
-      },
-      () => {
-        if (active) setFailed(true);
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [api, projectId, cardId, attempt]);
-  if (failed)
-    return (
-      <button onClick={() => setAttempt((value) => value + 1)}>
-        {t("Не удалось загрузить изображение. Повторить")}
-      </button>
-    );
-  if (!image) return <p role="status">{t("Загружаем изображение…")}</p>;
-  return (
-    <MessageImageProvider text="" images={[image.url]}>
-      <MessageImageGallery />
-      <p className="kanban-muted">{image.name}</p>
-    </MessageImageProvider>
   );
 }
 
@@ -1816,295 +1902,90 @@ function StageDialog({
   );
 }
 
-function TextDialog({
-  title,
-  label,
-  submitLabel,
-  busy,
-  error,
-  transcriptionConfig,
-  allowImage = false,
-  onClose,
-  onSubmit,
-}: {
-  title: string;
-  label: string;
-  submitLabel: string;
-  busy: boolean;
-  error: string | null;
-  transcriptionConfig: TranscriptionConfigResponse | null;
-  onClose(): void;
-  allowImage?: boolean;
-  onSubmit(value: string, id: string, image?: KanbanImageInput): Promise<void>;
-}) {
+function CardImages({ projectId, card }: { projectId: string; card: KanbanCard }) {
+  const { api } = useConnection();
   const { t } = useI18n();
-  const [input, setInput] = useState("");
-  const [voiceBusy, setVoiceBusy] = useState(false);
-  const id = useId();
-  const creationId = useRef(uuid());
-  const [image, setImage] = useState<KanbanImageInput>();
-  const [imageBusy, setImageBusy] = useState(false);
-  const [imageError, setImageError] = useState<string | null>(null);
-  const imageInput = useRef<HTMLInputElement>(null);
-  const reader = useRef<FileReader | null>(null);
-  const locked = busy || voiceBusy || imageBusy;
-  useEffect(
-    () => () => {
-      reader.current?.abort();
-    },
-    [],
-  );
-  function attachImage(file: File) {
-    if (locked) return;
-    setImageError(null);
-    if (
-      !/^image\/(png|jpeg|gif|webp)$/.test(file.type) ||
-      !file.size ||
-      file.size > KANBAN_IMAGE_MAX_BYTES
-    ) {
-      setImageError(t("Выберите изображение PNG, JPEG, GIF или WebP до 10 МБ"));
-      return;
-    }
-    const next = new FileReader();
-    reader.current = next;
-    setImageBusy(true);
-    next.onload = () => {
-      if (typeof next.result === "string") {
-        setImage({ name: file.name || "image", url: next.result });
-        creationId.current = uuid();
-      } else setImageError(t("Не удалось прочитать изображение"));
-      setImageBusy(false);
+  const count = card.images?.length ?? (card.image ? 1 : 0);
+  const [images, setImages] = useState<KanbanImageInput[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setFailed(false);
+    void Promise.all(
+      Array.from({ length: count }, (_, index) => api.readKanbanImage(projectId, card.id, index)),
+    ).then(
+      (value) => {
+        if (active) setImages(value);
+      },
+      () => {
+        if (active) setFailed(true);
+      },
+    );
+    return () => {
+      active = false;
     };
-    next.onerror = () => {
-      setImageError(t("Не удалось прочитать изображение"));
-      setImageBusy(false);
-    };
-    next.readAsDataURL(file);
-  }
+  }, [api, projectId, card.id, count, attempt]);
+  if (failed)
+    return (
+      <button onClick={() => setAttempt((value) => value + 1)}>
+        {t("Не удалось загрузить изображение. Повторить")}
+      </button>
+    );
+  if (!images) return <p role="status">{t("Загружаем изображение…")}</p>;
   return (
-    <Dialog
-      titleId={id}
-      className="kanban-text-dialog"
-      closeOnBackdrop={!locked}
-      closeOnEscape={!locked}
-      onClose={onClose}
-    >
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!locked && input.trim()) void onSubmit(input.trim(), creationId.current, image);
-        }}
-      >
-        <div className="dialog-header">
-          <h2 id={id}>{title}</h2>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={t("Закрыть")}
-            disabled={locked}
-            onClick={onClose}
-          >
-            <XIcon />
-          </button>
-        </div>
-        <VoiceTextField
-          label={label}
-          value={input}
-          onChange={(value) => {
-            setInput(value);
-            creationId.current = uuid();
-          }}
-          disabled={busy || imageBusy}
-          onPaste={
-            allowImage
-              ? (event) => {
-                  const item = Array.from(event.clipboardData.items).find((item) =>
-                    item.type.startsWith("image/"),
-                  );
-                  const file = item?.getAsFile();
-                  if (file) {
-                    event.preventDefault();
-                    attachImage(file);
-                  }
-                }
-              : undefined
-          }
-          config={transcriptionConfig}
-          onBusyChange={setVoiceBusy}
-        />
-        {allowImage && (
-          <div className="kanban-image-field">
-            <input
-              ref={imageInput}
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              aria-label={t("Прикрепить изображение")}
-              hidden
-              disabled={locked}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = "";
-                if (file) attachImage(file);
-              }}
-            />
-            <button type="button" disabled={locked} onClick={() => imageInput.current?.click()}>
-              <ImageIcon />
-              {imageBusy ? t("Загружаем изображение…") : t("Прикрепить изображение")}
-            </button>
-            {image && (
-              <div className="kanban-image-preview">
-                <img src={image.url} alt={image.name} />
-                <span>{image.name}</span>
-                <button
-                  type="button"
-                  className="icon-button"
-                  disabled={locked}
-                  aria-label={t("Удалить изображение {{name}}", { name: image.name })}
-                  onClick={() => {
-                    setImage(undefined);
-                    setImageError(null);
-                    creationId.current = uuid();
-                  }}
-                >
-                  <XIcon />
-                </button>
-              </div>
-            )}
-            {imageError && (
-              <p className="kanban-card-error" role="alert">
-                {imageError}
-              </p>
-            )}
-          </div>
-        )}
-        {error && (
-          <p className="kanban-card-error" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="dialog-actions">
-          <button type="button" disabled={locked} onClick={onClose}>
-            {t("Отмена")}
-          </button>
-          <button className="primary" disabled={locked || !input.trim()}>
-            {busy ? t("Отправляем…") : submitLabel}
-          </button>
-        </div>
-      </form>
-    </Dialog>
+    <MessageImageProvider text="" images={images.map((image) => image.url)}>
+      <MessageImageGallery />
+      <p className="kanban-muted">{images.map((image) => image.name).join(", ")}</p>
+    </MessageImageProvider>
   );
 }
 
-/** Uses the Composer's MIME selection, limits, cursor insertion and transcription API. */
-function VoiceTextField({
-  label,
-  value,
-  onChange,
-  disabled,
-  config,
-  onBusyChange,
-  onPaste,
-}: {
-  label: string;
-  value: string;
-  onChange(value: string): void;
-  disabled: boolean;
-  config: TranscriptionConfigResponse | null;
-  onBusyChange(value: boolean): void;
-  onPaste?: ClipboardEventHandler<HTMLTextAreaElement>;
-}) {
-  const { api } = useConnection();
-  const { t, language } = useI18n();
-  const id = useId();
-  const textarea = useRef<HTMLTextAreaElement>(null);
-  const latest = useRef({ value, onChange, onBusyChange, t, language });
-  latest.current = { value, onChange, onBusyChange, t, language };
-  const alive = useRef(true);
-  const recorder = useRef<MediaRecorder | null>(null);
-  const stream = useRef<MediaStream | null>(null);
-  const selection = useRef({ start: 0, end: 0 });
-  const recordingSelection = useRef({ start: 0, end: 0 });
-  const discarded = useRef(false);
-  const [speech, setSpeech] = useState<"idle" | "requesting" | "recording" | "transcribing">(
-    "idle",
-  );
+type Recording = { id: string; audio: Blob; durationMs: number };
+type ComposerValue = {
+  id: string;
+  text: string;
+  images: KanbanImageInput[];
+  recording?: Recording;
+};
+
+/** The board's recorder: the Composer's MIME choice, limits and microphone errors. */
+function useRecorder(
+  config: TranscriptionConfigResponse | null,
+  onRecorded: (recording: Recording) => void,
+) {
+  const { t } = useI18n();
+  const [state, setState] = useState<"idle" | "requesting" | "recording">("idle");
   const [seconds, setSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [retry, setRetry] = useState<{
-    audio: Blob;
-    duration: number;
-    selection: { start: number; end: number };
-  } | null>(null);
-  const timer = useRef<number | undefined>(undefined);
-  const limit = useRef<number | undefined>(undefined);
+  const recorder = useRef<MediaRecorder | null>(null);
+  const stream = useRef<MediaStream | null>(null);
+  const discarded = useRef(false);
+  const alive = useRef(true);
+  const timers = useRef<{ tick?: number; limit?: number }>({});
+  const latest = useRef({ onRecorded, t });
+  latest.current = { onRecorded, t };
   const unavailable = microphoneUnavailableReason(config, config?.provider ?? null, true, t);
-
-  function clearTimers() {
-    window.clearInterval(timer.current);
-    window.clearTimeout(limit.current);
-  }
-  function release() {
+  const release = () => {
+    window.clearInterval(timers.current.tick);
+    window.clearTimeout(timers.current.limit);
     stream.current?.getTracks().forEach((track) => track.stop());
     stream.current = null;
-  }
+  };
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
       discarded.current = true;
-      clearTimers();
       if (recorder.current?.state === "recording") recorder.current.stop();
       release();
-      latest.current.onBusyChange(false);
     };
   }, []);
-  function state(next: typeof speech) {
-    if (alive.current) {
-      setSpeech(next);
-      latest.current.onBusyChange(next !== "idle");
-    }
-  }
-  async function transcribe(audio: Blob, duration: number, insertion = recordingSelection.current) {
-    state("transcribing");
-    setError(null);
-    setSeconds(0);
-    const started = Date.now();
-    timer.current = window.setInterval(() => {
-      if (alive.current) setSeconds(Math.floor((Date.now() - started) / 1000));
-    }, 250);
-    try {
-      const response = await api.transcribe(audio, duration);
-      if (!alive.current || discarded.current) return;
-      const inserted = insertTranscriptAtSelection(
-        latest.current.value,
-        response.text,
-        insertion,
-        100_000,
-      );
-      if (!inserted) throw new Error(latest.current.t("Распознавание не вернуло текст"));
-      latest.current.onChange(inserted.value);
-      setRetry(null);
-      requestAnimationFrame(() => {
-        textarea.current?.focus();
-        textarea.current?.setSelectionRange(inserted.caret, inserted.caret);
-      });
-    } catch (caught) {
-      if (!alive.current) return;
-      const message =
-        caught instanceof Error ? caught.message : latest.current.t("Не удалось распознать запись");
-      setError(localizeKnownServerText(latest.current.language, message) ?? message);
-      setRetry({ audio, duration, selection: insertion });
-    } finally {
-      clearTimers();
-      state("idle");
-    }
-  }
   async function start() {
-    if (disabled || speech !== "idle" || unavailable) return;
+    if (state !== "idle" || unavailable) return;
     discarded.current = false;
-    recordingSelection.current = { ...selection.current };
     setError(null);
-    state("requesting");
+    setState("requesting");
     try {
       const capture = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (!alive.current || discarded.current) {
@@ -2119,43 +2000,43 @@ function VoiceTextField({
       let bytes = 0;
       const started = Date.now();
       media.addEventListener("dataavailable", (event) => {
-        if (event.data.size) {
-          chunks.push(event.data);
-          bytes += event.data.size;
-          if (bytes >= (config?.maxUploadBytes ?? 24 * 1024 * 1024) && media.state === "recording")
-            media.stop();
-        }
+        if (!event.data.size) return;
+        chunks.push(event.data);
+        bytes += event.data.size;
+        if (bytes >= (config?.maxUploadBytes ?? 24 * 1024 * 1024) && media.state === "recording")
+          media.stop();
       });
       media.addEventListener("error", () => {
         discarded.current = true;
         release();
-        clearTimers();
-        if (alive.current) setError(latest.current.t("Не удалось записать аудио"));
-        state("idle");
+        if (!alive.current) return;
+        setError(latest.current.t("Не удалось записать аудио"));
+        setState("idle");
       });
       media.addEventListener("stop", () => {
-        clearTimers();
         release();
         recorder.current = null;
-        if (!alive.current || discarded.current) {
-          state("idle");
-          return;
-        }
+        if (!alive.current) return;
+        setState("idle");
+        if (discarded.current) return;
         const audio = new Blob(chunks, { type: mimeType });
         if (!audio.size) {
           setError(latest.current.t("Не удалось записать аудио"));
-          state("idle");
           return;
         }
-        void transcribe(audio, Math.max(1, Date.now() - started));
+        latest.current.onRecorded({
+          id: uuid(),
+          audio,
+          durationMs: Math.max(1, Date.now() - started),
+        });
       });
       media.start(1000);
       setSeconds(0);
-      state("recording");
-      timer.current = window.setInterval(() => {
+      setState("recording");
+      timers.current.tick = window.setInterval(() => {
         if (alive.current) setSeconds(Math.floor((Date.now() - started) / 1000));
       }, 250);
-      limit.current = window.setTimeout(
+      timers.current.limit = window.setTimeout(
         () => {
           if (media.state === "recording") media.stop();
         },
@@ -2163,124 +2044,265 @@ function VoiceTextField({
       );
     } catch (caught) {
       release();
-      if (alive.current) setError(recordingErrorMessage(caught, t));
-      state("idle");
+      if (!alive.current) return;
+      setError(recordingErrorMessage(caught, t));
+      setState("idle");
+    }
+  }
+  const stop = () => {
+    if (recorder.current?.state === "recording") recorder.current.stop();
+  };
+  const cancel = () => {
+    discarded.current = true;
+    stop();
+  };
+  return { state, seconds, error, unavailable, start, stop, cancel };
+}
+
+const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
+
+/**
+ * One field for text, pictures and a recording. Stopping the recording sends the task
+ * at once with the typed text and pictures; the server transcribes it afterwards.
+ */
+function TaskComposer({
+  label,
+  placeholder,
+  submitLabel,
+  busy,
+  error,
+  config,
+  onSubmit,
+}: {
+  label: string;
+  placeholder: string;
+  submitLabel: string;
+  busy: boolean;
+  error: string | null;
+  config: TranscriptionConfigResponse | null;
+  onSubmit(value: ComposerValue): Promise<boolean>;
+}) {
+  const { t } = useI18n();
+  const [text, setText] = useState("");
+  const [images, setImages] = useState<KanbanImageInput[]>([]);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [reading, setReading] = useState(0);
+  const [failedRecording, setFailedRecording] = useState<Recording | null>(null);
+  const identity = useRef(uuid());
+  const fileInput = useRef<HTMLInputElement>(null);
+  const changed = () => {
+    identity.current = uuid();
+  };
+  async function submit(recording?: Recording) {
+    if (busy || reading || (!recording && !text.trim())) return;
+    const ok = await onSubmit({
+      id: recording ? `${identity.current}:${recording.id}` : identity.current,
+      text: text.trim(),
+      images,
+      ...(recording ? { recording } : {}),
+    });
+    if (ok) {
+      setText("");
+      setImages([]);
+      setFailedRecording(null);
+      changed();
+    } else if (recording) setFailedRecording(recording);
+  }
+  const recorder = useRecorder(config, (recording) => void submit(recording));
+  const recording = recorder.state === "recording";
+  function attach(files: File[]) {
+    setImageError(null);
+    for (const file of files) {
+      if (!IMAGE_TYPES.test(file.type) || !file.size || file.size > KANBAN_IMAGE_MAX_BYTES) {
+        setImageError(t("Выберите изображение PNG, JPEG, GIF или WebP до 10 МБ"));
+        continue;
+      }
+      setReading((value) => value + 1);
+      const reader = new FileReader();
+      reader.onload = () => {
+        setReading((value) => value - 1);
+        if (typeof reader.result !== "string") return;
+        const url = reader.result;
+        setImages((current) => {
+          if (current.length >= KANBAN_IMAGE_LIMIT) {
+            setImageError(
+              t("Можно прикрепить до {{count}} изображений", { count: KANBAN_IMAGE_LIMIT }),
+            );
+            return current;
+          }
+          return [...current, { name: file.name || "image", url }];
+        });
+        changed();
+      };
+      reader.onerror = () => {
+        setReading((value) => value - 1);
+        setImageError(t("Не удалось прочитать изображение"));
+      };
+      reader.readAsDataURL(file);
     }
   }
   return (
-    <div className="kanban-voice-field">
-      <label className="kanban-field" htmlFor={id}>
-        {label}
-        <textarea
-          id={id}
-          ref={textarea}
-          onPaste={onPaste}
-          value={value}
+    <div
+      className={`kanban-composer${recording ? " recording" : ""}`}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.files.length) return;
+        event.preventDefault();
+        attach(Array.from(event.dataTransfer.files));
+      }}
+    >
+      {images.length > 0 && (
+        <div className="kanban-composer-images">
+          {images.map((image, index) => (
+            <span className="kanban-composer-image" key={`${image.name}-${index}`}>
+              <img src={image.url} alt={image.name} />
+              <button
+                type="button"
+                className="icon-button"
+                disabled={busy}
+                aria-label={t("Удалить изображение {{name}}", { name: image.name })}
+                onClick={() => {
+                  setImages((current) => current.filter((_, position) => position !== index));
+                  setImageError(null);
+                  changed();
+                }}
+              >
+                <XIcon />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <textarea
+        className="kanban-composer-field"
+        aria-label={label}
+        placeholder={placeholder}
+        value={text}
+        rows={3}
+        maxLength={100_000}
+        autoFocus
+        disabled={busy}
+        onChange={(event) => {
+          setText(event.target.value);
+          changed();
+        }}
+        onPaste={(event) => {
+          const files = Array.from(event.clipboardData.items)
+            .filter((item) => item.type.startsWith("image/"))
+            .map((item) => item.getAsFile())
+            .filter((file): file is File => Boolean(file));
+          if (!files.length) return;
+          event.preventDefault();
+          attach(files);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            void submit();
+          }
+        }}
+      />
+      <div className="kanban-composer-actions">
+        <input
+          ref={fileInput}
+          type="file"
+          multiple
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          aria-label={t("Прикрепить изображение")}
+          hidden
+          disabled={busy}
           onChange={(event) => {
-            selection.current = {
-              start: event.target.selectionStart,
-              end: event.target.selectionEnd,
-            };
-            onChange(event.target.value);
+            const files = Array.from(event.target.files ?? []);
+            event.target.value = "";
+            attach(files);
           }}
-          onSelect={(event) => {
-            selection.current = {
-              start: event.currentTarget.selectionStart,
-              end: event.currentTarget.selectionEnd,
-            };
-          }}
-          disabled={disabled}
-          rows={7}
-          maxLength={100_000}
-          autoFocus
         />
-      </label>
-      <div className="kanban-voice-controls">
-        <span role="status" className="kanban-muted">
-          {speech === "recording"
-            ? t("Запись {{time}}", { time: formatRecordingTime(seconds) })
-            : speech === "transcribing"
-              ? t("Распознаём запись")
-              : speech === "requesting"
-                ? t("Запрашиваем доступ к микрофону")
-                : ""}
+        <button
+          type="button"
+          className="icon-button"
+          disabled={busy || recording}
+          onClick={() => fileInput.current?.click()}
+        >
+          <ImageIcon />
+          <span className="sr-only">{t("Прикрепить изображение")}</span>
+        </button>
+        <span className="kanban-composer-status kanban-muted" role="status">
+          {recording
+            ? t("Запись {{time}}", { time: formatRecordingTime(recorder.seconds) })
+            : recorder.state === "requesting"
+              ? t("Запрашиваем доступ к микрофону")
+              : busy
+                ? t("Отправляем…")
+                : reading
+                  ? t("Загружаем изображение…")
+                  : ""}
         </span>
-        {speech === "recording" && (
+        {recording && (
           <button
             type="button"
             className="icon-button"
             aria-label={t("Отменить запись")}
-            onClick={() => {
-              discarded.current = true;
-              recorder.current?.stop();
-            }}
+            onClick={recorder.cancel}
           >
             <XIcon />
           </button>
         )}
-        {retry && speech === "idle" && (
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => {
-              discarded.current = false;
-              void transcribe(retry.audio, retry.duration, retry.selection);
-            }}
-          >
-            {t("Повторить распознавание")}
-          </button>
-        )}
         <button
           type="button"
-          className={`composer-action microphone${speech === "recording" ? " recording timing" : ""}`}
-          title={unavailable ?? undefined}
+          className={`composer-action microphone${recording ? " recording timing" : ""}`}
           aria-label={
-            speech === "recording"
-              ? t("Остановить запись")
-              : speech === "transcribing"
-                ? t("Распознаём запись")
-                : (unavailable ?? t("Начать запись"))
+            recording
+              ? t("Остановить запись и отправить")
+              : (recorder.unavailable ?? t("Начать запись"))
           }
-          aria-pressed={speech === "recording"}
+          aria-pressed={recording}
           disabled={
-            disabled ||
-            speech === "requesting" ||
-            speech === "transcribing" ||
-            (speech === "idle" && !!unavailable)
+            busy ||
+            reading > 0 ||
+            recorder.state === "requesting" ||
+            (!recording && Boolean(recorder.unavailable))
           }
-          onPointerDown={() => {
-            if (speech === "idle")
-              selection.current = {
-                start: textarea.current?.selectionStart ?? value.length,
-                end: textarea.current?.selectionEnd ?? value.length,
-              };
-          }}
-          onClick={() => {
-            if (speech === "recording") recorder.current?.stop();
-            else {
-              if (textarea.current && document.activeElement === textarea.current)
-                selection.current = {
-                  start: textarea.current.selectionStart,
-                  end: textarea.current.selectionEnd,
-                };
-              else if (selection.current.start > value.length)
-                selection.current = { start: value.length, end: value.length };
-              void start();
-            }
-          }}
+          onClick={() => (recording ? recorder.stop() : void recorder.start())}
         >
-          {speech === "recording" ? (
+          {recording ? (
             <>
-              <span className="composer-action-timer">{seconds}</span>
+              <span className="composer-action-timer">{recorder.seconds}</span>
               <StopIcon />
             </>
-          ) : speech === "requesting" || speech === "transcribing" ? (
+          ) : recorder.state === "requesting" ? (
             <span className="spinner small" />
           ) : (
             <MicrophoneIcon />
           )}
         </button>
+        <button
+          type="button"
+          className="icon-button primary"
+          aria-label={submitLabel}
+          disabled={busy || reading > 0 || recording || !text.trim()}
+          onClick={() => void submit()}
+        >
+          {busy ? <span className="spinner small" /> : <SendIcon />}
+        </button>
       </div>
+      {failedRecording && !busy && (
+        <div className="kanban-composer-retry" role="alert">
+          <span>{t("Запись не отправлена.")}</span>
+          <button type="button" onClick={() => void submit(failedRecording)}>
+            {t("Отправить запись ещё раз")}
+          </button>
+          <button type="button" onClick={() => setFailedRecording(null)}>
+            {t("Удалить запись")}
+          </button>
+        </div>
+      )}
+      {(imageError || recorder.error) && (
+        <p className="kanban-card-error" role="alert">
+          {imageError ?? recorder.error}
+        </p>
+      )}
       {error && (
         <p className="kanban-card-error" role="alert">
           {error}
@@ -2288,4 +2310,76 @@ function VoiceTextField({
       )}
     </div>
   );
+}
+
+/** The header microphone records a task without opening a dialog. */
+function HeaderRecorder({
+  config,
+  busy,
+  onRecorded,
+}: {
+  config: TranscriptionConfigResponse | null;
+  busy: boolean;
+  onRecorded(recording: Recording): void;
+}) {
+  const { t } = useI18n();
+  const recorder = useRecorder(config, onRecorded);
+  const recording = recorder.state === "recording";
+  if (recorder.unavailable && !recording) return null;
+  return (
+    <>
+      {recording && (
+        <button
+          className="icon-button kanban-header-cancel"
+          aria-label={t("Отменить запись")}
+          onClick={recorder.cancel}
+        >
+          <XIcon />
+        </button>
+      )}
+      <button
+        className={`composer-action microphone kanban-header-microphone${
+          recording ? " recording timing" : ""
+        }`}
+        aria-label={recording ? t("Остановить запись и создать задачу") : t("Надиктовать задачу")}
+        aria-pressed={recording}
+        disabled={busy || recorder.state === "requesting"}
+        onClick={() => (recording ? recorder.stop() : void recorder.start())}
+      >
+        {recording ? (
+          <>
+            <span className="composer-action-timer">{formatRecordingTime(recorder.seconds)}</span>
+            <StopIcon />
+          </>
+        ) : recorder.state === "requesting" || busy ? (
+          <span className="spinner small" />
+        ) : (
+          <MicrophoneIcon />
+        )}
+      </button>
+      {recorder.error && (
+        <span className="sr-only" role="alert">
+          {recorder.error}
+        </span>
+      )}
+    </>
+  );
+}
+
+async function blobBase64(blob: Blob): Promise<string> {
+  const url = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read the recording"));
+    reader.readAsDataURL(blob);
+  });
+  return url.slice(url.indexOf(",") + 1);
+}
+
+async function audioInput(recording: Recording): Promise<KanbanAudioInput> {
+  return {
+    mediaType: recording.audio.type || "audio/webm",
+    data: await blobBase64(recording.audio),
+    durationMs: recording.durationMs,
+  };
 }

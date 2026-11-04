@@ -103,7 +103,7 @@ for (const width of [390, 1440]) {
           return route.fulfill({
             contentType: "application/json",
             headers,
-            body: JSON.stringify(creation!.image),
+            body: JSON.stringify(creation!.images![0]),
           });
         }
         if (request.method() === "POST") {
@@ -114,7 +114,9 @@ for (const width of [390, 1440]) {
             stageId: "todo",
             title: creation!.description,
             description: creation!.description,
-            image: { name: creation!.image!.name, size: png.length, mediaType: "image/png" },
+            images: [
+              { name: creation!.images![0]!.name, size: png.length, mediaType: "image/png" },
+            ],
           });
           board.revision++;
         }
@@ -182,10 +184,12 @@ for (const width of [390, 1440]) {
       await page.screenshot({ path: info.outputPath(`kanban-create-${width}-${theme}.png`) });
       await create.getByRole("button", { name: "Отправить", exact: true }).click();
       await expect(create).toBeHidden();
-      expect(creation!.image).toEqual({
-        name: "screenshot.png",
-        url: `data:image/png;base64,${png.toString("base64")}`,
-      });
+      expect(creation!.images).toEqual([
+        {
+          name: "screenshot.png",
+          url: `data:image/png;base64,${png.toString("base64")}`,
+        },
+      ]);
       await page.getByRole("button", { name: "Исправить по скриншоту", exact: true }).click();
       const saved = page.getByRole("complementary", { name: "Исправить по скриншоту" });
       await expect(saved.getByText("screenshot.png", { exact: true })).toBeVisible();

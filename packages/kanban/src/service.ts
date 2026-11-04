@@ -3,6 +3,7 @@ import { watch, type FSWatcher } from "node:fs";
 import { mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type {
+  KanbanAudioInput,
   CreateKanbanCardRequest,
   CreateKanbanStageRequest,
   KanbanActionRequest,
@@ -16,7 +17,11 @@ import type {
   UpdateKanbanCardRequest,
   UpdateKanbanStageRequest,
 } from "@codexnest/protocol";
-import { KANBAN_IMAGE_MAX_BYTES } from "@codexnest/protocol";
+import {
+  KANBAN_AUDIO_MAX_BYTES,
+  KANBAN_IMAGE_LIMIT,
+  KANBAN_IMAGE_MAX_BYTES,
+} from "@codexnest/protocol";
 import { agentCapability, agentPrompt, installAgentHelper } from "./agent.js";
 import {
   atomicJson,
@@ -25,6 +30,7 @@ import {
   processAlive,
   type CardRuntime,
   type KanbanDocument,
+  type StoredImage,
 } from "./store.js";
 import {
   createTaskWorkspace,
@@ -58,6 +64,8 @@ export type KanbanProviderAdapter = {
 export type KanbanServiceOptions = {
   provider: KanbanProvider;
   adapter: KanbanProviderAdapter;
+  /** The application's speech recognition; recordings fail clearly without it. */
+  transcribe?(audio: Buffer, contentType: string, durationMs: number): Promise<string>;
   dataDir?: string;
   onChange?: (board: KanbanBoard) => void;
   onError?: (error: unknown) => void;
@@ -137,6 +145,42 @@ function decodeImage(input: KanbanImageInput) {
   return { name, mediaType, bytes };
 }
 
+function decodeImages(inputs: unknown): ReturnType<typeof decodeImage>[] {
+  if (inputs === undefined) return [];
+  if (!Array.isArray(inputs) || inputs.length > KANBAN_IMAGE_LIMIT)
+    throw new KanbanError(
+      "invalid_request",
+      `Attach up to ${KANBAN_IMAGE_LIMIT} images to one task`,
+      400,
+    );
+  return inputs.map((input) => decodeImage(input as KanbanImageInput));
+}
+function decodeAudio(input: KanbanAudioInput) {
+  if (!input || typeof input !== "object")
+    throw new KanbanError("invalid_request", "Invalid recording", 400);
+  const mediaType = typeof input.mediaType === "string" ? input.mediaType.trim() : "";
+  if (!/^audio\/[\w.+-]+(?:\s*;.*)?$/i.test(mediaType) || mediaType.length > 200)
+    throw new KanbanError("invalid_request", "Invalid recording format", 400);
+  if (
+    typeof input.data !== "string" ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(input.data) ||
+    input.data.length > Math.ceil(KANBAN_AUDIO_MAX_BYTES / 3) * 4
+  )
+    throw new KanbanError("invalid_request", "The recording is too large or damaged", 400);
+  const bytes = Buffer.from(input.data, "base64");
+  const durationMs = Number(input.durationMs);
+  if (!bytes.length || !Number.isFinite(durationMs) || durationMs <= 0 || durationMs > 3_600_000)
+    throw new KanbanError("invalid_request", "Invalid recording", 400);
+  return { mediaType, bytes, durationMs: Math.round(durationMs) };
+}
+/** New cards keep several images; older cards have one legacy image named after the card. */
+const cardImages = (card: KanbanCard): StoredImage[] =>
+  card.images
+    ? card.images.map((image, index) => ({ ...image, file: `${card.id}.${index}` }))
+    : card.image
+      ? [{ ...card.image, file: card.id }]
+      : [];
+
 export class KanbanService {
   readonly store: KanbanStore;
   private watchers: FSWatcher[] = [];
@@ -145,6 +189,7 @@ export class KanbanService {
   private closed = true;
   private helper = "";
   private launching = new Set<string>();
+  private transcribing = new Set<string>();
   private pending = new Set<Promise<unknown>>();
   private pumpWaiters: (() => void)[] = [];
   private threads = new Map<string, { boardId: string; runId: string }>();
@@ -251,19 +296,63 @@ export class KanbanService {
     };
     return run;
   }
+  private imagePath(boardId: string, file: string): string {
+    return join(this.store.directory, "images", boardId, file);
+  }
+  private voicePath(boardId: string, cardId: string): string {
+    return join(this.store.directory, "voice", boardId, cardId);
+  }
+  private async storeImages(
+    boardId: string,
+    prefix: string,
+    images: ReturnType<typeof decodeImage>[],
+  ): Promise<StoredImage[]> {
+    if (!images.length) return [];
+    await mkdir(join(this.store.directory, "images", boardId), { recursive: true, mode: 0o700 });
+    return Promise.all(
+      images.map(async (image, index) => {
+        const file = `${prefix}.${index}`;
+        await writeFile(this.imagePath(boardId, file), image.bytes, { mode: 0o600, flag: "wx" });
+        return { name: image.name, mediaType: image.mediaType, size: image.bytes.length, file };
+      }),
+    );
+  }
+  private async storeAudio(boardId: string, cardId: string, bytes: Buffer): Promise<void> {
+    await mkdir(join(this.store.directory, "voice", boardId), { recursive: true, mode: 0o700 });
+    await writeFile(this.voicePath(boardId, cardId), bytes, { mode: 0o600 });
+  }
+  private requireTranscription(): void {
+    if (!this.options.transcribe)
+      throw new KanbanError("transcription_unavailable", "Speech recognition is not configured");
+  }
   async createCard(projectPath: string, request: CreateKanbanCardRequest): Promise<KanbanBoard> {
-    const description = text(request.description, "Task");
+    const audio = request.audio === undefined ? undefined : decodeAudio(request.audio);
+    const description = audio
+      ? typeof request.description === "string" && request.description.length <= 100_000
+        ? request.description.trim()
+        : text(request.description, "Task")
+      : text(request.description, "Task");
     const key = text(request.clientCreationId, "clientCreationId", 512);
     if (["__proto__", "constructor", "prototype"].includes(key))
       throw new KanbanError("invalid_request", "Invalid creation identifier", 400);
-    const image = request.image === undefined ? undefined : decodeImage(request.image);
+    const images = decodeImages([
+      ...(request.image === undefined ? [] : [request.image]),
+      ...(Array.isArray(request.images)
+        ? request.images
+        : request.images === undefined
+          ? []
+          : [null]),
+    ]);
+    if (audio) this.requireTranscription();
     // Keep the original text-only fingerprint compatible with existing retries.
-    const fingerprint = image
-      ? createHash("sha256")
-          .update(JSON.stringify([description, image.name, image.mediaType]))
-          .update(image.bytes)
-          .digest("hex")
-      : description;
+    let fingerprint = description;
+    if (images.length || audio) {
+      const hash = createHash("sha256").update(JSON.stringify([description, images.length]));
+      for (const image of images)
+        hash.update(JSON.stringify([image.name, image.mediaType])).update(image.bytes);
+      if (audio) hash.update(audio.mediaType).update(audio.bytes);
+      fingerprint = hash.digest("hex");
+    }
     const { board } = await this.store.update(projectPath, async (data) => {
       const prior = data.creations[key];
       if (prior) {
@@ -288,28 +377,44 @@ export class KanbanService {
         createdAt: now,
         updatedAt: now,
       };
-      if (image) {
-        const directory = join(this.store.directory, "images", data.board.id);
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        await writeFile(join(directory, card.id), image.bytes, { mode: 0o600, flag: "wx" });
-        card.image = { name: image.name, mediaType: image.mediaType, size: image.bytes.length };
-      }
+      const stored = await this.storeImages(data.board.id, card.id, images);
+      if (stored.length)
+        card.images = stored.map((image) => ({
+          name: image.name,
+          mediaType: image.mediaType,
+          size: image.size,
+        }));
       data.board.cards.unshift(card);
       data.cards[card.id] = {};
       data.creations[key] = { fingerprint, cardId: card.id };
-      this.addRun(data, "classify", [card.id]);
+      if (audio) {
+        // The card appears at once; classification starts after transcription.
+        await this.storeAudio(data.board.id, card.id, audio.bytes);
+        card.voice = {
+          purpose: "create",
+          status: "transcribing",
+          error: null,
+          provider: this.options.provider,
+        };
+        data.cards[card.id]!.voice = {
+          mediaType: audio.mediaType,
+          durationMs: audio.durationMs,
+          text: description,
+        };
+      } else this.addRun(data, "classify", [card.id]);
     });
     this.changed(board);
+    if (audio) this.schedule();
     return board;
   }
-  async readImage(projectPath: string, cardId: string): Promise<KanbanImageInput> {
+  async readImage(projectPath: string, cardId: string, index = 0): Promise<KanbanImageInput> {
     const data = await this.store.read(projectPath);
-    const card = findCard(data, cardId);
-    if (!card.image) throw new KanbanError("not_found", "Task image not found", 404);
-    const bytes = await readFile(join(this.store.directory, "images", data.board.id, card.id));
+    const image = cardImages(findCard(data, cardId))[index];
+    if (!image) throw new KanbanError("not_found", "Task image not found", 404);
+    const bytes = await readFile(this.imagePath(data.board.id, image.file));
     return {
-      name: card.image.name,
-      url: `data:${card.image.mediaType};base64,${bytes.toString("base64")}`,
+      name: image.name,
+      url: `data:${image.mediaType};base64,${bytes.toString("base64")}`,
     };
   }
   async createStage(projectPath: string, request: CreateKanbanStageRequest): Promise<KanbanBoard> {
@@ -405,7 +510,7 @@ export class KanbanService {
     const removal: {
       value?: {
         boardId: string;
-        image: boolean;
+        files: string[];
         workspace?: CardRuntime["workspace"];
         threads: string[];
       };
@@ -417,17 +522,23 @@ export class KanbanService {
       if (data.board.runs.some((run) => active(run) && run.cardIds.includes(card.id)))
         throw new KanbanError("already_running", "The task has an active session");
       const threads: string[] = [];
+      const files = [...cardImages(card), ...(data.cards[card.id]?.voice?.images ?? [])].map(
+        (image) => this.imagePath(data.board.id, image.file),
+      );
+      files.push(this.voicePath(data.board.id, card.id));
       data.board.runs = data.board.runs.filter((run) => {
         if (!run.cardIds.includes(card.id)) return true;
         run.cardIds = run.cardIds.filter((id) => id !== card.id);
         if (run.cardIds.length) return true;
         if (run.threadId && run.provider === this.options.provider) threads.push(run.threadId);
+        for (const image of data.runs[run.id]?.images ?? [])
+          files.push(this.imagePath(data.board.id, image.file));
         delete data.runs[run.id];
         return false;
       });
       removal.value = {
         boardId: data.board.id,
-        image: Boolean(card.image),
+        files,
         workspace: data.cards[card.id]?.workspace,
         threads,
       };
@@ -439,10 +550,7 @@ export class KanbanService {
     const cleanup = removal.value;
     if (cleanup) {
       const report = (error: unknown) => this.options.onError?.(error);
-      if (cleanup.image)
-        await rm(join(this.store.directory, "images", cleanup.boardId, cardId), {
-          force: true,
-        }).catch(report);
+      for (const file of cleanup.files) await rm(file, { force: true }).catch(report);
       if (cleanup.workspace)
         await removeTaskWorkspace(
           cleanup.workspace,
@@ -544,20 +652,38 @@ export class KanbanService {
     }
     card.updatedAt = Date.now();
   }
-  async action(projectPath: string, request: KanbanActionRequest): Promise<KanbanBoard> {
+  async action(
+    projectPath: string,
+    request: KanbanActionRequest,
+    voice?: { images: StoredImage[] },
+  ): Promise<KanbanBoard> {
     if (request.action === "execute" || request.action === "rework") {
       const { id } = await this.store.identity(projectPath);
-      return this.store.withLock(`activity-${id}`, () => this.performAction(projectPath, request));
+      return this.store.withLock(`activity-${id}`, () =>
+        this.performAction(projectPath, request, voice),
+      );
     }
-    return this.performAction(projectPath, request);
+    return this.performAction(projectPath, request, voice);
   }
   private async performAction(
     projectPath: string,
     request: KanbanActionRequest,
+    voice?: { images: StoredImage[] },
   ): Promise<KanbanBoard> {
     const actionId = text(request.clientActionId, "clientActionId", 512);
     if (["__proto__", "constructor", "prototype"].includes(actionId))
       throw new KanbanError("invalid_request", "Invalid action identifier", 400);
+    if (
+      (request.images !== undefined || request.audio !== undefined) &&
+      request.action !== "rework"
+    )
+      throw new KanbanError(
+        "invalid_request",
+        "Only rework comments carry images or a recording",
+        400,
+      );
+    if (request.audio !== undefined && !voice) return this.queueVoiceRework(projectPath, request);
+    const commentImages = voice ? [] : decodeImages(request.images);
     if (
       !Array.isArray(request.cardIds) ||
       !request.cardIds.length ||
@@ -567,9 +693,15 @@ export class KanbanService {
       throw new KanbanError("invalid_request", "Select one or more cards", 400);
     const ids = [...new Set(request.cardIds)];
     if (
-      !["execute", "review", "accept", "rework", "integrate", "retry-classification"].includes(
-        request.action,
-      )
+      ![
+        "execute",
+        "review",
+        "accept",
+        "rework",
+        "integrate",
+        "retry-classification",
+        "retry-transcription",
+      ].includes(request.action)
     )
       throw new KanbanError("invalid_request", "Unknown board action", 400);
     if (request.action !== "integrate" && ids.length !== 1)
@@ -597,8 +729,15 @@ export class KanbanService {
       action: request.action,
       ids,
       comment: request.comment ?? null,
+      ...(commentImages.length
+        ? {
+            images: createHash("sha256")
+              .update(Buffer.concat(commentImages.map((image) => image.bytes)))
+              .digest("hex"),
+          }
+        : {}),
     });
-    const { board } = await this.store.update(projectPath, (data) => {
+    const { board } = await this.store.update(projectPath, async (data) => {
       const prior = data.actions[actionId];
       if (prior) {
         if (prior.fingerprint !== fingerprint)
@@ -608,6 +747,11 @@ export class KanbanService {
       const cards = ids.map((id) => findCard(data, id));
       if (cards.some((card) => card.archivedAt !== undefined))
         throw new KanbanError("archived", "Restore the task from the archive first");
+      if (
+        request.action !== "retry-transcription" &&
+        cards.some((card) => card.voice && !(voice && card.voice.purpose === "rework"))
+      )
+        throw new KanbanError("voice_pending", "Wait until the recording is transcribed");
       if (
         data.board.runs.some(
           (run) =>
@@ -620,7 +764,18 @@ export class KanbanService {
         card.error = null;
         card.updatedAt = Date.now();
       }
-      if (request.action === "retry-classification") {
+      if (request.action === "retry-transcription") {
+        const card = cards[0]!;
+        if (card.voice?.status !== "failed")
+          throw new KanbanError("invalid_request", "There is no failed recording to retry", 400);
+        this.requireTranscription();
+        card.voice = {
+          ...card.voice,
+          status: "transcribing",
+          error: null,
+          provider: this.options.provider,
+        };
+      } else if (request.action === "retry-classification") {
         const card = cards[0]!;
         if (
           data.board.runs.some(
@@ -658,6 +813,14 @@ export class KanbanService {
           original?.threadId ?? undefined,
         );
         runtime.executionRunId ??= run.id;
+        const images =
+          voice?.images ??
+          (await this.storeImages(data.board.id, `comment-${run.id}`, commentImages));
+        if (images.length) data.runs[run.id]!.images = images;
+        if (voice) {
+          delete card.voice;
+          delete runtime.voice;
+        }
       } else if (request.action === "accept") {
         this.accept(data, cards[0]!);
       } else if (request.action === "review") {
@@ -698,6 +861,128 @@ export class KanbanService {
     });
     this.changed(board);
     return board;
+  }
+  /** A spoken rework comment: the card waits while the app transcribes, then rework starts. */
+  private async queueVoiceRework(
+    projectPath: string,
+    request: KanbanActionRequest,
+  ): Promise<KanbanBoard> {
+    const actionId = request.clientActionId;
+    if (!Array.isArray(request.cardIds) || request.cardIds.length !== 1)
+      throw new KanbanError("invalid_request", "This action requires exactly one card", 400);
+    if (
+      request.comment !== undefined &&
+      (typeof request.comment !== "string" || request.comment.length > 100_000)
+    )
+      throw new KanbanError("invalid_request", "Invalid comment", 400);
+    const audio = decodeAudio(request.audio!);
+    const images = decodeImages(request.images);
+    this.requireTranscription();
+    const hash = createHash("sha256").update(
+      JSON.stringify(["voice-rework", request.cardIds[0], request.comment ?? ""]),
+    );
+    for (const image of images) hash.update(image.bytes);
+    const fingerprint = hash.update(audio.bytes).digest("hex");
+    const { board } = await this.store.update(projectPath, async (data) => {
+      const prior = data.actions[actionId];
+      if (prior) {
+        if (prior.fingerprint !== fingerprint)
+          throw new KanbanError("conflict", "Action identifier was reused");
+        return;
+      }
+      const card = findCard(data, request.cardIds[0]!);
+      if (card.archivedAt !== undefined)
+        throw new KanbanError("archived", "Restore the task from the archive first");
+      if (card.voice)
+        throw new KanbanError("voice_pending", "Wait until the recording is transcribed");
+      if (activeFor(data, card.id))
+        throw new KanbanError("already_running", "A selected card already has an active session");
+      if (card.classification !== "ready")
+        throw new KanbanError("not_ready", "Wait for task classification");
+      const runtime = data.cards[card.id]!;
+      const original = data.board.runs.find((run) => run.id === runtime.executionRunId);
+      if (!original?.threadId)
+        throw new KanbanError("not_started", "The original task session is unavailable");
+      await this.storeAudio(data.board.id, card.id, audio.bytes);
+      runtime.voice = {
+        mediaType: audio.mediaType,
+        durationMs: audio.durationMs,
+        text: request.comment?.trim() ?? "",
+        actionId,
+        images: await this.storeImages(data.board.id, `comment-${randomUUID()}`, images),
+      };
+      card.voice = {
+        purpose: "rework",
+        status: "transcribing",
+        error: null,
+        provider: this.options.provider,
+      };
+      card.error = null;
+      card.updatedAt = Date.now();
+      data.actions[actionId] = { fingerprint, runIds: [] };
+    });
+    this.changed(board);
+    this.schedule();
+    return board;
+  }
+  /** Turns a saved recording into task text or a rework comment; failures stay retryable. */
+  private async transcribeCard(boardId: string, cardId: string): Promise<void> {
+    const document = await this.store.readById(boardId);
+    const card = document?.board.cards.find((item) => item.id === cardId);
+    const runtime = document?.cards[cardId]?.voice;
+    if (!document || !card?.voice || card.voice.status !== "transcribing" || !runtime) return;
+    let transcript: string;
+    try {
+      this.requireTranscription();
+      const audio = await readFile(this.voicePath(boardId, cardId));
+      transcript = (
+        await this.options.transcribe!(audio, runtime.mediaType, runtime.durationMs)
+      ).trim();
+      if (!transcript && !runtime.text) throw new Error("No speech was detected in the recording");
+    } catch (error) {
+      await this.failVoice(boardId, cardId, error);
+      return;
+    }
+    const combined = [runtime.text, transcript].filter(Boolean).join("\n\n");
+    if (card.voice.purpose === "rework") {
+      try {
+        await this.action(
+          document.board.projectPath,
+          {
+            action: "rework",
+            cardIds: [cardId],
+            comment: combined,
+            clientActionId: `${runtime.actionId ?? randomUUID()}:transcribed`,
+          },
+          { images: runtime.images ?? [] },
+        );
+      } catch (error) {
+        await this.failVoice(boardId, cardId, error);
+        return;
+      }
+    } else {
+      const { board } = await this.store.updateById(boardId, (data) => {
+        const current = data.board.cards.find((item) => item.id === cardId);
+        if (current?.voice?.status !== "transcribing") return;
+        current.description = combined;
+        current.title = combined.replace(/\s+/g, " ").slice(0, 100);
+        current.updatedAt = Date.now();
+        delete current.voice;
+        delete data.cards[cardId]!.voice;
+        this.addRun(data, "classify", [cardId]);
+      });
+      this.changed(board);
+    }
+    await rm(this.voicePath(boardId, cardId), { force: true });
+    this.schedule();
+  }
+  private async failVoice(boardId: string, cardId: string, error: unknown): Promise<void> {
+    const { board } = await this.store.updateById(boardId, (data) => {
+      const current = data.board.cards.find((item) => item.id === cardId);
+      if (current?.voice?.status === "transcribing")
+        current.voice = { ...current.voice, status: "failed", error: message(error) };
+    });
+    this.changed(board);
   }
   private accept(data: KanbanDocument, card: KanbanCard): void {
     const runtime = data.cards[card.id]!;
@@ -757,6 +1042,23 @@ export class KanbanService {
         const documents = await this.store.list();
         for (const document of documents) {
           this.changed(document.board);
+          for (const card of document.board.cards) {
+            if (
+              card.voice?.status !== "transcribing" ||
+              card.voice.provider !== this.options.provider
+            )
+              continue;
+            const key = `${document.board.id}:${card.id}`;
+            if (this.transcribing.has(key)) continue;
+            this.transcribing.add(key);
+            const promise = this.transcribeCard(document.board.id, card.id)
+              .catch((error) => this.options.onError?.(error))
+              .finally(() => {
+                this.transcribing.delete(key);
+                this.pending.delete(promise);
+              });
+            this.pending.add(promise);
+          }
           for (const run of document.board.runs) {
             if (run.provider !== this.options.provider) continue;
             if (run.threadId && active(run)) {
@@ -859,10 +1161,19 @@ export class KanbanService {
         capability,
         document.runs[runId]!.comment,
       );
+      const stored = [
+        ...document.board.cards
+          .filter((card) => run.cardIds.includes(card.id))
+          .flatMap((card) => cardImages(card)),
+        ...(document.runs[runId]!.images ?? []),
+      ];
       const images = await Promise.all(
-        document.board.cards
-          .filter((card) => run.cardIds.includes(card.id) && card.image)
-          .map(async (card) => (await this.readImage(document.board.projectPath, card.id)).url),
+        stored.map(
+          async (image) =>
+            `data:${image.mediaType};base64,${(
+              await readFile(this.imagePath(document.board.id, image.file))
+            ).toString("base64")}`,
+        ),
       );
       const imageInput = images.length ? { images } : {};
       const resume = document.runs[runId]!.resumeThreadId;

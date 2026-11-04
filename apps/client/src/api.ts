@@ -418,14 +418,15 @@ export class ApiClient {
     return this.request(`/api/v1/projects/${encodeURIComponent(projectId)}/kanban/cards`, {
       method: "POST",
       body,
-      timeoutMs: body.image ? null : undefined,
+      // Pictures and recordings can take longer than an ordinary request to upload.
+      timeoutMs: body.image || body.images?.length || body.audio ? null : undefined,
       retry: true,
     });
   }
 
-  readKanbanImage(projectId: string, cardId: string): Promise<KanbanImageInput> {
+  readKanbanImage(projectId: string, cardId: string, index = 0): Promise<KanbanImageInput> {
     return this.request(
-      `/api/v1/projects/${encodeURIComponent(projectId)}/kanban/cards/${encodeURIComponent(cardId)}/image`,
+      `/api/v1/projects/${encodeURIComponent(projectId)}/kanban/cards/${encodeURIComponent(cardId)}/image${index ? `?index=${index}` : ""}`,
       {
         cache: "no-store",
       },
@@ -482,6 +483,7 @@ export class ApiClient {
     return this.request(`/api/v1/projects/${encodeURIComponent(projectId)}/kanban/actions`, {
       method: "POST",
       body,
+      timeoutMs: body.images?.length || body.audio ? null : undefined,
       retry: true,
     });
   }

@@ -936,9 +936,133 @@ textarea.kanban-edit-field {
   }
 }
 
+/* Task composer: one floating field, like the chat input, with its actions inside.
+   Stopping a recording sends the task; the board shows it while it is transcribed. */
+.kanban-composer {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-2) var(--space-2) var(--space-4);
+  border-radius: var(--chat-radius-compact);
+  background: var(--color-floating);
+  box-shadow: var(--sidebar-surface-shadow);
+  transition: box-shadow var(--motion-fast) var(--motion-ease);
+}
+
+.kanban-composer:focus-within {
+  box-shadow: var(--field-focus-shadow);
+}
+
+/* Outranks the dialog and panel field rules: the text has no surface of its own. */
+:is(.chat-dialog, .kanban-workspace) .kanban-composer textarea.kanban-composer-field,
+:is(.chat-dialog, .kanban-workspace)
+  .kanban-composer
+  textarea.kanban-composer-field:is(:hover, :focus, :focus-visible) {
+  width: 100%;
+  min-height: 72px;
+  max-height: 40dvh;
+  padding: 0 var(--space-2) 0 0;
+  border: 0;
+  /* The field shares the composer surface; its own rounding would clip the first line. */
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--text-input);
+  line-height: var(--leading-copy);
+  outline: none;
+  resize: vertical;
+}
+
+.kanban-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.kanban-composer-status {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-caption);
+}
+
+.kanban-composer-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.kanban-composer-image {
+  position: relative;
+  width: 64px;
+  height: 64px;
+}
+
+.kanban-composer-image img {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--chat-radius-control);
+  object-fit: cover;
+}
+
+.kanban-composer-image .icon-button {
+  position: absolute;
+  top: calc(-1 * var(--space-1-5));
+  right: calc(-1 * var(--space-1-5));
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  background: var(--color-floating);
+  box-shadow: var(--chat-inner-shadow);
+}
+
+.kanban-composer-image .icon-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.kanban-composer-retry,
+.kanban-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.kanban-composer-retry {
+  color: var(--color-danger);
+  font-size: var(--text-small);
+}
+
+.kanban-composer-retry > span {
+  margin-right: var(--space-2);
+}
+
+/* Recording stays red with the inner pulse in every surface that resets buttons. */
+.kanban-workspace :is(.kanban-composer, .workspace-header) .microphone.recording,
+.chat-dialog .kanban-composer .microphone.recording {
+  --chat-button-rest: color-mix(in srgb, var(--danger) 12%, transparent);
+  --chat-button-hover: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+.kanban-workspace .workspace-header .kanban-header-microphone.timing {
+  width: auto;
+  padding: 0 var(--space-2-5);
+  gap: var(--space-1);
+}
+
+.kanban-card-images {
+  align-items: center;
+  gap: var(--space-0-5);
+}
+
 /* Task, comment and stage dialogs. */
 .kanban-text-dialog {
   width: min(100%, 600px);
+}
+
+.kanban-text-dialog .kanban-composer {
+  margin-top: var(--space-1);
 }
 
 .kanban-text-dialog .dialog-header h2 {
@@ -958,44 +1082,4 @@ textarea.kanban-edit-field {
   width: 100%;
   min-height: 100px;
   resize: vertical;
-}
-
-.kanban-voice-controls {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 38px;
-  margin-top: calc(-1 * var(--space-2));
-}
-
-.kanban-voice-controls > span:first-child {
-  flex: 1;
-}
-
-.kanban-voice-controls .microphone {
-  flex-shrink: 0;
-}
-
-.kanban-image-field {
-  margin-top: 12px;
-}
-
-.kanban-image-preview {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 10px;
-}
-
-.kanban-image-preview img {
-  width: 80px;
-  height: 64px;
-  object-fit: contain;
-}
-
-.kanban-image-preview span {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
 }

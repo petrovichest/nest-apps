@@ -218,10 +218,12 @@ describe("KanbanBoard", () => {
     fireEvent.click(send);
     await within(dialog).findByText("Cannot save task");
     const request = api.createKanbanCard.mock.calls[0][1];
-    expect(request.image).toEqual({
-      name: file.name,
-      url: "data:image/png;base64,aW1hZ2UgYnl0ZXM=",
-    });
+    expect(request.images).toEqual([
+      {
+        name: file.name,
+        url: "data:image/png;base64,aW1hZ2UgYnl0ZXM=",
+      },
+    ]);
     expect(within(dialog).getByRole("img", { name: file.name })).toBeInTheDocument();
     fireEvent.click(send);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -251,7 +253,7 @@ describe("KanbanBoard", () => {
     expect(within(dialog).queryByRole("img")).not.toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Отправить" }));
     await waitFor(() => expect(api.createKanbanCard).toHaveBeenCalled());
-    expect(api.createKanbanCard.mock.calls[0][1]).not.toHaveProperty("image");
+    expect(api.createKanbanCard.mock.calls[0][1]).not.toHaveProperty("images");
   });
   it("loads saved images only when opening a card, without refetching on board updates", async () => {
     const seed = board();
@@ -268,7 +270,7 @@ describe("KanbanBoard", () => {
       await screen.findByRole("button", { name: "Не удалось загрузить изображение. Повторить" }),
     );
     await screen.findByText("screenshot.png");
-    expect(api.readKanbanImage).toHaveBeenLastCalledWith("project", "one");
+    expect(api.readKanbanImage).toHaveBeenLastCalledWith("project", "one", 0);
     fireEvent.focus(window);
     await waitFor(() => expect(api.readKanban).toHaveBeenCalledTimes(2));
     expect(api.readKanbanImage).toHaveBeenCalledTimes(2);
@@ -322,11 +324,11 @@ describe("KanbanBoard", () => {
       "http://localhost:4311/threads/original",
     );
     fireEvent.click(screen.getByRole("button", { name: "На доработку" }));
-    const dialog = screen.getByRole("dialog", { name: "На доработку" });
-    fireEvent.change(within(dialog).getByLabelText("Комментарий"), {
+    const panel = screen.getByRole("complementary", { name: "Task one" });
+    fireEvent.change(within(panel).getByLabelText("Комментарий для доработки"), {
       target: { value: "Fix the missing error state" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Отправить на доработку" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Отправить на доработку" }));
     await waitFor(() =>
       expect(api.kanbanAction).toHaveBeenCalledWith("project", {
         action: "rework",
@@ -337,31 +339,84 @@ describe("KanbanBoard", () => {
     );
   });
 
-  it("inserts dictated text at the captured cursor while retaining edits made during transcription", async () => {
+  it("sends a recorded task at once with the typed text and leaves transcription to the server", async () => {
     installRecorder();
-    let finish!: (result: { text: string }) => void;
-    api.transcribe.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          finish = resolve;
-        }),
-    );
     show(voice);
     await screen.findByRole("button", { name: "Task one" });
     fireEvent.click(screen.getAllByRole("button", { name: "Добавить задачу" })[0]);
-    const input = screen.getByLabelText("Задача") as HTMLTextAreaElement;
-    fireEvent.change(input, { target: { value: "one two" } });
-    input.setSelectionRange(4, 4);
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Начать запись" }));
-    fireEvent.click(screen.getByRole("button", { name: "Начать запись" }));
-    const stop = await screen.findByRole("button", { name: "Остановить запись" });
-    fireEvent.click(stop);
-    await waitFor(() => expect(api.transcribe).toHaveBeenCalledOnce());
-    expect(screen.getByRole("button", { name: "Отправить" })).toBeDisabled();
-    fireEvent.change(input, { target: { value: "one two!" } });
-    await act(async () => finish({ text: "spoken" }));
-    expect(input).toHaveValue("one spoken two!");
-    expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
+    const dialog = screen.getByRole("dialog", { name: "Добавить задачу" });
+    fireEvent.change(within(dialog).getByLabelText("Задача"), { target: { value: "Fix login" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Начать запись" }));
+    fireEvent.click(
+      await within(dialog).findByRole("button", { name: "Остановить запись и отправить" }),
+    );
+    await waitFor(() =>
+      expect(api.createKanbanCard).toHaveBeenCalledWith("project", {
+        description: "Fix login",
+        clientCreationId: expect.any(String),
+        audio: {
+          mediaType: expect.stringMatching(/^audio\//),
+          data: "YXVkaW8=",
+          durationMs: expect.any(Number),
+        },
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(api.transcribe).not.toHaveBeenCalled();
+  });
+
+  it("dictates a task from the header without opening a dialog", async () => {
+    installRecorder();
+    show(voice);
+    fireEvent.click(await screen.findByRole("button", { name: "Надиктовать задачу" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Остановить запись и создать задачу" }),
+    );
+    await waitFor(() =>
+      expect(api.createKanbanCard).toHaveBeenCalledWith("project", {
+        description: "",
+        clientCreationId: expect.stringMatching(/^voice:/),
+        audio: expect.objectContaining({ data: "YXVkaW8=" }),
+      }),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("shows a transcribing card and retries a failed recording", async () => {
+    const seed = board([
+      { ...card("one"), title: "", description: "" },
+      { ...card("two"), title: "", description: "" },
+    ]);
+    seed.cards[0]!.voice = {
+      purpose: "create",
+      status: "transcribing",
+      error: null,
+      provider: "codex",
+    };
+    seed.cards[1]!.voice = {
+      purpose: "create",
+      status: "failed",
+      error: "Recognizer offline",
+      provider: "codex",
+    };
+    api.readKanban.mockResolvedValue(seed);
+    show();
+    const [pending, failed] = (
+      await screen.findAllByRole("button", { name: "Голосовая задача" })
+    ).map((button) => button.closest("article")!);
+    expect(pending).toHaveTextContent("Распознаём запись…");
+    expect(failed).toHaveTextContent("Не удалось распознать запись");
+    fireEvent.click(within(failed!).getByRole("button", { name: "Голосовая задача" }));
+    const panel = screen.getByRole("complementary");
+    expect(panel).toHaveTextContent("Recognizer offline");
+    fireEvent.click(within(panel).getByRole("button", { name: "Повторить распознавание" }));
+    await waitFor(() =>
+      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+        action: "retry-transcription",
+        cardIds: ["two"],
+        clientActionId: expect.any(String),
+      }),
+    );
   });
 
   it("opens the card of a linked session and closes its panel with Escape", async () => {
