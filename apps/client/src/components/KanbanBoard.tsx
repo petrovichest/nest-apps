@@ -731,7 +731,8 @@ export function KanbanBoard({
         ? runStatusClass(latest, session)
         : null;
     const imageCount = item.images?.length ?? (item.image ? 1 : 0);
-    const launch = launchable(board!, item);
+    // The card's own start button is for To do; other stages start from the panel.
+    const launch = selectable(board!, item);
     const categoryName = board!.categories.find((value) => value.id === item.categoryId)?.name;
     const meta: ReactNode[] = [];
     if (categoryName) meta.push(<span key="category">{categoryName}</span>);
@@ -836,11 +837,23 @@ export function KanbanBoard({
           >
             {item.title || t("Голосовая задача")}
           </button>
+          {launch && (
+            <button
+              className="kanban-card-launch"
+              aria-label={t("Запустить задачу «{{title}}»", {
+                title: item.title || t("Голосовая задача"),
+              })}
+              disabled={busy || !classified(item)}
+              onClick={() => void action("execute", [item.id])}
+            >
+              <PlayIcon />
+            </button>
+          )}
         </div>
         {item.description !== item.title && (
           <p className="kanban-card-excerpt">{item.description}</p>
         )}
-        {(meta.length > 0 || imageCount > 0 || launch) && (
+        {(meta.length > 0 || imageCount > 0) && (
           <div className="kanban-card-meta">
             {meta.map((node, index) => (
               <Fragment key={index}>
@@ -861,18 +874,6 @@ export function KanbanBoard({
                 <ImageIcon />
                 {imageCount > 1 && imageCount}
               </span>
-            )}
-            {launch && (
-              <button
-                className="kanban-card-launch"
-                aria-label={t("Запустить задачу «{{title}}»", {
-                  title: item.title || t("Голосовая задача"),
-                })}
-                disabled={busy || !classified(item)}
-                onClick={() => void action("execute", [item.id])}
-              >
-                <PlayIcon />
-              </button>
             )}
           </div>
         )}

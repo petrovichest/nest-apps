@@ -492,7 +492,7 @@ describe("KanbanBoard", () => {
   });
 
   it("starts a task from the round button on its card", async () => {
-    const seed = board([card("one"), card("two"), card("three", "ready")]);
+    const seed = board([card("one"), card("two"), card("three", "ready"), card("four", "working")]);
     seed.cards[1]!.classification = "pending";
     seed.runs.push(execution("three"));
     api.readKanban.mockResolvedValue(seed);
@@ -501,6 +501,8 @@ describe("KanbanBoard", () => {
     await screen.findByRole("button", { name: "Task one" });
     expect(screen.getByRole("button", { name: "Запустить задачу «Task two»" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Запустить задачу «Task three»" })).toBeNull();
+    // Only To do cards carry it; a task elsewhere without a session starts from its panel.
+    expect(screen.queryByRole("button", { name: "Запустить задачу «Task four»" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Запустить задачу «Task one»" }));
     await waitFor(() =>
       expect(api.kanbanAction).toHaveBeenCalledWith("project", {

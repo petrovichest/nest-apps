@@ -345,14 +345,11 @@
   min-width: 32px;
   height: 32px;
   min-height: 32px;
-  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-1-5)) calc(-1 * var(--space-0-5)) auto;
+  /* 8px from the top and right edges; the title row keeps its 20px line. */
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-2)) calc(-1 * var(--space-2)) 0;
   padding: 0;
   border-radius: 50%;
   color: var(--color-lapis-contrast);
-}
-
-.kanban-card-images ~ .kanban-card-launch {
-  margin-left: var(--space-1);
 }
 
 .kanban-card-launch svg {
