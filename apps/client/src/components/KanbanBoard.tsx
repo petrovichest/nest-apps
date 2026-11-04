@@ -730,6 +730,8 @@ export function KanbanBoard({
       : latest
         ? runStatusClass(latest, session)
         : null;
+    // To do has no agent at work yet: its cards carry no coloured marker, recognition is text.
+    const marker = stage.role === "todo" ? null : statusClass;
     const imageCount = item.images?.length ?? (item.image ? 1 : 0);
     // The card's own start button is for To do; other stages start from the panel.
     const launch = selectable(board!, item);
@@ -771,7 +773,7 @@ export function KanbanBoard({
       <article
         key={item.id}
         data-card-id={item.id}
-        className={`kanban-card${statusClass ? " has-status" : ""}${drag?.cardId === item.id ? " dragging" : ""}`}
+        className={`kanban-card${marker ? " has-status" : ""}${drag?.cardId === item.id ? " dragging" : ""}`}
         draggable={!busy && fineDrag.current}
         onDragStart={(event) => {
           event.dataTransfer.setData("application/x-nest-kanban-card", item.id);
@@ -881,7 +883,7 @@ export function KanbanBoard({
         {item.error && (
           <p className="kanban-card-error">{localizeKnownServerText(language, item.error)}</p>
         )}
-        {statusClass && <span className={`kanban-card-status ${statusClass}`} aria-hidden="true" />}
+        {marker && <span className={`kanban-card-status ${marker}`} aria-hidden="true" />}
       </article>
     );
   }

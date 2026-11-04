@@ -494,12 +494,22 @@ describe("KanbanBoard", () => {
   it("starts a task from the round button on its card", async () => {
     const seed = board([card("one"), card("two"), card("three", "ready"), card("four", "working")]);
     seed.cards[1]!.classification = "pending";
+    seed.cards[1]!.voice = {
+      purpose: "create",
+      status: "transcribing",
+      error: null,
+      provider: "codex",
+    };
     seed.runs.push(execution("three"));
     api.readKanban.mockResolvedValue(seed);
     api.kanbanAction.mockResolvedValue(seed);
     show();
     await screen.findByRole("button", { name: "Task one" });
     expect(screen.getByRole("button", { name: "Запустить задачу «Task two»" })).toBeDisabled();
+    // Recognition in To do shows as text only, without a coloured marker.
+    const recognising = screen.getByRole("button", { name: "Task two" }).closest("article")!;
+    expect(recognising).toHaveTextContent("Распознаём запись…");
+    expect(recognising.querySelector(".kanban-card-status")).toBeNull();
     expect(screen.queryByRole("button", { name: "Запустить задачу «Task three»" })).toBeNull();
     // Only To do cards carry it; a task elsewhere without a session starts from its panel.
     expect(screen.queryByRole("button", { name: "Запустить задачу «Task four»" })).toBeNull();
