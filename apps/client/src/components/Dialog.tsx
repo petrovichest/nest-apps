@@ -61,8 +61,15 @@ export function Dialog({
     const dialogElement = dialog;
     const ownerDocument = dialogElement.ownerDocument;
 
+    // React focuses an autoFocus field itself and leaves no autofocus attribute to find.
+    const focusedInside =
+      ownerDocument.activeElement instanceof HTMLElement &&
+      dialogElement.contains(ownerDocument.activeElement)
+        ? ownerDocument.activeElement
+        : null;
     const initialFocus =
       initialFocusRef?.current ??
+      focusedInside ??
       dialogElement.querySelector<HTMLElement>("[autofocus]") ??
       focusableElements(dialogElement)[0] ??
       dialogElement;

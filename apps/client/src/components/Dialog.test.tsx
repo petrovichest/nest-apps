@@ -35,6 +35,16 @@ describe("Dialog", () => {
     expect(screen.getByRole("textbox", { name: "Initial" })).toHaveFocus();
   });
 
+  it("keeps the focus a field took with autoFocus", () => {
+    render(
+      <Dialog ariaLabel="Task" closeOnBackdrop closeOnEscape onClose={vi.fn()}>
+        <button type="button">Close</button>
+        <textarea aria-label="Task text" autoFocus />
+      </Dialog>,
+    );
+    expect(screen.getByRole("textbox", { name: "Task text" })).toHaveFocus();
+  });
+
   it("traps Tab and Shift+Tab at the dialog boundaries", () => {
     render(<DialogHarness />);
     const first = screen.getByRole("button", { name: "First" });
