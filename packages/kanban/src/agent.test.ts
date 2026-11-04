@@ -50,6 +50,7 @@ describe("agent file bridge", () => {
         "\n\n## Задача 2\n\nПроверить на телефоне",
     );
     expect(PUBLISH_PROMPT).toContain("GitHub Actions");
+    expect(PUBLISH_PROMPT).toContain("только на GitHub");
     expect(PUBLISH_PROMPT).not.toMatch(/board|доск/i);
   });
   it("keeps classification self-contained and limited to a title and a category", () => {

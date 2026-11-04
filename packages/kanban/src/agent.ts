@@ -60,7 +60,8 @@ export function shellQuote(value: string): string {
 
 /** Sent to the task's own session when the operator publishes it from the board. */
 export const PUBLISH_PROMPT =
-  "Опубликуй: подтяни изменения с GitHub, разреши конфликты (если при этом правил код — прогони тесты), запушь и дождись проверок GitHub Actions.";
+  "Опубликуй только на GitHub: подтяни изменения с GitHub, разреши конфликты (если при этом правил код — прогони тесты), запушь и дождись проверок GitHub Actions. " +
+  "Даже если по правилам проекта публикация включает что-то ещё (деплой, обновление серверов или запущенных приложений, релиз), сейчас ничего сверх GitHub не делай.";
 
 /**
  * A task starts exactly like a message the operator typed into a new session: the agent

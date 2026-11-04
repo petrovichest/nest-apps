@@ -81,10 +81,14 @@ is stopped first. A session working in the other application cannot be replaced.
 
 An agent usually publishes its work itself. When it has not, or to wait for the checks,
 **Publish** in a ready task's panel, dragging it to Published, or **Publish all** in
-the Ready header sends the task's own session this message: «Опубликуй: подтяни
-изменения с GitHub, разреши конфликты (если при этом правил код — прогони тесты),
-запушь и дождись проверок GitHub Actions.» The agent publishes exactly as it would
-when asked in a normal session, under the repository's own rules. The card stays in
+the Ready header sends the task's own session this message: «Опубликуй только на
+GitHub: подтяни изменения с GitHub, разреши конфликты (если при этом правил код —
+прогони тесты), запушь и дождись проверок GitHub Actions. Даже если по правилам
+проекта публикация включает что-то ещё (деплой, обновление серверов или запущенных
+приложений, релиз), сейчас ничего сверх GitHub не делай.» The agent publishes as it
+would when asked in a normal session, under the repository's own rules, but only to
+GitHub: where those rules also deploy or release, the board asks for none of that.
+The card stays in
 Ready, marked as being published. When the turn ends it moves to Published, or to
 Waiting for answer if the agent asks something or reports failed checks. Several
 publications run one after another, since they push the same branch from the same
