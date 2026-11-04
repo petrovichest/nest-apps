@@ -1002,22 +1002,42 @@ describe("KanbanBoard", () => {
     expect(api.updateKanbanCard).toHaveBeenCalledTimes(1);
   });
 
-  it("adds to a short task's text before it starts instead of replacing it", async () => {
+  it("adds text and pictures to a task before it starts", async () => {
     const short = { ...card("one"), title: "Fix login", description: "Fix login" };
     api.readKanban.mockResolvedValue(board([short]));
     show();
     fireEvent.click(await screen.findByRole("button", { name: "Fix login" }));
     const panel = screen.getByRole("complementary", { name: "Fix login" });
-    fireEvent.click(within(panel).getByRole("button", { name: "Дописать задачу" }));
-    const field = within(panel).getByLabelText("Описание");
-    expect(field).toHaveValue("Fix login");
-    fireEvent.change(field, { target: { value: "Fix login\nKeep the session after a reload" } });
-    fireEvent.blur(field);
+    // The add button replaces the inline editor of a short task, so there is one way to add.
+    expect(within(panel).queryByRole("button", { name: "Дописать задачу" })).toBeNull();
+    fireEvent.click(within(panel).getByRole("button", { name: "Дописать" }));
+    const field = within(panel).getByLabelText("Дополнение к задаче");
+    expect(field).toHaveValue("");
+    const send = within(panel).getByRole("button", { name: "Добавить к задаче" });
+    expect(send).toBeDisabled();
+    fireEvent.change(field, { target: { value: "Keep the session after a reload" } });
+    fireEvent.click(send);
     await waitFor(() =>
-      expect(api.updateKanbanCard).toHaveBeenCalledWith("project", "one", {
-        description: "Fix login\nKeep the session after a reload",
+      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+        action: "append",
+        cardIds: ["one"],
+        comment: "Keep the session after a reload",
+        clientActionId: expect.any(String),
       }),
     );
+    expect(api.updateKanbanCard).not.toHaveBeenCalled();
+    await waitFor(() => expect(within(panel).queryByLabelText("Дополнение к задаче")).toBeNull());
+  });
+
+  it("offers no additions once an agent has taken the task", async () => {
+    const seed = board([card("one", "ready")]);
+    seed.runs.push(execution("one", "completed"));
+    api.readKanban.mockResolvedValue(seed);
+    show();
+    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    const panel = screen.getByRole("complementary", { name: "Task one" });
+    expect(within(panel).queryByRole("button", { name: "Дописать" })).toBeNull();
+    expect(within(panel).getByRole("button", { name: "На доработку" })).toBeInTheDocument();
   });
 
   it("edits, moves and deletes a custom stage", async () => {

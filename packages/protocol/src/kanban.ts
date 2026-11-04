@@ -18,10 +18,10 @@ export type KanbanImageInput = { name: string; url: string };
 export type KanbanImage = { name: string; mediaType: string; size: number };
 export const KANBAN_IMAGE_LIMIT = 10;
 export const KANBAN_AUDIO_MAX_BYTES = 24 * 1024 * 1024;
-/** A recording sent with a task or a rework comment; the server transcribes it. */
+/** A recording sent with a task, an addition to it or a rework comment; the server transcribes it. */
 export type KanbanAudioInput = { mediaType: string; data: string; durationMs: number };
 export type KanbanVoiceState = {
-  purpose: "create" | "rework";
+  purpose: "create" | "append" | "rework";
   status: "transcribing" | "failed";
   error: string | null;
   provider: KanbanProvider;
@@ -102,12 +102,21 @@ export type UpdateKanbanStageRequest = {
 };
 export type CreateKanbanStageRequest = { name: string; description?: string };
 export type KanbanAction =
-  "execute" | "restart" | "rework" | "publish" | "retry-classification" | "retry-transcription";
+  | "execute"
+  | "restart"
+  | "rework"
+  | "append"
+  | "publish"
+  | "retry-classification"
+  | "retry-transcription";
 export type KanbanActionRequest = {
   action: KanbanAction;
   cardIds: string[];
   comment?: string;
-  /** Rework only: pictures for the executor and a recording appended to the comment. */
+  /**
+   * Rework and append only: pictures and a recording whose transcript follows the comment.
+   * Append adds them to a task no session has taken yet.
+   */
   images?: KanbanImageInput[];
   audio?: KanbanAudioInput;
   clientActionId: string;

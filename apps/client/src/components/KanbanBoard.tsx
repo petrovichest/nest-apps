@@ -252,6 +252,7 @@ export function KanbanBoard({
   const [mobileStageId, setMobileStageId] = useState<string | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [reworkId, setReworkId] = useState<string | null>(null);
+  const [appendId, setAppendId] = useState<string | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [editStageId, setEditStageId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "stage" | "card"; id: string } | null>(null);
@@ -748,7 +749,9 @@ export function KanbanBoard({
             ? t("Не удалось распознать запись")
             : voice.purpose === "rework"
               ? t("Распознаём комментарий…")
-              : t("Распознаём запись…")}
+              : voice.purpose === "append"
+                ? t("Распознаём дополнение…")
+                : t("Распознаём запись…")}
         </span>,
       );
     else if (item.classification === "pending")
@@ -1526,19 +1529,22 @@ export function KanbanBoard({
                   }
                 />
               </h2>
-              <EditableText
-                key={`description-${card.id}`}
-                className="kanban-panel-description"
-                multiline
-                value={card.description}
-                empty={card.description === card.title}
-                placeholder={t("Дописать задачу")}
-                label={t("Описание")}
-                busy={busy}
-                onSave={(description) =>
-                  mutate(() => api.updateKanbanCard(projectId, card.id, { description }))
-                }
-              />
+              {/* A short task that no agent has taken is added to with the Add more button. */}
+              {(card.description !== card.title || !launchable(board, card)) && (
+                <EditableText
+                  key={`description-${card.id}`}
+                  className="kanban-panel-description"
+                  multiline
+                  value={card.description}
+                  empty={card.description === card.title}
+                  placeholder={t("Дописать задачу")}
+                  label={t("Описание")}
+                  busy={busy}
+                  onSave={(description) =>
+                    mutate(() => api.updateKanbanCard(projectId, card.id, { description }))
+                  }
+                />
+              )}
               {Boolean(card.images?.length || card.image) && (
                 <CardImages key={`${projectId}:${card.id}`} projectId={projectId} card={card} />
               )}
@@ -1546,7 +1552,9 @@ export function KanbanBoard({
                 <p className="working-text" role="status">
                   {card.voice.purpose === "rework"
                     ? t("Распознаём комментарий для доработки…")
-                    : t("Распознаём запись…")}
+                    : card.voice.purpose === "append"
+                      ? t("Распознаём дополнение…")
+                      : t("Распознаём запись…")}
                 </p>
               )}
               {card.voice?.status === "failed" && (
@@ -1634,6 +1642,15 @@ export function KanbanBoard({
                     {t("Запустить агента")}
                   </button>
                 )}
+                {launchable(board, card) && (
+                  <button
+                    disabled={busy || Boolean(card.voice)}
+                    aria-expanded={appendId === card.id}
+                    onClick={() => setAppendId(appendId === card.id ? null : card.id)}
+                  >
+                    {t("Дописать")}
+                  </button>
+                )}
                 {role === "ready" && session && (
                   <button
                     className="primary"
@@ -1665,6 +1682,41 @@ export function KanbanBoard({
                   </button>
                 )}
               </div>
+              {appendId === card.id && !card.voice && launchable(board, card) && (
+                <section className="kanban-panel-section">
+                  <h3>{t("Дописать задачу")}</h3>
+                  <TaskComposer
+                    key={card.id}
+                    label={t("Дополнение к задаче")}
+                    placeholder={t("Что добавить? Можно надиктовать и приложить картинки")}
+                    submitLabel={t("Добавить к задаче")}
+                    busy={busy}
+                    error={error}
+                    config={transcriptionConfig}
+                    onSubmit={async (value) => {
+                      let audio: KanbanAudioInput | undefined;
+                      try {
+                        if (value.recording) audio = await audioInput(value.recording);
+                      } catch {
+                        setError(t("Не удалось прочитать запись"));
+                        return false;
+                      }
+                      const ok = await mutate(() =>
+                        api.kanbanAction(projectId, {
+                          action: "append",
+                          cardIds: [card.id],
+                          clientActionId: value.id,
+                          ...(value.text ? { comment: value.text } : {}),
+                          ...(value.images.length ? { images: value.images } : {}),
+                          ...(audio ? { audio } : {}),
+                        }),
+                      );
+                      if (ok) setAppendId(null);
+                      return ok;
+                    }}
+                  />
+                </section>
+              )}
               {reworkId === card.id && !card.voice && (
                 <section className="kanban-panel-section">
                   <h3>{t("Комментарий для доработки")}</h3>
@@ -2343,7 +2395,7 @@ function TaskComposer({
     identity.current = uuid();
   };
   async function submit(recording?: Recording) {
-    if (busy || reading || (!recording && !text.trim())) return;
+    if (busy || reading || (!recording && !text.trim() && !images.length)) return;
     const ok = await onSubmit({
       id: recording ? `${identity.current}:${recording.id}` : identity.current,
       text: text.trim(),
@@ -2530,7 +2582,7 @@ function TaskComposer({
           type="button"
           className="icon-button primary"
           aria-label={submitLabel}
-          disabled={busy || reading > 0 || recording || !text.trim()}
+          disabled={busy || reading > 0 || recording || (!text.trim() && !images.length)}
           onClick={() => void submit()}
         >
           {busy ? <span className="spinner small" /> : <SendIcon />}

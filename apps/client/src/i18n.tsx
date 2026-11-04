@@ -34,6 +34,7 @@ const ENGLISH: Record<string, string> = {
   "Распознаём комментарий…": "Transcribing the comment…",
   "Распознаём запись…": "Transcribing the recording…",
   "Распознаём комментарий для доработки…": "Transcribing the rework comment…",
+  "Распознаём дополнение…": "Transcribing the addition…",
   "Изображений: {{count}}": "Images: {{count}}",
   "Запись не отправлена.": "The recording was not sent.",
   "Отправить запись ещё раз": "Send the recording again",
@@ -76,6 +77,11 @@ const ENGLISH: Record<string, string> = {
   "Сдвинуть вправо": "Move right",
   "Название стадии": "Stage name",
   "Дописать задачу": "Add to the task",
+  Дописать: "Add more",
+  "Дополнение к задаче": "Addition to the task",
+  "Добавить к задаче": "Add to the task",
+  "Что добавить? Можно надиктовать и приложить картинки":
+    "What should be added? You can dictate and attach pictures",
   "Прикрепить изображение": "Attach image",
   "Выберите изображение PNG, JPEG, GIF или WebP до 10 МБ":
     "Choose a PNG, JPEG, GIF or WebP image up to 10 MB",

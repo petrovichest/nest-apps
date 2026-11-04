@@ -16,7 +16,9 @@ recording sends the task at once with the typed text and images; the application
 that received the recording transcribes it in the background, so the app can be
 closed. The header microphone records a task without opening the dialog. A failed
 transcription can be retried from the card. Rework comments in the task panel work
-the same way. An agent assigns a category without asking questions. Questions about the work itself
+the same way. Until an agent takes a task, **Add more** in its panel appends text,
+images and a recording to it in the same way (up to ten images per task); after that,
+additions go to the task's session as rework. An agent assigns a category without asking questions. Questions about the work itself
 appear in the execution session. There is no permanent board chat.
 
 In CodexNest, classification runs in a temporary helper session that never appears

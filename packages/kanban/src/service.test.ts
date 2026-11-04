@@ -1302,4 +1302,102 @@ describe("shared provider board service", () => {
     expect(f.prompts.get(resumed.id)).toBe("Keep the header\n\nAlso handle the empty state");
     expect(f.resumedInputs.at(-1)?.images).toHaveLength(1);
   });
+
+  it("adds text, pictures and a recording to a task no agent has taken yet", async () => {
+    const transcribe = vi.fn(async () => "Spoken addition");
+    const f = await fixture(undefined, transcribe);
+    const id = await f.card("Fix the list");
+    let board = await f.services.codex.action(f.project, {
+      action: "append",
+      cardIds: [id],
+      comment: "  Also on the phone  ",
+      images: [png],
+      clientActionId: randomUUID(),
+    });
+    expect(board.cards[0]).toMatchObject({
+      title: "Fix the list",
+      description: "Fix the list\n\nAlso on the phone",
+    });
+    expect(board.cards[0]!.images?.map((image) => image.name)).toEqual(["shot.png"]);
+    expect(stage(board, id)).toBe("todo");
+    expect(board.runs.filter((run) => run.kind !== "classify")).toEqual([]);
+
+    // A recording joins the task once the app that received it has transcribed it.
+    board = await f.services.claude.action(f.project, {
+      action: "append",
+      cardIds: [id],
+      comment: "Typed with the recording",
+      images: [{ ...png, name: "second.png" }],
+      audio: recording("addition"),
+      clientActionId: randomUUID(),
+    });
+    expect(board.cards[0]!.voice).toMatchObject({ purpose: "append", provider: "claude" });
+    await expect(
+      f.services.codex.action(f.project, {
+        action: "execute",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "voice_pending" });
+    board = await until(
+      () => f.services.codex.read(f.project),
+      (current) => !current.cards[0]?.voice,
+    );
+    expect(board.cards[0]!.description).toBe(
+      "Fix the list\n\nAlso on the phone\n\nTyped with the recording\n\nSpoken addition",
+    );
+    expect(board.cards[0]!.images?.map((image) => image.name)).toEqual(["shot.png", "second.png"]);
+    expect((await f.services.codex.readImage(f.project, id, 1)).name).toBe("second.png");
+    await expect(
+      f.services.codex.action(f.project, {
+        action: "append",
+        cardIds: [id],
+        images: Array.from({ length: 9 }, () => png),
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "too_many_images" });
+
+    // Pictures sent with a silent recording are still added.
+    transcribe.mockResolvedValueOnce("");
+    await f.services.codex.action(f.project, {
+      action: "append",
+      cardIds: [id],
+      images: [{ ...png, name: "third.png" }],
+      audio: recording("silence"),
+      clientActionId: randomUUID(),
+    });
+    board = await until(
+      () => f.services.codex.read(f.project),
+      (current) => !current.cards[0]?.voice,
+    );
+    expect(board.cards[0]!.images).toHaveLength(3);
+    expect(board.cards[0]!.description).toMatch(/Spoken addition$/);
+
+    // The agent gets everything with the task; afterwards additions go to its session.
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const executor = await f.running("execute", id);
+    expect(f.prompts.get(executor.id)).toContain("Spoken addition");
+    expect(f.inputs.codex.at(-1)?.images).toHaveLength(3);
+    await expect(
+      f.services.codex.action(f.project, {
+        action: "append",
+        cardIds: [id],
+        comment: "Too late",
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "already_running" });
+    await f.finish(executor);
+    await expect(
+      f.services.codex.action(f.project, {
+        action: "append",
+        cardIds: [id],
+        comment: "Too late",
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "already_started" });
+  });
 });
