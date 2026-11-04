@@ -482,6 +482,7 @@ export function App({
               element={
                 <KanbanBoard
                   projects={snapshot?.projects ?? []}
+                  threads={snapshot?.threads ?? []}
                   transcriptionConfig={transcriptionConfig}
                   onOpenNavigation={() => setDrawer(true)}
                 />
