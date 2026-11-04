@@ -3918,6 +3918,8 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
 
   const pendingKanbanArchives = new Set<string>();
   const archiveKanbanThread = async (threadId: string) => {
+    // Ephemeral classifiers have no projected session to archive.
+    if (!projection.summary(threadId)) return;
     if (projection.summary(threadId)?.currentTurnId) {
       pendingKanbanArchives.add(threadId);
       return;
