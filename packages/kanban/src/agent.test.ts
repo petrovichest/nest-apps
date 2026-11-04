@@ -66,7 +66,9 @@ describe("agent file bridge", () => {
     expect(prompt).toContain("Classify this one task");
     expect(prompt).toContain("Fix layout");
     expect(prompt).toContain("/agent.mjs");
-    expect(prompt).toContain("Interface");
+    expect(prompt).toContain('["Interface"]');
+    expect(prompt).not.toContain('"ui"');
+    expect(prompt).toContain("language of the task text");
     expect(prompt).toContain("report");
     expect(prompt).not.toContain("scope");
   });

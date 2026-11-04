@@ -263,6 +263,20 @@ describe("shared provider board service", () => {
       title: "Layout",
       classification: "ready",
     });
+    // A category reported by its id is that category, not a new one named after the id.
+    const { categories } = await f.services.codex.read(f.project);
+    const second = await f.services.codex.createCard(f.project, {
+      description: "Fix spacing",
+      clientCreationId: randomUUID(),
+    });
+    const secondId = second.cards.find((card) => card.description === "Fix spacing")!.id;
+    await f.command(await f.running("classify", secondId), "report", {
+      title: "Spacing",
+      category: categories[0]!.id,
+    });
+    const after = await f.services.codex.read(f.project);
+    expect(after.categories).toEqual(categories);
+    expect(after.cards.find((card) => card.id === secondId)?.categoryId).toBe(categories[0]!.id);
   });
   it.each(["codex", "claude"] as const)(
     "persists images outside board JSON and delivers them once, when %s starts the session",

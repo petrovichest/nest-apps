@@ -107,9 +107,18 @@ function initial(projectPath: string, id: string): KanbanDocument {
 const ROLES: readonly KanbanStageRole[] = ["todo", "working", "waiting", "ready", "done"];
 /**
  * Boards from before plain-session tasks had Review between In progress and Ready: it becomes
- * Waiting for answer and its cards become ready. Saved with the next write.
+ * Waiting for answer and its cards become ready. Repairs are saved with the next write.
  */
 function upgrade(data: KanbanDocument): void {
+  // Classification once reported a category's id as a new category's name: fold it back.
+  const categories = data.board?.categories;
+  for (const stray of Array.isArray(categories) ? [...categories] : []) {
+    const target = categories.find((item) => item !== stray && item.id === stray.name);
+    if (!target) continue;
+    for (const card of data.board.cards ?? [])
+      if (card.categoryId === stray.id) card.categoryId = target.id;
+    categories.splice(categories.indexOf(stray), 1);
+  }
   const stages = data.board?.stages;
   if (!Array.isArray(stages) || stages.some((stage) => stage.role === "waiting")) return;
   const review = stages.find((stage) => (stage.role as string) === "review");

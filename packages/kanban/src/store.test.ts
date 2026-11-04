@@ -98,4 +98,25 @@ describe("shared kanban storage", () => {
     });
     expect(upgraded.cards.map((card) => card.stageId)).toEqual(["ready", "todo"]);
   });
+  it("folds a category named after another category's id back into that category", async () => {
+    const { project, store } = await fixture();
+    const { board } = await store.read(project);
+    const old = (await store.readById(board.id))!;
+    old.board.categories = [
+      { id: "93b4ab99", name: "Канбан-доска" },
+      { id: "stray", name: "93b4ab99" },
+      { id: "other", name: "Other" },
+    ];
+    old.board.cards = [
+      { id: "a", stageId: "todo", categoryId: "stray" },
+      { id: "b", stageId: "todo", categoryId: "other" },
+    ] as never;
+    await writeFile(join(store.boardsDirectory, `${board.id}.json`), JSON.stringify(old));
+    const repaired = (await store.read(project)).board;
+    expect(repaired.categories).toEqual([
+      { id: "93b4ab99", name: "Канбан-доска" },
+      { id: "other", name: "Other" },
+    ]);
+    expect(repaired.cards.map((card) => card.categoryId)).toEqual(["93b4ab99", "other"]);
+  });
 });

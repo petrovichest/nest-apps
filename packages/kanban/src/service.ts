@@ -1411,7 +1411,8 @@ export class KanbanService {
     const { board } = await this.store.updateById(document.board.id, (data) => {
       const current = findCard(data, card.id);
       let group = data.board.categories.find(
-        (item) => item.name.toLocaleLowerCase() === category.toLocaleLowerCase(),
+        (item) =>
+          item.id === category || item.name.toLocaleLowerCase() === category.toLocaleLowerCase(),
       );
       if (!group) {
         group = { id: randomUUID(), name: category };
