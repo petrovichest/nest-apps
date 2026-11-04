@@ -75,7 +75,7 @@ const ENGLISH: Record<string, string> = {
   "Сдвинуть влево": "Move left",
   "Сдвинуть вправо": "Move right",
   "Название стадии": "Stage name",
-  "Добавить описание": "Add a description",
+  "Дописать задачу": "Add to the task",
   "Прикрепить изображение": "Attach image",
   "Выберите изображение PNG, JPEG, GIF или WebP до 10 МБ":
     "Choose a PNG, JPEG, GIF or WebP image up to 10 MB",

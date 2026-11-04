@@ -1428,7 +1428,7 @@ export function KanbanBoard({
                 multiline
                 value={card.description}
                 empty={card.description === card.title}
-                placeholder={t("Добавить описание")}
+                placeholder={t("Дописать задачу")}
                 label={t("Описание")}
                 busy={busy}
                 onSave={(description) =>
@@ -1890,7 +1890,8 @@ function EditableText({
       <button
         className={`kanban-editable${empty ? " empty" : ""}${className ? ` ${className}` : ""}`}
         disabled={busy}
-        onClick={() => setDraft(empty ? "" : value)}
+        // A short task shows its text as the title: the editor starts from it to add more.
+        onClick={() => setDraft(value)}
       >
         {empty ? placeholder : value}
       </button>

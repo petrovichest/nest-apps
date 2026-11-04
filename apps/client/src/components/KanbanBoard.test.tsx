@@ -907,6 +907,24 @@ describe("KanbanBoard", () => {
     expect(api.updateKanbanCard).toHaveBeenCalledTimes(1);
   });
 
+  it("adds to a short task's text before it starts instead of replacing it", async () => {
+    const short = { ...card("one"), title: "Fix login", description: "Fix login" };
+    api.readKanban.mockResolvedValue(board([short]));
+    show();
+    fireEvent.click(await screen.findByRole("button", { name: "Fix login" }));
+    const panel = screen.getByRole("complementary", { name: "Fix login" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Дописать задачу" }));
+    const field = within(panel).getByLabelText("Описание");
+    expect(field).toHaveValue("Fix login");
+    fireEvent.change(field, { target: { value: "Fix login\nKeep the session after a reload" } });
+    fireEvent.blur(field);
+    await waitFor(() =>
+      expect(api.updateKanbanCard).toHaveBeenCalledWith("project", "one", {
+        description: "Fix login\nKeep the session after a reload",
+      }),
+    );
+  });
+
   it("edits, moves and deletes a custom stage", async () => {
     const seed = board([card("one", "custom")]);
     seed.stages.push({ id: "custom", name: "Deploy", description: "", role: null });
