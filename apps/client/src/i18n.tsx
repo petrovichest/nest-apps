@@ -94,6 +94,8 @@ const ENGLISH: Record<string, string> = {
   Опубликовать: "Publish",
   "Опубликовать все": "Publish all",
   "Запустить вместе ({{count}})": "Start together ({{count}})",
+  "Запустить вместе": "Start together",
+  "Запустить задачу «{{title}}»": "Start task “{{title}}”",
   "Выбрать задачу «{{title}}»": "Select task “{{title}}”",
   "В той же сессии": "In the same session",
   "Публикуется…": "Publishing…",

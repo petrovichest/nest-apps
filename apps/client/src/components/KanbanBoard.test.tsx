@@ -460,11 +460,13 @@ describe("KanbanBoard", () => {
     api.kanbanAction.mockResolvedValue(seed);
     show();
     await screen.findByRole("button", { name: "Task one" });
-    // Only tasks that can start now are selectable.
-    expect(screen.queryByRole("checkbox", { name: "Выбрать задачу «Task two»" })).toBeNull();
+    // A task still being classified keeps its place in the selection, switched off.
+    expect(screen.getByRole("checkbox", { name: "Выбрать задачу «Task two»" })).toBeDisabled();
     expect(screen.queryByRole("checkbox", { name: "Выбрать задачу «Task four»" })).toBeNull();
+    // The column step is there before anything is ticked, so ticking moves no card.
+    expect(screen.getByRole("button", { name: "Запустить вместе" })).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать задачу «Task three»" }));
-    expect(screen.queryByRole("button", { name: /Запустить вместе/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Запустить вместе" })).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать задачу «Task one»" }));
     fireEvent.click(screen.getByRole("button", { name: "Запустить вместе (2)" }));
     await waitFor(() =>
@@ -487,6 +489,28 @@ describe("KanbanBoard", () => {
     fireEvent.drop(working, { dataTransfer });
     await waitFor(() => expect(api.kanbanAction).toHaveBeenCalledTimes(2));
     expect(api.kanbanAction.mock.calls[1]![1]).toMatchObject({ cardIds: ["one", "three"] });
+  });
+
+  it("starts a task from the round button on its card", async () => {
+    const seed = board([card("one"), card("two"), card("three", "ready")]);
+    seed.cards[1]!.classification = "pending";
+    seed.runs.push(execution("three"));
+    api.readKanban.mockResolvedValue(seed);
+    api.kanbanAction.mockResolvedValue(seed);
+    show();
+    await screen.findByRole("button", { name: "Task one" });
+    expect(screen.getByRole("button", { name: "Запустить задачу «Task two»" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Запустить задачу «Task three»" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Запустить задачу «Task one»" }));
+    await waitFor(() =>
+      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+        action: "execute",
+        cardIds: ["one"],
+        clientActionId: expect.any(String),
+      }),
+    );
+    // Starting from the card does not open the task.
+    expect(screen.queryByRole("complementary")).toBeNull();
   });
 
   it("lists the tasks that share a session in the task panel", async () => {

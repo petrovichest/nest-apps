@@ -195,13 +195,24 @@ function insertionPoint(lane: Element, clientY: number, draggedId: string): stri
   return null;
 }
 
-/** A task that never ran can start alone or together with others in one session. */
-const startable = (board: Board, card: KanbanCard) =>
-  card.classification === "ready" &&
-  !card.voice &&
-  card.archivedAt === undefined &&
-  board.stages.find((stage) => stage.id === card.stageId)?.role === "todo" &&
-  !board.runs.some((run) => run.kind !== "classify" && run.cardIds.includes(card.id));
+/** No agent has taken the task yet: it starts from its card or its panel. */
+const launchable = (board: Board, card: KanbanCard) => {
+  const role = board.stages.find((stage) => stage.id === card.stageId)?.role;
+  return (
+    card.archivedAt === undefined &&
+    role !== "done" &&
+    role !== "ready" &&
+    role !== "waiting" &&
+    !board.runs.some((run) => run.kind !== "classify" && run.cardIds.includes(card.id))
+  );
+};
+/** A task in To do can also start together with others in one session. */
+const selectable = (board: Board, card: KanbanCard) =>
+  launchable(board, card) &&
+  board.stages.find((stage) => stage.id === card.stageId)?.role === "todo";
+/** Until a task is classified its start controls stay in place, disabled, so nothing shifts. */
+const classified = (card: KanbanCard) => card.classification === "ready" && !card.voice;
+const startable = (board: Board, card: KanbanCard) => classified(card) && selectable(board, card);
 
 function latestRun(board: Board, cardId: string): KanbanRun | undefined {
   return board.runs
@@ -720,6 +731,7 @@ export function KanbanBoard({
         ? runStatusClass(latest, session)
         : null;
     const imageCount = item.images?.length ?? (item.image ? 1 : 0);
+    const launch = launchable(board!, item);
     const categoryName = board!.categories.find((value) => value.id === item.categoryId)?.name;
     const meta: ReactNode[] = [];
     if (categoryName) meta.push(<span key="category">{categoryName}</span>);
@@ -788,7 +800,7 @@ export function KanbanBoard({
         }}
       >
         <div className="kanban-card-top">
-          {startable(board!, item) && (
+          {selectable(board!, item) && (
             <input
               type="checkbox"
               className="kanban-card-select"
@@ -796,7 +808,7 @@ export function KanbanBoard({
                 title: item.title || t("Голосовая задача"),
               })}
               checked={selected.has(item.id)}
-              disabled={busy}
+              disabled={busy || !classified(item)}
               onChange={(event) => {
                 const checked = event.target.checked;
                 setSelected((current) => {
@@ -828,7 +840,7 @@ export function KanbanBoard({
         {item.description !== item.title && (
           <p className="kanban-card-excerpt">{item.description}</p>
         )}
-        {(meta.length > 0 || imageCount > 0) && (
+        {(meta.length > 0 || imageCount > 0 || launch) && (
           <div className="kanban-card-meta">
             {meta.map((node, index) => (
               <Fragment key={index}>
@@ -849,6 +861,18 @@ export function KanbanBoard({
                 <ImageIcon />
                 {imageCount > 1 && imageCount}
               </span>
+            )}
+            {launch && (
+              <button
+                className="kanban-card-launch"
+                aria-label={t("Запустить задачу «{{title}}»", {
+                  title: item.title || t("Голосовая задача"),
+                })}
+                disabled={busy || !classified(item)}
+                onClick={() => void action("execute", [item.id])}
+              >
+                <PlayIcon />
+              </button>
             )}
           </div>
         )}
@@ -1028,20 +1052,26 @@ export function KanbanBoard({
             </details>
           </span>
         </header>
-        {stage.role === "todo" && together.length > 1 && !collapsed && (
+        {/* Column steps stay while the column has cards for them and only switch off,
+            so ticking a task or starting a publication never moves the cards below. */}
+        {stage.role === "todo" &&
+          cards.filter((item) => selectable(board_, item)).length > 1 &&
+          !collapsed && (
+            <button
+              className="kanban-lane-action"
+              disabled={busy || together.length < 2}
+              onClick={() => void startTogether()}
+            >
+              <PlayIcon />
+              {together.length > 1
+                ? t("Запустить вместе ({{count}})", { count: together.length })
+                : t("Запустить вместе")}
+            </button>
+          )}
+        {stage.role === "ready" && cards.length > 0 && !collapsed && (
           <button
             className="kanban-lane-action"
-            disabled={busy}
-            onClick={() => void startTogether()}
-          >
-            <PlayIcon />
-            {t("Запустить вместе ({{count}})", { count: together.length })}
-          </button>
-        )}
-        {readyIds.length > 0 && !collapsed && (
-          <button
-            className="kanban-lane-action"
-            disabled={busy}
+            disabled={busy || readyIds.length === 0}
             onClick={() => void action("publish", readyIds)}
           >
             <SendIcon />
@@ -1264,7 +1294,15 @@ export function KanbanBoard({
             <p className="working-text">{t("Загружаем доску…")}</p>
           </div>
         ) : (
-          <div className="kanban-scroll">
+          <div
+            className="kanban-scroll"
+            onScroll={(event) =>
+              event.currentTarget.toggleAttribute(
+                "data-scrolled",
+                event.currentTarget.scrollTop > 0,
+              )
+            }
+          >
             <div className="kanban-board">
               {(error || headerRetry) && (
                 <div className="kanban-error" role="alert">
@@ -1583,22 +1621,16 @@ export function KanbanBoard({
                     {t("Повторить категоризацию")}
                   </button>
                 )}
-                {card.classification === "ready" &&
-                  !card.voice &&
-                  card.archivedAt === undefined &&
-                  !session &&
-                  role !== "done" &&
-                  role !== "ready" &&
-                  role !== "waiting" && (
-                    <button
-                      className="kanban-launch"
-                      disabled={busy}
-                      onClick={() => void action("execute", [card.id])}
-                    >
-                      <PlayIcon />
-                      {t("Запустить агента")}
-                    </button>
-                  )}
+                {classified(card) && launchable(board, card) && (
+                  <button
+                    className="kanban-launch"
+                    disabled={busy}
+                    onClick={() => void action("execute", [card.id])}
+                  >
+                    <PlayIcon />
+                    {t("Запустить агента")}
+                  </button>
+                )}
                 {role === "ready" && session && (
                   <button
                     className="primary"

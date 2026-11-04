@@ -100,6 +100,18 @@
   background: linear-gradient(var(--color-canvas), transparent);
 }
 
+/* Until the board scrolls nothing is under the band, and it would only cut the first
+   cards' shadows and the column step under the name. */
+.kanban-scroll:not([data-scrolled]) :is(.kanban-lane-head, .kanban-stage-bar)::before,
+.kanban-scroll:not([data-scrolled]) :is(.kanban-lane-head, .kanban-stage-bar)::after {
+  opacity: 0;
+}
+
+/* The next column's band would cut the shadow of a hovered or open "…". */
+.kanban-lane-head:is(:hover, :focus-within, :has(details[open])) {
+  z-index: 4;
+}
+
 .kanban-lane-head h2 {
   min-width: 0;
   margin: 0;
@@ -313,6 +325,37 @@
 }
 
 .kanban-card-images svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Starting from the card: the panel's ink «Запустить агента» as a circle, in the corner. */
+.kanban-workspace .kanban-card .kanban-card-launch {
+  --chat-button-rest: var(--color-lapis);
+  --chat-button-hover: color-mix(in srgb, var(--color-lapis) 88%, var(--color-canvas));
+  --chat-button-pressed: color-mix(in srgb, var(--color-lapis) 78%, var(--color-canvas));
+  --chat-shadow:
+    0 6px 16px color-mix(in srgb, var(--color-lapis) 22%, transparent),
+    0 1px 3px color-mix(in srgb, var(--color-lapis) 18%, transparent);
+  position: relative;
+  z-index: 1;
+  flex: none;
+  justify-content: center;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-1-5)) calc(-1 * var(--space-0-5)) auto;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--color-lapis-contrast);
+}
+
+.kanban-card-images ~ .kanban-card-launch {
+  margin-left: var(--space-1);
+}
+
+.kanban-card-launch svg {
   width: 14px;
   height: 14px;
 }
@@ -911,7 +954,11 @@ textarea.kanban-edit-field {
     display: flex;
     gap: var(--space-1);
     overflow-x: auto;
-    padding: var(--space-1) var(--space-2);
+    /* Room for the selected tab's shadow inside the scroller; the margins keep the tabs
+       where they were, and the extra area lets taps through. */
+    margin: calc(-1 * var(--space-3)) 0 calc(-1 * var(--space-6)) calc(-1 * var(--space-2));
+    padding: var(--space-4) var(--space-2) calc(var(--space-1) + var(--space-6)) var(--space-4);
+    pointer-events: none;
     scrollbar-width: none;
     mask-image: linear-gradient(
       to right,
@@ -927,6 +974,7 @@ textarea.kanban-edit-field {
   }
 
   .kanban-stage-tabs button {
+    pointer-events: auto;
     flex: none;
     gap: var(--space-1-5);
     min-height: var(--control-touch-height);
