@@ -67,7 +67,7 @@ export async function agentPrompt(
   comment?: string,
 ): Promise<string> {
   const instructions = agentInstructions(board, run, helper, capability, comment);
-  // Classification sessions are short-lived and archived; they do not execute tasks.
+  // Classification prompts are self-contained; they do not execute tasks.
   if (run.kind === "classify") return instructions;
 
   const instructionsPath = join(dirname(capability), `${run.id}.md`);

@@ -3916,16 +3916,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     return reply.code(201).send(project);
   });
 
-  const pendingKanbanArchives = new Set<string>();
-  const archiveKanbanThread = async (threadId: string) => {
-    if (projection.summary(threadId)?.currentTurnId) {
-      pendingKanbanArchives.add(threadId);
-      return;
-    }
-    pendingKanbanArchives.delete(threadId);
-    await bridge.request("thread/archive", { threadId });
-    await projection.setArchived(threadId, true);
-  };
+  const kanbanClassifiers = new Map<string, { state: string; checked: boolean }>();
   const kanban = new KanbanService({
     provider: "codex",
     ...((process.env.NODE_ENV === "test" || process.env.VITEST) && !process.env.KANBAN_DATA_DIR
@@ -3936,6 +3927,39 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       async launch(job) {
         const project = store.view().projects.find((item) => item.path === job.projectPath);
         if (!project) throw new ProjectNotFoundError("Project not found");
+        if (job.kind === "classify") {
+          // Like title/transcript helpers, classifiers never enter the user projection or queue.
+          const settings = projection.newSessionSettings;
+          const { thread } = parseThreadStart(
+            await bridge.request("thread/start", {
+              cwd: job.cwd,
+              ephemeral: true,
+              approvalPolicy: "never",
+              sandbox: "workspace-write",
+              config: { sandbox_workspace_write: { writable_roots: [kanban.store.directory] } },
+              ...threadSettings(settings, projection.availableModels),
+            }),
+          );
+          kanbanClassifiers.set(thread.id, { state: "running", checked: false });
+          try {
+            await bridge.request("turn/start", {
+              threadId: thread.id,
+              input: [
+                { type: "text", text: job.prompt, text_elements: [] },
+                ...(job.images ?? []).map((url) => ({ type: "image", url })),
+              ],
+              effort: settings.reasoningEffort,
+              ...threadSettings(settings, projection.availableModels),
+            });
+          } catch (error) {
+            kanbanClassifiers.delete(thread.id);
+            await bridge
+              .request("thread/unsubscribe", { threadId: thread.id })
+              .catch(() => undefined);
+            throw error;
+          }
+          return { threadId: thread.id };
+        }
         const thread = await getOrCreateProjectThread(project.id, `kanban:${job.id}`, {
           cwd: job.cwd,
           title: job.title,
@@ -3954,10 +3978,13 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         });
       },
       async threadState(threadId) {
+        const classifier = kanbanClassifiers.get(threadId);
+        if (classifier) {
+          classifier.checked = true;
+          if (classifier.state !== "running") kanbanClassifiers.delete(threadId);
+          return classifier.state;
+        }
         return projection.summary(threadId)?.state ?? null;
-      },
-      async archive(threadId) {
-        await archiveKanbanThread(threadId);
       },
     },
   });
@@ -3975,25 +4002,33 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   );
   const kanbanThreadEvent = (_sequence: number, event: ServerEvent) => {
     if (event.type === "thread.upserted") {
-      if (pendingKanbanArchives.has(event.thread.id) && !event.thread.currentTurnId) {
-        void archiveKanbanThread(event.thread.id).catch((error: unknown) => {
-          app.log.warn(
-            { err: safeError(error) },
-            "Kanban classification session could not be archived",
-          );
-        });
-      }
       void kanban.notifyThread(event.thread.id, event.thread.state).catch((error: unknown) => {
         app.log.warn({ err: safeError(error) }, "Kanban session state could not be saved");
       });
     }
   };
+  const kanbanClassifierEvent = (notification: ServerNotification) => {
+    if (notification.method !== "turn/completed") return;
+    const { threadId, turn } = notification.params;
+    const classifier = kanbanClassifiers.get(threadId);
+    if (!classifier) return;
+    classifier.state = turn.status;
+    // Preserve immediate completion until dispatch has registered this thread.
+    if (classifier.checked) kanbanClassifiers.delete(threadId);
+    void kanban.notifyThread(threadId, turn.status).catch((error: unknown) => {
+      app.log.warn({ err: safeError(error) }, "Kanban classifier state could not be saved");
+    });
+    void bridge.request("thread/unsubscribe", { threadId }).catch(() => undefined);
+  };
+  bridge.on("notification", kanbanClassifierEvent);
   projection.on("event", kanbanThreadEvent);
   app.addHook("onReady", () => kanban.initialize());
   app.addHook("onClose", async () => {
     projection.off("event", kanbanThreadEvent);
+    bridge.off("notification", kanbanClassifierEvent);
     bridge.off("state", wakeKanban);
     await kanban.close();
+    kanbanClassifiers.clear();
   });
 
   app.post<{ Params: { id: string }; Body: MoveProjectRequest }>(

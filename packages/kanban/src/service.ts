@@ -518,6 +518,8 @@ export class KanbanService {
   async notifyThread(threadId: string, state: string): Promise<void> {
     const known = this.threads.get(threadId);
     if (!known || this.closed || this.observedStates.get(threadId) === state) return;
+    // A new session can still be idle before its queued first turn starts.
+    if (state === "idle" && this.launching.has(known.runId)) return;
     this.observedStates.set(threadId, state);
     await this.store
       .updateById(known.boardId, (data) => {
@@ -533,7 +535,18 @@ export class KanbanService {
               card.error = null;
             }
         } else if (state === "needsAttention") run.status = "waiting";
-        else if (state === "completed" || state === "idle") {
+        else if (
+          run.kind === "classify" &&
+          ["completed", "idle", "interrupted", "failed", "unavailable"].includes(state)
+        ) {
+          run.status = "failed";
+          run.error = "Task classification did not finish; retry classification";
+          for (const id of run.cardIds) {
+            const card = findCard(data, id);
+            card.classification = "failed";
+            card.error = run.error;
+          }
+        } else if (state === "completed" || state === "idle") {
           run.status = "waiting";
           run.error =
             "Session ended without a task report; open the original session and submit the result";

@@ -8,6 +8,10 @@ Create a card with **+**, type or dictate its description, and send it. An agent
 assigns a category without asking questions. Questions about the work itself
 appear in the execution session. There is no permanent board chat.
 
+In CodexNest, classification runs in a temporary helper session that never appears
+in the session list. If classification fails, use **Retry classification** in the
+card to start a new attempt.
+
 The initial stages are **To do → In progress → Review → Ready to merge → Done**.
 Additional stages have a name and an optional description. Moving a card changes
 its stage; session controls remain in the session. A move to Done cannot bypass
