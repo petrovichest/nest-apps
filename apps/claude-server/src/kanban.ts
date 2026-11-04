@@ -18,6 +18,8 @@ export async function registerClaudeKanban(app: FastifyInstance, ui: UiService):
         const { thread } = await ui.createThread(project.id, job.id, undefined, {
           cwd: job.cwd,
           title: job.title,
+          // Task classification is a short routine step: run it on the fastest, cheapest model.
+          ...(job.kind === "classify" ? { model: "haiku" } : {}),
         });
         await ui.enqueue(thread.id, {
           input: job.prompt,

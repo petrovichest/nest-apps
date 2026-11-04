@@ -962,7 +962,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   function getOrCreateProjectThread(
     projectId: string,
     clientCreationId: string,
-    workspace?: { cwd: string; title: string },
+    workspace?: { cwd: string; title: string; settings?: SessionSettings },
   ): Promise<ThreadSummary> {
     const key = `${projectId}:${clientCreationId}`;
     const current = projectThreadCreations.get(key);
@@ -983,7 +983,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       codexManager?.assertTurnsAllowed();
       const project = store.view().projects.find((candidate) => candidate.id === projectId);
       if (!project) throw new ProjectNotFoundError("Project not found");
-      const settings = projection.newSessionSettings;
+      const settings = workspace?.settings ?? projection.newSessionSettings;
       if (!previous) {
         const params = {
           clientCreationId,
@@ -3936,9 +3936,12 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       async launch(job) {
         const project = store.view().projects.find((item) => item.path === job.projectPath);
         if (!project) throw new ProjectNotFoundError("Project not found");
+        const settings =
+          job.kind === "classify" ? classificationSettings(projection.availableModels) : undefined;
         const thread = await getOrCreateProjectThread(project.id, `kanban:${job.id}`, {
           cwd: job.cwd,
           title: job.title,
+          ...(settings ? { settings } : {}),
         });
         await queue.enqueue(thread.id, job.prompt, job.images ?? [], `kanban:${job.id}:start`);
         void queue.drain(thread.id).catch((error: unknown) => {
@@ -8194,6 +8197,12 @@ function managedTaskOptions(
     model: model.id,
     reasoningEffort,
   };
+}
+
+/** Task classification is a short routine step, so it runs on the fast, inexpensive Luna tier. */
+function classificationSettings(models: ModelOption[]): SessionSettings | undefined {
+  const model = models.find((candidate) => candidate.id.includes("luna"));
+  return model ? { collaborationMode: "default", model: model.id } : undefined;
 }
 
 function managedChildModel(models: ModelOption[]): ModelOption {

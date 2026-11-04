@@ -152,6 +152,34 @@ describe("project boards", () => {
     expect(replay.thread.id).toBe(result.thread.id);
     expect(state.operations).toEqual([]);
   });
+
+  it("classifies board tasks on Haiku instead of the new-session model", async () => {
+    const state = await fixture(async (manager) => {
+      (manager as { accepting: boolean }).accepting = true;
+    });
+    const { project } = await state.reserve();
+    await state.ui.store.update((data) => {
+      data.taskDefaults = { model: "opus", reasoningEffort: "xhigh" };
+      data.models = [
+        { value: "opus", displayName: "Opus", description: "", supportedEffortLevels: ["xhigh"] },
+        { value: "haiku", displayName: "Haiku", description: "" },
+      ];
+    });
+    const created = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${project.id}/kanban/cards`,
+      headers: state.headers,
+      payload: { clientCreationId: randomUUID(), description: "Classify this task" },
+    });
+    expect(created.statusCode).toBe(200);
+    await vi.waitFor(() =>
+      expect(
+        Object.values(state.ui.store.data.threads).find((thread) =>
+          thread.title?.startsWith("classify:"),
+        )?.settings,
+      ).toEqual({ collaborationMode: "default", model: "haiku" }),
+    );
+  });
 });
 
 async function attachActive(state: Awaited<ReturnType<typeof fixture>>, id: string) {
