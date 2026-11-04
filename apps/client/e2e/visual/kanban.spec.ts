@@ -27,6 +27,18 @@ function seedBoard(): KanbanBoard {
     categories: [
       { id: "front", name: "Фронтенд" },
       { id: "back", name: "Бэкенд" },
+      ...[
+        "Производство",
+        "Админка",
+        "Слайсинг",
+        "Конфигуратор",
+        "Кабинет",
+        "Заказ и доставка",
+        "Оплата",
+        "Данные и закон",
+        "Эксплуатация",
+        "Развитие и долгосрочное планирование работы проекта",
+      ].map((name, index) => ({ id: `category-${index}`, name })),
     ],
     cards: titles.map((title, i) => ({
       id: `card-${i}`,
@@ -138,6 +150,55 @@ for (const width of [390, 1440]) {
         page.getByRole("button", { name: "Сохранить настройки фильтров", exact: true }),
       ).toBeVisible();
       await waitForVisualReady(page);
+      const categoryMenu = page.locator(
+        width < 821 ? ".kanban-filter-menu" : ".kanban-category-filter",
+      );
+      const categoryTrigger = categoryMenu.locator("summary");
+      await categoryTrigger.click();
+      const categoryOptions = categoryMenu.locator(".action-menu-popover");
+      await expect(categoryOptions).toBeVisible();
+      await expect(categoryOptions).toHaveCSS(
+        "background-color",
+        theme === "light" ? "rgb(248, 249, 246)" : "rgb(36, 39, 34)",
+      );
+      await expect(categoryOptions).toHaveCSS("border-radius", "24px");
+      const bounds = await categoryOptions.boundingBox();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      expect(await categoryOptions.evaluate((menu) => menu.scrollHeight > menu.clientHeight)).toBe(
+        true,
+      );
+      const lastCategory = categoryOptions.getByRole("button", { name: /Развитие и/ });
+      await lastCategory.scrollIntoViewIfNeeded();
+      await expect(lastCategory).toBeInViewport();
+      expect(await categoryOptions.evaluate((menu) => menu.scrollWidth <= menu.clientWidth)).toBe(
+        true,
+      );
+      await categoryOptions.evaluate((menu) => (menu.scrollTop = 0));
+      await page.screenshot({ path: info.outputPath(`kanban-categories-${width}-${theme}.png`) });
+      await categoryOptions.getByRole("button", { name: "Бэкенд", exact: true }).click();
+      await expect(categoryOptions).toBeHidden();
+      await expect(
+        page.getByRole("button", { name: "Сохранить настройки фильтров", exact: true }),
+      ).toBeHidden();
+      await categoryTrigger.click();
+      await expect(
+        categoryOptions.getByRole("button", { name: "Бэкенд", exact: true }),
+      ).toHaveAttribute("aria-pressed", "true");
+      await categoryOptions.getByRole("button", { name: "Все категории", exact: true }).click();
+      if (width >= 821) {
+        await expect(categoryTrigger).toBeFocused();
+        await categoryTrigger.press("ArrowDown");
+        await expect(
+          categoryOptions.getByRole("button", { name: "Все категории", exact: true }),
+        ).toBeFocused();
+        await page.keyboard.press("Escape");
+        await expect(categoryOptions).toBeHidden();
+        await expect(categoryTrigger).toBeFocused();
+      }
+      await categoryTrigger.click();
+      await page.getByRole("heading", { name: "Доска задач", exact: true }).click();
+      await expect(categoryOptions).toBeHidden();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
         true,
       );

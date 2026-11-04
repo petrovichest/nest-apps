@@ -155,6 +155,46 @@ function execution(cardId: string, status: KanbanRun["status"] = "completed"): K
 }
 
 describe("KanbanBoard", () => {
+  it("filters categories locally from the header menu and restores focus on selection or Escape", async () => {
+    const seed = board([card("one"), { ...card("two"), categoryId: "back" }]);
+    seed.categories.push({ id: "back", name: "Backend" });
+    api.readKanban.mockResolvedValue(seed);
+    show();
+    await screen.findByRole("button", { name: "Task one" });
+    const options = screen.getByRole("group", { name: "Категория", hidden: true });
+    const menu = options.closest("details")!;
+    const trigger = menu.querySelector("summary")!;
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "ArrowUp" });
+    expect(menu.open).toBe(true);
+    expect(within(options).getByRole("button", { name: "Backend" })).toHaveFocus();
+    fireEvent.click(document.activeElement!);
+    expect(menu.open).toBe(false);
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("Backend");
+    expect(screen.queryByRole("button", { name: "Task one" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Task two" })).toBeInTheDocument();
+
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    const all = within(options).getByRole("button", { name: "Все категории" });
+    expect(all).toHaveFocus();
+    expect(within(options).getByRole("button", { name: "Backend" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.keyDown(all, { key: "Escape" });
+    expect(menu.open).toBe(false);
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("Backend");
+    fireEvent.keyDown(trigger, { key: "Home" });
+    fireEvent.click(all);
+    expect(trigger).toHaveTextContent("Все категории");
+    expect(screen.getByRole("button", { name: "Task one" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Task two" })).toBeInTheDocument();
+    expect(api.readKanban).toHaveBeenCalledTimes(1);
+    expect(api.updateKanbanCard).not.toHaveBeenCalled();
+  });
+
   it("localizes canonical server stages by role and preserves custom names", async () => {
     const seed = board();
     const names = ["To do", "In progress", "Review", "Ready for integration", "Done"];

@@ -443,31 +443,61 @@
 }
 
 /* Header controls inside the right capsule. */
-.kanban-workspace .workspace-header select.kanban-filter {
-  width: auto;
+.kanban-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   max-width: 220px;
-  height: var(--control-height);
   min-height: var(--control-height);
-  padding-block: 0;
-  line-height: var(--control-height);
-  border-color: transparent;
-  background-color: transparent;
-  box-shadow: none;
-  transition:
-    background-color var(--motion-fast) var(--motion-ease),
-    box-shadow var(--motion-fast) var(--motion-ease);
+  padding: 0 var(--space-3);
 }
 
-@media (hover: hover) {
-  .kanban-workspace .workspace-header select.kanban-filter:hover {
-    background-color: var(--color-floating);
-    box-shadow: var(--chat-shadow);
-  }
+.kanban-filter > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.kanban-workspace .workspace-header select.kanban-filter:focus-visible {
-  background-color: var(--color-floating);
-  box-shadow: var(--chat-shadow);
+.kanban-filter > svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.kanban-category-options {
+  left: 0;
+  right: auto;
+  width: max-content;
+  min-width: 100%;
+  max-width: min(320px, calc(100vw - 2 * var(--space-5)));
+}
+
+:is(.kanban-category-options, .kanban-filter-menu .action-menu-popover) {
+  max-height: min(480px, 60dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.kanban-category-options button {
+  gap: var(--space-2);
+  text-align: left;
+}
+
+.kanban-category-options button > svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.kanban-category-options button:not([aria-pressed="true"]) > svg {
+  visibility: hidden;
+}
+
+.kanban-category-options button > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .kanban-add-button {
@@ -847,7 +877,7 @@ textarea.kanban-edit-field {
     padding-top: var(--kanban-head-top);
   }
 
-  .kanban-workspace .workspace-header select.kanban-filter,
+  .kanban-category-filter,
   .kanban-archive-button,
   .kanban-add-button > span {
     display: none;

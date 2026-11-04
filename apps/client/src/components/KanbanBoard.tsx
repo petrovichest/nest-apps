@@ -35,6 +35,7 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   CheckIcon,
+  ChevronDownIcon,
   ChevronRightIcon,
   GitBranchIcon,
   ImageIcon,
@@ -1035,19 +1036,63 @@ export function KanbanBoard({
             project ? (
               <>
                 {categoryCount > 0 && (
-                  <select
-                    className="kanban-filter"
-                    aria-label={t("Категория")}
-                    value={category}
-                    onChange={(event) => setCategory(event.target.value)}
+                  <details
+                    className="thread-action-menu kanban-category-filter"
+                    data-dismiss-on-outside-click
+                    onKeyDown={(event) => {
+                      const menu = event.currentTarget;
+                      if (event.key === "Escape" && menu.open) {
+                        event.preventDefault();
+                        menu.open = false;
+                        menu.querySelector("summary")?.focus();
+                      } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+                        event.preventDefault();
+                        menu.open = true;
+                        const options = [...menu.querySelectorAll("button")];
+                        let next = options.indexOf(document.activeElement as HTMLButtonElement);
+                        if (event.key === "Home") next = 0;
+                        else if (event.key === "End") next = options.length - 1;
+                        else if (next < 0)
+                          next = event.key === "ArrowDown" ? 0 : options.length - 1;
+                        else
+                          next =
+                            (next + (event.key === "ArrowDown" ? 1 : -1) + options.length) %
+                            options.length;
+                        options[next]?.focus();
+                      }
+                    }}
                   >
-                    <option value="">{t("Все категории")}</option>
-                    {board?.categories.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name}
-                      </option>
-                    ))}
-                  </select>
+                    <summary className="kanban-filter" aria-label={t("Категория")}>
+                      <span>
+                        {board?.categories.find((item) => item.id === category)?.name ??
+                          t("Все категории")}
+                      </span>
+                      <ChevronDownIcon />
+                    </summary>
+                    <div
+                      className="action-menu-popover kanban-category-options"
+                      role="group"
+                      aria-label={t("Категория")}
+                    >
+                      {[{ id: "", name: t("Все категории") }, ...(board?.categories ?? [])].map(
+                        (item) => (
+                          <button
+                            key={item.id}
+                            aria-pressed={category === item.id}
+                            onClick={(event) => {
+                              const menu = event.currentTarget.closest("details")!;
+                              menu.open = false;
+                              menu.querySelector("summary")?.focus();
+                              setCategory(item.id);
+                            }}
+                          >
+                            <CheckIcon aria-hidden="true" />
+                            <span>{item.name}</span>
+                          </button>
+                        ),
+                      )}
+                    </div>
+                  </details>
                 )}
                 <button
                   className="icon-button kanban-archive-button"
