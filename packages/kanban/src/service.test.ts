@@ -117,6 +117,7 @@ async function fixture(
   const resumedInputs: { images?: string[] }[] = [];
   const resumes = { codex: [] as string[], claude: [] as string[] };
   const archived = { codex: [] as string[], claude: [] as string[] };
+  const interrupted = { codex: [] as string[], claude: [] as string[] };
   const prompts = new Map<string, string>();
   const services = {} as Record<"codex" | "claude", KanbanService>;
   for (const provider of ["codex", "claude"] as const) {
@@ -142,6 +143,9 @@ async function fixture(
         },
         archive: async (threadId) => {
           archived[provider].push(threadId);
+        },
+        interrupt: async (threadId) => {
+          interrupted[provider].push(threadId);
         },
       },
     });
@@ -211,6 +215,7 @@ async function fixture(
     resumedInputs,
     resumes,
     archived,
+    interrupted,
     prompts,
     running,
     command,
@@ -358,7 +363,68 @@ describe("shared provider board service", () => {
     await mkdir(other);
     await expect(service.readImage(other, id)).rejects.toMatchObject({ status: 404 });
   });
-  it("prevents concurrent execution across providers and routes rework to the original provider", async () => {
+  it("runs one agent per application side by side and asks which result to accept", async () => {
+    const f = await fixture();
+    const id = await f.card("Implement A");
+    const start = (provider: "codex" | "claude", extra: Record<string, unknown> = {}) =>
+      f.services[provider].action(f.project, {
+        action: "execute",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+        ...extra,
+      });
+    await start("codex");
+    const codex = await f.running("execute", id);
+    await expect(start("codex")).rejects.toThrow("active session");
+    await start("claude");
+    const claude = await until(
+      () => f.services.claude.read(f.project),
+      (board) =>
+        board.runs.some(
+          (run) => run.provider === "claude" && run.kind === "execute" && run.status === "running",
+        ),
+    ).then((board) => board.runs.find((run) => run.provider === "claude")!);
+    // Each agent works in its own clean copy and branch.
+    expect(codex.workspacePath).not.toBe(claude.workspacePath);
+    for (const run of [codex, claude])
+      expect(
+        (
+          await f.command(run, "prepare-repository", {
+            repositoryPath: f.project,
+            targetBranch: "main",
+          })
+        )?.ok,
+      ).toBe(true);
+    // The first result waits for the other agent instead of publishing on its own.
+    expect((await f.command(codex, "report", { outcome: "completed" }))?.result?.next).toBe(
+      "review",
+    );
+    expect((await f.services.codex.read(f.project)).cards[0]?.stageId).toBe("working");
+    await expect(start("codex")).rejects.toThrow("use rework or restart");
+    expect((await f.command(claude, "report", { outcome: "completed" }))?.result?.next).toBe(
+      "review",
+    );
+    expect((await f.services.codex.read(f.project)).cards[0]?.stageId).toBe("review");
+    await expect(
+      f.services.codex.action(f.project, {
+        action: "accept",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toThrow("choose one");
+    const board = await f.services.codex.action(f.project, {
+      action: "accept",
+      cardIds: [id],
+      provider: "claude",
+      clientActionId: randomUUID(),
+    });
+    const accepted = board.cards.find((card) => card.id === id)!;
+    expect(accepted.stageId).toBe("ready");
+    expect(accepted.repositories.map((repository) => repository.branch)).toEqual([
+      `task/${id}-${claude.id.slice(0, 8)}`,
+    ]);
+  });
+  it("restarts an agent from a clean copy, stops its session and routes rework to it", async () => {
     const f = await fixture();
     const id = await f.card("Implement A");
     await f.services.codex.action(f.project, {
@@ -366,15 +432,37 @@ describe("shared provider board service", () => {
       cardIds: [id],
       clientActionId: randomUUID(),
     });
-    const executor = await f.running("execute", id);
-    await expect(
-      f.services.claude.action(f.project, {
-        action: "execute",
-        cardIds: [id],
-        clientActionId: randomUUID(),
-      }),
-    ).rejects.toThrow("active session");
-    expect((await f.command(executor, "report", { outcome: "completed" }))?.ok).toBe(true);
+    const first = await f.running("execute", id);
+    expect(
+      (
+        await f.command(first, "prepare-repository", {
+          repositoryPath: f.project,
+          targetBranch: "main",
+        })
+      )?.ok,
+    ).toBe(true);
+    // A restart requested from the other application reaches the agent that owns the task.
+    await f.services.claude.action(f.project, {
+      action: "restart",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const second = await until(
+      () => f.services.codex.read(f.project),
+      (board) => board.runs.some((run) => run.status === "running" && run.id !== first.id),
+    ).then((board) => board.runs.find((run) => run.status === "running")!);
+    expect(second.provider).toBe("codex");
+    expect(second.threadId).not.toBe(first.threadId);
+    expect(second.workspacePath).not.toBe(first.workspacePath);
+    expect(f.interrupted.codex).toEqual([first.threadId]);
+    expect(f.prompts.get(second.id)).toContain("Implement A");
+    const board = await f.services.codex.read(f.project);
+    expect(board.runs.find((run) => run.id === first.id)?.status).toBe("completed");
+    // The old session can no longer report for the task.
+    expect((await f.command(first, "report", { outcome: "completed" }))?.error).toContain(
+      "already finished",
+    );
+    expect((await f.command(second, "report", { outcome: "completed" }))?.ok).toBe(true);
     await f.services.claude.action(f.project, {
       action: "rework",
       cardIds: [id],
@@ -385,7 +473,7 @@ describe("shared provider board service", () => {
       async () => f.resumes.codex,
       (values) => values.length === 1,
     );
-    expect(f.resumes.codex[0]).toBe(executor.threadId);
+    expect(f.resumes.codex[0]).toBe(second.threadId);
     expect(f.resumes.claude).toEqual([]);
   });
   it("enforces worker card scope and rejects Done without publication evidence", async () => {

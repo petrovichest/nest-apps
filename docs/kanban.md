@@ -40,8 +40,18 @@ application.
 
 Starting a card creates a normal session in the current application, using its
 new-session defaults. The session belongs to the original project but works in
-an isolated workspace. A card cannot run twice at the same time, including across
-the two applications.
+an isolated workspace.
+
+Each application can run its own agent on a card. To give a task to a second
+agent, open the card in the other application and press **Start in CodexNest**
+or **Start in ClaudeNest**. The two agents work in separate copies and branches;
+one application never runs two agents on the same card.
+
+**Restart**, next to an agent's current session, sends the original task to a new
+session of that agent's application. A working agent is stopped first. The new
+session starts from a clean copy; the previous branch stays in the repository.
+A restart requested from the other application waits until the agent's
+application is running.
 
 The session's opening message shows the task title, description and any operator
 comment. Internal board commands and workflow rules are kept in a local
@@ -60,13 +70,17 @@ Nested repositories keep their own histories. A local-only Git repository may
 track files belonging to a previously unversioned project directory; child
 repositories and generated/runtime data are excluded from that repository.
 
-If there are no other started, unfinished cards in the project, the executor can
-finish the complete workflow: check, integrate and publish. Unstarted backlog
+If there are no other started, unfinished cards in the project and no other agent
+works on the same card, the executor can finish the complete workflow: check,
+integrate and publish. Unstarted backlog
 cards do not prevent this. The condition is checked again before integration.
 
 Parallel results go through review. Accept a result yourself or start a separate
-review session. **Rework** sends a typed or dictated comment back to the original
-executor, including when requested from the other application. That application
+review session. With two agents the card stays In progress until both finish;
+then choose whose **Result** to accept, review or rework. Accepting one result ends
+the other agent's session on the board; its copy and branch remain. **Rework**
+sends a typed or dictated comment back to the original executor, including when
+requested from the other application. That application
 must be running to deliver the continuation; the request remains queued otherwise.
 
 ## Integration and publication

@@ -47,6 +47,9 @@ export async function registerClaudeKanban(
       async threadState(id) {
         return ui.store.data.threads[id] ? ui.summary(id).state : null;
       },
+      async interrupt(id) {
+        if (ui.store.data.threads[id]) await ui.interrupt(id);
+      },
       async archive(id) {
         await ui.store.update((data) => {
           if (data.threads[id]) data.threads[id]!.archived = true;

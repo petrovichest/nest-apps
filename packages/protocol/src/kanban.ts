@@ -105,6 +105,7 @@ export type UpdateKanbanStageRequest = {
 export type CreateKanbanStageRequest = { name: string; description?: string };
 export type KanbanAction =
   | "execute"
+  | "restart"
   | "review"
   | "accept"
   | "rework"
@@ -118,5 +119,10 @@ export type KanbanActionRequest = {
   /** Rework only: pictures for the executor and a recording appended to the comment. */
   images?: KanbanImageInput[];
   audio?: KanbanAudioInput;
+  /**
+   * Each application runs its own agent on a task. Restart, rework, review and accept act on
+   * this application's agent; execute always starts the agent of the application handling it.
+   */
+  provider?: KanbanProvider;
   clientActionId: string;
 };

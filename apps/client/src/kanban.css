@@ -632,6 +632,55 @@ textarea.kanban-edit-field {
   padding: 0 var(--space-3);
 }
 
+/* Starting an agent is the board's one filled control: an ink capsule, approved 4 November 2026. */
+.thread-workspace .session-inspector .kanban-launch {
+  --chat-button-rest: var(--color-lapis);
+  --inspector-button-shadow:
+    0 6px 16px color-mix(in srgb, var(--color-lapis) 22%, transparent),
+    0 1px 3px color-mix(in srgb, var(--color-lapis) 18%, transparent);
+  min-height: 40px;
+  /* The capsule's edge, not its label, lines up with the panel text. */
+  margin-inline-start: var(--space-3);
+  padding: 0 var(--space-5) 0 var(--space-4);
+  background: var(--color-lapis);
+  color: var(--color-lapis-contrast);
+  font-weight: var(--weight-action);
+}
+
+.thread-workspace .session-inspector .kanban-launch svg {
+  width: 15px;
+  height: 15px;
+}
+
+.thread-workspace .session-inspector .kanban-launch:is(:hover, :focus-visible):not(:disabled) {
+  background: color-mix(in srgb, var(--color-lapis) 88%, var(--color-canvas));
+  box-shadow: var(--inspector-button-shadow);
+}
+
+.thread-workspace .session-inspector .kanban-launch:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-lapis) 78%, var(--color-canvas));
+}
+
+/* Which agent's result the review actions use when both agents submitted one. */
+.kanban-result-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.kanban-result-choice > span {
+  margin-inline-end: var(--space-1);
+  color: var(--muted);
+  font-size: var(--text-small);
+}
+
+.thread-workspace .session-inspector .kanban-result-choice button[aria-pressed="true"] {
+  --chat-button-rest: var(--color-floating);
+  --inspector-button-shadow: var(--chat-shadow);
+  color: var(--text-strong);
+}
+
 .kanban-panel-link,
 .kanban-session {
   display: inline-flex;
@@ -679,6 +728,34 @@ textarea.kanban-edit-field {
   margin: 0 calc(-1 * var(--space-3));
   padding: 0;
   list-style: none;
+}
+
+.kanban-session-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.kanban-session-row > .kanban-session {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Restart sits beside the agent's current session as an outlined capsule with its label. */
+.thread-workspace .session-inspector .kanban-restart {
+  --inspector-button-shadow: inset 0 0 0 1px var(--color-line-strong);
+  flex: none;
+  gap: var(--space-1-5);
+  min-height: 30px;
+  margin-inline-end: var(--space-2);
+  padding: 0 var(--space-3) 0 var(--space-2);
+  color: var(--text-strong);
+  font-size: var(--text-small);
+}
+
+.thread-workspace .session-inspector .kanban-restart svg {
+  width: 16px;
+  height: 16px;
 }
 
 .kanban-session-list > li > .kanban-card-error {

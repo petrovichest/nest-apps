@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { KanbanBoard, KanbanStageRole } from "@codexnest/protocol";
+import type { KanbanBoard, KanbanProvider, KanbanStageRole } from "@codexnest/protocol";
 import type { IntegrationWorkspace, RepositoryResult, TaskWorkspace } from "./workspace.js";
 
 /** An image saved next to the board; file is relative to the board's image directory. */
@@ -14,6 +14,8 @@ export type VoiceRuntime = {
   text: string;
   actionId?: string;
   images?: StoredImage[];
+  /** The agent a spoken rework comment continues. */
+  provider?: KanbanProvider;
 };
 export type CardRuntime = {
   voice?: VoiceRuntime;
@@ -29,6 +31,10 @@ export type RunRuntime = {
   comment?: string;
   images?: StoredImage[];
   workspace?: TaskWorkspace;
+  /** An execution's submitted result; each agent's latest one is a candidate for acceptance. */
+  results?: RepositoryResult[];
+  /** A restart stops the session it replaces before launching. */
+  interruptThreadId?: string;
   integration?: IntegrationWorkspace;
   integrations?: IntegrationWorkspace[];
   report?: unknown;

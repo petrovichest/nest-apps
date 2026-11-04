@@ -3962,6 +3962,15 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       async threadState(threadId) {
         return projection.summary(threadId)?.state ?? null;
       },
+      async interrupt(threadId) {
+        const turnId = projection.summary(threadId)?.currentTurnId;
+        if (!turnId) return;
+        await withKeyLock(turnStartLocks, threadId, () =>
+          interruptTurnIfRunning(bridge, threadId, turnId),
+        );
+        await projection.markInterrupted(threadId, [turnId]);
+        projection.publishThreadState(threadId);
+      },
       async archive(threadId) {
         await archiveKanbanThread(threadId);
       },

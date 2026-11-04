@@ -125,7 +125,7 @@ function agentInstructions(
     common.push(
       'When work is complete call report {outcome:"completed",summary:"..."}. The helper validates exact clean commits and decides whether parallel tasks require Review.',
       'If report returns {next:"publish"}, this is a solo task: continue in this same session, call prepare-integration {}, resolve integration conflicts if any, run combined tests, then publish {}. Do not stop at Review for a solo task.',
-      'If report returns {next:"review"}, stop after delivering the result; another task is active and acceptance/integration are separate.',
+      'If report returns {next:"review"}, stop after delivering the result; another task, or the other application agent on this task, is active and acceptance/integration are separate.',
       'If the operation cannot proceed call report {outcome:"waiting",error:"actionable explanation"}; ask the operator in the same session. For terminal failures use outcome:"failed". Resume after the answer.',
     );
   if (run.kind === "review")

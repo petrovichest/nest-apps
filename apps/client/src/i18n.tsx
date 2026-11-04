@@ -113,6 +113,8 @@ const ENGLISH: Record<string, string> = {
   "Определяем категорию…": "Assigning category…",
   "Открыть сессию": "Open session",
   "Запустить агента": "Start agent",
+  "Запустить в {{name}}": "Start in {{name}}",
+  "Перезапустить {{name}}": "Restart {{name}}",
   "Отправить на доработку": "Send for rework",
   "Отправляем…": "Sending…",
   "Повторить категоризацию": "Retry categorization",

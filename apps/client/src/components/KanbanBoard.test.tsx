@@ -334,6 +334,68 @@ describe("KanbanBoard", () => {
         action: "rework",
         cardIds: ["one"],
         comment: "Fix the missing error state",
+        provider: "claude",
+        clientActionId: expect.any(String),
+      }),
+    );
+  });
+
+  it("starts this application's agent beside the other one and restarts an agent", async () => {
+    const seed = board([card("one", "working")]);
+    seed.runs.push({
+      ...execution("one", "running"),
+      provider: "claude",
+      sessionUrl: "http://localhost:4311/threads/thread-one",
+    });
+    api.readKanban.mockResolvedValue(seed);
+    api.kanbanAction.mockResolvedValue(seed);
+    show();
+    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    const panel = screen.getByRole("complementary", { name: "Task one" });
+    expect(within(panel).queryByRole("button", { name: "Запустить агента" })).toBeNull();
+    fireEvent.click(within(panel).getByRole("button", { name: "Запустить в CodexNest" }));
+    await waitFor(() =>
+      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+        action: "execute",
+        cardIds: ["one"],
+        clientActionId: expect.any(String),
+      }),
+    );
+    fireEvent.click(within(panel).getByRole("button", { name: "Перезапустить ClaudeNest" }));
+    await waitFor(() =>
+      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+        action: "restart",
+        cardIds: ["one"],
+        provider: "claude",
+        clientActionId: expect.any(String),
+      }),
+    );
+  });
+
+  it("accepts the chosen agent's result when both agents submitted one", async () => {
+    const seed = board([card("one", "review")]);
+    seed.runs.push(execution("one"), {
+      ...execution("one"),
+      id: "run-claude",
+      provider: "claude",
+      threadId: "thread-claude",
+    });
+    api.readKanban.mockResolvedValue(seed);
+    show();
+    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    const panel = screen.getByRole("complementary", { name: "Task one" });
+    const choice = within(panel).getByRole("group", { name: "Результат" });
+    expect(within(choice).getByRole("button", { name: "CodexNest" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(within(choice).getByRole("button", { name: "ClaudeNest" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Принять" }));
+    await waitFor(() =>
+      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+        action: "accept",
+        cardIds: ["one"],
+        provider: "claude",
         clientActionId: expect.any(String),
       }),
     );

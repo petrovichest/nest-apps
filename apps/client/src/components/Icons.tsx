@@ -232,6 +232,24 @@ export const CompactIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const PlayIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path
+      d="M8.2 6.4v11.2a1.3 1.3 0 0 0 2 1.1l8.8-5.6a1.3 1.3 0 0 0 0-2.2l-8.8-5.6a1.3 1.3 0 0 0-2 1.1z"
+      fill="currentColor"
+    />
+  </Icon>
+);
+
+/** A circular arrow around a play mark: the task starts again in a new session. */
+export const RestartIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M4.6 12.4a7.4 7.4 0 1 0 2.3-5.5" />
+    <path d="m6.4 3.4.6 3.6-3.6.6" />
+    <path d="M10.4 9.5v5l4.1-2.5z" fill="currentColor" strokeWidth="1.3" />
+  </Icon>
+);
+
 export const SendIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M12 19.5v-14M6 10.5l4.6-4.6a2 2 0 0 1 2.8 0l4.6 4.6" />

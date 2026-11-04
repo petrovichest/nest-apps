@@ -59,6 +59,8 @@ export type KanbanProviderAdapter = {
   launch(input: KanbanLaunch): Promise<{ threadId: string; sessionUrl?: string }>;
   resume(input: { threadId: string; prompt: string; id: string; images?: string[] }): Promise<void>;
   archive?(threadId: string): Promise<void>;
+  /** Stops a session that a restart replaces. */
+  interrupt?(threadId: string): Promise<void>;
   threadState?(threadId: string): Promise<string | null> | string | null;
 };
 export type KanbanServiceOptions = {
@@ -103,6 +105,44 @@ const expiredDone = (board: KanbanBoard, card: KanbanCard, cutoff: number) =>
 const activeFor = (data: KanbanDocument, cardId: string) =>
   data.board.runs.some(
     (run) => run.kind !== "classify" && active(run) && run.cardIds.includes(cardId),
+  );
+const PROVIDERS: readonly KanbanProvider[] = ["codex", "claude"];
+/** Each application's newest execution is its agent's current session on the task. */
+function agentRuns(data: KanbanDocument, cardId: string): Map<KanbanProvider, KanbanRun> {
+  const latest = new Map<KanbanProvider, KanbanRun>();
+  for (const run of data.board.runs)
+    if (run.kind === "execute" && run.cardIds.includes(cardId)) latest.set(run.provider, run);
+  return latest;
+}
+/** An agent's newest submitted result since it last started from a clean copy. */
+function agentResult(data: KanbanDocument, cardId: string, provider: KanbanProvider) {
+  const runs = data.board.runs.filter(
+    (run) => run.kind === "execute" && run.provider === provider && run.cardIds.includes(cardId),
+  );
+  for (const run of runs.reverse()) {
+    const runtime = data.runs[run.id];
+    if (runtime?.results && runtime.workspace)
+      return { provider, workspace: runtime.workspace, results: runtime.results };
+    if (!runtime?.resumeThreadId) return undefined;
+  }
+  return undefined;
+}
+/** The result an operator acts on: the named agent's, or the only one submitted. */
+function chosenResult(data: KanbanDocument, cardId: string, provider?: KanbanProvider) {
+  if (provider) {
+    const result = agentResult(data, cardId, provider);
+    if (!result) throw new KanbanError("no_result", "This agent has not submitted a result");
+    return result;
+  }
+  const results = PROVIDERS.flatMap((item) => agentResult(data, cardId, item) ?? []);
+  if (results.length > 1)
+    throw new KanbanError("choose_result", "Both agents submitted results; choose one of them");
+  return results[0];
+}
+/** Another agent still working or holding a result sends the outcome to review. */
+const rivalAgent = (data: KanbanDocument, cardId: string, provider: KanbanProvider) =>
+  [...agentRuns(data, cardId).values()].some(
+    (run) => run.provider !== provider && (active(run) || agentResult(data, cardId, run.provider)),
   );
 const findCard = (data: KanbanDocument, id: string) => {
   const card = data.board.cards.find((card) => card.id === id);
@@ -511,7 +551,7 @@ export class KanbanService {
       value?: {
         boardId: string;
         files: string[];
-        workspace?: CardRuntime["workspace"];
+        workspaces: NonNullable<CardRuntime["workspace"]>[];
         threads: string[];
       };
     } = {};
@@ -522,6 +562,19 @@ export class KanbanService {
       if (data.board.runs.some((run) => active(run) && run.cardIds.includes(card.id)))
         throw new KanbanError("already_running", "The task has an active session");
       const threads: string[] = [];
+      // Every agent and restart has its own copy; keep the newest record of each.
+      const workspaces = new Map<string, NonNullable<CardRuntime["workspace"]>>();
+      for (const workspace of [
+        data.cards[card.id]?.workspace,
+        ...data.board.runs
+          .filter((run) => run.cardIds.includes(card.id))
+          .map((run) => data.runs[run.id]?.workspace),
+      ])
+        if (
+          workspace &&
+          (workspaces.get(workspace.id)?.repositories.length ?? -1) < workspace.repositories.length
+        )
+          workspaces.set(workspace.id, workspace);
       const files = [...cardImages(card), ...(data.cards[card.id]?.voice?.images ?? [])].map(
         (image) => this.imagePath(data.board.id, image.file),
       );
@@ -539,7 +592,7 @@ export class KanbanService {
       removal.value = {
         boardId: data.board.id,
         files,
-        workspace: data.cards[card.id]?.workspace,
+        workspaces: [...workspaces.values()],
         threads,
       };
       data.board.cards.splice(data.board.cards.indexOf(card), 1);
@@ -551,11 +604,10 @@ export class KanbanService {
     if (cleanup) {
       const report = (error: unknown) => this.options.onError?.(error);
       for (const file of cleanup.files) await rm(file, { force: true }).catch(report);
-      if (cleanup.workspace)
-        await removeTaskWorkspace(
-          cleanup.workspace,
-          join(this.store.directory, "workspaces"),
-        ).catch(report);
+      for (const workspace of cleanup.workspaces)
+        await removeTaskWorkspace(workspace, join(this.store.directory, "workspaces")).catch(
+          report,
+        );
       for (const threadId of cleanup.threads)
         await Promise.resolve(this.options.adapter.archive?.(threadId)).catch(report);
     }
@@ -657,7 +709,7 @@ export class KanbanService {
     request: KanbanActionRequest,
     voice?: { images: StoredImage[] },
   ): Promise<KanbanBoard> {
-    if (request.action === "execute" || request.action === "rework") {
+    if (["execute", "rework", "restart"].includes(request.action)) {
       const { id } = await this.store.identity(projectPath);
       return this.store.withLock(`activity-${id}`, () =>
         this.performAction(projectPath, request, voice),
@@ -695,6 +747,7 @@ export class KanbanService {
     if (
       ![
         "execute",
+        "restart",
         "review",
         "accept",
         "rework",
@@ -711,14 +764,17 @@ export class KanbanService {
       (typeof request.comment !== "string" || request.comment.length > 100_000)
     )
       throw new KanbanError("invalid_request", "Invalid comment", 400);
+    if (request.provider !== undefined && !PROVIDERS.includes(request.provider))
+      throw new KanbanError("invalid_request", "Unknown agent application", 400);
     if (["accept", "review"].includes(request.action)) {
       const snapshot = await this.store.read(projectPath);
-      const runtime = snapshot.cards[ids[0]!];
-      if (runtime?.workspace && runtime.results) {
-        const actual = (await validateTaskWorkspace(runtime.workspace)).filter(
+      const candidate =
+        chosenResult(snapshot, ids[0]!, request.provider) ?? snapshot.cards[ids[0]!];
+      if (candidate?.workspace && candidate.results) {
+        const actual = (await validateTaskWorkspace(candidate.workspace)).filter(
           (item) => item.changed !== false,
         );
-        if (!sameResults(actual, runtime.results))
+        if (!sameResults(actual, candidate.results))
           throw new KanbanError(
             "result_changed",
             "The task result changed; submit it again before acceptance",
@@ -729,6 +785,7 @@ export class KanbanService {
       action: request.action,
       ids,
       comment: request.comment ?? null,
+      ...(request.provider ? { provider: request.provider } : {}),
       ...(commentImages.length
         ? {
             images: createHash("sha256")
@@ -752,10 +809,31 @@ export class KanbanService {
         cards.some((card) => card.voice && !(voice && card.voice.purpose === "rework"))
       )
         throw new KanbanError("voice_pending", "Wait until the recording is transcribed");
+      const agents = agentRuns(data, ids[0]!);
+      const chosen = ["accept", "review"].includes(request.action)
+        ? chosenResult(data, ids[0]!, request.provider)
+        : undefined;
+      // The agent an action concerns; the other application's agent may keep working meanwhile.
+      const agent =
+        request.action === "execute"
+          ? this.options.provider
+          : request.action === "rework" || request.action === "restart"
+            ? (request.provider ??
+              (agents.size === 1 ? [...agents.keys()][0]! : this.options.provider))
+            : request.action === "accept"
+              ? chosen?.provider
+              : undefined;
       if (
         data.board.runs.some(
           (run) =>
-            run.kind !== "classify" && active(run) && run.cardIds.some((id) => ids.includes(id)),
+            run.kind !== "classify" &&
+            active(run) &&
+            run.cardIds.some((id) => ids.includes(id)) &&
+            !(
+              run.kind === "execute" &&
+              agent !== undefined &&
+              (run.provider !== agent || request.action === "restart")
+            ),
         )
       )
         throw new KanbanError("already_running", "A selected card already has an active session");
@@ -785,19 +863,34 @@ export class KanbanService {
           throw new KanbanError("already_running", "Classification is already running");
         card.classification = "pending";
         this.addRun(data, "classify", ids);
-      } else if (request.action === "execute" || request.action === "rework") {
+      } else if (
+        request.action === "execute" ||
+        request.action === "rework" ||
+        request.action === "restart"
+      ) {
         const card = cards[0]!;
         if (card.classification !== "ready")
           throw new KanbanError("not_ready", "Wait for task classification");
         const runtime = data.cards[card.id]!;
-        if (request.action === "execute" && runtime.executionRunId)
-          throw new KanbanError(
-            "already_started",
-            "Use rework to continue the original task session",
-          );
-        const original = data.board.runs.find((run) => run.id === runtime.executionRunId);
-        if (request.action === "rework" && !original?.threadId)
+        const current = agents.get(agent!);
+        if (request.action === "execute") {
+          if (current)
+            throw new KanbanError(
+              "already_started",
+              "This application's agent already has the task; use rework or restart",
+            );
+          if (
+            runtime.acceptedResults !== undefined ||
+            stageRole(data.board, card.stageId) === "done"
+          )
+            throw new KanbanError("already_accepted", "The task result was already accepted");
+        } else if (request.action === "rework" && !current?.threadId)
           throw new KanbanError("not_started", "The original task session is unavailable");
+        else if (request.action === "restart") {
+          if (!current) throw new KanbanError("not_started", "This agent has not started the task");
+          if (stageRole(data.board, card.stageId) === "done")
+            throw new KanbanError("already_done", "The task is already done");
+        }
         delete runtime.acceptedResults;
         for (const repository of card.repositories) {
           repository.status = "working";
@@ -808,11 +901,17 @@ export class KanbanService {
           data,
           "execute",
           ids,
-          original?.provider ?? this.options.provider,
+          agent,
           request.comment,
-          original?.threadId ?? undefined,
+          request.action === "rework" ? current!.threadId! : undefined,
         );
         runtime.executionRunId ??= run.id;
+        // A restart replaces the agent's session: the new one starts from a clean copy.
+        if (request.action === "restart" && active(current!)) {
+          current!.status = "completed";
+          current!.updatedAt = Date.now();
+          if (current!.threadId) data.runs[run.id]!.interruptThreadId = current!.threadId;
+        }
         const images =
           voice?.images ??
           (await this.storeImages(data.board.id, `comment-${run.id}`, commentImages));
@@ -822,8 +921,16 @@ export class KanbanService {
           delete runtime.voice;
         }
       } else if (request.action === "accept") {
+        if (chosen) this.useResult(data, cards[0]!, chosen);
+        // The other agent's session ends with the choice; its copy and branch stay as they are.
+        for (const run of agents.values())
+          if (run.provider !== chosen?.provider && active(run)) {
+            run.status = "completed";
+            run.updatedAt = Date.now();
+          }
         this.accept(data, cards[0]!);
       } else if (request.action === "review") {
+        if (chosen) this.useResult(data, cards[0]!, chosen);
         const runtime = data.cards[cards[0]!.id]!;
         if (!runtime.results)
           throw new KanbanError("no_result", "The executor has not submitted a result");
@@ -875,11 +982,18 @@ export class KanbanService {
       (typeof request.comment !== "string" || request.comment.length > 100_000)
     )
       throw new KanbanError("invalid_request", "Invalid comment", 400);
+    if (request.provider !== undefined && !PROVIDERS.includes(request.provider))
+      throw new KanbanError("invalid_request", "Unknown agent application", 400);
     const audio = decodeAudio(request.audio!);
     const images = decodeImages(request.images);
     this.requireTranscription();
     const hash = createHash("sha256").update(
-      JSON.stringify(["voice-rework", request.cardIds[0], request.comment ?? ""]),
+      JSON.stringify([
+        "voice-rework",
+        request.cardIds[0],
+        request.comment ?? "",
+        ...(request.provider ? [request.provider] : []),
+      ]),
     );
     for (const image of images) hash.update(image.bytes);
     const fingerprint = hash.update(audio.bytes).digest("hex");
@@ -900,7 +1014,10 @@ export class KanbanService {
       if (card.classification !== "ready")
         throw new KanbanError("not_ready", "Wait for task classification");
       const runtime = data.cards[card.id]!;
-      const original = data.board.runs.find((run) => run.id === runtime.executionRunId);
+      const agents = agentRuns(data, card.id);
+      const original = agents.get(
+        request.provider ?? (agents.size === 1 ? [...agents.keys()][0]! : this.options.provider),
+      );
       if (!original?.threadId)
         throw new KanbanError("not_started", "The original task session is unavailable");
       await this.storeAudio(data.board.id, card.id, audio.bytes);
@@ -910,6 +1027,7 @@ export class KanbanService {
         text: request.comment?.trim() ?? "",
         actionId,
         images: await this.storeImages(data.board.id, `comment-${randomUUID()}`, images),
+        provider: original.provider,
       };
       card.voice = {
         purpose: "rework",
@@ -952,6 +1070,7 @@ export class KanbanService {
             action: "rework",
             cardIds: [cardId],
             comment: combined,
+            ...(runtime.provider ? { provider: runtime.provider } : {}),
             clientActionId: `${runtime.actionId ?? randomUUID()}:transcribed`,
           },
           { images: runtime.images ?? [] },
@@ -983,6 +1102,20 @@ export class KanbanService {
         current.voice = { ...current.voice, status: "failed", error: message(error) };
     });
     this.changed(board);
+  }
+  /** Makes one agent's submitted result the task's result for review, acceptance and merging. */
+  private useResult(
+    data: KanbanDocument,
+    card: KanbanCard,
+    chosen: NonNullable<ReturnType<typeof agentResult>>,
+  ): void {
+    const runtime = data.cards[card.id]!;
+    runtime.workspace = chosen.workspace;
+    runtime.results = chosen.results;
+    card.repositories = chosen.results.map((item) => ({
+      ...this.repositorySummary(item.repository),
+      commit: item.sha,
+    }));
   }
   private accept(data: KanbanDocument, card: KanbanCard): void {
     const runtime = data.cards[card.id]!;
@@ -1116,15 +1249,29 @@ export class KanbanService {
       let cwd = document.board.projectPath;
       if (run.kind === "execute") {
         const cardId = run.cardIds[0]!;
+        const task = document.cards[cardId]!;
+        const runtime = document.runs[runId]!;
+        const first = task.executionRunId === runId;
+        // A continuation keeps its session's copy; another agent or a restart gets a clean one.
+        const resumed = runtime.resumeThreadId
+          ? document.board.runs
+              .filter(
+                (item) =>
+                  item.threadId === runtime.resumeThreadId && document.runs[item.id]?.workspace,
+              )
+              .at(-1)
+          : undefined;
         const workspace =
-          document.cards[cardId]!.workspace ??
+          runtime.workspace ??
+          (resumed ? document.runs[resumed.id]!.workspace : undefined) ??
+          (runtime.resumeThreadId || first ? task.workspace : undefined) ??
           (await createTaskWorkspace({
             projectPath: document.board.projectPath,
             workspaceRoot: join(this.store.directory, "workspaces"),
-            taskId: cardId,
+            taskId: first ? cardId : `${cardId}-${runId.slice(0, 8)}`,
           }));
         await this.store.updateById(boardId, (data) => {
-          data.cards[cardId]!.workspace = workspace;
+          data.cards[cardId]!.workspace ??= workspace;
           data.runs[runId]!.workspace = workspace;
           data.board.runs.find((item) => item.id === runId)!.workspacePath = workspace.rootPath;
         });
@@ -1176,6 +1323,11 @@ export class KanbanService {
         ),
       );
       const imageInput = images.length ? { images } : {};
+      const replaced = document.runs[runId]!.interruptThreadId;
+      if (replaced)
+        await Promise.resolve(this.options.adapter.interrupt?.(replaced)).catch((error) =>
+          this.options.onError?.(error),
+        );
       const resume = document.runs[runId]!.resumeThreadId;
       const launched = resume
         ? (await this.options.adapter.resume({
@@ -1357,7 +1509,8 @@ export class KanbanService {
         }),
       );
       const { board } = await this.store.updateById(document.board.id, (data) => {
-        data.cards[card.id]!.workspace = workspace;
+        const task = data.cards[card.id]!;
+        if (!task.workspace || task.workspace.id === workspace.id) task.workspace = workspace;
         data.runs[run.id]!.workspace = workspace;
         const current = findCard(data, card.id);
         if (!current.repositories.some((item) => item.id === repository.id))
@@ -1485,7 +1638,7 @@ export class KanbanService {
       (run.kind === "review" && outcome !== "accepted")
     )
       throw new KanbanError("invalid_request", "Invalid completion outcome", 400);
-    const workspace = document.cards[card.id]!.workspace;
+    const workspace = document.runs[run.id]!.workspace ?? document.cards[card.id]!.workspace;
     const results = workspace
       ? (await validateTaskWorkspace(workspace)).filter((result) => result.changed !== false)
       : [];
@@ -1503,6 +1656,10 @@ export class KanbanService {
       current.updatedAt = Date.now();
       data.runs[run.id]!.report = payload;
       data.cards[card.id]!.results = results;
+      if (run.kind === "execute") {
+        data.runs[run.id]!.results = results;
+        if (workspace) data.cards[card.id]!.workspace = workspace;
+      }
       current.repositories = results.map((item) => ({
         ...this.repositorySummary(item.repository),
         commit: item.sha,
@@ -1512,7 +1669,8 @@ export class KanbanService {
         own.status = "completed";
         return "accepted";
       }
-      const solo = !this.otherUnfinishedCard(data, card.id);
+      const rival = rivalAgent(data, card.id, run.provider);
+      const solo = !rival && !this.otherUnfinishedCard(data, card.id);
       if (solo && !results.length) {
         this.accept(data, current);
         own.status = "completed";
@@ -1525,7 +1683,9 @@ export class KanbanService {
         return "publish";
       }
       own.status = "completed";
-      setStage(data, current, role(data.board, "review"));
+      // The task stays in progress until the other agent finishes too.
+      if (![...agentRuns(data, card.id).values()].some(active))
+        setStage(data, current, role(data.board, "review"));
       return "review";
     });
     this.changed(board);
