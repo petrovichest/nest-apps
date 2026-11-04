@@ -1547,10 +1547,11 @@ export function KanbanBoard({
                   </button>
                 )}
                 {session &&
-                  (role === "working" || role === "waiting" || role === "done") &&
+                  role !== "todo" &&
                   sessionLink(
                     session,
-                    "kanban-panel-link primary",
+                    // In Ready, publishing is the main step and the session sits beside it.
+                    role === "ready" ? "kanban-panel-link" : "kanban-panel-link primary",
                     <>
                       <ArrowRightIcon />
                       {role === "waiting" ? t("Ответить") : t("Открыть сессию")}

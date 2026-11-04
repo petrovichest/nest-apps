@@ -491,6 +491,10 @@ describe("KanbanBoard", () => {
       "http://localhost:4311/threads/original",
     );
     expect(within(panel).queryByRole("button", { name: "Запустить агента" })).toBeNull();
+    expect(within(panel).getByRole("link", { name: "Открыть сессию" })).toHaveAttribute(
+      "href",
+      "http://localhost:4311/threads/original",
+    );
     fireEvent.click(within(panel).getByRole("button", { name: "Опубликовать" }));
     await waitFor(() =>
       expect(api.kanbanAction).toHaveBeenCalledWith("project", {
