@@ -596,6 +596,8 @@ describe("shared provider board service", () => {
       expect(board.cards[0]).toMatchObject({ classification: "failed" });
       expect(board.cards[0]?.error).toContain("retry classification");
       expect(board.runs.find((item) => item.id === run.id)?.status).toBe("failed");
+      // The failed classifier stays out of the session list like a finished one.
+      expect(f.archived.codex).toEqual([run.threadId]);
       await f.services.codex.action(f.project, {
         action: "retry-classification",
         cardIds: [id],

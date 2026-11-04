@@ -1,9 +1,19 @@
 import { dirname, join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import type { ServerFrame } from "@codexnest/protocol";
+import type { ServerFrame, ThreadSummary } from "@codexnest/protocol";
 import { KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
 import type { UiService } from "./ui-service";
 import type { ClaudeVoiceService } from "./voice";
+
+/**
+ * A new session looks finished for a moment: its first message is accepted before its runner
+ * attaches. The board waits until no turn is in progress.
+ */
+export function boardThreadState(thread: Pick<ThreadSummary, "state" | "currentTurnId">): string {
+  return thread.currentTurnId && ["completed", "idle"].includes(thread.state)
+    ? "running"
+    : thread.state;
+}
 
 export async function registerClaudeKanban(
   app: FastifyInstance,
@@ -47,7 +57,7 @@ export async function registerClaudeKanban(
         });
       },
       async threadState(id) {
-        return ui.store.data.threads[id] ? ui.summary(id).state : null;
+        return ui.store.data.threads[id] ? boardThreadState(ui.summary(id)) : null;
       },
       async interrupt(id) {
         if (ui.store.data.threads[id]) await ui.interrupt(id);
@@ -69,7 +79,7 @@ export async function registerClaudeKanban(
   const observe = (frame: ServerFrame) => {
     if (frame.type === "event" && frame.event.type === "thread.upserted") {
       void service
-        .notifyThread(frame.event.thread.id, frame.event.thread.state)
+        .notifyThread(frame.event.thread.id, boardThreadState(frame.event.thread))
         .catch(() => undefined);
     }
   };

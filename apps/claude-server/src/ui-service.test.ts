@@ -19,6 +19,7 @@ import {
   type RunnerSnapshot,
 } from "./types";
 import { UiService, commandId } from "./ui-service";
+import { boardThreadState } from "./kanban";
 import { subagentThreadId } from "./types";
 import { parseClaudeUsage } from "./rate-limits";
 import type { UiData } from "./ui-store";
@@ -611,6 +612,26 @@ describe("Claude UI durable session facade", () => {
     expect(manager.stops).toEqual([]);
   });
 
+  it("never shows the board a new session as finished while its first turn starts", async () => {
+    const { manager, start, reserve } = await fixture();
+    manager.accepting = true;
+    const service = await start();
+    const id = await reserve(service);
+    const states: Array<{ state: string; board: string }> = [];
+    service.on("frame", (frame: ServerFrame) => {
+      if (frame.type === "event" && frame.event.type === "thread.upserted")
+        states.push({
+          state: frame.event.thread.state,
+          board: boardThreadState(frame.event.thread),
+        });
+    });
+    await service.enqueue(id, { clientMessageId: randomUUID(), input: "Classify", images: [] });
+    await waitForQueue(service, id, 0);
+    await expect.poll(() => service.summary(id).state).toBe("running");
+    // The message is accepted before the runner attaches: the summary looks finished then.
+    expect(states.map((item) => item.state)).toContain("completed");
+    expect(states.map((item) => item.board)).not.toContain("completed");
+  });
   it("keeps the selected account free for a queued message before its owner starts", async () => {
     const { manager, start, reserve } = await fixture();
     manager.accounts = new FakeAccounts();

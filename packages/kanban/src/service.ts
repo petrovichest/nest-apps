@@ -964,6 +964,7 @@ export class KanbanService {
     this.observedStates.set(threadId, state);
     // Remember the initial idle state until a real turn transition arrives.
     if (state === "idle" && this.launching.has(known.runId)) return;
+    let classifierFailed = false;
     const { board, result: finished } = await this.store.updateById(known.boardId, (data) => {
       const run = data.board.runs.find((run) => run.id === known.runId);
       if (!run || !active(run)) return false;
@@ -976,6 +977,7 @@ export class KanbanService {
         else if (["completed", "idle", "interrupted", "failed", "unavailable"].includes(state)) {
           run.status = "failed";
           run.error = "Task classification did not finish; retry classification";
+          classifierFailed = true;
           for (const id of run.cardIds) {
             const card = findCard(data, id);
             card.classification = "failed";
@@ -1020,6 +1022,11 @@ export class KanbanService {
       return false;
     });
     this.changed(board);
+    // A classifier is a service session: it stays out of the session list even when it fails.
+    if (classifierFailed)
+      await Promise.resolve(this.options.adapter.archive?.(threadId)).catch((error) =>
+        this.options.onError?.(error),
+      );
     if (finished) await this.settle(known, threadId, state);
   }
   /** A finished turn: the agent either waits for the operator or is done with this step. */
