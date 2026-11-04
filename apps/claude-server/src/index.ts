@@ -3,17 +3,15 @@ import { loadConfig } from "./config";
 import { SessionManager } from "./manager";
 import { UiService } from "./ui-service";
 import { ClaudeAccounts } from "./accounts";
-import { claudeTitleGenerator } from "./title";
+import { claudeReplyCheck, claudeTitleGenerator } from "./title";
 
 const config = await loadConfig();
 const accounts: ClaudeAccounts = new ClaudeAccounts(config, {
   canWarm: (id) => ui.accountIdle(id),
 });
 const manager = new SessionManager(config, undefined, accounts);
-const ui = new UiService(
-  manager,
-  claudeTitleGenerator({ claudeBin: config.claudeBin, configDir: config.configDir, accounts }),
-);
+const helper = { claudeBin: config.claudeBin, configDir: config.configDir, accounts };
+const ui = new UiService(manager, claudeTitleGenerator(helper), claudeReplyCheck(helper));
 await accounts.initialize();
 await manager.initialize();
 await ui.initialize();

@@ -28,8 +28,6 @@ function card(id: string, stageId = "todo"): KanbanCard {
     stageId,
     categoryId: "front",
     classification: "ready",
-    scope: "task",
-    repositories: [],
     error: null,
     createdAt: 1,
     updatedAt: 1,
@@ -43,9 +41,9 @@ function board(cards = [card("one")]): Board {
     stages: [
       { id: "todo", name: "К выполнению", description: "", role: "todo" },
       { id: "working", name: "В работе", description: "", role: "working" },
-      { id: "review", name: "Проверка", description: "", role: "review" },
-      { id: "ready", name: "К объединению", description: "", role: "ready" },
-      { id: "done", name: "Готово", description: "", role: "done" },
+      { id: "waiting", name: "Ждёт ответа", description: "", role: "waiting" },
+      { id: "ready", name: "Готовые", description: "", role: "ready" },
+      { id: "done", name: "Опубликовано", description: "", role: "done" },
     ],
     categories: [{ id: "front", name: "Frontend" }],
     cards,
@@ -147,7 +145,6 @@ function execution(cardId: string, status: KanbanRun["status"] = "completed"): K
     threadId: `thread-${cardId}`,
     sessionUrl: null,
     status,
-    workspacePath: null,
     error: null,
     createdAt: 1,
     updatedAt: 1,
@@ -197,7 +194,7 @@ describe("KanbanBoard", () => {
 
   it("localizes canonical server stages by role and preserves custom names", async () => {
     const seed = board();
-    const names = ["To do", "In progress", "Review", "Ready for integration", "Done"];
+    const names = ["To do", "In progress", "Waiting for answer", "Ready", "Published"];
     seed.stages.forEach((stage, index) => {
       stage.name = names[index];
     });
@@ -211,9 +208,9 @@ describe("KanbanBoard", () => {
     show();
     await screen.findByRole("region", { name: "К выполнению" });
     expect(screen.getByRole("region", { name: "В работе" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Проверка" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "К объединению" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Готово" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Ждёт ответа" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Готовые" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Опубликовано" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Review" })).toHaveTextContent(
       "Custom operator stage",
     );
@@ -328,46 +325,72 @@ describe("KanbanBoard", () => {
     expect(api.kanbanAction).not.toHaveBeenCalled();
   });
 
-  it("merges only selected accepted cards", async () => {
-    api.readKanban.mockResolvedValue(
-      board([card("one", "ready"), card("two", "ready"), card("three")]),
-    );
+  it("publishes every ready card from the column header", async () => {
+    const seed = board([card("one", "ready"), card("two", "ready"), card("three")]);
+    seed.runs.push(execution("one"), execution("two"));
+    api.readKanban.mockResolvedValue(seed);
     show();
-    fireEvent.click(await screen.findByLabelText("Выбрать задачу Task two"));
-    fireEvent.click(screen.getByRole("button", { name: "Объединить (1)" }));
+    expect(await screen.findByRole("button", { name: "Task two" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Опубликовать все" }));
     await waitFor(() =>
       expect(api.kanbanAction).toHaveBeenCalledWith("project", {
-        action: "integrate",
-        cardIds: ["two"],
+        action: "publish",
+        cardIds: ["one", "two"],
         clientActionId: expect.any(String),
       }),
     );
   });
 
-  it("links to the original provider and sends rework comments without a new executor selection", async () => {
-    const seed = board([card("one", "review")]);
-    seed.runs.push({
-      id: "run",
-      kind: "execute",
-      cardIds: ["one"],
-      provider: "claude",
-      threadId: "original",
-      sessionUrl: "http://localhost:4311/threads/original",
-      status: "completed",
-      workspacePath: "/tmp/task",
-      error: null,
-      createdAt: 1,
-      updatedAt: 2,
-    });
+  it("links to the task's session, publishes it and sends rework comments to it", async () => {
+    const seed = board([card("one", "ready")]);
+    seed.runs.push(
+      {
+        id: "run",
+        kind: "execute",
+        cardIds: ["one"],
+        provider: "claude",
+        threadId: "original",
+        sessionUrl: "http://localhost:4311/threads/original",
+        status: "completed",
+        error: null,
+        createdAt: 1,
+        updatedAt: 2,
+      },
+      {
+        id: "rework",
+        kind: "execute",
+        cardIds: ["one"],
+        provider: "claude",
+        threadId: "original",
+        sessionUrl: "http://localhost:4311/threads/original",
+        status: "completed",
+        error: null,
+        createdAt: 2,
+        updatedAt: 3,
+      },
+    );
     api.readKanban.mockResolvedValue(seed);
+    api.kanbanAction.mockResolvedValue(seed);
     show();
     fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
-    expect(screen.getByRole("link", { name: /Выполнение/ })).toHaveAttribute(
+    const panel = screen.getByRole("complementary", { name: "Task one" });
+    // A continuation is a turn of the same session, listed once.
+    expect(within(panel).getAllByRole("link", { name: /Выполнение/ })).toHaveLength(1);
+    expect(within(panel).getByRole("link", { name: /Выполнение/ })).toHaveAttribute(
       "href",
       "http://localhost:4311/threads/original",
     );
-    fireEvent.click(screen.getByRole("button", { name: "На доработку" }));
-    const panel = screen.getByRole("complementary", { name: "Task one" });
+    expect(within(panel).queryByRole("button", { name: "Запустить агента" })).toBeNull();
+    fireEvent.click(within(panel).getByRole("button", { name: "Опубликовать" }));
+    await waitFor(() =>
+      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+        action: "publish",
+        cardIds: ["one"],
+        clientActionId: expect.any(String),
+      }),
+    );
+    fireEvent.click(within(panel).getByRole("button", { name: "На доработку" }));
     fireEvent.change(within(panel).getByLabelText("Комментарий для доработки"), {
       target: { value: "Fix the missing error state" },
     });
@@ -377,71 +400,53 @@ describe("KanbanBoard", () => {
         action: "rework",
         cardIds: ["one"],
         comment: "Fix the missing error state",
-        provider: "claude",
         clientActionId: expect.any(String),
       }),
     );
   });
 
-  it("starts this application's agent beside the other one and restarts an agent", async () => {
-    const seed = board([card("one", "working")]);
-    seed.runs.push({
-      ...execution("one", "running"),
-      provider: "claude",
-      sessionUrl: "http://localhost:4311/threads/thread-one",
-    });
+  it("shows what a waiting agent asks, opens its session to answer and starts again", async () => {
+    const seed = board([
+      { ...card("one", "waiting"), question: "Which file should change?" },
+      card("two"),
+    ]);
+    seed.runs.push({ ...execution("one", "waiting"), sessionUrl: "/threads/thread-one" });
     api.readKanban.mockResolvedValue(seed);
     api.kanbanAction.mockResolvedValue(seed);
     show();
-    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    const waiting = (await screen.findByRole("button", { name: "Task one" })).closest("article")!;
+    expect(waiting).toHaveTextContent("Which file should change?");
+    fireEvent.click(screen.getByRole("button", { name: "Task one" }));
     const panel = screen.getByRole("complementary", { name: "Task one" });
-    expect(within(panel).queryByRole("button", { name: "Запустить агента" })).toBeNull();
-    fireEvent.click(within(panel).getByRole("button", { name: "Запустить в CodexNest" }));
-    await waitFor(() =>
-      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
-        action: "execute",
-        cardIds: ["one"],
-        clientActionId: expect.any(String),
-      }),
+    expect(within(panel).getByRole("link", { name: "Ответить" })).toHaveAttribute(
+      "href",
+      "/threads/thread-one",
     );
-    fireEvent.click(within(panel).getByRole("button", { name: "Перезапустить ClaudeNest" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Начать заново" }));
     await waitFor(() =>
       expect(api.kanbanAction).toHaveBeenCalledWith("project", {
         action: "restart",
         cardIds: ["one"],
-        provider: "claude",
         clientActionId: expect.any(String),
       }),
     );
+    fireEvent.click(screen.getByRole("button", { name: "Task two" }));
+    expect(
+      within(screen.getByRole("complementary", { name: "Task two" })).getByRole("button", {
+        name: "Запустить агента",
+      }),
+    ).toBeInTheDocument();
   });
 
-  it("accepts the chosen agent's result when both agents submitted one", async () => {
-    const seed = board([card("one", "review")]);
-    seed.runs.push(execution("one"), {
-      ...execution("one"),
-      id: "run-claude",
-      provider: "claude",
-      threadId: "thread-claude",
-    });
+  it("translates the board's own reasons for waiting", async () => {
+    const seed = board([
+      { ...card("one", "waiting"), error: "The session was stopped; continue it or start again" },
+    ]);
     api.readKanban.mockResolvedValue(seed);
     show();
-    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
-    const panel = screen.getByRole("complementary", { name: "Task one" });
-    const choice = within(panel).getByRole("group", { name: "Результат" });
-    expect(within(choice).getByRole("button", { name: "CodexNest" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    fireEvent.click(within(choice).getByRole("button", { name: "ClaudeNest" }));
-    fireEvent.click(within(panel).getByRole("button", { name: "Принять" }));
-    await waitFor(() =>
-      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
-        action: "accept",
-        cardIds: ["one"],
-        provider: "claude",
-        clientActionId: expect.any(String),
-      }),
-    );
+    expect(
+      (await screen.findByRole("button", { name: "Task one" })).closest("article"),
+    ).toHaveTextContent("Сессия остановлена. Продолжите её или начните заново.");
   });
 
   it("sends a recorded task at once with the typed text and leaves transcription to the server", async () => {
@@ -534,7 +539,6 @@ describe("KanbanBoard", () => {
       threadId: "session-one",
       sessionUrl: "/threads/session-one",
       status: "running",
-      workspacePath: "/tmp/task",
       error: null,
       createdAt: 1,
       updatedAt: 2,
@@ -552,7 +556,7 @@ describe("KanbanBoard", () => {
   });
 
   it("shows the agent state on a card only while it needs attention", async () => {
-    const seed = board([card("one", "working"), card("two", "review")]);
+    const seed = board([card("one", "working"), card("two", "ready")]);
     seed.runs.push(
       {
         id: "waiting",
@@ -562,7 +566,6 @@ describe("KanbanBoard", () => {
         threadId: "a",
         sessionUrl: null,
         status: "waiting",
-        workspacePath: null,
         error: null,
         createdAt: 1,
         updatedAt: 1,
@@ -575,7 +578,6 @@ describe("KanbanBoard", () => {
         threadId: "b",
         sessionUrl: null,
         status: "completed",
-        workspacePath: null,
         error: null,
         createdAt: 1,
         updatedAt: 1,
@@ -611,7 +613,7 @@ describe("KanbanBoard", () => {
       provider,
     });
     const seed = board(
-      ["unread", "read", "stopped", "seen", "elsewhere"].map((id) => card(id, "review")),
+      ["unread", "read", "stopped", "seen", "elsewhere"].map((id) => card(id, "ready")),
     );
     seed.runs.push(
       run("unread", "completed"),
@@ -649,7 +651,7 @@ describe("KanbanBoard", () => {
   it("keeps collapsed and resized columns on this device", async () => {
     const view = show();
     fireEvent.click(
-      await screen.findByRole("button", { name: "Развернуть стадию «Готово», задач: 0" }),
+      await screen.findByRole("button", { name: "Развернуть стадию «Опубликовано», задач: 0" }),
     );
     const menu = screen.getByLabelText("Действия со стадией «К выполнению»").closest("details")!;
     fireEvent.click(within(menu).getByRole("button", { name: "Свернуть" }));
@@ -665,7 +667,7 @@ describe("KanbanBoard", () => {
     expect(
       await screen.findByRole("button", { name: "Развернуть стадию «К выполнению», задач: 1" }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Развернуть стадию «Готово»/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Развернуть стадию «Опубликовано»/ })).toBeNull();
     expect(screen.getByRole("separator", { name: "Ширина стадии «В работе»" })).toHaveAttribute(
       "aria-valuenow",
       "216",
@@ -683,7 +685,7 @@ describe("KanbanBoard", () => {
     const card = (await screen.findByRole("button", { name: "Task one" })).closest("article")!;
     const dataTransfer = transfer();
     fireEvent.dragStart(card, { dataTransfer });
-    expect(screen.getByRole("region", { name: "Проверка" })).toHaveClass("drop-disabled");
+    expect(screen.getByRole("region", { name: "Ждёт ответа" })).toHaveClass("drop-disabled");
     expect(screen.getByRole("region", { name: "В работе" })).not.toHaveClass("drop-disabled");
     const working = screen.getByRole("region", { name: "В работе" });
     fireEvent.dragOver(working, { dataTransfer });
@@ -699,8 +701,8 @@ describe("KanbanBoard", () => {
     expect(api.updateKanbanCard).not.toHaveBeenCalled();
   });
 
-  it("accepts a reviewed card dropped into Ready and keeps a running card in its stage", async () => {
-    const seed = board([card("one", "review"), card("two", "working")]);
+  it("publishes a ready card dropped into Published and keeps a running card in its stage", async () => {
+    const seed = board([card("one", "ready"), card("two", "working")]);
     seed.runs.push(execution("one"), execution("two", "running"));
     api.readKanban.mockResolvedValue(seed);
     show();
@@ -708,15 +710,16 @@ describe("KanbanBoard", () => {
     fireEvent.dragStart(running, { dataTransfer: transfer() });
     expect(screen.getByRole("region", { name: "К выполнению" })).toHaveClass("drop-disabled");
     fireEvent.dragEnd(running);
-    const reviewed = screen.getByRole("button", { name: "Task one" }).closest("article")!;
+    const ready = screen.getByRole("button", { name: "Task one" }).closest("article")!;
     const dataTransfer = transfer();
-    fireEvent.dragStart(reviewed, { dataTransfer });
-    const ready = screen.getByRole("region", { name: "К объединению" });
-    fireEvent.dragOver(ready, { dataTransfer });
-    fireEvent.drop(ready, { dataTransfer });
+    fireEvent.dragStart(ready, { dataTransfer });
+    expect(screen.getByRole("region", { name: "Ждёт ответа" })).toHaveClass("drop-disabled");
+    const published = screen.getByRole("region", { name: "Опубликовано" });
+    fireEvent.dragOver(published, { dataTransfer });
+    fireEvent.drop(published, { dataTransfer });
     await waitFor(() =>
       expect(api.kanbanAction).toHaveBeenCalledWith("project", {
-        action: "accept",
+        action: "publish",
         cardIds: ["one"],
         clientActionId: expect.any(String),
       }),

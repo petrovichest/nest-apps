@@ -37,7 +37,6 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  GitBranchIcon,
   ImageIcon,
   KanbanIcon,
   MicrophoneIcon,
@@ -61,21 +60,19 @@ import {
 } from "./speech-input";
 import "../kanban.css";
 
-const activeStatuses = new Set<KanbanRun["status"]>(["queued", "preparing", "running", "waiting"]);
+/** The task's agent is busy: its card stays where it is. */
+const busyStatuses = new Set<KanbanRun["status"]>(["queued", "preparing", "running"]);
 const uuid = () => globalThis.crypto.randomUUID();
 
 function runLabel(run: KanbanRun, t: Translate, session?: ThreadSummary): string {
   if (run.status === "waiting" && session?.state === "interrupted") return t("Прервана");
   if (run.status === "waiting") return t("Ждёт ответа");
   if (run.status === "failed") return t("Ошибка");
-  if (run.status === "queued") return t("В очереди");
+  if (run.status === "queued")
+    return run.kind === "publish" ? t("В очереди на публикацию") : t("В очереди");
   if (run.status === "preparing") return t("Подготовка");
   if (run.status === "completed") return t("Завершено");
-  return run.kind === "review"
-    ? t("Проверяем…")
-    : run.kind === "integrate"
-      ? t("Объединяем…")
-      : t("В работе");
+  return run.kind === "publish" ? t("Публикуется…") : t("В работе");
 }
 
 function stageLabel(stage: KanbanStage, t: Translate): string {
@@ -83,9 +80,9 @@ function stageLabel(stage: KanbanStage, t: Translate): string {
   const defaults: Record<string, string> = {
     todo: "К выполнению",
     working: "В работе",
-    review: "Проверка",
-    ready: "К объединению",
-    done: "Готово",
+    waiting: "Ждёт ответа",
+    ready: "Готовые",
+    done: "Опубликовано",
   };
   return stage.role && !stage.renamed ? t(defaults[stage.role]) : stage.name;
 }
@@ -143,45 +140,30 @@ function runStatusClass(run: KanbanRun, session?: ThreadSummary): string | null 
   return null;
 }
 
-type DropRule = "reorder" | "move" | "execute" | "accept" | "rework" | "integrate";
+type DropRule = "reorder" | "move" | "execute" | "rework" | "publish";
 
-const cardActiveOn = (board: Board, cardId: string) =>
+const cardBusy = (board: Board, cardId: string) =>
   board.runs.some(
     (run) =>
-      run.kind !== "classify" && activeStatuses.has(run.status) && run.cardIds.includes(cardId),
+      run.kind !== "classify" && busyStatuses.has(run.status) && run.cardIds.includes(cardId),
   );
-
-/** Each application's newest execution is its agent's current session on the task. */
-function agentRuns(board: Board, cardId: string): KanbanRun[] {
-  const latest = new Map<KanbanProvider, KanbanRun>();
-  for (const run of board.runs)
-    if (run.kind === "execute" && run.cardIds.includes(cardId)) latest.set(run.provider, run);
-  return [...latest.values()];
-}
 
 const providerName = (provider: KanbanProvider) =>
   provider === "claude" ? "ClaudeNest" : "CodexNest";
 
-/** A drop runs the same action as the button for that step; agent-owned stages refuse drops. */
+/** A drop runs the same action as the button for that step; the app alone moves into Waiting. */
 function dropRule(board: Board, card: KanbanCard, target: KanbanStage): DropRule | null {
   if (card.stageId === target.id) return "reorder";
-  if (card.voice || cardActiveOn(board, card.id)) return null;
+  if (card.voice || cardBusy(board, card.id)) return null;
   const from = board.stages.find((stage) => stage.id === card.stageId)?.role ?? null;
-  const executed = board.runs.some(
-    (run) => run.kind === "execute" && run.cardIds.includes(card.id),
+  const started = board.runs.some(
+    (run) => run.kind !== "classify" && run.cardIds.includes(card.id),
   );
-  if (target.role === "working") {
-    if (from === "review" || from === "ready") return executed ? "rework" : null;
-    return card.classification === "ready" && !executed ? "execute" : null;
-  }
-  // With results from both agents the choice is made in the task panel.
-  if (target.role === "ready")
-    return from === "review" &&
-      agentRuns(board, card.id).filter((run) => run.status === "completed").length < 2
-      ? "accept"
-      : null;
-  if (target.role === "done") return from === "ready" ? "integrate" : null;
-  if (target.role === "review") return null;
+  if (target.role === "working")
+    return started ? "rework" : card.classification === "ready" ? "execute" : null;
+  if (target.role === "waiting") return null;
+  if (target.role === "ready") return from === "waiting" ? "move" : null;
+  if (target.role === "done") return from === "ready" ? "publish" : null;
   return "move";
 }
 
@@ -224,13 +206,11 @@ export function KanbanBoard({
   const [loading, setLoading] = useState(true);
   const [dialog, setDialog] = useState<"create" | "stage" | null>(null);
   const [cardId, setCardId] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [category, setCategory] = useState("");
   const [layout, setLayout] = useState<LaneLayout>(() => readLayout(projectId));
   const [mobileStageId, setMobileStageId] = useState<string | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [reworkId, setReworkId] = useState<string | null>(null);
-  const [resultChoice, setResultChoice] = useState<KanbanProvider | null>(null);
   const [editStageId, setEditStageId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "stage" | "card"; id: string } | null>(null);
   const [addingStage, setAddingStage] = useState(false);
@@ -284,7 +264,6 @@ export function KanbanBoard({
     setError(null);
     setLoading(true);
     setCardId(null);
-    setSelected(new Set());
     setCategory("");
     setBusy(false);
     setDialog(null);
@@ -366,20 +345,9 @@ export function KanbanBoard({
       if (alive.current && generation === requestGeneration.current) setBusy(false);
     }
   }
-  const action = (
-    value: KanbanAction,
-    ids: string[],
-    comment?: string,
-    provider?: KanbanProvider,
-  ) =>
+  const action = (value: KanbanAction, ids: string[]) =>
     mutate(() =>
-      api.kanbanAction(projectId, {
-        action: value,
-        cardIds: ids,
-        clientActionId: uuid(),
-        ...(comment !== undefined ? { comment } : {}),
-        ...(provider ? { provider } : {}),
-      }),
+      api.kanbanAction(projectId, { action: value, cardIds: ids, clientActionId: uuid() }),
     );
   const move = (id: string, stageId: string) =>
     mutate(() => api.updateKanbanCard(projectId, id, { stageId }));
@@ -430,8 +398,7 @@ export function KanbanBoard({
       await mutate(() =>
         api.updateKanbanCard(projectId, item.id, { stageId: stage.id, beforeCardId }),
       );
-    else if (rule === "execute" || rule === "accept" || rule === "integrate")
-      await action(rule, [item.id]);
+    else if (rule === "execute" || rule === "publish") await action(rule, [item.id]);
     else if (rule === "rework") {
       setArchiveOpen(false);
       setCardId(item.id);
@@ -484,24 +451,14 @@ export function KanbanBoard({
         .filter((run) => run.cardIds.includes(card.id) && run.kind !== "classify")
         .sort((a, b) => b.createdAt - a.createdAt)
     : [];
-  const cardActive = cardRuns.some((run) => activeStatuses.has(run.status));
+  const cardWorking = cardRuns.some((run) => busyStatuses.has(run.status));
   const role = board?.stages.find((stage) => stage.id === card?.stageId)?.role;
-  // Each application may run its own agent on the task, side by side in separate copies.
-  const agents = card ? agentRuns(board!, card.id) : [];
-  const ownAgent = agents.find((run) => run.provider === application.provider);
-  const execution =
-    (ownAgent && activeStatuses.has(ownAgent.status) ? ownAgent : undefined) ??
-    cardRuns.find((run) => run.kind === "execute");
-  const reviewBusy = cardRuns.some(
-    (run) => run.kind !== "execute" && activeStatuses.has(run.status),
+  // Continuations and publications are turns of the same session: list each session once.
+  const cardSessions = cardRuns.filter(
+    (run, index) =>
+      !run.threadId || cardRuns.findIndex((other) => other.threadId === run.threadId) === index,
   );
-  const results =
-    role === "review" || role === "ready" ? agents.filter((run) => run.status === "completed") : [];
-  const resultProvider = (
-    results.find((run) => run.provider === resultChoice) ??
-    results.find((run) => run.provider === application.provider) ??
-    results[0]
-  )?.provider;
+  const session = cardSessions[0];
   const editStage = board?.stages.find((stage) => stage.id === editStageId) ?? null;
   const archived = (board?.cards ?? [])
     .filter((item) => item.archivedAt !== undefined)
@@ -526,15 +483,10 @@ export function KanbanBoard({
     if (!item) return null;
     return {
       title: t("Удалить задачу навсегда?"),
-      text: t(
-        "«{{title}}» исчезнет вместе с рабочей копией. Ветки задачи останутся в репозиториях, а её сессии в этом приложении уйдут в архив сессий.",
-        { title: item.title },
-      ),
-      warning: item.repositories.some(
-        (repo) => repo.status !== "published" && repo.status !== "integrated",
-      )
-        ? t("В рабочей копии есть неопубликованные изменения, они будут потеряны.")
-        : null,
+      text: t("«{{title}}» исчезнет с доски, а её сессии в этом приложении уйдут в архив сессий.", {
+        title: item.title,
+      }),
+      warning: null,
       label: t("Удалить навсегда"),
       run: () => api.deleteKanbanCard(projectId, item.id),
     };
@@ -709,21 +661,6 @@ export function KanbanBoard({
         }}
       >
         <div className="kanban-card-top">
-          {stage.role === "ready" && (
-            <input
-              type="checkbox"
-              aria-label={t("Выбрать задачу {{title}}", { title: item.title })}
-              checked={selected.has(item.id)}
-              onChange={(event) =>
-                setSelected((current) => {
-                  const next = new Set(current);
-                  if (event.target.checked) next.add(item.id);
-                  else next.delete(item.id);
-                  return next;
-                })
-              }
-            />
-          )}
           <button
             className="kanban-card-open"
             aria-expanded={cardId === item.id}
@@ -768,7 +705,10 @@ export function KanbanBoard({
             )}
           </div>
         )}
-        {item.error && <p className="kanban-card-error">{item.error}</p>}
+        {item.question && <p className="kanban-card-question">{item.question}</p>}
+        {item.error && (
+          <p className="kanban-card-error">{localizeKnownServerText(language, item.error)}</p>
+        )}
         {statusClass && <span className={`kanban-card-status ${statusClass}`} aria-hidden="true" />}
       </article>
     );
@@ -792,9 +732,10 @@ export function KanbanBoard({
       ) : null;
     const index = board_.stages.indexOf(stage);
     const width = layout.widths[stage.id];
+    // Publishing everything that is ready runs one card after another on the server.
     const readyIds =
       stage.role === "ready"
-        ? cards.filter((item) => selected.has(item.id)).map((item) => item.id)
+        ? cards.filter((item) => !cardBusy(board_, item.id)).map((item) => item.id)
         : [];
     return (
       <section
@@ -879,18 +820,6 @@ export function KanbanBoard({
           <h2>{name}</h2>
           <span className="kanban-lane-count">{cards.length}</span>
           <span className="kanban-lane-head-actions">
-            {readyIds.length > 0 && (
-              <button
-                disabled={busy}
-                onClick={() =>
-                  void action("integrate", readyIds).then((ok) => {
-                    if (ok) setSelected(new Set());
-                  })
-                }
-              >
-                {t("Объединить ({{count}})", { count: readyIds.length })}
-              </button>
-            )}
             <details className="thread-action-menu kanban-lane-menu" data-dismiss-on-outside-click>
               <summary
                 className="icon-button"
@@ -952,6 +881,16 @@ export function KanbanBoard({
             </details>
           </span>
         </header>
+        {readyIds.length > 0 && !collapsed && (
+          <button
+            className="kanban-lane-action"
+            disabled={busy}
+            onClick={() => void action("publish", readyIds)}
+          >
+            <SendIcon />
+            {t("Опубликовать все")}
+          </button>
+        )}
         {stage.description && <p className="kanban-lane-description">{stage.description}</p>}
         <div className="kanban-lane-cards">
           {cards.map((item) => (
@@ -1334,8 +1273,23 @@ export function KanbanBoard({
                     <MoreIcon />
                   </summary>
                   <div className="action-menu-popover">
+                    {session && role !== "done" && card.archivedAt === undefined && (
+                      <button
+                        disabled={
+                          busy ||
+                          Boolean(card.voice) ||
+                          (cardWorking && session.provider !== application.provider)
+                        }
+                        onClick={(event) => {
+                          event.currentTarget.closest("details")?.removeAttribute("open");
+                          void action("restart", [card.id]);
+                        }}
+                      >
+                        <RestartIcon /> {t("Начать заново")}
+                      </button>
+                    )}
                     <button
-                      disabled={busy || cardActive}
+                      disabled={busy || cardWorking}
                       onClick={(event) => {
                         event.currentTarget.closest("details")?.removeAttribute("open");
                         void mutate(() =>
@@ -1345,7 +1299,7 @@ export function KanbanBoard({
                     >
                       <ArchiveIcon /> {t("В архив")}
                     </button>
-                    {cardActive && (
+                    {cardWorking && (
                       <p className="kanban-menu-note">
                         {t("Остановите агента в сессии, чтобы убрать задачу в архив")}
                       </p>
@@ -1440,30 +1394,16 @@ export function KanbanBoard({
                   </select>
                 </label>
               </div>
+              {card.question && <p className="kanban-card-question">{card.question}</p>}
               {card.error && (
                 <p className="kanban-card-error" role="alert">
-                  {card.error}
+                  {localizeKnownServerText(language, card.error)}
                 </p>
               )}
               {error && (
                 <p className="kanban-card-error" role="alert">
                   {error}
                 </p>
-              )}
-              {results.length > 1 && (
-                <div className="kanban-result-choice" role="group" aria-label={t("Результат")}>
-                  <span>{t("Результат")}</span>
-                  {results.map((run) => (
-                    <button
-                      key={run.provider}
-                      aria-pressed={run.provider === resultProvider}
-                      disabled={busy}
-                      onClick={() => setResultChoice(run.provider)}
-                    >
-                      {providerName(run.provider)}
-                    </button>
-                  ))}
-                </div>
               )}
               <div className="kanban-panel-actions">
                 {card.voice?.status === "failed" && (
@@ -1489,68 +1429,47 @@ export function KanbanBoard({
                 {card.classification === "ready" &&
                   !card.voice &&
                   card.archivedAt === undefined &&
-                  !ownAgent &&
-                  !reviewBusy &&
+                  !session &&
                   role !== "done" &&
                   role !== "ready" &&
-                  role !== "review" && (
+                  role !== "waiting" && (
                     <button
                       className="kanban-launch"
                       disabled={busy}
                       onClick={() => void action("execute", [card.id])}
                     >
                       <PlayIcon />
-                      {agents.length
-                        ? t("Запустить в {{name}}", { name: application.name })
-                        : t("Запустить агента")}
+                      {t("Запустить агента")}
                     </button>
                   )}
-                {role === "working" &&
-                  execution &&
+                {role === "ready" && session && (
+                  <button
+                    className="primary"
+                    disabled={busy || cardWorking}
+                    onClick={() => void action("publish", [card.id])}
+                  >
+                    <SendIcon />
+                    {t("Опубликовать")}
+                  </button>
+                )}
+                {session &&
+                  (role === "working" || role === "waiting" || role === "done") &&
                   sessionLink(
-                    execution,
+                    session,
                     "kanban-panel-link primary",
                     <>
                       <ArrowRightIcon />
-                      {t("Открыть сессию")}
+                      {role === "waiting" ? t("Ответить") : t("Открыть сессию")}
                     </>,
                   )}
-                {role === "review" && (
+                {session && role !== "working" && card.archivedAt === undefined && (
                   <button
-                    className="primary"
-                    disabled={busy || cardActive}
-                    onClick={() => void action("accept", [card.id], undefined, resultProvider)}
+                    disabled={busy || cardWorking || Boolean(card.voice)}
+                    aria-expanded={reworkId === card.id}
+                    onClick={() => setReworkId(reworkId === card.id ? null : card.id)}
                   >
-                    <CheckIcon />
-                    {t("Принять")}
+                    {t("На доработку")}
                   </button>
-                )}
-                {role === "ready" && (
-                  <button
-                    className="primary"
-                    disabled={busy || cardActive}
-                    onClick={() => void action("integrate", [card.id])}
-                  >
-                    <GitBranchIcon />
-                    {t("Объединить")}
-                  </button>
-                )}
-                {(role === "review" || role === "ready") && (
-                  <>
-                    <button
-                      disabled={busy || cardActive || Boolean(card.voice)}
-                      aria-expanded={reworkId === card.id}
-                      onClick={() => setReworkId(reworkId === card.id ? null : card.id)}
-                    >
-                      {t("На доработку")}
-                    </button>
-                    <button
-                      disabled={busy || cardActive}
-                      onClick={() => void action("review", [card.id], undefined, resultProvider)}
-                    >
-                      {t("Проверить агентом")}
-                    </button>
-                  </>
                 )}
               </div>
               {reworkId === card.id && !card.voice && (
@@ -1580,7 +1499,6 @@ export function KanbanBoard({
                           ...(value.text ? { comment: value.text } : {}),
                           ...(value.images.length ? { images: value.images } : {}),
                           ...(audio ? { audio } : {}),
-                          ...(resultProvider ? { provider: resultProvider } : {}),
                         }),
                       );
                       if (ok) setReworkId(null);
@@ -1589,11 +1507,11 @@ export function KanbanBoard({
                   />
                 </section>
               )}
-              {cardRuns.length > 0 && (
+              {cardSessions.length > 0 && (
                 <section className="kanban-panel-section">
                   <h3>{t("Сессии задачи")}</h3>
                   <ul className="kanban-session-list">
-                    {cardRuns.map((run) => {
+                    {cardSessions.map((run) => {
                       const content = (
                         <>
                           <span
@@ -1602,11 +1520,7 @@ export function KanbanBoard({
                           />
                           <span className="kanban-session-text">
                             <span>
-                              {run.kind === "review"
-                                ? t("Проверка")
-                                : run.kind === "integrate"
-                                  ? t("Объединение")
-                                  : t("Выполнение")}
+                              {run.kind === "publish" ? t("Публикация") : t("Выполнение")}
                             </span>
                             <small>
                               {providerName(run.provider)} · {runLabel(run, t, sessionOf(run))}
@@ -1614,9 +1528,6 @@ export function KanbanBoard({
                           </span>
                         </>
                       );
-                      // The agent's current session can start over with the original task.
-                      const restartable =
-                        agents.includes(run) && role !== "done" && card.archivedAt === undefined;
                       return (
                         <li key={run.id}>
                           <div className="kanban-session-row">
@@ -1628,33 +1539,11 @@ export function KanbanBoard({
                                 </small>
                               </div>
                             )}
-                            {restartable && (
-                              <button
-                                className="kanban-restart"
-                                aria-label={t("Перезапустить {{name}}", {
-                                  name: providerName(run.provider),
-                                })}
-                                disabled={busy || reviewBusy || Boolean(card.voice)}
-                                onClick={() =>
-                                  void action("restart", [card.id], undefined, run.provider)
-                                }
-                              >
-                                <RestartIcon />
-                                {t("Перезапустить")}
-                              </button>
-                            )}
                           </div>
-                          {run.error && <p className="kanban-card-error">{run.error}</p>}
                         </li>
                       );
                     })}
                   </ul>
-                </section>
-              )}
-              {card.repositories.length > 0 && (
-                <section className="kanban-panel-section">
-                  <h3>{t("Репозитории")}</h3>
-                  <RepositoryStatus card={card} />
                 </section>
               )}
             </div>
@@ -1691,7 +1580,7 @@ export function KanbanBoard({
               )}
               {archived.length === 0 ? (
                 <p className="kanban-muted">
-                  {t("В архиве пока пусто. Готовые задачи попадают сюда через неделю.")}
+                  {t("В архиве пока пусто. Опубликованные задачи попадают сюда через неделю.")}
                 </p>
               ) : (
                 <ul className="kanban-archive-list">
@@ -1841,60 +1730,6 @@ export function KanbanBoard({
   );
 }
 
-function RepositoryStatus({ card }: { card: KanbanCard }) {
-  const { t } = useI18n();
-  if (!card.repositories?.length) return null;
-  const published = card.repositories.filter((repo) => repo.status === "published").length;
-  const status = (value: string) =>
-    value === "published"
-      ? t("Отправлено")
-      : value === "integrated"
-        ? t("Объединено локально")
-        : value === "integrating"
-          ? t("Объединяется")
-          : value === "accepted"
-            ? t("К объединению")
-            : value === "failed"
-              ? t("Ошибка")
-              : t("В работе");
-  return (
-    <>
-      {card.repositories.length > 1 && published > 0 && published < card.repositories.length && (
-        <p className="kanban-muted">
-          {t("Отправлено {{done}} из {{total}}", {
-            done: published,
-            total: card.repositories.length,
-          })}
-        </p>
-      )}
-      <table className="kanban-repositories">
-        <thead>
-          <tr>
-            <th scope="col">{t("Репозиторий")}</th>
-            <th scope="col">{t("Ветка")}</th>
-            <th scope="col">{t("Состояние")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {card.repositories.map((repo) => (
-            <tr key={repo.id}>
-              <td title={repo.path}>{repo.path.split(/[\\/]/).filter(Boolean).at(-1)}</td>
-              <td>
-                <code>{repo.targetBranch}</code>
-              </td>
-              <td className={repo.status === "failed" ? "kanban-card-error" : undefined}>
-                {status(repo.status)}
-                {repo.error && <span className="kanban-repository-error">{repo.error}</span>}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </>
-  );
-}
-
-/** Text that turns into a field on click; Enter or Ctrl/Cmd+Enter saves, Escape cancels. */
 function EditableText({
   value,
   label,

@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { ServerFrame } from "@codexnest/protocol";
-import { KanbanService, registerKanbanRoutes } from "@nest-apps/kanban";
+import { KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
 import type { UiService } from "./ui-service";
 import type { ClaudeVoiceService } from "./voice";
 
@@ -57,6 +57,11 @@ export async function registerClaudeKanban(
           if (data.threads[id]) data.threads[id]!.archived = true;
         });
         ui.publish({ type: "thread.upserted", thread: ui.summary(id) });
+      },
+      async awaitsAnswer(id) {
+        if (!ui.checkReply || !ui.store.data.threads[id]) return null;
+        const reply = lastReply((await ui.detail(id)).turns);
+        return reply ? ui.checkReply(reply) : null;
       },
     },
   });

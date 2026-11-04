@@ -2,8 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { KanbanBoard, KanbanProvider, KanbanStageRole } from "@codexnest/protocol";
-import type { IntegrationWorkspace, RepositoryResult, TaskWorkspace } from "./workspace.js";
+import type { KanbanBoard, KanbanStageRole } from "@codexnest/protocol";
 
 /** An image saved next to the board; file is relative to the board's image directory. */
 export type StoredImage = { name: string; mediaType: string; size: number; file: string };
@@ -14,15 +13,9 @@ export type VoiceRuntime = {
   text: string;
   actionId?: string;
   images?: StoredImage[];
-  /** The agent a spoken rework comment continues. */
-  provider?: KanbanProvider;
 };
 export type CardRuntime = {
   voice?: VoiceRuntime;
-  workspace?: TaskWorkspace;
-  executionRunId?: string;
-  results?: RepositoryResult[];
-  acceptedResults?: RepositoryResult[];
 };
 export type RunRuntime = {
   token: string;
@@ -30,15 +23,11 @@ export type RunRuntime = {
   resumeThreadId?: string;
   comment?: string;
   images?: StoredImage[];
-  workspace?: TaskWorkspace;
-  /** An execution's submitted result; each agent's latest one is a candidate for acceptance. */
-  results?: RepositoryResult[];
   /** A restart stops the session it replaces before launching. */
   interruptThreadId?: string;
-  integration?: IntegrationWorkspace;
-  integrations?: IntegrationWorkspace[];
+  /** The session has run this turn; until then its earlier finished state is not this run's. */
+  started?: boolean;
   report?: unknown;
-  preparingIntegration?: boolean;
 };
 export type KanbanDocument = {
   version: 1;
@@ -84,9 +73,9 @@ function initial(projectPath: string, id: string): KanbanDocument {
   const stages: { name: string; role: KanbanStageRole }[] = [
     { name: "To do", role: "todo" },
     { name: "In progress", role: "working" },
-    { name: "Review", role: "review" },
-    { name: "Ready for integration", role: "ready" },
-    { name: "Done", role: "done" },
+    { name: "Waiting for answer", role: "waiting" },
+    { name: "Ready", role: "ready" },
+    { name: "Published", role: "done" },
   ];
   return {
     version: 1,
@@ -106,6 +95,23 @@ function initial(projectPath: string, id: string): KanbanDocument {
     cards: {},
     runs: {},
   };
+}
+
+const ROLES: readonly KanbanStageRole[] = ["todo", "working", "waiting", "ready", "done"];
+/**
+ * Boards from before plain-session tasks had Review between In progress and Ready: it becomes
+ * Waiting for answer and its cards become ready. Saved with the next write.
+ */
+function upgrade(data: KanbanDocument): void {
+  const stages = data.board?.stages;
+  if (!Array.isArray(stages) || stages.some((stage) => stage.role === "waiting")) return;
+  const review = stages.find((stage) => (stage.role as string) === "review");
+  const ready = stages.find((stage) => stage.role === "ready");
+  if (!review || !ready) return;
+  for (const card of data.board.cards ?? [])
+    if (card.stageId === review.id) card.stageId = ready.id;
+  Object.assign(review, { role: "waiting", name: "Waiting for answer", description: "" });
+  delete review.renamed;
 }
 
 /** Both providers use the same directory; locks serialize writes across processes. */
@@ -208,6 +214,7 @@ export class KanbanStore {
   async readById(id: string): Promise<KanbanDocument | null> {
     try {
       const data = JSON.parse(await readFile(this.boardPath(id), "utf8")) as KanbanDocument;
+      upgrade(data);
       if (
         !data ||
         data.version !== 1 ||
@@ -221,9 +228,7 @@ export class KanbanStore {
         ![data.creations, data.actions, data.cards, data.runs].every(
           (value) => value && typeof value === "object" && !Array.isArray(value),
         ) ||
-        !["todo", "working", "review", "ready", "done"].every((role) =>
-          data.board.stages.some((stage) => stage.role === role),
-        )
+        !ROLES.every((role) => data.board.stages.some((stage) => stage.role === role))
       ) {
         throw new KanbanError("invalid_state", "Unsupported or invalid kanban state", 500);
       }

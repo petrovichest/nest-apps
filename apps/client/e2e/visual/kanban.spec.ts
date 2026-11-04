@@ -20,9 +20,9 @@ function seedBoard(): KanbanBoard {
     stages: [
       { id: "todo", role: "todo", name: "К выполнению", description: "" },
       { id: "working", role: "working", name: "В работе", description: "" },
-      { id: "review", role: "review", name: "Проверка", description: "" },
-      { id: "ready", role: "ready", name: "К объединению", description: "" },
-      { id: "done", role: "done", name: "Готово", description: "" },
+      { id: "waiting", role: "waiting", name: "Ждёт ответа", description: "" },
+      { id: "ready", role: "ready", name: "Готовые", description: "" },
+      { id: "done", role: "done", name: "Опубликовано", description: "" },
     ],
     categories: [
       { id: "front", name: "Фронтенд" },
@@ -50,43 +50,25 @@ function seedBoard(): KanbanBoard {
             ? "Соединение должно восстанавливаться после возвращения из фонового режима."
             : title,
       categoryId: i === 1 ? "back" : "front",
-      stageId: ["todo", "working", "review", "ready", "done"][i],
+      stageId: ["todo", "working", "waiting", "ready", "done"][i],
       classification: "ready",
-      scope: "task",
-      repositories:
-        i === 0
-          ? []
-          : [
-              {
-                id: "repo",
-                path: "/work/codex-nest",
-                branch: "kanban/task",
-                targetBranch: "feature/project-board",
-                baseSha: "abc",
-                commit: null,
-                status: i === 4 ? "published" : "working",
-                error: null,
-              },
-            ],
+      ...(i === 2 ? { question: "Какую ширину колонки категорий оставить на телефоне?" } : {}),
       error: null,
       createdAt: now,
       updatedAt: now,
     })),
-    runs: [
-      {
-        id: "run",
-        kind: "execute",
-        cardIds: ["card-1"],
-        provider: "codex",
-        threadId: "session-main",
-        sessionUrl: "/threads/session-main",
-        status: "running",
-        workspacePath: "/tmp/task",
-        error: null,
-        createdAt: now,
-        updatedAt: now,
-      },
-    ],
+    runs: (["running", "waiting", "completed", "completed"] as const).map((status, index) => ({
+      id: `run-${index + 1}`,
+      kind: "execute",
+      cardIds: [`card-${index + 1}`],
+      provider: "codex",
+      threadId: index === 0 ? "session-main" : `session-${index + 1}`,
+      sessionUrl: index === 0 ? "/threads/session-main" : `/threads/session-${index + 1}`,
+      status,
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+    })),
   };
 }
 
@@ -218,15 +200,35 @@ for (const width of [390, 1440]) {
         );
       else
         await expect(
-          page.getByRole("button", { name: "Развернуть стадию «Готово», задач: 1" }),
+          page.getByRole("button", { name: "Развернуть стадию «Опубликовано», задач: 1" }),
         ).toBeVisible();
       await page.screenshot({ path: info.outputPath(`kanban-${width}-${theme}.png`) });
+      if (width >= 821) {
+        // A waiting task shows what the agent asks; answering opens its session.
+        await page
+          .getByRole("button", { name: "Проверить мобильную навигацию", exact: true })
+          .click();
+        const waiting = page.getByRole("complementary", { name: "Проверить мобильную навигацию" });
+        await expect(
+          waiting.getByText("Какую ширину колонки категорий оставить на телефоне?"),
+        ).toBeVisible();
+        await expect(waiting.getByRole("link", { name: "Ответить" })).toHaveAttribute(
+          "href",
+          "/threads/session-2",
+        );
+        await expect(page.getByRole("button", { name: "Опубликовать все" })).toBeVisible();
+        await page.screenshot({ path: info.outputPath(`kanban-waiting-${width}-${theme}.png`) });
+        await waiting.getByRole("button", { name: "Закрыть", exact: true }).click();
+        await expect(waiting).toBeHidden();
+      }
       await page.getByRole("button", { name: "Сохранить настройки фильтров", exact: true }).click();
       const panel = page.getByRole("complementary", { name: "Сохранить настройки фильтров" });
       await expect(panel).toBeVisible();
       await expect(panel.getByRole("button", { name: "Запустить агента" })).toBeVisible();
-      await panel.getByRole("combobox", { name: "Стадия", exact: true }).selectOption("review");
-      await expect(panel.getByRole("button", { name: "Принять", exact: true })).toBeVisible();
+      await panel.getByRole("combobox", { name: "Стадия", exact: true }).selectOption("ready");
+      // A task that never ran has no session to publish or rework.
+      await expect(panel.getByRole("button", { name: "Запустить агента" })).toBeHidden();
+      await expect(panel.getByRole("button", { name: "Опубликовать", exact: true })).toBeHidden();
       await page.screenshot({ path: info.outputPath(`kanban-card-${width}-${theme}.png`) });
       await panel.getByRole("button", { name: "Закрыть", exact: true }).click();
       await expect(panel).toBeHidden();

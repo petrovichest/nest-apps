@@ -1,99 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { KanbanRun } from "@codexnest/protocol";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { KanbanBoard, KanbanRun } from "@codexnest/protocol";
+import { PUBLISH_PROMPT, TASK_SUFFIX } from "./agent.js";
 import { atomicJson, type KanbanDocument } from "./store.js";
 import { KanbanService, type KanbanLaunch } from "./service.js";
-
-const fake = vi.hoisted(() => ({
-  candidates: new Map<string, unknown[]>(),
-  groups: [] as unknown[][],
-}));
-vi.mock("./workspace.js", () => ({
-  createTaskWorkspace: vi.fn(
-    async (input: { projectPath: string; workspaceRoot: string; taskId: string }) => ({
-      id: input.taskId,
-      projectPath: input.projectPath,
-      rootPath: join(input.workspaceRoot, input.taskId),
-      repositories: [],
-    }),
-  ),
-  prepareRepository: vi.fn(
-    async (
-      workspace: { id: string; repositories: unknown[] },
-      input: { repositoryPath: string; targetBranch: string },
-    ) => {
-      const repository = {
-        id: `${workspace.id}-${input.repositoryPath}-${input.targetBranch}`,
-        sourcePath: input.repositoryPath,
-        relativePath: "repo",
-        gitCommonDir: `${input.repositoryPath}/.git`,
-        workspacePath: `/isolated/${workspace.id}`,
-        branch: `task/${workspace.id}`,
-        targetBranch: input.targetBranch,
-        baseSha: "a".repeat(40),
-        targetSha: "a".repeat(40),
-        remote: null,
-      };
-      workspace.repositories.push(repository);
-      fake.candidates.set(
-        workspace.id,
-        workspace.repositories.map((repository) => ({
-          repository,
-          sha: "b".repeat(40),
-          changed: true,
-        })),
-      );
-      return repository;
-    },
-  ),
-  validateTaskWorkspace: vi.fn(
-    async (workspace: { id: string }) => fake.candidates.get(workspace.id) ?? [],
-  ),
-  prepareIntegrationWorkspace: vi.fn(
-    async (input: {
-      integrationId: string;
-      projectPath: string;
-      results: { repository: Record<string, unknown>; sha: string }[];
-    }) => {
-      fake.groups.push(input.results);
-      return {
-        id: input.integrationId,
-        projectPath: input.projectPath,
-        rootPath: `/integrations/${input.integrationId}`,
-        repositories: input.results.map((item) => ({
-          ...item.repository,
-          id: `integration-${item.repository.id}`,
-          inputShas: [item.sha],
-          expectedTargetSha: "a".repeat(40),
-          mergeStatus: "merged",
-        })),
-      };
-    },
-  ),
-  removeTaskWorkspace: vi.fn(async () => {}),
-  validateIntegrationWorkspace: vi.fn(async (workspace: { repositories: { id: string }[] }) =>
-    workspace.repositories.map((repository) => ({ repository, sha: "c".repeat(40) })),
-  ),
-  publishIntegrationRepository: vi.fn(async (repository: { id: string; targetBranch: string }) => ({
-    repositoryId: repository.id,
-    sha: "c".repeat(40),
-    targetBranch: repository.targetBranch,
-    remote: null,
-    pushed: false,
-    localOnly: true,
-  })),
-}));
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-});
-beforeEach(() => {
-  fake.candidates.clear();
-  fake.groups.length = 0;
 });
 async function until<T>(read: () => Promise<T>, predicate: (value: T) => boolean): Promise<T> {
   const deadline = Date.now() + 4000;
@@ -119,6 +36,8 @@ async function fixture(
   const archived = { codex: [] as string[], claude: [] as string[] };
   const interrupted = { codex: [] as string[], claude: [] as string[] };
   const prompts = new Map<string, string>();
+  // The fast check of a finished turn: what the agent asks, by session.
+  const questions = new Map<string, string | null>();
   const services = {} as Record<"codex" | "claude", KanbanService>;
   for (const provider of ["codex", "claude"] as const) {
     const service = new KanbanService({
@@ -147,6 +66,7 @@ async function fixture(
         interrupt: async (threadId) => {
           interrupted[provider].push(threadId);
         },
+        awaitsAnswer: async (threadId) => questions.get(threadId) ?? null,
       },
     });
     services[provider] = service;
@@ -193,7 +113,15 @@ async function fixture(
       (result) => result !== null,
     );
   }
-  async function card(description: string, scope = "task") {
+  /** The session runs one turn and finishes it; question is what the fast check reads. */
+  async function finish(run: KanbanRun, question: string | null = null) {
+    const service = services[run.provider];
+    questions.set(run.threadId!, question);
+    await service.notifyThread(run.threadId!, "running");
+    await service.notifyThread(run.threadId!, "completed");
+    return service.read(project);
+  }
+  async function card(description: string) {
     const board = await services.codex.createCard(project, {
       description,
       clientCreationId: randomUUID(),
@@ -201,9 +129,9 @@ async function fixture(
     // New cards are placed at the top of To do.
     const value = board.cards[0]!;
     const run = await running("classify", value.id);
-    expect(
-      (await command(run, "report", { title: description, category: "General", scope }))?.ok,
-    ).toBe(true);
+    expect((await command(run, "report", { title: description, category: "General" }))?.ok).toBe(
+      true,
+    );
     return value.id;
   }
   return {
@@ -217,15 +145,22 @@ async function fixture(
     archived,
     interrupted,
     prompts,
+    questions,
     running,
     command,
+    finish,
     card,
   };
 }
 
+const stage = (board: KanbanBoard, id: string) =>
+  board.stages.find((item) => item.id === board.cards.find((card) => card.id === id)?.stageId)
+    ?.role;
+const runOf = (board: KanbanBoard, id: string) => board.runs.find((run) => run.id === id);
+
 describe("shared provider board service", () => {
   it.each(["codex", "claude"] as const)(
-    "delivers readable assignments and fresh workflow files for %s launch and rework",
+    "starts a %s task as an ordinary session in the project with only its text",
     async (provider) => {
       const f = await fixture();
       const id = await f.card("Attach an image when creating a task");
@@ -236,27 +171,33 @@ describe("shared provider board service", () => {
         clientActionId: randomUUID(),
       });
       const executor = await f.running("execute", id, service);
-      const instructionsPath = (run: KanbanRun) =>
-        join(service.store.directory, "capabilities", `${run.id}.md`);
-      expect(f.prompts.get(executor.id)).toContain("Attach an image when creating a task");
-      expect(f.prompts.get(executor.id)).toContain(JSON.stringify(instructionsPath(executor)));
-      expect(await readFile(instructionsPath(executor), "utf8")).toContain("prepare-repository");
-      expect((await f.command(executor, "report", { outcome: "completed" }))?.ok).toBe(true);
+      const launch = f.inputs[provider].find((input) => input.id === executor.id)!;
+      expect(launch).toMatchObject({
+        cwd: f.project,
+        projectPath: f.project,
+        kind: "execute",
+        title: "Attach an image when creating a task",
+      });
+      expect(launch.prompt).toBe(`Attach an image when creating a task\n\n${TASK_SUFFIX}`);
+      // Only classification gets a board capability; the task knows nothing about the board.
+      const capabilities = await readdir(join(service.store.directory, "capabilities"));
+      expect(capabilities.some((name) => name.startsWith(executor.id))).toBe(false);
+      let board = await f.finish(executor);
+      expect(stage(board, id)).toBe("ready");
+      expect(runOf(board, executor.id)?.status).toBe("completed");
 
-      await service.action(f.project, {
+      board = await service.action(f.project, {
         action: "rework",
         cardIds: [id],
         comment: "Also support clipboard images",
         clientActionId: randomUUID(),
       });
+      expect(stage(board, id)).toBe("working");
       const rework = await f.running("execute", id, service);
       expect(rework.id).not.toBe(executor.id);
       expect(rework.threadId).toBe(executor.threadId);
-      expect(f.prompts.get(rework.id)).toContain("Also support clipboard images");
-      expect(f.prompts.get(rework.id)).toContain(JSON.stringify(instructionsPath(rework)));
-      expect(await readFile(instructionsPath(rework), "utf8")).toContain(
-        "Operator instruction: Also support clipboard images",
-      );
+      expect(f.prompts.get(rework.id)).toBe("Also support clipboard images");
+      expect(f.launches[provider]).not.toContain(rework.id);
     },
   );
   it("creates exactly one card for retried creation and agent classification is shared", async () => {
@@ -274,7 +215,6 @@ describe("shared provider board service", () => {
         await f.command(classifier, "report", {
           title: "Layout",
           category: "Interface",
-          scope: "task",
         })
       )?.ok,
     ).toBe(true);
@@ -284,7 +224,7 @@ describe("shared provider board service", () => {
     });
   });
   it.each(["codex", "claude"] as const)(
-    "persists images outside board JSON and delivers them on %s launch and rework",
+    "persists images outside board JSON and delivers them once, when %s starts the session",
     async (provider) => {
       const f = await fixture();
       const service = f.services[provider];
@@ -313,7 +253,7 @@ describe("shared provider board service", () => {
       expect(f.inputs[provider].find((input) => input.id === classify.id)?.images).toEqual([
         image.url,
       ]);
-      await f.command(classify, "report", { title: "Screenshot", category: "UI", scope: "task" });
+      await f.command(classify, "report", { title: "Screenshot", category: "UI" });
       await service.action(f.project, {
         action: "execute",
         cardIds: [id],
@@ -323,7 +263,7 @@ describe("shared provider board service", () => {
       expect(f.inputs[provider].find((input) => input.id === execute.id)?.images).toEqual([
         image.url,
       ]);
-      await f.command(execute, "report", { outcome: "completed" });
+      await f.finish(execute);
       await sibling.action(f.project, {
         action: "rework",
         cardIds: [id],
@@ -334,7 +274,8 @@ describe("shared provider board service", () => {
         async () => f.resumedInputs,
         (inputs) => inputs.length === 1,
       );
-      expect(f.resumedInputs[0]?.images).toEqual([image.url]);
+      // The session already has the task's pictures; a rework sends only its own.
+      expect(f.resumedInputs[0]?.images).toBeUndefined();
     },
   );
   it("rejects invalid images without creating cards and scopes image reads to the project", async () => {
@@ -363,208 +304,279 @@ describe("shared provider board service", () => {
     await mkdir(other);
     await expect(service.readImage(other, id)).rejects.toMatchObject({ status: 404 });
   });
-  it("runs one agent per application side by side and asks which result to accept", async () => {
+  it("moves the card by its session: working, waiting for an answer, ready", async () => {
     const f = await fixture();
-    const id = await f.card("Implement A");
-    const start = (provider: "codex" | "claude", extra: Record<string, unknown> = {}) =>
-      f.services[provider].action(f.project, {
-        action: "execute",
-        cardIds: [id],
-        clientActionId: randomUUID(),
-        ...extra,
-      });
-    await start("codex");
-    const codex = await f.running("execute", id);
-    await expect(start("codex")).rejects.toThrow("active session");
-    await start("claude");
-    const claude = await until(
-      () => f.services.claude.read(f.project),
-      (board) =>
-        board.runs.some(
-          (run) => run.provider === "claude" && run.kind === "execute" && run.status === "running",
-        ),
-    ).then((board) => board.runs.find((run) => run.provider === "claude")!);
-    // Each agent works in its own clean copy and branch.
-    expect(codex.workspacePath).not.toBe(claude.workspacePath);
-    for (const run of [codex, claude])
-      expect(
-        (
-          await f.command(run, "prepare-repository", {
-            repositoryPath: f.project,
-            targetBranch: "main",
-          })
-        )?.ok,
-      ).toBe(true);
-    // The first result waits for the other agent instead of publishing on its own.
-    expect((await f.command(codex, "report", { outcome: "completed" }))?.result?.next).toBe(
-      "review",
-    );
-    expect((await f.services.codex.read(f.project)).cards[0]?.stageId).toBe("working");
-    await expect(start("codex")).rejects.toThrow("use rework or restart");
-    expect((await f.command(claude, "report", { outcome: "completed" }))?.result?.next).toBe(
-      "review",
-    );
-    expect((await f.services.codex.read(f.project)).cards[0]?.stageId).toBe("review");
-    await expect(
-      f.services.codex.action(f.project, {
-        action: "accept",
-        cardIds: [id],
-        clientActionId: randomUUID(),
-      }),
-    ).rejects.toThrow("choose one");
-    const board = await f.services.codex.action(f.project, {
-      action: "accept",
-      cardIds: [id],
-      provider: "claude",
-      clientActionId: randomUUID(),
-    });
-    const accepted = board.cards.find((card) => card.id === id)!;
-    expect(accepted.stageId).toBe("ready");
-    expect(accepted.repositories.map((repository) => repository.branch)).toEqual([
-      `task/${id}-${claude.id.slice(0, 8)}`,
-    ]);
-  });
-  it("restarts an agent from a clean copy, stops its session and routes rework to it", async () => {
-    const f = await fixture();
-    const id = await f.card("Implement A");
-    await f.services.codex.action(f.project, {
-      action: "execute",
-      cardIds: [id],
-      clientActionId: randomUUID(),
-    });
-    const first = await f.running("execute", id);
-    expect(
-      (
-        await f.command(first, "prepare-repository", {
-          repositoryPath: f.project,
-          targetBranch: "main",
-        })
-      )?.ok,
-    ).toBe(true);
-    // A restart requested from the other application reaches the agent that owns the task.
-    await f.services.claude.action(f.project, {
-      action: "restart",
-      cardIds: [id],
-      clientActionId: randomUUID(),
-    });
-    const second = await until(
-      () => f.services.codex.read(f.project),
-      (board) => board.runs.some((run) => run.status === "running" && run.id !== first.id),
-    ).then((board) => board.runs.find((run) => run.status === "running")!);
-    expect(second.provider).toBe("codex");
-    expect(second.threadId).not.toBe(first.threadId);
-    expect(second.workspacePath).not.toBe(first.workspacePath);
-    expect(f.interrupted.codex).toEqual([first.threadId]);
-    expect(f.prompts.get(second.id)).toContain("Implement A");
-    const board = await f.services.codex.read(f.project);
-    expect(board.runs.find((run) => run.id === first.id)?.status).toBe("completed");
-    // The old session can no longer report for the task.
-    expect((await f.command(first, "report", { outcome: "completed" }))?.error).toContain(
-      "already finished",
-    );
-    expect((await f.command(second, "report", { outcome: "completed" }))?.ok).toBe(true);
-    await f.services.claude.action(f.project, {
-      action: "rework",
-      cardIds: [id],
-      comment: "Improve it",
-      clientActionId: randomUUID(),
-    });
-    await until(
-      async () => f.resumes.codex,
-      (values) => values.length === 1,
-    );
-    expect(f.resumes.codex[0]).toBe(second.threadId);
-    expect(f.resumes.claude).toEqual([]);
-  });
-  it("enforces worker card scope and rejects Done without publication evidence", async () => {
-    const f = await fixture();
-    const first = await f.card("Implement A"),
-      second = await f.card("Implement B");
-    await f.services.codex.action(f.project, {
-      action: "execute",
-      cardIds: [first],
-      clientActionId: randomUUID(),
-    });
-    const executor = await f.running("execute", first);
-    await f.services.codex.store.update(f.project, (data) => {
-      data.board.cards
-        .find((card) => card.id === second)!
-        .repositories.push({
-          id: "context-repository",
-          path: "/original/repo",
-          targetBranch: "experiment",
-          branch: "task/other",
-          baseSha: "a".repeat(40),
-          commit: null,
-          status: "working",
-          error: null,
-        });
-    });
-    const context = await f.command(executor, "read", {});
-    const other = (await f.services.codex.read(f.project)).cards.find(
-      (card) => card.id === second,
-    )!;
-    expect(context?.result?.readOnlyContext).toEqual([
-      {
-        id: second,
-        title: "Implement B",
-        stageId: other.stageId,
-        categoryId: other.categoryId,
-        repositories: [{ path: "/original/repo", targetBranch: "experiment", status: "working" }],
-      },
-    ]);
-    expect(
-      (context?.result?.board as { cards: { id: string }[] }).cards.map((card) => card.id),
-    ).toEqual([first]);
-    expect(
-      (
-        await f.command(executor, "update-card", {
-          cardId: second,
-          patch: { title: "Unauthorized" },
-        })
-      )?.ok,
-    ).toBe(false);
-    expect((await f.command(executor, "move", { cardId: first, stageId: "done" }))?.ok).toBe(false);
-    expect(
-      (await f.services.codex.read(f.project)).cards.find((card) => card.id === second)?.title,
-    ).toBe("Implement B");
-  });
-  it("lets an explicitly assigned board audit close a no-output card", async () => {
-    const f = await fixture();
-    const target = await f.card("Already done outside this board"),
-      audit = await f.card("Audit and close fulfilled cards", "board");
-    await f.services.codex.action(f.project, {
-      action: "execute",
-      cardIds: [audit],
-      clientActionId: randomUUID(),
-    });
-    const executor = await f.running("execute", audit);
-    expect((await f.command(executor, "move", { cardId: target, stageId: "done" }))?.ok).toBe(true);
-    expect(
-      (await f.services.codex.read(f.project)).cards.find((card) => card.id === target)?.stageId,
-    ).toBe("done");
-  });
-  it("keeps native turn completion waiting and returns to working on operator continuation", async () => {
-    const f = await fixture();
-    const id = await f.card("Implement A");
+    const id = await f.card("Pick a database");
     await f.services.codex.action(f.project, {
       action: "execute",
       cardIds: [id],
       clientActionId: randomUUID(),
     });
     const run = await f.running("execute", id);
-    await f.services.codex.notifyThread(run.threadId!, "completed");
-    let board = await f.services.codex.read(f.project);
-    expect(board.runs.find((item) => item.id === run.id)?.status).toBe("waiting");
-    expect(board.cards[0]?.stageId).not.toBe("done");
-    const custom = await f.services.codex.createStage(f.project, {
-      name: "Operator",
-      description: "Needs intervention",
+    const notify = async (state: string) => {
+      await f.services.codex.notifyThread(run.threadId!, state);
+      return f.services.codex.read(f.project);
+    };
+    let board = await notify("needsAttention");
+    expect(stage(board, id)).toBe("waiting");
+    expect(runOf(board, run.id)?.status).toBe("waiting");
+    board = await notify("running");
+    expect(stage(board, id)).toBe("working");
+    // A question asked in plain text is recognised by the fast check of the last reply.
+    f.questions.set(run.threadId!, "Which database should I use?");
+    board = await notify("completed");
+    expect(stage(board, id)).toBe("waiting");
+    expect(board.cards[0]).toMatchObject({ question: "Which database should I use?", error: null });
+    // The operator answers in the session itself.
+    board = await notify("running");
+    expect(stage(board, id)).toBe("working");
+    expect(board.cards[0]!.question).toBeNull();
+    f.questions.set(run.threadId!, null);
+    board = await notify("completed");
+    expect(stage(board, id)).toBe("ready");
+    expect(runOf(board, run.id)?.status).toBe("completed");
+
+    await f.services.claude.action(f.project, {
+      action: "rework",
+      cardIds: [id],
+      comment: "Use SQLite",
+      clientActionId: randomUUID(),
     });
-    await f.services.codex.updateCard(f.project, id, { stageId: custom.stages.at(-1)!.id });
-    await f.services.codex.notifyThread(run.threadId!, "running");
+    const rework = await f.running("execute", id);
+    // The rework continues the Codex session, so CodexNest sends it.
+    expect(rework.provider).toBe("codex");
+    await f.services.codex.notifyThread(rework.threadId!, "running");
+    await f.services.codex.notifyThread(rework.threadId!, "interrupted");
     board = await f.services.codex.read(f.project);
-    expect(board.cards[0]?.stageId).toBe("working");
+    expect(stage(board, id)).toBe("waiting");
+    expect(board.cards[0]!.error).toContain("stopped");
+  });
+  it("does not take a continued session's previous outcome for the new turn", async () => {
+    const f = await fixture();
+    const id = await f.card("Continue");
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const run = await f.running("execute", id);
+    await f.finish(run);
+    await f.services.codex.action(f.project, {
+      action: "rework",
+      cardIds: [id],
+      comment: "More",
+      clientActionId: randomUUID(),
+    });
+    const rework = await f.running("execute", id);
+    // Until the new turn starts the session still reports the previous one.
+    await f.services.codex.notifyThread(rework.threadId!, "completed");
+    let board = await f.services.codex.read(f.project);
+    expect(stage(board, id)).toBe("working");
+    expect(runOf(board, rework.id)?.status).toBe("running");
+    board = await f.finish(rework);
+    expect(stage(board, id)).toBe("ready");
+  });
+  it("keeps the card working when a new turn starts while the last reply is checked", async () => {
+    const f = await fixture();
+    const id = await f.card("Race");
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const run = await f.running("execute", id);
+    let release!: (question: string | null) => void;
+    f.questions.clear();
+    const service = f.services.codex as unknown as {
+      options: { adapter: { awaitsAnswer: (id: string) => Promise<string | null> } };
+    };
+    service.options.adapter.awaitsAnswer = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    await f.services.codex.notifyThread(run.threadId!, "running");
+    const checking = f.services.codex.notifyThread(run.threadId!, "completed");
+    await until(
+      async () => release,
+      (value) => Boolean(value),
+    );
+    await f.services.codex.notifyThread(run.threadId!, "running");
+    release("Old question");
+    await checking;
+    const board = await f.services.codex.read(f.project);
+    expect(stage(board, id)).toBe("working");
+    expect(runOf(board, run.id)?.status).toBe("running");
+    expect(board.cards[0]!.question).toBeNull();
+  });
+  it("waits for the operator when the last reply cannot be checked", async () => {
+    const f = await fixture();
+    const errors: unknown[] = [];
+    await f.services.codex.close();
+    const service = new KanbanService({
+      provider: "codex",
+      dataDir: f.services.codex.store.directory,
+      onError: (error) => errors.push(error),
+      adapter: {
+        launch: async (job) => ({ threadId: job.id }),
+        resume: async () => {},
+        awaitsAnswer: async () => {
+          throw new Error("Model unavailable");
+        },
+      },
+    });
+    cleanups.push(() => service.close());
+    await service.initialize();
+    const id = await f.card("Check fails");
+    await service.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const run = await f.running("execute", id, service);
+    await service.notifyThread(run.threadId!, "completed");
+    const board = await service.read(f.project);
+    expect(stage(board, id)).toBe("waiting");
+    expect(board.cards[0]!.error).toContain("open the session");
+    expect(errors).toHaveLength(1);
+  });
+  it("publishes in each task's own session, one card at a time", async () => {
+    const f = await fixture();
+    const ids: string[] = [];
+    const sessions = new Map<string, KanbanRun>();
+    for (const [index, provider] of (["codex", "claude"] as const).entries()) {
+      const id = await f.card(`Task ${index}`);
+      await f.services[provider].action(f.project, {
+        action: "execute",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+      });
+      const run = await f.running("execute", id, f.services[provider]);
+      await f.finish(run);
+      sessions.set(id, run);
+      ids.push(id);
+    }
+    // A card that never ran has nothing to push.
+    const idle = await f.card("Nothing done");
+    await f.services.codex.updateCard(f.project, idle, { stageId: "ready" });
+    let board = await f.services.claude.action(f.project, {
+      action: "publish",
+      cardIds: [...ids, idle],
+      clientActionId: randomUUID(),
+    });
+    expect(stage(board, idle)).toBe("done");
+    const publications = () =>
+      f.services.codex
+        .read(f.project)
+        .then((board) => board.runs.filter((run) => run.kind === "publish"));
+    const first = (
+      await until(publications, (runs) => runs.some((run) => run.status === "running"))
+    ).find((run) => run.status === "running")!;
+    const firstCard = first.cardIds[0]!;
+    const secondCard = ids.find((id) => id !== firstCard)!;
+    expect(first.threadId).toBe(sessions.get(firstCard)!.threadId);
+    expect(first.provider).toBe(sessions.get(firstCard)!.provider);
+    expect(f.prompts.get(first.id)).toBe(PUBLISH_PROMPT);
+    // The other publication waits: both push the same branch from the same folder.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect((await publications()).find((run) => run.cardIds.includes(secondCard))?.status).toBe(
+      "queued",
+    );
+    await f.services[first.provider].notifyThread(first.threadId!, "running");
+    board = await f.services.codex.read(f.project);
+    expect(stage(board, firstCard)).toBe("ready");
+    await f.services[first.provider].notifyThread(first.threadId!, "completed");
+    board = await f.services.codex.read(f.project);
+    expect(stage(board, firstCard)).toBe("done");
+    expect(board.cards.find((card) => card.id === firstCard)!.doneAt).toEqual(expect.any(Number));
+
+    const second = await f.running(
+      "publish",
+      secondCard,
+      f.services[sessions.get(secondCard)!.provider],
+    );
+    expect(second.threadId).toBe(sessions.get(secondCard)!.threadId);
+    board = await f.finish(second, "GitHub Actions failed: lint");
+    expect(stage(board, secondCard)).toBe("waiting");
+    expect(board.cards.find((card) => card.id === secondCard)!.question).toContain("lint");
+  });
+  it("starts a task again in the application that asks, with the original text", async () => {
+    const f = await fixture();
+    const id = await f.card("Draw a chart");
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const first = await f.running("execute", id);
+    // Another application cannot stop a working session.
+    await expect(
+      f.services.claude.action(f.project, {
+        action: "restart",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "already_running" });
+    await f.services.codex.action(f.project, {
+      action: "restart",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const second = await until(
+      () => f.running("execute", id),
+      (run) => run.id !== first.id,
+    );
+    expect(f.interrupted.codex).toEqual([first.threadId]);
+    expect(second.threadId).not.toBe(first.threadId);
+    expect(f.prompts.get(second.id)).toBe(`Draw a chart\n\n${TASK_SUFFIX}`);
+    expect(runOf(await f.services.codex.read(f.project), first.id)?.status).toBe("completed");
+
+    await f.services.codex.notifyThread(second.threadId!, "needsAttention");
+    await f.services.claude.action(f.project, {
+      action: "restart",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const third = await f.running("execute", id, f.services.claude);
+    expect(third.provider).toBe("claude");
+    expect(f.interrupted.claude).toEqual([]);
+    const board = await f.services.claude.read(f.project);
+    expect(runOf(board, second.id)?.status).toBe("completed");
+    expect(stage(board, id)).toBe("working");
+    await expect(
+      f.services.claude.action(f.project, {
+        action: "execute",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "already_running" });
+  });
+  it("keeps a working card in place and lets the operator move a waiting one on", async () => {
+    const f = await fixture();
+    const id = await f.card("Move me");
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const run = await f.running("execute", id);
+    await expect(
+      f.services.codex.updateCard(f.project, id, { stageId: "ready" }),
+    ).rejects.toMatchObject({ code: "already_running" });
+    await f.finish(run, "Which file?");
+    let board = await f.services.codex.updateCard(f.project, id, { stageId: "ready" });
+    expect(stage(board, id)).toBe("ready");
+    expect(runOf(board, run.id)?.status).toBe("completed");
+    expect(board.cards[0]!.question).toBeNull();
+    await expect(
+      f.services.codex.action(f.project, {
+        action: "rework",
+        cardIds: [id],
+        comment: "  ",
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    board = await f.services.codex.read(f.project);
+    expect(stage(board, id)).toBe("ready");
   });
   it.each(["completed", "idle", "interrupted", "failed", "unavailable"])(
     "allows classification to be retried after a session ends with %s without reporting",
@@ -640,61 +652,6 @@ describe("shared provider board service", () => {
     await f.running("classify", board.cards[0]!.id);
     expect(f.launches.codex.filter((id) => id === queuedId)).toHaveLength(1);
   });
-  it("automatically groups different target branches and marks every selected card after publication", async () => {
-    const f = await fixture();
-    const first = await f.card("Main feature"),
-      second = await f.card("Experimental feature");
-    for (const id of [first, second])
-      await f.services.codex.action(f.project, {
-        action: "execute",
-        cardIds: [id],
-        clientActionId: randomUUID(),
-      });
-    const runs = await Promise.all([f.running("execute", first), f.running("execute", second)]);
-    for (const [index, run] of runs.entries()) {
-      expect(
-        (
-          await f.command(run, "prepare-repository", {
-            repositoryPath: f.project,
-            targetBranch: index ? "experiment" : "main",
-          })
-        )?.ok,
-      ).toBe(true);
-      expect((await f.command(run, "report", { outcome: "completed" }))?.result?.next).toBe(
-        "review",
-      );
-      await f.services.codex.action(f.project, {
-        action: "accept",
-        cardIds: run.cardIds,
-        clientActionId: randomUUID(),
-      });
-    }
-    await f.services.codex.action(f.project, {
-      action: "integrate",
-      cardIds: [first, second],
-      clientActionId: randomUUID(),
-    });
-    const integrator = await f.running("integrate", first);
-    expect((await f.command(integrator, "prepare-integration", {}))?.ok).toBe(true);
-    expect(fake.groups).toHaveLength(2);
-    expect((await f.command(integrator, "publish", {}))?.ok).toBe(true);
-    const board = await f.services.codex.read(f.project);
-    expect(board.cards.every((card) => card.stageId === "done")).toBe(true);
-  });
-  it("completes solo no-code work directly without a review gate", async () => {
-    const f = await fixture();
-    const id = await f.card("Explain the architecture");
-    await f.services.codex.action(f.project, {
-      action: "execute",
-      cardIds: [id],
-      clientActionId: randomUUID(),
-    });
-    const executor = await f.running("execute", id);
-    expect((await f.command(executor, "report", { outcome: "completed" }))?.result?.next).toBe(
-      "done",
-    );
-    expect((await f.services.codex.read(f.project)).cards[0]?.stageId).toBe("done");
-  });
   it("does not scan idle boards continuously after watcher events settle", async () => {
     const f = await fixture();
     await f.services.codex.read(f.project);
@@ -703,55 +660,6 @@ describe("shared provider board service", () => {
     calls.mockClear();
     await new Promise((resolve) => setTimeout(resolve, 120));
     expect(calls).not.toHaveBeenCalled();
-  });
-  it("revalidates exact accepted commits again after integration was prepared", async () => {
-    const f = await fixture();
-    const id = await f.card("A solo code change");
-    await f.services.codex.action(f.project, {
-      action: "execute",
-      cardIds: [id],
-      clientActionId: randomUUID(),
-    });
-    const executor = await f.running("execute", id);
-    await f.command(executor, "prepare-repository", {
-      repositoryPath: f.project,
-      targetBranch: "main",
-    });
-    expect((await f.command(executor, "report", { outcome: "completed" }))?.result?.next).toBe(
-      "publish",
-    );
-    expect((await f.command(executor, "prepare-integration", {}))?.ok).toBe(true);
-    const results = fake.candidates.get(id)! as { repository: unknown; sha: string }[];
-    results[0]!.sha = "d".repeat(40);
-    const published = await f.command(executor, "publish", {});
-    expect(published?.ok).toBe(false);
-    expect(published?.error).toContain("changed after integration");
-    expect((await f.services.codex.read(f.project)).cards[0]?.stageId).not.toBe("done");
-  });
-
-  it("serializes concurrent repository preparations within one task capability", async () => {
-    const f = await fixture();
-    const id = await f.card("A two-repository change");
-    await f.services.codex.action(f.project, {
-      action: "execute",
-      cardIds: [id],
-      clientActionId: randomUUID(),
-    });
-    const executor = await f.running("execute", id);
-    const responses = await Promise.all([
-      f.command(executor, "prepare-repository", {
-        repositoryPath: join(f.project, "one"),
-        targetBranch: "main",
-      }),
-      f.command(executor, "prepare-repository", {
-        repositoryPath: join(f.project, "two"),
-        targetBranch: "main",
-      }),
-    ]);
-    expect(responses.every((response) => response?.ok)).toBe(true);
-    const document = await f.services.codex.store.read(f.project);
-    expect(document.cards[id]?.workspace?.repositories).toHaveLength(2);
-    expect(document.board.cards[0]?.repositories).toHaveLength(2);
   });
   it("waits for a launching adapter to persist its thread before close returns", async () => {
     const f = await fixture();
@@ -841,11 +749,10 @@ describe("shared provider board service", () => {
       (value) => value,
     );
     await service.close();
-    const run = (await service.read(f.project)).runs.find(
-      (run) => run.kind === "execute" && run.cardIds.includes(id),
-    );
-    expect(run?.status).toBe("waiting");
-    expect(run?.error).toContain("without a task report");
+    const board = await service.read(f.project);
+    const run = board.runs.find((run) => run.kind === "execute" && run.cardIds.includes(id));
+    expect(run?.status).toBe("completed");
+    expect(stage(board, id)).toBe("ready");
   });
   it.each(["completed", null] as const)(
     "reconciles a persisted running session once on startup when local state is %s",
@@ -871,8 +778,11 @@ describe("shared provider board service", () => {
       cleanups.push(() => restored.close());
       await restored.initialize();
       const board = await restored.read(f.project);
-      expect(board.runs.find((run) => run.id === original.id)?.status).toBe("waiting");
-      expect(board.cards.find((card) => card.id === id)?.stageId).not.toBe("done");
+      // A finished turn is checked once; a vanished session waits for the operator.
+      expect(board.runs.find((run) => run.id === original.id)?.status).toBe(
+        state ? "completed" : "waiting",
+      );
+      expect(stage(board, id)).toBe(state ? "ready" : "waiting");
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(threadState).toHaveBeenCalledExactlyOnceWith(original.threadId);
       expect(launch).not.toHaveBeenCalled();
@@ -901,7 +811,7 @@ describe("shared provider board service", () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 
-  it("archives idle cards only, restores them and moves week-old Done cards to the archive", async () => {
+  it("archives cards without a working agent, restores them and moves week-old published cards to the archive", async () => {
     const f = await fixture();
     const id = await f.card("Archive me");
     await f.services.codex.action(f.project, {
@@ -913,8 +823,11 @@ describe("shared provider board service", () => {
     await expect(
       f.services.codex.updateCard(f.project, id, { archived: true }),
     ).rejects.toMatchObject({ code: "already_running" });
-    expect((await f.command(executor, "report", { outcome: "completed" }))?.ok).toBe(true);
+    await f.finish(executor, "Which colour?");
+    // A task waiting for an answer can be archived; its question is dropped.
     let board = await f.services.codex.updateCard(f.project, id, { archived: true });
+    expect(runOf(board, executor.id)?.status).toBe("completed");
+    expect(board.cards[0]!.question).toBeNull();
     expect(board.cards[0]!.archivedAt).toEqual(expect.any(Number));
     await expect(
       f.services.claude.action(f.project, {
@@ -940,8 +853,7 @@ describe("shared provider board service", () => {
     expect((await f.services.codex.read(f.project)).cards[0]!.archivedAt).toBeUndefined();
   });
 
-  it("deletes only archived cards with their worktrees and this application's sessions", async () => {
-    const workspace = await import("./workspace.js");
+  it("deletes only archived cards with this application's sessions", async () => {
     const f = await fixture();
     const id = await f.card("Delete me");
     await f.services.codex.action(f.project, {
@@ -950,23 +862,16 @@ describe("shared provider board service", () => {
       clientActionId: randomUUID(),
     });
     const executor = await f.running("execute", id);
-    expect((await f.command(executor, "report", { outcome: "completed" }))?.ok).toBe(true);
-    const task = { id: "task", projectPath: f.project, rootPath: "/w/task", repositories: [] };
-    await f.services.codex.store.update(f.project, (data) => {
-      data.cards[id]!.workspace = task;
-    });
+    await f.finish(executor);
     await expect(f.services.codex.deleteCard(f.project, id)).rejects.toMatchObject({
       code: "not_archived",
     });
     await f.services.codex.updateCard(f.project, id, { archived: true });
-    const board = await f.services.codex.deleteCard(f.project, id);
+    const board = await f.services.claude.deleteCard(f.project, id);
     expect(board.cards).toEqual([]);
     expect(board.runs.filter((run) => run.cardIds.includes(id))).toEqual([]);
-    expect(workspace.removeTaskWorkspace).toHaveBeenCalledWith(
-      task,
-      join(f.services.codex.store.directory, "workspaces"),
-    );
-    expect(f.archived.codex).toContain(executor.threadId);
+    // Only the application that owns a session archives it.
+    expect(f.archived.claude).not.toContain(executor.threadId);
     expect(Object.keys((await f.services.codex.store.read(f.project)).cards)).toEqual([]);
   });
 
@@ -1105,7 +1010,7 @@ describe("shared provider board service", () => {
       clientActionId: randomUUID(),
     });
     const executor = await f.running("execute", id);
-    expect((await f.command(executor, "report", { outcome: "completed" }))?.ok).toBe(true);
+    await f.finish(executor);
     const board = await f.services.claude.action(f.project, {
       action: "rework",
       cardIds: [id],
@@ -1124,7 +1029,7 @@ describe("shared provider board service", () => {
     expect(rework.cards[0]!.voice).toBeUndefined();
     const resumed = await f.running("execute", id);
     expect(resumed.threadId).toBe(executor.threadId);
-    expect(f.prompts.get(resumed.id)).toContain("Keep the header\n\nAlso handle the empty state");
+    expect(f.prompts.get(resumed.id)).toBe("Keep the header\n\nAlso handle the empty state");
     expect(f.resumedInputs.at(-1)?.images).toHaveLength(1);
   });
 });

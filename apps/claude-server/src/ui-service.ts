@@ -4,7 +4,7 @@ import { mkdir, realpath, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { Readable } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
-import type { TitleGenerator } from "./title";
+import type { ReplyCheck, TitleGenerator } from "./title";
 import {
   copyPastedMessage,
   pastedText,
@@ -175,6 +175,8 @@ export class UiService extends EventEmitter {
   constructor(
     readonly manager: SessionManager,
     private readonly generateTitle?: TitleGenerator,
+    /** Tells a finished board task's question from a done result. */
+    readonly checkReply?: ReplyCheck,
   ) {
     super();
     this.store = new UiStore(manager.config.stateDir);

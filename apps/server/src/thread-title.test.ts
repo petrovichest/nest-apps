@@ -59,6 +59,35 @@ describe("ThreadTitleGenerator", () => {
     });
   });
 
+  it.each([
+    ['{"waiting":true,"reason":"  Нужно выбрать   ветку  "}', "Нужно выбрать ветку"],
+    ['{"waiting":true,"reason":""}', "The agent is waiting for an answer"],
+    ['{"waiting":false,"reason":"ignored"}', null],
+  ])("reads whether a finished turn waits for the user: %s", async (response, expected) => {
+    const bridge = fakeBridge(response);
+    const generator = new ThreadTitleGenerator(bridge as unknown as CodexBridge);
+
+    await expect(
+      generator.awaitsAnswer("Готово. Какую ветку выбрать?", { cwd: "/work", model: "fast" }),
+    ).resolves.toBe(expected);
+    expect(bridge.request.mock.calls[0]?.[1]).toMatchObject({
+      ephemeral: true,
+      sandbox: "read-only",
+      baseInstructions: expect.stringContaining("waits for the user"),
+    });
+    expect(bridge.request.mock.calls[1]?.[1]).toMatchObject({
+      model: "fast",
+      input: [
+        {
+          type: "text",
+          text: "<reply>\nГотово. Какую ветку выбрать?\n</reply>",
+          text_elements: [],
+        },
+      ],
+      outputSchema: expect.objectContaining({ required: ["waiting", "reason"] }),
+    });
+  });
+
   it("sends the first images after the source text and omits an empty text item", async () => {
     const bridge = fakeBridge('{"title":"Скриншот ошибки"}');
     const generator = new ThreadTitleGenerator(bridge as unknown as CodexBridge);

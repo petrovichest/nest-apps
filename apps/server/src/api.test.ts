@@ -196,7 +196,7 @@ describe("project boards", () => {
       expect(response.json().stages.map((stage: { role: string }) => stage.role)).toEqual([
         "todo",
         "working",
-        "review",
+        "waiting",
         "ready",
         "done",
       ]);

@@ -6,7 +6,7 @@ in the session header. From a task's session the board opens with that task.
 Both applications must run as the same operating-system user and resolve the
 project to the same directory.
 
-Column widths can be dragged and columns collapsed; Done starts collapsed. These
+Column widths can be dragged and columns collapsed; Published starts collapsed. These
 choices are remembered on each device. On a phone the board shows one stage at a
 time. Task details open in a side panel.
 
@@ -23,88 +23,61 @@ In CodexNest, classification runs in a temporary helper session that never appea
 in the session list. If classification fails, use **Retry classification** in the
 card to start a new attempt.
 
-The initial stages are **To do → In progress → Review → Ready to merge → Done**.
-Additional stages have a name and an optional description; they can be renamed,
-moved and deleted (their tasks return to To do). Standard stages can be renamed
-but keep their order.
+The initial stages are **To do → In progress → Waiting for answer → Ready →
+Published**. Additional stages have a name and an optional description; they can be
+renamed, moved and deleted (their tasks return to To do). Standard stages can be
+renamed but keep their order. Boards created before this layout turn their Review
+stage into Waiting for answer, and its tasks into Ready.
 
-Dragging a card performs the step it represents: into In progress it starts the
-agent, from Review into Ready to merge it accepts the result, back into In
-progress it requests rework, and into Done it integrates the task. Cards move
-freely to To do and custom stages, and reorder within a stage; new and moved
-cards go to the top. A card stays put while its agent works, and agent-owned
-stages refuse drops. A move to Done cannot bypass the publication checks.
+The application moves cards between In progress, Waiting for answer and Ready; the
+agent never does. Dragging a card performs the step it represents: into In progress
+it starts the agent, or sends a rework comment when the task already has a session;
+from Ready into Published it publishes the task. A card waiting for an answer can be
+moved to Ready by hand. Cards move freely to To do and custom stages, and reorder
+within a stage; new and moved cards go to the top. A card stays put while its agent
+works.
 
-Idle tasks can be moved to the archive; Done tasks move there automatically after
-seven days. Restoring brings a task back. Deleting an archived task removes its
-working copy (task branches stay) and archives its sessions in the current
-application.
+Idle tasks can be moved to the archive; published tasks move there automatically
+after seven days. Restoring brings a task back. Deleting an archived task removes its
+pictures and archives its sessions in the current application.
 
-## Execution and review
+## Execution
 
-Starting a card creates a normal session in the current application, using its
-new-session defaults. The session belongs to the original project but works in
-an isolated workspace.
+Starting a card creates an ordinary session of the current application in the
+project folder, with that application's new-session defaults. Its first message is
+the task text and pictures as the operator wrote them, followed by one sentence:
+«Закоммить, но не пушь.» There are no board instructions, helper commands or reports;
+the agent follows the project's own rules as in any session. Tasks share the project
+folder, so the operator decides which tasks may run at the same time.
 
-Each application can run its own agent on a card. To give a task to a second
-agent, open the card in the other application and press **Start in CodexNest**
-or **Start in ClaudeNest**. The two agents work in separate copies and branches;
-one application never runs two agents on the same card.
+The card follows the session:
 
-**Restart**, next to an agent's current session, sends the original task to a new
-session of that agent's application. A working agent is stopped first. The new
-session starts from a clean copy; the previous branch stays in the repository.
-A restart requested from the other application waits until the agent's
-application is running.
+- the session works — **In progress**;
+- the agent asks through a question, an approval or a plan, or the session stops,
+  fails or becomes unavailable — **Waiting for answer**, with the reason;
+- a turn ends — the application's quick model (Haiku in ClaudeNest, the fastest
+  subscription model in CodexNest) reads the agent's last message. A question,
+  a request for a decision or a reported failure keeps the card in **Waiting for
+  answer** with that question; otherwise the card goes to **Ready**;
+- the operator answers in the session — back to **In progress**.
 
-The session's opening message shows the task title, description and any operator
-comment. Internal board commands and workflow rules are kept in a local
-instructions file referenced by that message; the agent must read it before
-starting. The same applies to review, integration and rework messages in both
-applications.
+**Rework** sends a typed or dictated comment, with pictures, to the same session.
+**Start again**, in the task's "…" menu, starts a new session with the original task
+in the application where it was pressed; a working session of the same application
+is stopped first. A session working in the other application cannot be replaced.
 
-One card can involve several repositories. Each gets its own worktree, task
-branch, starting commit and target branch. The target comes from the assignment;
-the executor asks in its session when it cannot determine the intended branch.
-Existing uncommitted changes are never silently included. The executor must
-explicitly choose a committed baseline or arrange a preliminary commit.
+## Publication
 
-Projects containing several repositories retain their directory structure.
-Nested repositories keep their own histories. A local-only Git repository may
-track files belonging to a previously unversioned project directory; child
-repositories and generated/runtime data are excluded from that repository.
-
-If there are no other started, unfinished cards in the project and no other agent
-works on the same card, the executor can finish the complete workflow: check,
-integrate and publish. Unstarted backlog
-cards do not prevent this. The condition is checked again before integration.
-
-Parallel results go through review. Accept a result yourself or start a separate
-review session. With two agents the card stays In progress until both finish;
-then choose whose **Result** to accept, review or rework. Accepting one result ends
-the other agent's session on the board; its copy and branch remain. **Rework**
-sends a typed or dictated comment back to the original executor, including when
-requested from the other application. That application
-must be running to deliver the continuation; the request remains queued otherwise.
-
-## Integration and publication
-
-Select accepted cards to integrate. The integration agent assembles their exact
-accepted commits in separate worktrees, resolves conflicts and incompatibilities,
-and checks the combined result. It asks for operator input when a decision is
-needed. Normal merge conflicts do not require manual intervention by themselves.
-
-Publication never force-pushes or discards changes in an original working copy.
-The target branch is checked again before promotion. Repository-specific
-instructions still apply, including restrictions on publishing and deployment.
-Deployment is a separate assignment.
-
-For a remote repository, Done requires a successful push. For a local-only
-repository, successful integration into the local target branch is sufficient.
-Read-only tasks do not require a Git publication. A card involving several
-repositories finishes when all required results have been published. Independent
-repositories cannot be pushed as one atomic transaction; partial success is
-recorded so a retry can continue from the remaining repository.
+**Publish** in a ready task's panel, dragging it to Published, or **Publish all** in
+the Ready header sends the task's own session this message: «Опубликуй: подтяни
+изменения с GitHub, разреши конфликты (если при этом правил код — прогони тесты),
+запушь и дождись проверок GitHub Actions.» The agent publishes exactly as it would
+when asked in a normal session, under the repository's own rules. The card stays in
+Ready, marked as being published. When the turn ends it moves to Published, or to
+Waiting for answer if the agent asks something or reports failed checks. Several
+publications run one after another, since they push the same branch from the same
+folder. A task that never ran has nothing to publish and moves to Published at once.
+The application itself checks neither Git nor GitHub.
 
 ## Shared storage and links
 
@@ -112,14 +85,12 @@ Boards, queued work and agent receipts live in
 `~/.local/share/nest-apps/kanban`, outside project repositories. Set
 `KANBAN_DATA_DIR` to use another shared directory; both applications must use the
 same value. State is written atomically under interprocess locks. Restarting an
-application preserves cards, workspace metadata and queued continuations.
+application preserves cards and queued continuations.
 
 Session links use the current hostname with the default application ports
 (`4310` for CodexNest and `4311` for ClaudeNest). Reverse proxies and custom ports
 can override the sibling application addresses with `KANBAN_CODEX_URL` and
 `KANBAN_CLAUDE_URL` on both servers.
 
-Worktrees isolate ordinary working files. They are not an operating-system
-sandbox: the agent retains the permissions of its configured runtime. Board
-commands are scoped to the assigned card unless the assignment explicitly
-delegates management of other cards.
+Only task classification talks to the board, through a file-based helper limited to
+reporting one card's title and category.

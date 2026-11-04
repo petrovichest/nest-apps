@@ -136,6 +136,20 @@
   color: var(--muted);
 }
 
+/* A step for the whole column, such as publishing every ready task, sits under its name. */
+.kanban-lane-action {
+  align-self: flex-start;
+  gap: var(--space-1-5);
+  margin: 0 0 var(--space-2) var(--space-3);
+  padding: 0 var(--space-3);
+  color: var(--muted);
+}
+
+.kanban-lane-action svg {
+  width: 16px;
+  height: 16px;
+}
+
 .kanban-lane-description {
   margin: 0 var(--space-6) var(--space-2);
   color: var(--muted);
@@ -218,11 +232,6 @@
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-}
-
-.kanban-card-top input {
-  position: relative;
-  z-index: 1;
 }
 
 /* The title button covers the whole card, so any part of it opens the task. */
@@ -315,6 +324,29 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* What a waiting agent asks; two lines on the card, in full in the panel. */
+.kanban-card-question {
+  margin: var(--space-1-5) 0 0;
+  color: var(--text-strong);
+  font-size: var(--text-caption);
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.kanban-card > .kanban-card-question {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.kanban-panel-body > .kanban-card-question {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: 20px;
+  white-space: pre-wrap;
 }
 
 /* The navigation marker: 3 × 20px, 10px from the right edge. */
@@ -691,26 +723,6 @@ textarea.kanban-edit-field {
   background: color-mix(in srgb, var(--color-lapis) 78%, var(--color-canvas));
 }
 
-/* Which agent's result the review actions use when both agents submitted one. */
-.kanban-result-choice {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.kanban-result-choice > span {
-  margin-inline-end: var(--space-1);
-  color: var(--muted);
-  font-size: var(--text-small);
-}
-
-.thread-workspace .session-inspector .kanban-result-choice button[aria-pressed="true"] {
-  --chat-button-rest: var(--color-floating);
-  --inspector-button-shadow: var(--chat-shadow);
-  color: var(--text-strong);
-}
-
 .kanban-panel-link,
 .kanban-session {
   display: inline-flex;
@@ -771,23 +783,6 @@ textarea.kanban-edit-field {
   min-width: 0;
 }
 
-/* Restart sits beside the agent's current session as an outlined capsule with its label. */
-.thread-workspace .session-inspector .kanban-restart {
-  --inspector-button-shadow: inset 0 0 0 1px var(--color-line-strong);
-  flex: none;
-  gap: var(--space-1-5);
-  min-height: 30px;
-  margin-inline-end: var(--space-2);
-  padding: 0 var(--space-3) 0 var(--space-2);
-  color: var(--text-strong);
-  font-size: var(--text-small);
-}
-
-.thread-workspace .session-inspector .kanban-restart svg {
-  width: 16px;
-  height: 16px;
-}
-
 .kanban-session-list > li > .kanban-card-error {
   margin: 0 var(--space-3) var(--space-1);
 }
@@ -818,30 +813,6 @@ textarea.kanban-edit-field {
 .kanban-session > small {
   color: var(--muted);
   font-size: var(--text-caption);
-}
-
-.kanban-repositories {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-small);
-}
-
-.kanban-repositories th {
-  padding: 0 var(--space-2) var(--space-1) 0;
-  color: var(--muted);
-  font-size: var(--text-caption);
-  font-weight: var(--weight-regular);
-  text-align: left;
-}
-
-.kanban-repositories td {
-  padding: var(--space-1) var(--space-2) var(--space-1) 0;
-  overflow-wrap: anywhere;
-  vertical-align: top;
-}
-
-.kanban-repository-error {
-  display: block;
 }
 
 .kanban-muted {
@@ -1012,6 +983,10 @@ textarea.kanban-edit-field {
 
   .kanban-lane-description {
     margin-inline: var(--space-4);
+  }
+
+  .kanban-lane-action {
+    margin-left: var(--space-1);
   }
 
   .kanban-error {

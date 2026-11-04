@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeLaunchAccount } from "./accounts";
 import { createClaudeProxyEnvironment } from "./proxy";
-import { claudeTitleGenerator } from "./title";
+import { claudeReplyCheck, claudeTitleGenerator } from "./title";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -170,5 +170,31 @@ describe("claudeTitleGenerator", () => {
     await expect(
       claudeTitleGenerator({ claudeBin: claude.bin })("Why?", undefined, [PNG]),
     ).rejects.toThrow("Invalid Claude title response");
+  });
+});
+
+describe("claudeReplyCheck", () => {
+  it.each([
+    ['{"structured_output":{"waiting":true,"reason":"  Нужна   ветка "}}', "Нужна ветка"],
+    ['{"structured_output":{"waiting":false,"reason":""}}', null],
+  ])("tells a question from a finished result on the fast model: %s", async (answer, expected) => {
+    const claude = await fakeClaude(answer);
+    await expect(claudeReplyCheck({ claudeBin: claude.bin })("Готово. Какая ветка?")).resolves.toBe(
+      expected,
+    );
+    const call = await claude.call();
+    expect(call.input).toBe("<reply>\nГотово. Какая ветка?\n</reply>");
+    expect(call.args[call.args.indexOf("--model") + 1]).toBe("haiku");
+    expect(call.args[call.args.indexOf("--system-prompt") + 1]).toContain("waits for the user");
+    expect(JSON.parse(call.args[call.args.indexOf("--json-schema") + 1]!).required).toEqual([
+      "waiting",
+      "reason",
+    ]);
+  });
+  it("fails on an answer without a verdict", async () => {
+    const claude = await fakeClaude('{"structured_output":{"reason":"?"}}');
+    await expect(claudeReplyCheck({ claudeBin: claude.bin })("Hi")).rejects.toThrow(
+      "Invalid Claude reply check",
+    );
   });
 });

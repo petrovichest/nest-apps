@@ -23,7 +23,6 @@ const LEGACY_INSTALLATION_KEYS = [
 ];
 
 const ENGLISH: Record<string, string> = {
-  "Отправлено {{done}} из {{total}}": "Published {{done}} of {{total}}",
   "Доска задач": "Task board",
   "Открыть доску задач проекта {{project}}": "Open the task board of {{project}}",
   "Развернуть стадию «{{name}}», задач: {{count}}": "Expand stage “{{name}}”, tasks: {{count}}",
@@ -60,15 +59,13 @@ const ENGLISH: Record<string, string> = {
   Вернуть: "Restore",
   "Удалить навсегда": "Delete permanently",
   "Закрыть архив": "Close archive",
-  "В архиве пока пусто. Готовые задачи попадают сюда через неделю.":
-    "The archive is empty. Done tasks move here after a week.",
+  "В архиве пока пусто. Опубликованные задачи попадают сюда через неделю.":
+    "The archive is empty. Published tasks move here after a week.",
   "Остановите агента в сессии, чтобы убрать задачу в архив":
     "Stop the agent in its session to move the task to the archive",
   "Удалить задачу навсегда?": "Delete the task permanently?",
-  "«{{title}}» исчезнет вместе с рабочей копией. Ветки задачи останутся в репозиториях, а её сессии в этом приложении уйдут в архив сессий.":
-    "“{{title}}” will be removed with its working copy. Its branches stay in the repositories, and its sessions in this app move to the session archive.",
-  "В рабочей копии есть неопубликованные изменения, они будут потеряны.":
-    "The working copy has unpublished changes; they will be lost.",
+  "«{{title}}» исчезнет с доски, а её сессии в этом приложении уйдут в архив сессий.":
+    "“{{title}}” will be removed from the board, and its sessions in this app move to the session archive.",
   "Удалить стадию «{{name}}»?": "Delete stage “{{name}}”?",
   "Задачи из неё ({{count}}) переедут в «К выполнению».":
     "Its tasks ({{count}}) will move to To do.",
@@ -92,8 +89,14 @@ const ENGLISH: Record<string, string> = {
   "Стадии задач": "Task stages",
   "В работе": "In progress",
   "К выполнению": "To do",
-  "К объединению": "Ready to merge",
-  "Выбрать задачу {{title}}": "Select task {{title}}",
+  Готовые: "Ready",
+  Опубликовано: "Published",
+  Опубликовать: "Publish",
+  "Опубликовать все": "Publish all",
+  "Публикуется…": "Publishing…",
+  "В очереди на публикацию": "Queued for publishing",
+  Публикация: "Publication",
+  "Начать заново": "Start again",
   Добавить: "Add",
   "Здесь появятся задачи. Добавьте первую текстом, голосом или картинкой.":
     "Tasks will appear here. Add the first one by typing, dictating or attaching a picture.",
@@ -102,25 +105,15 @@ const ENGLISH: Record<string, string> = {
   "Загружаем доску…": "Loading board…",
   "Категория не определена": "Category not assigned",
   "На доработку": "Request changes",
-  Объединение: "Integration",
-  "Объединено локально": "Merged locally",
-  "Объединить ({{count}})": "Merge ({{count}})",
-  Объединить: "Merge",
-  "Объединяем…": "Merging…",
-  Объединяется: "Merging",
   "Ожидает запуска приложения": "Waiting for the app to start",
   "Описание (необязательно)": "Description (optional)",
   "Определяем категорию…": "Assigning category…",
   "Открыть сессию": "Open session",
   "Запустить агента": "Start agent",
-  "Запустить в {{name}}": "Start in {{name}}",
-  "Перезапустить {{name}}": "Restart {{name}}",
   "Отправить на доработку": "Send for rework",
   "Отправляем…": "Sending…",
   "Повторить категоризацию": "Retry categorization",
   "Повторить распознавание": "Retry transcription",
-  Принять: "Accept",
-  "Проверить агентом": "Review with an agent",
   "Проект не найден": "Project not found",
   "Сессии задачи": "Task sessions",
   "Не удалось обновить доску": "Could not update the board",
@@ -1338,6 +1331,27 @@ export function translate(
   return interpolate(applicationText(template), variables);
 }
 
+/** Why a board task waits for the operator, as the shared board service words it. */
+const BOARD_REASONS: Record<string, string> = {
+  "The session was stopped; continue it or start again":
+    "Сессия остановлена. Продолжите её или начните заново.",
+  "The session failed; continue it or start again":
+    "Сессия завершилась ошибкой. Продолжите её или начните заново.",
+  "The session is unavailable; continue it or start again":
+    "Сессия недоступна. Продолжите её или начните заново.",
+  "Could not tell whether the agent finished; open the session":
+    "Не удалось понять, закончил ли агент. Откройте сессию.",
+  "The agent is waiting for an answer": "Агент ждёт ответа.",
+  "Task classification did not finish; retry classification":
+    "Категория не определена. Повторите категоризацию.",
+  "The task's agent is working; wait or stop it":
+    "Агент работает над задачей. Дождитесь его или остановите.",
+  "A selected card already has an active session": "У задачи уже идёт сессия.",
+  "The task already has a session; continue it or start again":
+    "У задачи уже есть сессия. Продолжите её или начните заново.",
+  "Describe what to change": "Напишите, что доработать.",
+};
+
 export function localizeKnownServerText(
   language: UiLanguage,
   value: string | null | undefined,
@@ -1370,6 +1384,8 @@ export function localizeKnownServerText(
       return "Прикреплённый файл больше недоступен";
     }
     if (value === "Upload is too large") return "Загружаемый файл слишком большой";
+    const board = BOARD_REASONS[value];
+    if (board) return board;
     return value;
   }
   const direct = ENGLISH[value];

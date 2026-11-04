@@ -28,7 +28,6 @@ function fixture() {
       threadId: provider,
       sessionUrl: `/threads/${provider}`,
       status: "running",
-      workspacePath: null,
       error: null,
       createdAt: 1,
       updatedAt: 1,

@@ -11,7 +11,7 @@ import {
   type PastedText,
 } from "@codexnest/protocol";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { KanbanService, registerKanbanRoutes } from "@nest-apps/kanban";
+import { KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
 import { constants, createReadStream, type Stats } from "node:fs";
 import { access, lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -524,7 +524,8 @@ export interface ApiServices {
   codexManager?: CodexManager;
   appManager?: AppManager;
   lifecycle?: RuntimeLifecycle;
-  threadTitles?: Pick<ThreadTitleGenerator, "generate">;
+  threadTitles?: Pick<ThreadTitleGenerator, "generate"> &
+    Partial<Pick<ThreadTitleGenerator, "awaitsAnswer">>;
   transcription?: Pick<
     TranscriptionService,
     "configuration" | "updateConfiguration" | "transcribe"
@@ -4016,6 +4017,26 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       },
       async archive(threadId) {
         await archiveKanbanThread(threadId);
+      },
+      async awaitsAnswer(threadId) {
+        const summary = projection.summary(threadId);
+        if (!summary || !threadTitles?.awaitsAnswer) return null;
+        const reply = lastReply((await projection.readThread(threadId)).turns);
+        if (!reply) return null;
+        // The same quick model as task classification, else the title model.
+        const fast = classificationSettings(projection.availableModels)?.model;
+        const model =
+          projection.availableModels.find((item) => item.id === fast) ??
+          effectiveTitleModel(
+            summary.settings,
+            store.view().taskDefaults,
+            projection.availableModels,
+          );
+        return threadTitles.awaitsAnswer(reply, {
+          cwd: summary.cwd,
+          model: model?.id,
+          effort: model?.reasoningEfforts[0]?.value,
+        });
       },
     },
   });

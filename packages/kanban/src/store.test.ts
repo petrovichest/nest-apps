@@ -64,4 +64,38 @@ describe("shared kanban storage", () => {
     );
     await expect(store.read(project)).rejects.toThrow("invalid kanban state");
   });
+  it("turns an old Review stage into Waiting for answer and moves its cards to Ready", async () => {
+    const { project, store } = await fixture();
+    const { board } = await store.read(project);
+    const old = {
+      ...(await store.readById(board.id))!,
+    };
+    old.board.stages = [
+      { id: "todo", name: "To do", description: "", role: "todo" },
+      { id: "working", name: "In progress", description: "", role: "working" },
+      { id: "review", name: "Проверено", description: "Look", role: "review", renamed: true },
+      { id: "ready", name: "Ready for integration", description: "", role: "ready" },
+      { id: "done", name: "Done", description: "", role: "done" },
+    ] as never;
+    old.board.cards = [
+      { id: "a", stageId: "review" },
+      { id: "b", stageId: "todo" },
+    ] as never;
+    await writeFile(join(store.boardsDirectory, `${board.id}.json`), JSON.stringify(old));
+    const upgraded = (await store.read(project)).board;
+    expect(upgraded.stages.map((stage) => stage.role)).toEqual([
+      "todo",
+      "working",
+      "waiting",
+      "ready",
+      "done",
+    ]);
+    expect(upgraded.stages[2]).toEqual({
+      id: "review",
+      name: "Waiting for answer",
+      description: "",
+      role: "waiting",
+    });
+    expect(upgraded.cards.map((card) => card.stageId)).toEqual(["ready", "todo"]);
+  });
 });

@@ -1,6 +1,7 @@
 /** Project boards are shared by the local CodexNest and ClaudeNest instances. */
 export type KanbanProvider = "codex" | "claude";
-export type KanbanStageRole = "todo" | "working" | "review" | "ready" | "done";
+/** The application moves cards between working, waiting and ready; the agent never does. */
+export type KanbanStageRole = "todo" | "working" | "waiting" | "ready" | "done";
 export type KanbanStage = {
   id: string;
   name: string;
@@ -23,16 +24,6 @@ export type KanbanVoiceState = {
   error: string | null;
   provider: KanbanProvider;
 };
-export type KanbanRepositorySummary = {
-  id: string;
-  path: string;
-  branch: string;
-  targetBranch: string;
-  baseSha: string;
-  commit: string | null;
-  status: "working" | "accepted" | "integrating" | "integrated" | "published" | "failed";
-  error: string | null;
-};
 export type KanbanCard = {
   id: string;
   title: string;
@@ -45,16 +36,17 @@ export type KanbanCard = {
   voice?: KanbanVoiceState;
   stageId: string;
   classification: "pending" | "ready" | "failed";
-  scope: "task" | "board";
-  repositories: KanbanRepositorySummary[];
+  /** Shown in Waiting: what the agent asks, in short. Failures use error instead. */
+  question?: string | null;
   error: string | null;
-  /** Set while the card sits in Done; it moves to the archive after seven days. */
+  /** Set while the card sits in Published; it moves to the archive after seven days. */
   doneAt?: number;
   archivedAt?: number;
   createdAt: number;
   updatedAt: number;
 };
-export type KanbanRunKind = "classify" | "execute" | "review" | "integrate";
+/** Execution and publication are turns of the task's ordinary session. */
+export type KanbanRunKind = "classify" | "execute" | "publish";
 export type KanbanRun = {
   id: string;
   kind: KanbanRunKind;
@@ -63,7 +55,6 @@ export type KanbanRun = {
   threadId: string | null;
   sessionUrl: string | null;
   status: "queued" | "preparing" | "running" | "waiting" | "completed" | "failed";
-  workspacePath: string | null;
   error: string | null;
   createdAt: number;
   updatedAt: number;
@@ -104,14 +95,7 @@ export type UpdateKanbanStageRequest = {
 };
 export type CreateKanbanStageRequest = { name: string; description?: string };
 export type KanbanAction =
-  | "execute"
-  | "restart"
-  | "review"
-  | "accept"
-  | "rework"
-  | "integrate"
-  | "retry-classification"
-  | "retry-transcription";
+  "execute" | "restart" | "rework" | "publish" | "retry-classification" | "retry-transcription";
 export type KanbanActionRequest = {
   action: KanbanAction;
   cardIds: string[];
@@ -119,10 +103,5 @@ export type KanbanActionRequest = {
   /** Rework only: pictures for the executor and a recording appended to the comment. */
   images?: KanbanImageInput[];
   audio?: KanbanAudioInput;
-  /**
-   * Each application runs its own agent on a task. Restart, rework, review and accept act on
-   * this application's agent; execute always starts the agent of the application handling it.
-   */
-  provider?: KanbanProvider;
   clientActionId: string;
 };
