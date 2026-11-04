@@ -466,6 +466,9 @@ const DETAIL_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000] as c
 const TAIL_FOLLOW_THRESHOLD_PX = 1;
 const SCROLL_GESTURE_THRESHOLD_PX = 6;
 const DRAFT_SAVE_DELAY_MS = 500;
+// A ClaudeNest session arrives with its whole history. Drawing hundreds of turns at once froze
+// the page on every switch, so only the tail is drawn and earlier turns follow on scroll up.
+const RENDERED_TURNS_PAGE = 20;
 
 function forkChildPriority(thread: ThreadSummary): number {
   if (thread.archived) return 4;
@@ -801,6 +804,19 @@ export function ThreadPage({
     scrollHeight: number;
     scrollTop: number;
   } | null>(null);
+  // Pinned when a session opens, so turns arriving later do not push the first drawn one out.
+  const [renderedTurnsStart, setRenderedTurnsStart] = useState<{
+    threadId: string;
+    start: number;
+  } | null>(null);
+  const tailTurnsStart = Math.max(0, (detail?.turns.length ?? 0) - RENDERED_TURNS_PAGE);
+  if (detail && renderedTurnsStart?.threadId !== threadId) {
+    setRenderedTurnsStart({ threadId, start: tailTurnsStart });
+  }
+  const turnsStart =
+    renderedTurnsStart?.threadId === threadId
+      ? Math.min(renderedTurnsStart.start, tailTurnsStart)
+      : tailTurnsStart;
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [olderError, setOlderError] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -2642,7 +2658,7 @@ export function ThreadPage({
     if (!anchor || anchor.threadId !== threadId || !node) return;
     node.scrollTop = anchor.scrollTop + (node.scrollHeight - anchor.scrollHeight);
     olderScrollAnchor.current = null;
-  }, [detail, searchTarget, threadId]);
+  }, [detail, searchTarget, threadId, turnsStart]);
 
   // A saved draft replaces `detail` without changing the history. The cards it adds float over
   // the text, so it must not pull the view down to the end that now lies below them.
@@ -2681,7 +2697,17 @@ export function ThreadPage({
   const loadOlder = useCallback(async () => {
     const cursor = detail?.olderTurnsCursor;
     const node = scrollRef.current;
-    if (searchTarget || isSubagent || !cursor || !node || loadingOlder) return;
+    if (searchTarget || !node || loadingOlder) return;
+    if (turnsStart > 0) {
+      olderScrollAnchor.current = {
+        threadId,
+        scrollHeight: node.scrollHeight,
+        scrollTop: node.scrollTop,
+      };
+      setRenderedTurnsStart({ threadId, start: Math.max(0, turnsStart - RENDERED_TURNS_PAGE) });
+      return;
+    }
+    if (isSubagent || !cursor) return;
     olderScrollAnchor.current = {
       threadId,
       scrollHeight: node.scrollHeight,
@@ -2697,7 +2723,15 @@ export function ThreadPage({
     } finally {
       setLoadingOlder(false);
     }
-  }, [detail?.olderTurnsCursor, isSubagent, loadOlderDetail, loadingOlder, searchTarget, threadId]);
+  }, [
+    detail?.olderTurnsCursor,
+    isSubagent,
+    loadOlderDetail,
+    loadingOlder,
+    searchTarget,
+    threadId,
+    turnsStart,
+  ]);
 
   const loadSessionArtifacts = useCallback(async () => {
     if (!application.capabilities.artifacts) return;
@@ -4370,7 +4404,7 @@ export function ThreadPage({
                           <div className="spinner" />
                         </div>
                       )}
-                    {detail?.turns.map((turn) => {
+                    {detail?.turns.slice(turnsStart).map((turn) => {
                       const display = groupedTurnActivities.get(turn.id)!;
                       const { entries } = display;
                       const technicalItems = technicalTurnActivities.get(turn.id)!;

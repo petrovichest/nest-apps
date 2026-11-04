@@ -6678,6 +6678,37 @@ describe("Activity", () => {
     await waitFor(() => expect(scroll.scrollTop).toBe(350));
   });
 
+  it("draws the latest turns of a long session and adds earlier ones near the top", async () => {
+    const context = mockThreadConnection(threadApi(), summary, {
+      turns: Array.from({ length: 25 }, (_, index) => ({
+        ...completedAgentTurn(),
+        id: `turn-${index}`,
+        items: [
+          { ...completedAgentTurn().items[0]!, id: `answer-${index}`, text: `Ответ ${index}` },
+        ],
+      })),
+    });
+    const view = renderThread();
+    const scroll = view.container.querySelector(".conversation-scroll") as HTMLDivElement;
+    Object.defineProperty(scroll, "scrollHeight", {
+      configurable: true,
+      get: () => 100 * screen.queryAllByText(/^Ответ \d+$/).length,
+    });
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, get: () => 500 });
+
+    expect(screen.getByText("Ответ 24")).toBeInTheDocument();
+    expect(screen.getByText("Ответ 5")).toBeInTheDocument();
+    expect(screen.queryByText("Ответ 4")).toBeNull();
+
+    fireEvent.wheel(scroll, { deltaY: -30 });
+    scroll.scrollTop = 50;
+    fireEvent.scroll(scroll);
+
+    expect(await screen.findByText("Ответ 0")).toBeInTheDocument();
+    expect(scroll.scrollTop).toBe(550);
+    expect(context.loadOlderDetail).not.toHaveBeenCalled();
+  });
+
   it("corrects a late browser scroll without loading older history or losing tail following", async () => {
     const context = mockThreadConnection(threadApi(), summary, { olderTurnsCursor: "older" });
     const view = renderThread();
