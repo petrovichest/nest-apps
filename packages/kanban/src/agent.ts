@@ -64,10 +64,14 @@ export const PUBLISH_PROMPT =
 
 /**
  * A task starts exactly like a message the operator typed into a new session: the agent
- * commits and pushes by the project's own rules, as without the board.
+ * commits and pushes by the project's own rules, as without the board. Tasks sent to one
+ * session go in one message, each under its own heading.
  */
-export function taskPrompt(card: KanbanCard): string {
-  return card.description.trim();
+export function taskPrompt(cards: KanbanCard[]): string {
+  if (cards.length === 1) return cards[0]!.description.trim();
+  return cards
+    .map((card, index) => `## Задача ${index + 1}\n\n${card.description.trim()}`)
+    .join("\n\n");
 }
 
 /** Classification reports through the board helper; tasks themselves never see it. */

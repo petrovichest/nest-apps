@@ -74,6 +74,81 @@ function seedBoard(): KanbanBoard {
 
 for (const width of [390, 1440]) {
   for (const theme of ["light", "dark"] as const) {
+    test(`kanban starts selected tasks together at ${width}px ${theme}`, async ({ page }, info) => {
+      await page.setViewportSize({ width, height: 900 });
+      await installVisualFixture(page, { theme });
+      const board = seedBoard();
+      const todo = board.cards[0]!;
+      board.cards.splice(
+        1,
+        0,
+        {
+          ...todo,
+          id: "todo-2",
+          title: "Показать ошибку под полем",
+          description: "Показать ошибку под полем",
+        },
+        {
+          ...todo,
+          id: "todo-3",
+          title: "Убрать пробелы в адресе",
+          description: "Убрать пробелы в адресе",
+        },
+      );
+      let started: string[] | undefined;
+      await page.route("**/api/v1/projects/project-nest/kanban**", async (route) => {
+        const request = route.request();
+        const headers = {
+          "access-control-allow-origin": "*",
+          "access-control-allow-headers": "Authorization, Content-Type",
+          "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+        };
+        if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+        if (request.method() === "POST" && request.url().endsWith("/actions")) {
+          started = request.postDataJSON().cardIds;
+          for (const card of board.cards) if (started!.includes(card.id)) card.stageId = "working";
+          board.runs.push({
+            ...board.runs[0]!,
+            id: "run-together",
+            cardIds: started!,
+            threadId: "session-together",
+            sessionUrl: "/threads/session-together",
+          });
+          board.revision++;
+        }
+        await route.fulfill({
+          contentType: "application/json",
+          headers,
+          body: JSON.stringify(board),
+        });
+      });
+      await page.goto("/projects/project-nest/kanban");
+      await waitForVisualReady(page);
+      const todoLane = page.getByRole("region", { name: "К выполнению" });
+      await todoLane
+        .getByRole("checkbox", { name: "Выбрать задачу «Сохранить настройки фильтров»" })
+        .click();
+      await todoLane
+        .getByRole("checkbox", { name: "Выбрать задачу «Убрать пробелы в адресе»" })
+        .click();
+      const start = todoLane.getByRole("button", { name: "Запустить вместе (2)" });
+      await expect(start).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+        true,
+      );
+      await page.screenshot({ path: info.outputPath(`kanban-select-${width}-${theme}.png`) });
+      await start.click();
+      await expect(start).toBeHidden();
+      expect(started).toEqual(["card-0", "todo-3"]);
+      if (width < 821) await page.getByRole("tab", { name: /В работе/ }).click();
+      await page.getByRole("button", { name: "Убрать пробелы в адресе", exact: true }).click();
+      const panel = page.getByRole("complementary", { name: "Убрать пробелы в адресе" });
+      await expect(panel.getByRole("heading", { name: "В той же сессии" })).toBeVisible();
+      await expect(
+        panel.getByRole("button", { name: /Сохранить настройки фильтров/ }),
+      ).toBeVisible();
+      await page.screenshot({ path: info.outputPath(`kanban-together-${width}-${theme}.png`) });
+    });
     test(`kanban follows app surfaces at ${width}px ${theme}`, async ({ page }, info) => {
       await page.setViewportSize({ width, height: 900 });
       await installVisualFixture(page, { theme });

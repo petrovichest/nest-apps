@@ -42,8 +42,12 @@ describe("agent file bridge", () => {
       title: "Прикрепление изображения",
       description: "Добавить изображение при создании задачи.\n\nСохранить описание.  ",
     } as KanbanCard;
-    expect(taskPrompt(card)).toBe(
+    expect(taskPrompt([card])).toBe(
       "Добавить изображение при создании задачи.\n\nСохранить описание.",
+    );
+    expect(taskPrompt([card, { ...card, description: " Проверить на телефоне " }])).toBe(
+      "## Задача 1\n\nДобавить изображение при создании задачи.\n\nСохранить описание." +
+        "\n\n## Задача 2\n\nПроверить на телефоне",
     );
     expect(PUBLISH_PROMPT).toContain("GitHub Actions");
     expect(PUBLISH_PROMPT).not.toMatch(/board|доск/i);

@@ -345,6 +345,92 @@ describe("shared provider board service", () => {
     await mkdir(other);
     await expect(service.readImage(other, id)).rejects.toMatchObject({ status: 404 });
   });
+  it("sends several tasks to one session and moves them together", async () => {
+    const f = await fixture();
+    const first = await f.card("Add a login form");
+    const second = await f.card("Validate the email field");
+    const other = await f.card("Unrelated task");
+    let board = await f.services.claude.action(f.project, {
+      action: "execute",
+      cardIds: [first, second],
+      clientActionId: randomUUID(),
+    });
+    expect([stage(board, first), stage(board, second), stage(board, other)]).toEqual([
+      "working",
+      "working",
+      "todo",
+    ]);
+    // The tasks keep their order at the top of the column.
+    expect(board.cards.slice(0, 2).map((card) => card.id)).toEqual([first, second]);
+    const run = await f.running("execute", first, f.services.claude);
+    expect(run.cardIds).toEqual([first, second]);
+    expect(f.inputs.claude).toHaveLength(1);
+    expect(f.inputs.claude[0]).toMatchObject({
+      title: "Add a login form; Validate the email field",
+      prompt: "## Задача 1\n\nAdd a login form\n\n## Задача 2\n\nValidate the email field",
+    });
+    // A task already in a session cannot be started again in another one.
+    await expect(
+      f.services.claude.action(f.project, {
+        action: "execute",
+        cardIds: [other, second],
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "already_running" });
+    board = await f.finish(run);
+    expect([stage(board, first), stage(board, second)]).toEqual(["ready", "ready"]);
+
+    // A comment on one task continues the shared session and takes both tasks back to work.
+    board = await f.services.claude.action(f.project, {
+      action: "rework",
+      cardIds: [second],
+      comment: "Show the error under the field",
+      clientActionId: randomUUID(),
+    });
+    expect([stage(board, first), stage(board, second)]).toEqual(["working", "working"]);
+    const rework = await until(
+      () => f.running("execute", first, f.services.claude),
+      (value) => value.id !== run.id,
+    );
+    expect(rework).toMatchObject({ cardIds: [first, second], threadId: run.threadId });
+    await expect(
+      f.services.claude.action(f.project, {
+        action: "rework",
+        cardIds: [first],
+        comment: "Also trim spaces",
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "already_running" });
+    await f.finish(rework);
+
+    // Publishing both sends the session one request.
+    board = await f.services.claude.action(f.project, {
+      action: "publish",
+      cardIds: [first, second],
+      clientActionId: randomUUID(),
+    });
+    const publications = board.runs.filter((item) => item.kind === "publish");
+    expect(publications).toHaveLength(1);
+    expect(publications[0]).toMatchObject({ cardIds: [first, second] });
+    const publish = await f.running("publish", second, f.services.claude);
+    board = await f.finish(publish);
+    expect([stage(board, first), stage(board, second)]).toEqual(["done", "done"]);
+
+    // Starting again sends both original texts to a new session.
+    await f.services.claude.updateCard(f.project, first, { stageId: board.stages[0]!.id });
+    await f.services.claude.action(f.project, {
+      action: "restart",
+      cardIds: [first],
+      clientActionId: randomUUID(),
+    });
+    const restart = await until(
+      () => f.running("execute", second, f.services.claude),
+      (value) => value.id !== rework.id,
+    );
+    expect(restart.cardIds).toEqual([first, second]);
+    expect(restart.threadId).not.toBe(run.threadId);
+    expect(f.prompts.get(restart.id)).toContain("## Задача 2\n\nValidate the email field");
+  });
   it("moves the card by its session: working, waiting for an answer, ready", async () => {
     const f = await fixture();
     const id = await f.card("Pick a database");

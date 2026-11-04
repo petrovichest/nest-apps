@@ -114,6 +114,21 @@ function taskSession(data: KanbanDocument, cardId: string) {
   }
   return undefined;
 }
+/**
+ * Tasks started together share one session, so its later turns carry all of them that are
+ * still on the board; the card asked about stays even when archived, to fail clearly.
+ */
+function sessionCards(
+  data: KanbanDocument,
+  card: KanbanCard,
+  session = taskSession(data, card.id),
+): KanbanCard[] {
+  if (!session) return [card];
+  return session.run.cardIds.flatMap((id) => {
+    const item = data.board.cards.find((value) => value.id === id);
+    return item && (item === card || item.archivedAt === undefined) ? [item] : [];
+  });
+}
 /** The task's agent is busy; classification does not count. */
 const working = (data: KanbanDocument, cardId: string) =>
   data.board.runs.some(
@@ -727,7 +742,7 @@ export class KanbanService {
       ].includes(request.action)
     )
       throw new KanbanError("invalid_request", "Unknown board action", 400);
-    if (request.action !== "publish" && ids.length !== 1)
+    if (!["execute", "publish"].includes(request.action) && ids.length !== 1)
       throw new KanbanError("invalid_request", "This action requires exactly one card", 400);
     if (
       request.comment !== undefined &&
@@ -756,9 +771,16 @@ export class KanbanService {
       const cards = ids.map((id) => findCard(data, id));
       if (cards.some((card) => card.archivedAt !== undefined))
         throw new KanbanError("archived", "Restore the task from the archive first");
+      // A turn of a shared session concerns every task in it.
+      const affected = ["rework", "restart", "publish"].includes(request.action)
+        ? [...new Set(cards.flatMap((card) => sessionCards(data, card)))]
+        : cards;
+      const affectedIds = affected.map((card) => card.id);
       if (
         request.action !== "retry-transcription" &&
-        cards.some((card) => card.voice && !(voice && card.voice.purpose === "rework"))
+        affected.some(
+          (card) => card.voice && !(voice && card === cards[0] && card.voice.purpose === "rework"),
+        )
       )
         throw new KanbanError("voice_pending", "Wait until the recording is transcribed");
       if (
@@ -768,14 +790,14 @@ export class KanbanService {
           (run) =>
             run.kind !== "classify" &&
             busy(run) &&
-            run.cardIds.some((id) => ids.includes(id)) &&
+            run.cardIds.some((id) => affectedIds.includes(id)) &&
             // A restart replaces this application's own session, even a working one.
             !(request.action === "restart" && run.provider === this.options.provider),
         )
       )
         throw new KanbanError("already_running", "A selected card already has an active session");
       const before = data.board.runs.length;
-      for (const card of cards) {
+      for (const card of affected) {
         card.error = null;
         card.updatedAt = Date.now();
       }
@@ -801,6 +823,7 @@ export class KanbanService {
         card.classification = "pending";
         this.addRun(data, "classify", ids);
       } else if (request.action === "publish") {
+        const published = new Set<string>();
         for (const card of cards) {
           const session = taskSession(data, card.id);
           this.release(data, card);
@@ -809,11 +832,18 @@ export class KanbanService {
             setStage(data, card, role(data.board, "done"));
             continue;
           }
-          setStage(data, card, role(data.board, "ready"));
+          // Tasks of one session are published by one message to it.
+          if (published.has(session.threadId)) continue;
+          published.add(session.threadId);
+          const group = sessionCards(data, card, session);
+          for (const item of [...group].reverse()) {
+            this.release(data, item);
+            setStage(data, item, role(data.board, "ready"));
+          }
           this.addRun(
             data,
             "publish",
-            [card.id],
+            group.map((item) => item.id),
             session.run.provider,
             undefined,
             session.threadId,
@@ -821,12 +851,12 @@ export class KanbanService {
         }
       } else {
         const card = cards[0]!;
-        if (card.classification !== "ready")
+        if (cards.some((item) => item.classification !== "ready"))
           throw new KanbanError("not_ready", "Wait for task classification");
         const session = taskSession(data, card.id);
         let resumeThreadId: string | undefined;
         let provider = this.options.provider;
-        if (request.action === "execute" && session)
+        if (request.action === "execute" && cards.some((item) => taskSession(data, item.id)))
           throw new KanbanError(
             "already_started",
             "The task already has a session; continue it or start again",
@@ -839,9 +869,19 @@ export class KanbanService {
           resumeThreadId = session.threadId;
           provider = session.run.provider;
         }
-        this.release(data, card);
-        setStage(data, card, role(data.board, "working"));
-        const run = this.addRun(data, "execute", ids, provider, request.comment, resumeThreadId);
+        // Keep the tasks' order in the column they move to.
+        for (const item of [...affected].reverse()) {
+          this.release(data, item);
+          setStage(data, item, role(data.board, "working"));
+        }
+        const run = this.addRun(
+          data,
+          "execute",
+          affectedIds,
+          provider,
+          request.comment,
+          resumeThreadId,
+        );
         // Starting again replaces the session: the new one gets the original task.
         if (request.action === "restart" && session && active(session.run)) {
           session.run.status = "completed";
@@ -1183,7 +1223,8 @@ export class KanbanService {
       const document = (await this.store.readById(boardId))!;
       const run = document.board.runs.find((run) => run.id === runId)!;
       const runtime = document.runs[runId]!;
-      const card = findCard(document, run.cardIds[0]!);
+      const cards = run.cardIds.map((id) => findCard(document, id));
+      const card = cards[0]!;
       const prompt =
         run.kind === "classify"
           ? classificationPrompt(
@@ -1196,10 +1237,10 @@ export class KanbanService {
             ? PUBLISH_PROMPT
             : runtime.resumeThreadId
               ? (runtime.comment?.trim() ?? "")
-              : taskPrompt(card);
-      // A new session gets the task's pictures; a rework comment carries its own.
+              : taskPrompt(cards);
+      // A new session gets the tasks' pictures; a rework comment carries its own.
       const stored = [
-        ...(runtime.resumeThreadId ? [] : cardImages(card)),
+        ...(runtime.resumeThreadId ? [] : cards.flatMap((item) => cardImages(item))),
         ...(runtime.images ?? []),
       ];
       const images = await Promise.all(
@@ -1211,7 +1252,10 @@ export class KanbanService {
         ),
       );
       const imageInput = images.length ? { images } : {};
-      const chosen = document.cards[card.id]?.settings;
+      // Tasks sent together start with the first settings chosen in this application.
+      const chosen = cards
+        .map((item) => document.cards[item.id]?.settings)
+        .find((value) => value?.provider === this.options.provider);
       if (runtime.interruptThreadId)
         await Promise.resolve(this.options.adapter.interrupt?.(runtime.interruptThreadId)).catch(
           (error) => this.options.onError?.(error),
@@ -1241,7 +1285,10 @@ export class KanbanService {
             prompt,
             ...imageInput,
             kind: run.kind,
-            title: run.kind === "classify" ? `classify: ${card.title}` : card.title,
+            title:
+              run.kind === "classify"
+                ? `classify: ${card.title}`
+                : cards.map((item) => item.title).join("; "),
             ...(run.kind === "execute" && chosen?.provider === this.options.provider
               ? { settings: chosen.value }
               : {}),

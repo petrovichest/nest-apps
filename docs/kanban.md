@@ -50,6 +50,14 @@ instructions, helper commands or reports: the agent follows the project's own ru
 in any session, including committing and pushing its work. Tasks share the project
 folder, so the operator decides which tasks may run at the same time.
 
+Several tasks can share one session: tick them in To do and press **Start together
+(N)** in the column header, or drag one of the ticked tasks into In progress. The
+first message then holds every task's text under its own heading («## Задача 1», …)
+with all their pictures; the session uses the first settings chosen with them in
+this application. From then on the tasks move together: a rework comment, **Start
+again** and **Publish** on any of them go to that one session once and carry all of
+them. The task panel lists the other tasks of its session.
+
 The card follows the session:
 
 - the session works — **In progress**;

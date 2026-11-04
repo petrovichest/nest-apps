@@ -440,7 +440,9 @@ describe("KanbanBoard", () => {
     api.readKanban.mockResolvedValue(seed);
     show();
     expect(await screen.findByRole("button", { name: "Task two" })).toBeInTheDocument();
-    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(
+      within(screen.getByRole("region", { name: "Готовые" })).queryByRole("checkbox"),
+    ).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Опубликовать все" }));
     await waitFor(() =>
       expect(api.kanbanAction).toHaveBeenCalledWith("project", {
@@ -449,6 +451,59 @@ describe("KanbanBoard", () => {
         clientActionId: expect.any(String),
       }),
     );
+  });
+
+  it("starts selected tasks together in one session, by the button or by dragging", async () => {
+    const seed = board([card("one"), card("two"), card("three"), card("four", "working")]);
+    seed.cards[1]!.classification = "pending";
+    api.readKanban.mockResolvedValue(seed);
+    api.kanbanAction.mockResolvedValue(seed);
+    show();
+    await screen.findByRole("button", { name: "Task one" });
+    // Only tasks that can start now are selectable.
+    expect(screen.queryByRole("checkbox", { name: "Выбрать задачу «Task two»" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Выбрать задачу «Task four»" })).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать задачу «Task three»" }));
+    expect(screen.queryByRole("button", { name: /Запустить вместе/ })).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать задачу «Task one»" }));
+    fireEvent.click(screen.getByRole("button", { name: "Запустить вместе (2)" }));
+    await waitFor(() =>
+      expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+        action: "execute",
+        cardIds: ["one", "three"],
+        clientActionId: expect.any(String),
+      }),
+    );
+    expect(screen.getByRole("checkbox", { name: "Выбрать задачу «Task one»" })).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать задачу «Task one»" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать задачу «Task three»" }));
+    const dataTransfer = transfer();
+    fireEvent.dragStart(screen.getByRole("button", { name: "Task three" }).closest("article")!, {
+      dataTransfer,
+    });
+    const working = screen.getByRole("region", { name: "В работе" });
+    fireEvent.dragOver(working, { dataTransfer });
+    fireEvent.drop(working, { dataTransfer });
+    await waitFor(() => expect(api.kanbanAction).toHaveBeenCalledTimes(2));
+    expect(api.kanbanAction.mock.calls[1]![1]).toMatchObject({ cardIds: ["one", "three"] });
+  });
+
+  it("lists the tasks that share a session in the task panel", async () => {
+    const seed = board([card("one", "ready"), card("two", "ready"), card("three", "ready")]);
+    seed.runs.push({ ...execution("one"), cardIds: ["one", "two"] }, execution("three"));
+    api.readKanban.mockResolvedValue(seed);
+    show();
+    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    const panel = screen.getByRole("complementary");
+    const together = within(panel).getByRole("heading", { name: "В той же сессии" }).parentElement!;
+    expect(
+      within(together)
+        .getAllByRole("button")
+        .map((item) => item.textContent),
+    ).toEqual(["Task twoГотовые"]);
+    fireEvent.click(within(together).getByRole("button", { name: /Task two/ }));
+    expect(within(panel).getByRole("heading", { level: 2 })).toHaveTextContent("Task two");
   });
 
   it("links to the task's session, publishes it and sends rework comments to it", async () => {

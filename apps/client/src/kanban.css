@@ -234,6 +234,11 @@
   gap: var(--space-2);
 }
 
+/* Selecting tasks to start together sits above the title button that covers the card. */
+.kanban-card-top .kanban-card-select {
+  z-index: 1;
+}
+
 /* The title button covers the whole card, so any part of it opens the task. */
 .kanban-card .kanban-card-open,
 .kanban-card .kanban-card-open:is(:hover, :active, :focus-visible) {
@@ -741,18 +746,18 @@ textarea.kanban-edit-field {
 }
 
 @media (hover: hover) {
-  :is(a.kanban-panel-link, a.kanban-session):hover {
+  :is(a.kanban-panel-link, .kanban-session:is(a, button)):hover {
     background: var(--color-floating);
     box-shadow: var(--chat-shadow);
   }
 }
 
-:is(a.kanban-panel-link, a.kanban-session):focus-visible {
+:is(a.kanban-panel-link, .kanban-session:is(a, button)):focus-visible {
   background: var(--color-floating);
   box-shadow: var(--chat-shadow);
 }
 
-:is(a.kanban-panel-link, a.kanban-session):active {
+:is(a.kanban-panel-link, .kanban-session:is(a, button)):active {
   background: var(--sidebar-control-active);
   box-shadow: var(--sidebar-pressed-shadow);
 }
@@ -789,6 +794,8 @@ textarea.kanban-edit-field {
 
 .kanban-session {
   width: 100%;
+  justify-content: flex-start;
+  text-align: left;
   min-height: 44px;
   gap: var(--space-3);
   padding: var(--space-1-5) var(--space-3);

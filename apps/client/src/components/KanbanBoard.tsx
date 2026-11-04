@@ -195,6 +195,14 @@ function insertionPoint(lane: Element, clientY: number, draggedId: string): stri
   return null;
 }
 
+/** A task that never ran can start alone or together with others in one session. */
+const startable = (board: Board, card: KanbanCard) =>
+  card.classification === "ready" &&
+  !card.voice &&
+  card.archivedAt === undefined &&
+  board.stages.find((stage) => stage.id === card.stageId)?.role === "todo" &&
+  !board.runs.some((run) => run.kind !== "classify" && run.cardIds.includes(card.id));
+
 function latestRun(board: Board, cardId: string): KanbanRun | undefined {
   return board.runs
     .filter((run) => run.cardIds.includes(cardId) && run.kind !== "classify")
@@ -233,6 +241,7 @@ export function KanbanBoard({
   const [mobileStageId, setMobileStageId] = useState<string | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [reworkId, setReworkId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [editStageId, setEditStageId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "stage" | "card"; id: string } | null>(null);
   const [addingStage, setAddingStage] = useState(false);
@@ -296,6 +305,7 @@ export function KanbanBoard({
     setMobileStageId(null);
     setArchiveOpen(false);
     setReworkId(null);
+    setSelected(new Set());
     setEditStageId(null);
     setConfirm(null);
     setAddingStage(false);
@@ -413,6 +423,19 @@ export function KanbanBoard({
     mutate(() =>
       api.kanbanAction(projectId, { action: value, cardIds: ids, clientActionId: uuid() }),
     );
+  // Selected tasks in column order; started or moved ones drop out of the selection.
+  const together = board
+    ? board.cards.filter((item) => selected.has(item.id) && startable(board, item))
+    : [];
+  const startTogether = async () => {
+    if (
+      await action(
+        "execute",
+        together.map((item) => item.id),
+      )
+    )
+      setSelected(new Set());
+  };
   const move = (id: string, stageId: string) =>
     mutate(() => api.updateKanbanCard(projectId, id, { stageId }));
   async function createTask(value: ComposerValue): Promise<boolean> {
@@ -492,6 +515,9 @@ export function KanbanBoard({
       await mutate(() =>
         api.updateKanbanCard(projectId, item.id, { stageId: stage.id, beforeCardId }),
       );
+    // Dragging one of the selected tasks starts all of them in one session.
+    else if (rule === "execute" && together.length > 1 && together.includes(item))
+      await startTogether();
     else if (rule === "execute" || rule === "publish") await action(rule, [item.id]);
     else if (rule === "rework") {
       setArchiveOpen(false);
@@ -553,6 +579,13 @@ export function KanbanBoard({
       !run.threadId || cardRuns.findIndex((other) => other.threadId === run.threadId) === index,
   );
   const session = cardSessions[0];
+  // Tasks started together share their session and move with it.
+  const sessionPartners = session
+    ? session.cardIds.flatMap((id) => {
+        const item = board!.cards.find((value) => value.id === id);
+        return item && item.id !== card!.id && item.archivedAt === undefined ? [item] : [];
+      })
+    : [];
   const editStage = board?.stages.find((stage) => stage.id === editStageId) ?? null;
   const archived = (board?.cards ?? [])
     .filter((item) => item.archivedAt !== undefined)
@@ -755,6 +788,26 @@ export function KanbanBoard({
         }}
       >
         <div className="kanban-card-top">
+          {startable(board!, item) && (
+            <input
+              type="checkbox"
+              className="kanban-card-select"
+              aria-label={t("Выбрать задачу «{{title}}»", {
+                title: item.title || t("Голосовая задача"),
+              })}
+              checked={selected.has(item.id)}
+              disabled={busy}
+              onChange={(event) => {
+                const checked = event.target.checked;
+                setSelected((current) => {
+                  const next = new Set(current);
+                  if (checked) next.add(item.id);
+                  else next.delete(item.id);
+                  return next;
+                });
+              }}
+            />
+          )}
           <button
             className="kanban-card-open"
             aria-expanded={cardId === item.id}
@@ -975,6 +1028,16 @@ export function KanbanBoard({
             </details>
           </span>
         </header>
+        {stage.role === "todo" && together.length > 1 && !collapsed && (
+          <button
+            className="kanban-lane-action"
+            disabled={busy}
+            onClick={() => void startTogether()}
+          >
+            <PlayIcon />
+            {t("Запустить вместе ({{count}})", { count: together.length })}
+          </button>
+        )}
         {readyIds.length > 0 && !collapsed && (
           <button
             className="kanban-lane-action"
@@ -1600,6 +1663,28 @@ export function KanbanBoard({
                       return ok;
                     }}
                   />
+                </section>
+              )}
+              {sessionPartners.length > 0 && (
+                <section className="kanban-panel-section">
+                  <h3>{t("В той же сессии")}</h3>
+                  <ul className="kanban-session-list">
+                    {sessionPartners.map((item) => (
+                      <li key={item.id}>
+                        <button className="kanban-session" onClick={() => setCardId(item.id)}>
+                          <span className="kanban-session-text">
+                            <span>{item.title || t("Голосовая задача")}</span>
+                            <small>
+                              {stageLabel(
+                                board.stages.find((value) => value.id === item.stageId)!,
+                                t,
+                              )}
+                            </small>
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 </section>
               )}
               {cardSessions.length > 0 && (
