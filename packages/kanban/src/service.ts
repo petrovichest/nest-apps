@@ -1130,9 +1130,9 @@ export class KanbanService {
   async notifyThread(threadId: string, state: string): Promise<void> {
     const known = this.threads.get(threadId);
     if (!known || this.closed || this.observedStates.get(threadId) === state) return;
-    // A new session can still be idle before its queued first turn starts.
-    if (state === "idle" && this.launching.has(known.runId)) return;
     this.observedStates.set(threadId, state);
+    // Remember the initial idle state until a real turn transition arrives.
+    if (state === "idle" && this.launching.has(known.runId)) return;
     await this.store
       .updateById(known.boardId, (data) => {
         const run = data.board.runs.find((run) => run.id === known.runId);
