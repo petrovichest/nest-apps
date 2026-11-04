@@ -19,6 +19,10 @@ transcription can be retried from the card. Rework comments in the task panel wo
 the same way. An agent assigns a category without asking questions. Questions about the work itself
 appear in the execution session. There is no permanent board chat.
 
+In CodexNest, classification runs in a temporary helper session that never appears
+in the session list. If classification fails, use **Retry classification** in the
+card to start a new attempt.
+
 The initial stages are **To do → In progress → Review → Ready to merge → Done**.
 Additional stages have a name and an optional description; they can be renamed,
 moved and deleted (their tasks return to To do). Standard stages can be renamed

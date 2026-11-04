@@ -58,6 +58,129 @@ const TEAM_MARKER_TEXT =
   "Continue CodexNest Team orchestration using the attached managed-task results.";
 
 describe("project boards", () => {
+  it.each(["reported", "reported-immediate", "completed", "immediate", "start-failed"])(
+    "keeps classifier sessions hidden and reconciles %s completion",
+    async (outcome) => {
+      const repository = await createApiTestRepository();
+      const { app, bridge, projection, store, headers } = await createTeamHarness({
+        projectPath: repository,
+      });
+      const events: ServerEvent[] = [];
+      projection.on("event", (_sequence, event: ServerEvent) => events.push(event));
+      const original = bridge.request.getMockImplementation()!;
+      const report = async (prompt: string) => {
+        const capability = /'([^']+\.json)' report/.exec(prompt)?.[1];
+        expect(capability).toBeDefined();
+        await execFileAsync(process.execPath, [
+          join(dirname(dirname(capability!)), "agent.mjs"),
+          capability!,
+          "report",
+          JSON.stringify({ title: "Layout", category: "Interface", scope: "task" }),
+        ]);
+      };
+      const complete = () =>
+        bridge.emit("notification", {
+          method: "turn/completed",
+          params: { threadId: "classifier", turn: testTurn("classify-turn", "completed") },
+        } satisfies ServerNotification);
+      bridge.request.mockImplementation(async (method, params = {}) => {
+        if (method === "thread/start" && params.ephemeral) {
+          const thread = { ...testThread("classifier"), cwd: repository, ephemeral: true };
+          bridge.emit("notification", { method: "thread/started", params: { thread } });
+          return { thread };
+        }
+        if (method === "turn/start" && params.threadId === "classifier") {
+          if (outcome === "start-failed") throw new Error("Classifier launch failed");
+          const result = await original(method, params);
+          if (outcome === "reported-immediate") {
+            const input = params.input as { text: string }[];
+            await report(input[0]!.text);
+          }
+          if (outcome.endsWith("immediate")) complete();
+          return result;
+        }
+        return original(method, params);
+      });
+      const readBoard = async () =>
+        (await app.inject({ url: "/api/v1/projects/project/kanban", headers })).json();
+      try {
+        const image = {
+          name: "layout.png",
+          url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aB1sAAAAASUVORK5CYII=",
+        };
+        const created = await app.inject({
+          method: "POST",
+          url: "/api/v1/projects/project/kanban/cards",
+          headers,
+          payload: { description: "Fix layout", clientCreationId: "classify", image },
+        });
+        expect(created.statusCode).toBe(200);
+        if (outcome === "reported" || outcome === "completed") {
+          await vi.waitFor(async () =>
+            expect((await readBoard()).runs[0]?.threadId).toBe("classifier"),
+          );
+          expect((await readBoard()).cards[0]).toMatchObject({
+            classification: "pending",
+            error: null,
+          });
+          if (outcome === "reported") {
+            const start = bridge.request.mock.calls.find(
+              ([method, params]) => method === "turn/start" && params.threadId === "classifier",
+            );
+            await report((start![1].input as { text: string }[])[0]!.text);
+          }
+          complete();
+        }
+        const success = outcome.startsWith("reported");
+        await vi.waitFor(async () => {
+          const board = await readBoard();
+          expect(board.cards[0].classification).toBe(success ? "ready" : "failed");
+          expect(board.runs[0].status).toBe(success ? "completed" : "failed");
+          expect(board.runs[0].sessionUrl).toBeNull();
+        });
+        if (success)
+          expect((await readBoard()).cards[0]).toMatchObject({ title: "Layout", error: null });
+        const start = bridge.request.mock.calls.find(
+          ([method, params]) => method === "turn/start" && params.threadId === "classifier",
+        );
+        expect(start?.[1].input).toContainEqual({ type: "image", url: image.url });
+        expect(bridge.request).toHaveBeenCalledWith(
+          "thread/start",
+          expect.objectContaining({
+            ephemeral: true,
+            approvalPolicy: "never",
+            sandbox: "workspace-write",
+            config: {
+              sandbox_workspace_write: { writable_roots: [join(dirname(store.path), "kanban")] },
+            },
+          }),
+        );
+        expect(projection.summary("classifier")).toBeUndefined();
+        expect(projection.snapshot().threads.some((thread) => thread.id === "classifier")).toBe(
+          false,
+        );
+        expect(
+          events.some(
+            (event) => event.type === "thread.upserted" && event.thread.id === "classifier",
+          ),
+        ).toBe(false);
+        expect(store.view().messageQueues?.classifier).toBeUndefined();
+        expect(store.view().threadMeta.classifier).toBeUndefined();
+        await vi.waitFor(() =>
+          expect(bridge.request).toHaveBeenCalledWith("thread/unsubscribe", {
+            threadId: "classifier",
+          }),
+        );
+        expect(
+          bridge.request.mock.calls.some(
+            ([method]) => method === "thread/archive" || method === "thread/name/set",
+          ),
+        ).toBe(false);
+      } finally {
+        await app.close();
+      }
+    },
+  );
   it("authenticates board access and edits shared stages without model RPC", async () => {
     const repository = await createApiTestRepository();
     const { app, bridge, headers } = await createTeamHarness({ projectPath: repository });

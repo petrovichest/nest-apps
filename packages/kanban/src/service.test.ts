@@ -566,6 +566,68 @@ describe("shared provider board service", () => {
     board = await f.services.codex.read(f.project);
     expect(board.cards[0]?.stageId).toBe("working");
   });
+  it.each(["completed", "idle", "interrupted", "failed", "unavailable"])(
+    "allows classification to be retried after a session ends with %s without reporting",
+    async (state) => {
+      const f = await fixture();
+      const created = await f.services.codex.createCard(f.project, {
+        description: "Classify this task",
+        clientCreationId: randomUUID(),
+      });
+      const id = created.cards[0]!.id;
+      const run = await f.running("classify", id);
+      // Finish the dispatch before simulating a later terminal session notification.
+      await f.services.codex.close();
+      await f.services.codex.initialize();
+      await f.services.codex.notifyThread(run.threadId!, state);
+      const board = await f.services.codex.read(f.project);
+      expect(board.cards[0]).toMatchObject({ classification: "failed" });
+      expect(board.cards[0]?.error).toContain("retry classification");
+      expect(board.runs.find((item) => item.id === run.id)?.status).toBe("failed");
+      await f.services.codex.action(f.project, {
+        action: "retry-classification",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+      });
+      const retry = await f.running("classify", id);
+      expect(retry.id).not.toBe(run.id);
+      expect((await f.command(retry, "report", { title: "Task", category: "Tasks" }))?.ok).toBe(
+        true,
+      );
+      expect((await f.services.codex.read(f.project)).cards[0]).toMatchObject({
+        classification: "ready",
+        error: null,
+      });
+    },
+  );
+  it("does not mistake an idle newly created classifier for a completed turn", async () => {
+    const f = await fixture();
+    await f.services.codex.close();
+    const service = new KanbanService({
+      provider: "codex",
+      dataDir: f.services.codex.store.directory,
+      adapter: {
+        launch: async (job) => ({ threadId: job.id }),
+        resume: async () => {},
+        threadState: () => "idle",
+      },
+    });
+    cleanups.push(() => service.close());
+    await service.initialize();
+    const created = await service.createCard(f.project, {
+      description: "Task",
+      clientCreationId: randomUUID(),
+    });
+    await until(
+      () => service.read(f.project),
+      (board) => Boolean(board.runs[0]?.threadId),
+    );
+    await service.close();
+    const board = await service.read(f.project);
+    expect(board.cards[0]).toMatchObject({ classification: "pending", error: null });
+    expect(board.runs[0]).toMatchObject({ status: "running", error: null });
+    expect(created.cards[0]?.id).toBe(board.cards[0]?.id);
+  });
   it("resumes provider-owned durable queued jobs after service initialization", async () => {
     const f = await fixture();
     await f.services.codex.close();
