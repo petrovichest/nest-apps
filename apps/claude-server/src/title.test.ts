@@ -200,6 +200,14 @@ describe("claudeReplyCheck", () => {
       "published",
     ]);
   });
+  it("uses the model chosen for the check", async () => {
+    const claude = await fakeClaude(
+      '{"structured_output":{"waiting":false,"reason":"","published":false}}',
+    );
+    await claudeReplyCheck({ claudeBin: claude.bin })("Done.", "sonnet");
+    const call = await claude.call();
+    expect(call.args[call.args.indexOf("--model") + 1]).toBe("sonnet");
+  });
   it("fails on an answer without a verdict", async () => {
     const claude = await fakeClaude('{"structured_output":{"reason":"?"}}');
     await expect(claudeReplyCheck({ claudeBin: claude.bin })("Hi")).rejects.toThrow(

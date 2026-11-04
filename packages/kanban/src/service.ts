@@ -70,6 +70,8 @@ export type KanbanServiceOptions = {
   adapter: KanbanProviderAdapter;
   /** The application's speech recognition; recordings fail clearly without it. */
   transcribe?(audio: Buffer, contentType: string, durationMs: number): Promise<string>;
+  /** False when new tasks keep their text as the title instead of being classified. */
+  classifies?(): boolean;
   dataDir?: string;
   onChange?: (board: KanbanBoard) => void;
   onError?: (error: unknown) => void;
@@ -322,6 +324,11 @@ export class KanbanService {
     this.changed(updated.board);
     return updated.board;
   }
+  /** A new task gets its title and category from the classifier, unless it is turned off. */
+  private classify(data: KanbanDocument, card: KanbanCard): void {
+    if (this.options.classifies?.() === false) card.classification = "ready";
+    else this.addRun(data, "classify", [card.id]);
+  }
   private addRun(
     data: KanbanDocument,
     kind: KanbanRunKind,
@@ -458,7 +465,7 @@ export class KanbanService {
           durationMs: audio.durationMs,
           text: description,
         };
-      } else this.addRun(data, "classify", [card.id]);
+      } else this.classify(data, card);
     });
     this.changed(board);
     if (audio) this.schedule();
@@ -1013,7 +1020,7 @@ export class KanbanService {
         current.updatedAt = Date.now();
         delete current.voice;
         delete data.cards[cardId]!.voice;
-        this.addRun(data, "classify", [cardId]);
+        this.classify(data, current);
       });
       this.changed(board);
     }

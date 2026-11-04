@@ -601,6 +601,15 @@ const ENGLISH: Record<string, string> = {
   "Уровень reasoning, выбранный для новых сессий.": "Reasoning level selected for new sessions.",
   "Reasoning по умолчанию": "Default reasoning",
   "Модель для автоматических названий сессий.": "Model used for automatic session titles.",
+  "Классификация задач доски": "Board task classification",
+  "Даёт новым задачам доски название и категорию. Без неё название — начало текста задачи.":
+    "Gives new board tasks a title and a category. When off, the title is the start of the task text.",
+  "Модель классификации": "Classification model",
+  "Модель, которая классифицирует задачи доски. По умолчанию — самая быстрая.":
+    "Model that classifies board tasks. By default, the fastest one.",
+  "Модель проверки задач": "Task check model",
+  "Читает последний ответ задачи доски: ждёт ли агент оператора и опубликовал ли работу. По умолчанию — самая быстрая модель.":
+    "Reads a board task's last reply: whether the agent waits for the operator and whether it published its work. By default, the fastest model.",
   "Стиль ответов для новых задач.": "Response style for new tasks.",
   "По умолчанию": "Default",
   Дружелюбная: "Friendly",

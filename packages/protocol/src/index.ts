@@ -823,6 +823,12 @@ export type TaskDefaults = {
   personality?: string;
   /** Reasoning effort preselected for new sessions. */
   reasoningEffort?: string;
+  /** False when new board tasks skip classification and keep their text as the title. */
+  classifyTasks?: boolean;
+  /** Model that names and categorizes new board tasks; absent uses the quick model. */
+  classificationModel?: string;
+  /** Model that reads a board task's last reply; absent uses the quick model. */
+  replyCheckModel?: string;
 };
 
 export type UpdateTaskDefaultsRequest = {
@@ -832,6 +838,10 @@ export type UpdateTaskDefaultsRequest = {
   serviceTier?: string | null;
   personality?: string | null;
   reasoningEffort?: string | null;
+  /** null turns classification back on. */
+  classifyTasks?: boolean | null;
+  classificationModel?: string | null;
+  replyCheckModel?: string | null;
 };
 
 export type ThreadGoalStatus =

@@ -671,30 +671,15 @@ export function SettingsPage({
                 label="Title model"
                 labelFor="settings-title-model"
               >
-                <select
+                <TaskModelSelect
                   disabled={!defaultModel || taskDefaultsSaving}
                   id="settings-title-model"
-                  value={taskDefaults.titleModel ?? ""}
-                  onChange={(event) =>
-                    setTaskDefaults((current) => ({
-                      ...current,
-                      titleModel: event.target.value || undefined,
-                    }))
+                  models={models}
+                  value={taskDefaults.titleModel}
+                  onChange={(titleModel) =>
+                    setTaskDefaults((current) => ({ ...current, titleModel }))
                   }
-                >
-                  <option value="">{t("По умолчанию")}</option>
-                  {taskDefaults.titleModel &&
-                    !models.some((model) => model.id === taskDefaults.titleModel) && (
-                      <option value={taskDefaults.titleModel}>
-                        {taskDefaults.titleModel} — {t("Недоступна")}
-                      </option>
-                    )}
-                  {models.map((model) => (
-                    <option value={model.id} key={model.id}>
-                      {model.displayName}
-                    </option>
-                  ))}
-                </select>
+                />
               </SettingsRow>
               <SettingsRow
                 description={t("Уровень reasoning, выбранный для новых сессий.")}
@@ -779,6 +764,63 @@ export function SettingsPage({
                   </select>
                 </SettingsRow>
               )}
+              <SettingsRow
+                description={t(
+                  "Даёт новым задачам доски название и категорию. Без неё название — начало текста задачи.",
+                )}
+                label={t("Классификация задач доски")}
+                labelFor="settings-classify-tasks"
+              >
+                <input
+                  id="settings-classify-tasks"
+                  type="checkbox"
+                  role="switch"
+                  checked={taskDefaults.classifyTasks !== false}
+                  disabled={taskDefaultsSaving}
+                  onChange={(event) =>
+                    setTaskDefaults((current) => ({
+                      ...current,
+                      classifyTasks: event.target.checked ? undefined : false,
+                    }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                description={t(
+                  "Модель, которая классифицирует задачи доски. По умолчанию — самая быстрая.",
+                )}
+                label={t("Модель классификации")}
+                labelFor="settings-classification-model"
+              >
+                <TaskModelSelect
+                  disabled={
+                    !defaultModel || taskDefaultsSaving || taskDefaults.classifyTasks === false
+                  }
+                  id="settings-classification-model"
+                  models={models}
+                  value={taskDefaults.classificationModel}
+                  onChange={(classificationModel) =>
+                    setTaskDefaults((current) => ({ ...current, classificationModel }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                description={t(
+                  "Читает последний ответ задачи доски: ждёт ли агент оператора и опубликовал ли работу. По умолчанию — самая быстрая модель.",
+                )}
+                label={t("Модель проверки задач")}
+                labelFor="settings-reply-check-model"
+              >
+                <TaskModelSelect
+                  disabled={!defaultModel || taskDefaultsSaving}
+                  id="settings-reply-check-model"
+                  models={models}
+                  value={taskDefaults.replyCheckModel}
+                  onChange={(replyCheckModel) =>
+                    setTaskDefaults((current) => ({ ...current, replyCheckModel }))
+                  }
+                />
+              </SettingsRow>
               {taskDefaultsError && (
                 <div className="settings-notice danger" role="alert">
                   {taskDefaultsError}
@@ -951,6 +993,43 @@ export function SettingsPage({
   );
 }
 
+/** A model chosen in settings; the empty choice keeps the application's default. */
+function TaskModelSelect({
+  disabled,
+  id,
+  models,
+  value,
+  onChange,
+}: {
+  disabled: boolean;
+  id: string;
+  models: ModelOption[];
+  value: string | undefined;
+  onChange(value: string | undefined): void;
+}) {
+  const { t } = useI18n();
+  return (
+    <select
+      disabled={disabled}
+      id={id}
+      value={value ?? ""}
+      onChange={(event) => onChange(event.target.value || undefined)}
+    >
+      <option value="">{t("По умолчанию")}</option>
+      {value && !models.some((model) => model.id === value) && (
+        <option value={value}>
+          {value} — {t("Недоступна")}
+        </option>
+      )}
+      {models.map((model) => (
+        <option value={model.id} key={model.id}>
+          {model.displayName}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function editableTaskDefaults(value: TaskDefaults): EditableTaskDefaults {
   const next = { ...value };
   if (!application.isClaude && isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
@@ -984,6 +1063,15 @@ function taskDefaultsPatch(
   return {
     ...(saved.model !== current.model ? { model: current.model ?? null } : {}),
     ...(saved.titleModel !== current.titleModel ? { titleModel: current.titleModel ?? null } : {}),
+    ...(saved.classifyTasks !== current.classifyTasks
+      ? { classifyTasks: current.classifyTasks ?? null }
+      : {}),
+    ...(saved.classificationModel !== current.classificationModel
+      ? { classificationModel: current.classificationModel ?? null }
+      : {}),
+    ...(saved.replyCheckModel !== current.replyCheckModel
+      ? { replyCheckModel: current.replyCheckModel ?? null }
+      : {}),
     ...(saved.serviceTier !== current.serviceTier
       ? { serviceTier: current.serviceTier ?? null }
       : {}),

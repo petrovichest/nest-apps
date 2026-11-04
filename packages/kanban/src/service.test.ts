@@ -25,6 +25,7 @@ async function until<T>(read: () => Promise<T>, predicate: (value: T) => boolean
 async function fixture(
   available?: () => boolean,
   transcribe?: (audio: Buffer, contentType: string, durationMs: number) => Promise<string>,
+  classifies?: () => boolean,
 ) {
   const directory = await mkdtemp(join(tmpdir(), "kanban-service-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
@@ -46,6 +47,7 @@ async function fixture(
     const service = new KanbanService({
       provider,
       ...(transcribe ? { transcribe } : {}),
+      ...(classifies ? { classifies } : {}),
       dataDir: join(directory, "shared"),
       adapter: {
         ...(available ? { available } : {}),
@@ -1176,6 +1178,54 @@ describe("shared provider board service", () => {
     });
     await f.running("execute", id);
     expect(f.inputs.codex.at(-1)?.images).toHaveLength(2);
+  });
+
+  it("keeps new tasks unclassified, with their text as the title, when classification is off", async () => {
+    let classifies = false;
+    const f = await fixture(
+      undefined,
+      async () => "Spoken details",
+      () => classifies,
+    );
+    let board = await f.services.codex.createCard(f.project, {
+      description: "Fix the  login\nform on Safari",
+      clientCreationId: randomUUID(),
+    });
+    const typed = board.cards[0]!.id;
+    expect(board.cards[0]).toMatchObject({
+      title: "Fix the login form on Safari",
+      categoryId: null,
+      classification: "ready",
+    });
+    board = await f.services.codex.createCard(f.project, {
+      description: "Typed start",
+      clientCreationId: randomUUID(),
+      audio: recording("voice"),
+    });
+    const spoken = board.cards[0]!.id;
+    board = await until(
+      () => f.services.codex.read(f.project),
+      (value) => value.cards.find((card) => card.id === spoken)?.classification === "ready",
+    );
+    expect(board.cards.find((card) => card.id === spoken)?.title).toBe(
+      "Typed start Spoken details",
+    );
+    expect(board.runs.filter((run) => run.kind === "classify")).toEqual([]);
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [typed],
+      clientActionId: randomUUID(),
+    });
+    await f.running("execute", typed);
+
+    // Turned on again, the next task is classified.
+    classifies = true;
+    board = await f.services.codex.createCard(f.project, {
+      description: "Another task",
+      clientCreationId: randomUUID(),
+    });
+    expect(board.cards[0]!.classification).toBe("pending");
+    await f.running("classify", board.cards[0]!.id);
   });
 
   it("keeps a failed recording retryable and refuses recordings without speech recognition", async () => {

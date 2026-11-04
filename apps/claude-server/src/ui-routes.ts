@@ -294,16 +294,20 @@ export async function registerUiRoutes(
   });
   app.put("/api/v1/settings/task-defaults", async (request) => {
     const body = record(request.body);
-    for (const key of ["model", "titleModel"])
+    const models = ["model", "titleModel", "classificationModel", "replyCheckModel"] as const;
+    for (const key of models)
       if (body[key] && !ui.modelOptions().some((model) => model.id === body[key]))
         throw new AppError("invalid_request", "Unknown Claude model");
     await ui.store.update((data) => {
       const next = { ...data.taskDefaults };
-      for (const key of ["model", "titleModel", "reasoningEffort"] as const) {
+      for (const key of [...models, "reasoningEffort"] as const) {
         if (body[key] === undefined) continue;
         if (typeof body[key] === "string" && body[key]) next[key] = body[key];
         else delete next[key];
       }
+      // Classification is on unless turned off, so only false is stored.
+      if (body.classifyTasks === false) next.classifyTasks = false;
+      else if (body.classifyTasks !== undefined) delete next.classifyTasks;
       data.taskDefaults = next;
     });
     ui.publish({ type: "taskDefaults.changed", taskDefaults: ui.store.data.taskDefaults });

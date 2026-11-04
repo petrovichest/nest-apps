@@ -566,6 +566,57 @@ describe("SettingsPage", () => {
     );
   });
 
+  it("turns board classification off and chooses the board's models", async () => {
+    const updateTaskDefaults = vi.fn().mockResolvedValue({
+      classifyTasks: false,
+      replyCheckModel: "gpt",
+    });
+    connection.mockReturnValue({
+      api: {
+        readPermissionSettings: vi.fn().mockResolvedValue({ preset: "auto" }),
+        updateTaskDefaults,
+      },
+      state: {
+        snapshot: {
+          taskDefaults: { classificationModel: "gpt" },
+          models: [
+            {
+              id: "gpt",
+              displayName: "GPT",
+              description: "",
+              isDefault: true,
+              reasoningEfforts: [],
+              serviceTiers: [],
+              supportsPersonality: true,
+            },
+          ],
+        },
+      },
+    });
+
+    renderPage();
+    openSection("Codex");
+    const classification = screen.getByRole("switch", { name: "Классификация задач доски" });
+    const classificationModel = screen.getByRole("combobox", { name: "Модель классификации" });
+    expect(classification).toBeChecked();
+    expect(classificationModel).toHaveValue("gpt");
+    fireEvent.change(classificationModel, { target: { value: "" } });
+    fireEvent.click(classification);
+    expect(classificationModel).toBeDisabled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Модель проверки задач" }), {
+      target: { value: "gpt" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить настройки новых задач" }));
+
+    await waitFor(() =>
+      expect(updateTaskDefaults).toHaveBeenCalledWith({
+        classifyTasks: false,
+        classificationModel: null,
+        replyCheckModel: "gpt",
+      }),
+    );
+  });
+
   it("restores, saves and clears the default reasoning effort for Codex", async () => {
     const updateTaskDefaults = vi
       .fn()

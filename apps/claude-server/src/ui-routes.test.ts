@@ -180,6 +180,56 @@ describe("project boards", () => {
       ).toEqual({ collaborationMode: "default", model: "haiku" }),
     );
   });
+
+  it("classifies board tasks on the model chosen in settings", async () => {
+    const state = await fixture(async (manager) => {
+      (manager as { accepting: boolean }).accepting = true;
+    });
+    const { project } = await state.reserve();
+    await state.ui.store.update((data) => {
+      data.taskDefaults = { classificationModel: "sonnet" };
+      data.models = [
+        { value: "sonnet", displayName: "Sonnet", description: "" },
+        { value: "haiku", displayName: "Haiku", description: "" },
+      ];
+    });
+    const created = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${project.id}/kanban/cards`,
+      headers: state.headers,
+      payload: { clientCreationId: randomUUID(), description: "Classify this task" },
+    });
+    expect(created.statusCode).toBe(200);
+    await vi.waitFor(() =>
+      expect(
+        Object.values(state.ui.store.data.threads).find((thread) =>
+          thread.title?.startsWith("classify:"),
+        )?.settings,
+      ).toEqual({ collaborationMode: "default", model: "sonnet" }),
+    );
+  });
+
+  it("leaves a new board task ready, without a classifier, when classification is off", async () => {
+    const state = await fixture(async (manager) => {
+      (manager as { accepting: boolean }).accepting = true;
+    });
+    const { project } = await state.reserve();
+    await state.ui.store.update((data) => {
+      data.taskDefaults = { classifyTasks: false };
+    });
+    const created = await state.app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${project.id}/kanban/cards`,
+      headers: state.headers,
+      payload: { clientCreationId: randomUUID(), description: "Keep this as the title" },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().cards[0]).toMatchObject({
+      title: "Keep this as the title",
+      classification: "ready",
+    });
+    expect(created.json().runs).toEqual([]);
+  });
 });
 
 async function attachActive(state: Awaited<ReturnType<typeof fixture>>, id: string) {
@@ -510,6 +560,32 @@ process.stdin.on("end", () => {
     });
     expect((await put({ titleModel: "missing" })).statusCode).toBe(400);
     expect((await put({ titleModel: null })).json()).toEqual({ model: "sonnet" });
+  });
+
+  it("stores the board's classification switch and models", async () => {
+    const state = await fixture();
+    await state.ui.store.update((data) => {
+      data.models = [
+        { value: "haiku", displayName: "Haiku", description: "" },
+        { value: "sonnet", displayName: "Sonnet", description: "" },
+      ] as typeof data.models;
+    });
+    const put = (payload: object) =>
+      state.app.inject({
+        method: "PUT",
+        url: "/api/v1/settings/task-defaults",
+        headers: state.headers,
+        payload,
+      });
+    expect(
+      (
+        await put({ classifyTasks: false, classificationModel: "sonnet", replyCheckModel: "haiku" })
+      ).json(),
+    ).toEqual({ classifyTasks: false, classificationModel: "sonnet", replyCheckModel: "haiku" });
+    expect((await put({ replyCheckModel: "missing" })).statusCode).toBe(400);
+    expect((await put({ classifyTasks: true, classificationModel: null })).json()).toEqual({
+      replyCheckModel: "haiku",
+    });
   });
 
   it("defaults to full access and applies permission settings live with optimistic version checks", async () => {

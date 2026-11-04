@@ -57,16 +57,16 @@ type ClaudeHelperOptions = {
 };
 
 /** A finished turn's last reply: what the agent waits for, and whether it pushed its work. */
-export type ReplyCheck = (reply: string) => Promise<ReplyVerdict>;
+export type ReplyCheck = (reply: string, model?: string) => Promise<ReplyVerdict>;
 
 export function claudeReplyCheck(options: ClaudeHelperOptions): ReplyCheck {
-  return async (reply) => {
+  return async (reply, model) => {
     const output = (await structured(
       options,
       ANSWER_INSTRUCTIONS,
       ANSWER_SCHEMA,
       `<reply>\n${reply.trim().slice(-ANSWER_INPUT_LIMIT)}\n</reply>`,
-      options.model || "haiku",
+      model || options.model || "haiku",
       [],
     )) as { waiting?: unknown; reason?: unknown; published?: unknown } | undefined;
     if (typeof output?.waiting !== "boolean") throw new Error("Invalid Claude reply check");

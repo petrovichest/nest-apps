@@ -3939,6 +3939,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   const kanbanClassifiers = new Map<string, { state: string; checked: boolean }>();
   const kanban = new KanbanService({
     provider: "codex",
+    classifies: () => store.view().taskDefaults?.classifyTasks !== false,
     ...(services.transcription
       ? {
           transcribe: (audio: Buffer, contentType: string) =>
@@ -3956,7 +3957,10 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         if (job.kind === "classify") {
           // Like title/transcript helpers, classifiers never enter the user projection or queue.
           const settings =
-            classificationSettings(projection.availableModels) ?? projection.newSessionSettings;
+            classificationSettings(
+              projection.availableModels,
+              store.view().taskDefaults?.classificationModel,
+            ) ?? projection.newSessionSettings;
           const { thread } = parseThreadStart(
             await bridge.request("thread/start", {
               cwd: job.cwd,
@@ -4031,9 +4035,11 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         if (!summary || !threadTitles?.readReply) return null;
         const reply = lastReply((await projection.readThread(threadId)).turns);
         if (!reply) return null;
-        // The same quick model as task classification, else the title model.
+        // The model chosen in settings, else the quick classification tier, else the title model.
+        const chosen = store.view().taskDefaults?.replyCheckModel;
         const fast = classificationSettings(projection.availableModels)?.model;
         const model =
+          projection.availableModels.find((item) => item.id === chosen) ??
           projection.availableModels.find((item) => item.id === fast) ??
           effectiveTitleModel(
             summary.settings,
@@ -8296,9 +8302,17 @@ function managedTaskOptions(
   };
 }
 
-/** Task classification is a short routine step, so it runs on the fast, inexpensive Luna tier. */
-function classificationSettings(models: ModelOption[]): SessionSettings | undefined {
-  const model = models.find((candidate) => candidate.id.includes("luna"));
+/**
+ * Task classification is a short routine step: unless settings choose a model, it runs on the
+ * fast, inexpensive Luna tier.
+ */
+function classificationSettings(
+  models: ModelOption[],
+  chosen?: string,
+): SessionSettings | undefined {
+  const model =
+    models.find((candidate) => candidate.id === chosen) ??
+    models.find((candidate) => candidate.id.includes("luna"));
   return model ? { collaborationMode: "default", model: model.id } : undefined;
 }
 
@@ -9522,10 +9536,26 @@ function validateTaskDefaults(value: unknown): UpdateTaskDefaultsRequest {
   if (
     Object.keys(body).some(
       (key) =>
-        !["model", "titleModel", "serviceTier", "personality", "reasoningEffort"].includes(key),
+        ![
+          "model",
+          "titleModel",
+          "serviceTier",
+          "personality",
+          "reasoningEffort",
+          "classifyTasks",
+          "classificationModel",
+          "replyCheckModel",
+        ].includes(key),
     )
   ) {
     throw new ProjectValidationError("Unknown task default");
+  }
+  if (
+    body.classifyTasks !== undefined &&
+    body.classifyTasks !== null &&
+    typeof body.classifyTasks !== "boolean"
+  ) {
+    throw new ProjectValidationError("classifyTasks must be a boolean or null");
   }
   for (const key of [
     "model",
@@ -9533,6 +9563,8 @@ function validateTaskDefaults(value: unknown): UpdateTaskDefaultsRequest {
     "serviceTier",
     "personality",
     "reasoningEffort",
+    "classificationModel",
+    "replyCheckModel",
   ] as const) {
     if (
       body[key] !== undefined &&
@@ -9708,11 +9740,15 @@ function mergeTaskDefaults(
     if (model) next.model = model;
     else delete next.model;
   }
-  if (patch.titleModel !== undefined) {
-    const model = validateTaskDefaultModel(patch.titleModel, models);
-    if (model) next.titleModel = model;
-    else delete next.titleModel;
+  for (const key of ["titleModel", "classificationModel", "replyCheckModel"] as const) {
+    if (patch[key] === undefined) continue;
+    const model = validateTaskDefaultModel(patch[key], models);
+    if (model) next[key] = model;
+    else delete next[key];
   }
+  // Classification is on unless turned off, so only false is stored.
+  if (patch.classifyTasks === false) next.classifyTasks = false;
+  else if (patch.classifyTasks !== undefined) delete next.classifyTasks;
   const personality = patch.personality;
   if (personality === null) delete next.personality;
   else if (personality !== undefined) next.personality = personality;

@@ -21,7 +21,9 @@ appear in the execution session. There is no permanent board chat.
 
 In CodexNest, classification runs in a temporary helper session that never appears
 in the session list. If classification fails, use **Retry classification** in the
-card to start a new attempt.
+card to start a new attempt. Settings → New tasks can turn classification off for
+tasks created in that application (their title is then the start of the task text,
+without a category) and choose its model.
 
 The initial stages are **To do → In progress → Waiting for answer → Ready →
 Published**. Additional stages have a name and an optional description; they can be
@@ -64,7 +66,8 @@ The card follows the session:
 - the agent asks through a question, an approval or a plan, or the session stops,
   fails or becomes unavailable — **Waiting for answer**, with the reason;
 - a turn ends — the application's quick model (Haiku in ClaudeNest, the fastest
-  subscription model in CodexNest) reads the agent's last message. A question,
+  subscription model in CodexNest, or the task check model chosen in Settings → New
+  tasks) reads the agent's last message. A question,
   a request for a decision or a reported failure keeps the card in **Waiting for
   answer** with that question; otherwise the card goes to **Ready**;
 - the operator answers in the session — back to **In progress**.

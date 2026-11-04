@@ -22,6 +22,7 @@ export async function registerClaudeKanban(
 ): Promise<void> {
   const service = new KanbanService({
     provider: "claude",
+    classifies: () => ui.store.data.taskDefaults.classifyTasks !== false,
     ...(voice
       ? {
           transcribe: (audio: Buffer, contentType: string, durationMs: number) =>
@@ -39,8 +40,11 @@ export async function registerClaudeKanban(
         const { thread } = await ui.createThread(project.id, job.id, undefined, {
           cwd: job.cwd,
           title: job.title,
-          // Task classification is a short routine step: run it on the fastest, cheapest model.
-          ...(job.kind === "classify" ? { model: "haiku" } : {}),
+          // Task classification is a short routine step: unless settings choose a model, run it
+          // on the fastest, cheapest one.
+          ...(job.kind === "classify"
+            ? { model: ui.store.data.taskDefaults.classificationModel ?? "haiku" }
+            : {}),
         });
         // Settings chosen in the task field, applied like a new session's before its first message.
         if (job.settings)
@@ -78,7 +82,7 @@ export async function registerClaudeKanban(
       async readReply(id) {
         if (!ui.checkReply || !ui.store.data.threads[id]) return null;
         const reply = lastReply((await ui.detail(id)).turns);
-        return reply ? ui.checkReply(reply) : null;
+        return reply ? ui.checkReply(reply, ui.store.data.taskDefaults.replyCheckModel) : null;
       },
     },
   });

@@ -261,6 +261,64 @@ describe("project boards", () => {
     }
   });
 
+  it("classifies board tasks on the model chosen in settings", async () => {
+    const repository = await createApiTestRepository();
+    const { app, bridge, headers, projection, store } = await createTeamHarness({
+      projectPath: repository,
+    });
+    try {
+      bridge.includeLunaModels = true;
+      await projection.sync();
+      await store.update((state) => {
+        state.taskDefaults = { classificationModel: "gpt-b" };
+      });
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/kanban/cards",
+        headers,
+        payload: { clientCreationId: "classify-chosen", description: "Classify this task" },
+      });
+      expect(created.statusCode).toBe(200);
+      await vi.waitFor(() =>
+        expect(
+          bridge.request.mock.calls.find(
+            ([method, params]) => method === "thread/start" && params.ephemeral === true,
+          )?.[1],
+        ).toMatchObject({ model: "gpt-b" }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("leaves a new board task ready, without a classifier, when classification is off", async () => {
+    const repository = await createApiTestRepository();
+    const { app, bridge, headers, store } = await createTeamHarness({ projectPath: repository });
+    try {
+      await store.update((state) => {
+        state.taskDefaults = { classifyTasks: false };
+      });
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/kanban/cards",
+        headers,
+        payload: { clientCreationId: "classify-off", description: "Keep this as the title" },
+      });
+      expect(created.statusCode).toBe(200);
+      expect(created.json().cards[0]).toMatchObject({
+        title: "Keep this as the title",
+        classification: "ready",
+      });
+      expect(created.json().runs).toEqual([]);
+      expect(bridge.request).not.toHaveBeenCalledWith(
+        "thread/start",
+        expect.objectContaining({ ephemeral: true }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   it("starts a board task's session with the settings chosen in its task field", async () => {
     const repository = await createApiTestRepository();
     const { app, bridge, headers, projection } = await createTeamHarness({
@@ -5280,6 +5338,35 @@ describe("task defaults", () => {
       expect(cleared.json()).toEqual({});
       expect(projection.summary("created")?.settings.reasoningEffort).toBe("high");
       expect(projection.newSessionSettings.reasoningEffort).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("stores the board's classification switch and models", async () => {
+    const { app, headers } = await createForkHarness();
+    try {
+      const save = (payload: Record<string, unknown>) =>
+        app.inject({
+          method: "PUT",
+          url: "/api/v1/settings/task-defaults",
+          headers,
+          payload,
+        });
+      expect(
+        (
+          await save({
+            classifyTasks: false,
+            classificationModel: "gpt-a",
+            replyCheckModel: "gpt-b",
+          })
+        ).json(),
+      ).toEqual({ classifyTasks: false, classificationModel: "gpt-a", replyCheckModel: "gpt-b" });
+      expect((await save({ classifyTasks: "no" })).statusCode).toBe(400);
+      expect((await save({ replyCheckModel: "missing" })).statusCode).toBe(400);
+      expect((await save({ classifyTasks: true, classificationModel: null })).json()).toEqual({
+        replyCheckModel: "gpt-b",
+      });
     } finally {
       await app.close();
     }
