@@ -205,7 +205,8 @@ export async function discoverRepositories(projectPath: string): Promise<Reposit
 
 /**
  * Materialize a repository only after its target has been determined. This never overlays
- * uncommitted files. Callers persist the mutated workspace after the operation succeeds.
+ * uncommitted files: they stay untouched in the source checkout and are not part of the task.
+ * Callers persist the mutated workspace after the operation succeeds.
  */
 export async function prepareRepository(
   workspace: TaskWorkspace,
@@ -213,7 +214,6 @@ export async function prepareRepository(
     repositoryPath: string;
     targetBranch?: string;
     baseBranch?: string;
-    excludeDirty?: boolean;
     initialize?: boolean;
     /** Explicit root-owned files for a new local repository; sensitive paths are rejected. */
     initialFiles?: string[];
@@ -274,19 +274,6 @@ export async function prepareRepository(
     }
     await materializeRepository(workspace, existing);
     return existing;
-  }
-  const dirty = await gitText(source.path, [
-    "status",
-    "--porcelain=v1",
-    "-z",
-    "--untracked-files=all",
-  ]);
-  if (dirty && !options.excludeDirty) {
-    throw new WorkspaceError(
-      "dirty_source",
-      "Commit the source changes or explicitly exclude them from this task",
-      { repositoryPath: source.path },
-    );
   }
   const targetSha = await branchSha(source.path, options.targetBranch);
   if (!targetSha && !options.baseBranch) {
@@ -532,11 +519,12 @@ export async function publishIntegrationRepository(
       throw new WorkspaceError("target_changed", "The target is checked out in multiple worktrees");
     const targetPath = checkedOut[0];
     if (targetPath) {
+      // Untracked files stay in place; the fast-forward refuses to overwrite any of them.
       const dirty = await gitText(targetPath, [
         "status",
         "--porcelain=v1",
         "-z",
-        "--untracked-files=all",
+        "--untracked-files=no",
       ]);
       if (dirty)
         throw new WorkspaceError(

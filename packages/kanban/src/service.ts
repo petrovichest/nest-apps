@@ -1349,7 +1349,6 @@ export class KanbanService {
             ? { targetBranch: payload.targetBranch }
             : {}),
           ...(typeof payload.baseBranch === "string" ? { baseBranch: payload.baseBranch } : {}),
-          ...(payload.excludeDirty === true ? { excludeDirty: true } : {}),
           ...(payload.initialize === true ? { initialize: true } : {}),
           ...(Array.isArray(payload.initialFiles) &&
           payload.initialFiles.every((item) => typeof item === "string")

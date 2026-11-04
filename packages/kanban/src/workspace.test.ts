@@ -72,7 +72,7 @@ describe("Kanban multi-repository Git workspaces", () => {
     ).toBe(oneApi.workspacePath);
   });
 
-  it("requires an explicit decision for dirty source files and never copies them", async () => {
+  it("leaves dirty source files in place and never copies them", async () => {
     const source = await repository(undefined, { "file.txt": "saved\n" });
     await writeFile(join(source, "file.txt"), "unsaved\n");
     await writeFile(join(source, ".env"), "SECRET=value\n");
@@ -81,13 +81,9 @@ describe("Kanban multi-repository Git workspaces", () => {
       workspaceRoot: await temporary(),
       taskId: "dirty",
     });
-    await expect(
-      prepareRepository(task, { repositoryPath: source, targetBranch: "main" }),
-    ).rejects.toMatchObject({ code: "dirty_source" });
     const prepared = await prepareRepository(task, {
       repositoryPath: source,
       targetBranch: "main",
-      excludeDirty: true,
     });
     expect(await readFile(join(prepared.workspacePath, "file.txt"), "utf8")).toBe("saved\n");
     await expect(readFile(join(prepared.workspacePath, ".env"))).rejects.toMatchObject({
@@ -157,7 +153,6 @@ describe("Kanban multi-repository Git workspaces", () => {
           repositoryPath: source,
           targetBranch: "feature/bootstrap",
           initialize: true,
-          excludeDirty: true,
         }),
       ).rejects.toMatchObject({ code: "base_branch_required" });
     } finally {
@@ -274,10 +269,12 @@ describe("Kanban multi-repository Git workspaces", () => {
     expect(await readFile(join(source, "other.txt"), "utf8")).toBe("uncommitted\n");
     await git(integration.rootPath, "merge", "--no-edit", "main");
     const [updated] = await validateIntegrationWorkspace(integration);
+    await writeFile(join(source, "preview.png"), "untracked\n");
     await expect(
       publishIntegrationRepository(integration.repositories[0]!, { expectedSha: updated!.sha }),
     ).resolves.toMatchObject({ sha: updated!.sha });
     expect(await readFile(join(source, "file.txt"), "utf8")).toBe("task\n");
+    expect(await readFile(join(source, "preview.png"), "utf8")).toBe("untracked\n");
   });
 
   it("preserves existing nested gitlinks and keeps commits in their owning repositories", async () => {
@@ -318,7 +315,6 @@ describe("Kanban multi-repository Git workspaces", () => {
     const parentResult = await prepareRepository(task, {
       repositoryPath: source,
       targetBranch: "main",
-      excludeDirty: true,
     });
     await prepareRepository(task, { repositoryPath: child, targetBranch: "main" });
     await commit(parentResult.workspacePath, "accidental git add child");
