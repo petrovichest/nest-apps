@@ -200,6 +200,47 @@ describe("shared provider board service", () => {
       expect(f.launches[provider]).not.toContain(rework.id);
     },
   );
+  it("starts a task with the settings chosen in the application that received it", async () => {
+    const f = await fixture();
+    const settings = { collaborationMode: "plan", model: "opus", reasoningEffort: "high" } as const;
+    const request = { description: "Plan the board", clientCreationId: randomUUID(), settings };
+    const created = await f.services.claude.createCard(f.project, request);
+    const id = created.cards[0]!.id;
+    // A retry with the same settings is the same task; other settings are another request.
+    expect((await f.services.claude.createCard(f.project, request)).cards).toHaveLength(1);
+    await expect(
+      f.services.claude.createCard(f.project, {
+        ...request,
+        settings: { ...settings, model: "sonnet" },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(
+      f.services.claude.createCard(f.project, {
+        description: "Broken",
+        clientCreationId: randomUUID(),
+        settings: { collaborationMode: "fast" } as never,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    const classifier = await f.running("classify", id, f.services.claude);
+    expect(f.inputs.claude.find((input) => input.id === classifier.id)?.settings).toBeUndefined();
+    await f.command(classifier, "report", { title: "Plan", category: "Board" });
+    await f.services.claude.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const executor = await f.running("execute", id, f.services.claude);
+    expect(f.inputs.claude.find((input) => input.id === executor.id)?.settings).toEqual(settings);
+    // The other application's models differ: its session uses its own defaults.
+    await f.services.claude.notifyThread(executor.threadId!, "needsAttention");
+    await f.services.codex.action(f.project, {
+      action: "restart",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const restarted = await f.running("execute", id, f.services.codex);
+    expect(f.inputs.codex.find((input) => input.id === restarted.id)?.settings).toBeUndefined();
+  });
   it("creates exactly one card for retried creation and agent classification is shared", async () => {
     const f = await fixture();
     const request = { description: "Fix layout", clientCreationId: randomUUID() };

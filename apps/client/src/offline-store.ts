@@ -8,6 +8,7 @@ import type {
   PlanImplementationMode,
   ThreadDetail,
   ThreadDraft,
+  ThreadDraftImage,
   ThreadGoal,
   ThreadFileAttachment,
   ThreadSummary,
@@ -379,6 +380,53 @@ export async function deleteNewSessionDraft(
   await deleteValue(DRAFT_STORE, newSessionDraftKey(connectionCacheKey(settings), projectId));
 }
 
+/** An unsent board task: the text, pictures and settings of its task field. */
+export type BoardTaskDraft = PastedText & {
+  input: string;
+  images: ThreadDraftImage[];
+  settings?: SessionSettings;
+};
+
+type LocalBoardTaskDraft = {
+  key: string;
+  connectionKey: string;
+  projectId: string;
+  value: BoardTaskDraft;
+  updatedAt: number;
+};
+
+export async function loadBoardTaskDraft(
+  settings: ConnectionSettings,
+  projectId: string,
+): Promise<BoardTaskDraft | null> {
+  const draft = await readValue<LocalBoardTaskDraft>(
+    DRAFT_STORE,
+    boardTaskDraftKey(connectionCacheKey(settings), projectId),
+  );
+  return draft?.value ?? null;
+}
+
+/** An empty field removes the draft. */
+export async function saveBoardTaskDraft(
+  settings: ConnectionSettings,
+  projectId: string,
+  value: BoardTaskDraft,
+): Promise<void> {
+  const connectionKey = connectionCacheKey(settings);
+  const key = boardTaskDraftKey(connectionKey, projectId);
+  if (!value.input && !value.images.length && !value.pasteBlocks?.length && !value.settings) {
+    await deleteValue(DRAFT_STORE, key);
+    return;
+  }
+  await writeValue(DRAFT_STORE, {
+    key,
+    connectionKey,
+    projectId,
+    value,
+    updatedAt: Date.now(),
+  } satisfies LocalBoardTaskDraft);
+}
+
 export async function confirmLocalDraft(
   settings: ConnectionSettings,
   threadId: string,
@@ -595,6 +643,10 @@ function scopedKey(connectionKey: string, id: string): string {
 
 function newSessionDraftKey(connectionKey: string, projectId: string): string {
   return scopedKey(connectionKey, `new-session:${projectId}`);
+}
+
+function boardTaskDraftKey(connectionKey: string, projectId: string): string {
+  return scopedKey(connectionKey, `board-task:${projectId}`);
 }
 
 function tokenFingerprint(token: string): string {

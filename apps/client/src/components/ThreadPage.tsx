@@ -319,7 +319,7 @@ function clientSessionSettings(value: SessionSettings): ClientSessionSettings {
   return next;
 }
 
-function clientSessionSettingsPatch(
+export function clientSessionSettingsPatch(
   value: UpdateThreadSettingsRequest,
 ): UpdateThreadSettingsRequest {
   const next = { ...value };
@@ -329,7 +329,7 @@ function clientSessionSettingsPatch(
   return next;
 }
 
-function applySessionSettingsPatch(
+export function applySessionSettingsPatch(
   current: ClientSessionSettings,
   patch: UpdateThreadSettingsRequest,
 ): ClientSessionSettings {

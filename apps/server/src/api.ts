@@ -963,7 +963,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   function getOrCreateProjectThread(
     projectId: string,
     clientCreationId: string,
-    workspace?: { cwd: string; title: string },
+    workspace?: { cwd: string; title: string; settings?: SessionSettings },
   ): Promise<ThreadSummary> {
     const key = `${projectId}:${clientCreationId}`;
     const current = projectThreadCreations.get(key);
@@ -984,7 +984,14 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       codexManager?.assertTurnsAllowed();
       const project = store.view().projects.find((candidate) => candidate.id === projectId);
       if (!project) throw new ProjectNotFoundError("Project not found");
-      const settings = projection.newSessionSettings;
+      // Settings chosen with a board task replace the new-session defaults.
+      const settings = workspace?.settings
+        ? mergeSettings(
+            { collaborationMode: "default" },
+            workspace.settings,
+            projection.availableModels,
+          )
+        : projection.newSessionSettings;
       if (!previous) {
         const params = {
           clientCreationId,
@@ -3983,6 +3990,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         const thread = await getOrCreateProjectThread(project.id, `kanban:${job.id}`, {
           cwd: job.cwd,
           title: job.title,
+          ...(job.settings ? { settings: job.settings } : {}),
         });
         await queue.enqueue(thread.id, job.prompt, job.images ?? [], `kanban:${job.id}:start`);
         void queue.drain(thread.id).catch((error: unknown) => {

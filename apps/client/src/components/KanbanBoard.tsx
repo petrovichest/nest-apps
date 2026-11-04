@@ -20,13 +20,28 @@ import type {
   KanbanRun,
   KanbanStage,
   Project,
+  SessionSettings,
   ThreadSummary,
   TranscriptionConfigResponse,
+  TranscriptionProvider,
 } from "@codexnest/protocol";
-import { KANBAN_IMAGE_LIMIT, KANBAN_IMAGE_MAX_BYTES } from "@codexnest/protocol";
+import {
+  copyPastedMessage,
+  KANBAN_IMAGE_LIMIT,
+  KANBAN_IMAGE_MAX_BYTES,
+  rebasePastedText,
+} from "@codexnest/protocol";
 import { MessageImageGallery, MessageImageProvider } from "./MessageImageGallery";
+import { onBeforeAppReload } from "../app-reload";
 import { application } from "../application";
 import { useConnection } from "../connection";
+import { loadBoardTaskDraft, saveBoardTaskDraft, type BoardTaskDraft } from "../offline-store";
+import { Composer, type ComposerImage, type ComposerRecording } from "./Composer";
+import {
+  applySessionSettingsPatch,
+  clientSessionSettingsPatch,
+  initialSessionSettings,
+} from "./ThreadPage";
 import { localizeKnownServerText, useI18n, type Translate } from "../i18n";
 import { threadMarkerClasses } from "../thread-status";
 import { Dialog } from "./Dialog";
@@ -63,6 +78,9 @@ import "../kanban.css";
 /** The task's agent is busy: its card stays where it is. */
 const busyStatuses = new Set<KanbanRun["status"]>(["queued", "preparing", "running"]);
 const uuid = () => globalThis.crypto.randomUUID();
+const boardImage = ({ url }: ComposerImage) =>
+  /^data:image\/(?:png|jpeg|gif|webp);base64,/.test(url) &&
+  ((url.length - url.indexOf(",") - 1) * 3) / 4 <= KANBAN_IMAGE_MAX_BYTES;
 
 function runLabel(run: KanbanRun, t: Translate, session?: ThreadSummary): string {
   if (run.status === "waiting" && session?.state === "interrupted") return t("Прервана");
@@ -187,18 +205,22 @@ export function KanbanBoard({
   projects,
   threads = [],
   transcriptionConfig = null,
+  transcriptionProvider = null,
   onOpenNavigation,
 }: {
   projects: Project[];
   /** Sessions of this application; they colour the markers of the tasks they run. */
   threads?: ThreadSummary[];
   transcriptionConfig?: TranscriptionConfigResponse | null;
+  transcriptionProvider?: TranscriptionProvider | null;
   onOpenNavigation(): void;
 }) {
   const { projectId = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const project = projects.find((item) => item.id === projectId);
-  const { api } = useConnection();
+  // A refreshed project list (after a reconnect) must not reset the open board.
+  const hasProject = Boolean(project);
+  const { api, state } = useConnection();
   const { t, language } = useI18n();
   const [board, setBoard] = useState<Board | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -222,6 +244,10 @@ export function KanbanBoard({
   const [stageDrag, setStageDrag] = useState<string | null>(null);
   const [headerRetry, setHeaderRetry] = useState<Recording | null>(null);
   const [stageDropId, setStageDropId] = useState<string | null>(null);
+  const [taskDraft, setTaskDraft] = useState<BoardTaskDraft>(EMPTY_TASK_DRAFT);
+  const taskDraftRef = useRef(taskDraft);
+  const taskDraftSave = useRef<{ projectId: string; timer: number } | null>(null);
+  const taskCreationId = useRef(uuid());
   const alive = useRef(true);
   const requestGeneration = useRef(0);
   const resize = useRef<{ id: string; x: number; width: number } | null>(null);
@@ -291,14 +317,14 @@ export function KanbanBoard({
         if (alive.current && requestGeneration.current === generation) setLoading(false);
       }
     }
-    if (project) void refresh();
+    if (hasProject) void refresh();
     else setLoading(false);
     // Only the visible board refreshes. Session views add no board requests.
     const timer = window.setInterval(() => {
-      if (project) void refresh();
+      if (hasProject) void refresh();
     }, 4_000);
     const onVisible = () => {
-      if (project) void refresh();
+      if (hasProject) void refresh();
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
@@ -308,7 +334,45 @@ export function KanbanBoard({
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
-  }, [api, projectId, project, receive, displayError]);
+  }, [api, projectId, hasProject, receive, displayError]);
+
+  /** The task field keeps its draft on this device, like a session's, until the task is sent. */
+  const flushTaskDraft = useCallback(async () => {
+    const pending = taskDraftSave.current;
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    taskDraftSave.current = null;
+    await saveBoardTaskDraft(api.settings, pending.projectId, taskDraftRef.current).catch(
+      () => undefined,
+    );
+  }, [api]);
+  useEffect(() => {
+    let active = true;
+    const empty = EMPTY_TASK_DRAFT;
+    taskDraftRef.current = empty;
+    taskCreationId.current = uuid();
+    setTaskDraft(empty);
+    void loadBoardTaskDraft(api.settings, projectId)
+      .then((saved) => {
+        // Text typed before the saved draft arrives wins.
+        if (!active || !saved || taskDraftRef.current !== empty) return;
+        taskDraftRef.current = saved;
+        setTaskDraft(saved);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      void flushTaskDraft();
+    };
+  }, [api, projectId, flushTaskDraft]);
+  useEffect(() => onBeforeAppReload(flushTaskDraft), [flushTaskDraft]);
+  const models = state.snapshot?.models;
+  const defaultReasoningEffort = state.snapshot?.defaultReasoningEffort;
+  const taskDefaults = state.snapshot?.taskDefaults;
+  const defaultTaskSettings = useMemo(
+    () => initialSessionSettings(defaultReasoningEffort, models ?? [], taskDefaults),
+    [defaultReasoningEffort, models, taskDefaults],
+  );
 
   // A session's board link names the session; its card opens once the board arrives.
   useEffect(() => {
@@ -365,8 +429,38 @@ export function KanbanBoard({
         clientCreationId: value.id,
         ...(value.images.length ? { images: value.images } : {}),
         ...(audio ? { audio } : {}),
+        ...(value.settings ? { settings: value.settings } : {}),
       }),
     );
+  }
+  function editTaskDraft(next: BoardTaskDraft) {
+    taskDraftRef.current = next;
+    taskCreationId.current = uuid();
+    setTaskDraft(next);
+    if (taskDraftSave.current) window.clearTimeout(taskDraftSave.current.timer);
+    taskDraftSave.current = {
+      projectId,
+      timer: window.setTimeout(() => void flushTaskDraft(), 400),
+    };
+  }
+  /** Sends the task field like a session's first message; a recording goes with it at once. */
+  async function submitTask(recording?: ComposerRecording): Promise<boolean> {
+    const draft = taskDraftRef.current;
+    const ok = await createTask({
+      id: recording ? `${taskCreationId.current}:${recording.id}` : taskCreationId.current,
+      text: copyPastedMessage(draft.input.trim(), draft).trim(),
+      images: draft.images.map(({ name, url }) => ({ name, url })),
+      ...(recording ? { recording } : {}),
+      ...(draft.settings ? { settings: draft.settings } : {}),
+    });
+    if (!ok) return false;
+    // Text typed while the task was being sent stays for the next task.
+    if (taskDraftRef.current === draft) {
+      editTaskDraft(EMPTY_TASK_DRAFT);
+      void flushTaskDraft();
+      setDialog(null);
+    }
+    return true;
   }
   async function sendHeaderRecording(recording: Recording) {
     const ok = await createTask({ id: `voice:${recording.id}`, text: "", images: [], recording });
@@ -1684,7 +1778,7 @@ export function KanbanBoard({
       {dialog === "create" && (
         <Dialog
           titleId="kanban-create-title"
-          className="chat-dialog kanban-text-dialog"
+          className="chat-dialog kanban-text-dialog kanban-task-dialog"
           closeOnBackdrop={!busy}
           closeOnEscape={!busy}
           onClose={() => setDialog(null)}
@@ -1700,18 +1794,59 @@ export function KanbanBoard({
               <XIcon />
             </button>
           </div>
-          <TaskComposer
-            label={t("Задача")}
-            placeholder={t("Опишите задачу, приложите картинки или надиктуйте")}
-            submitLabel={t("Отправить")}
-            busy={busy}
-            error={error}
-            config={transcriptionConfig}
-            onSubmit={async (value) => {
-              const ok = await createTask(value);
-              if (ok) setDialog(null);
-              return ok;
+          <Composer
+            autoFocus
+            sessionIdentity={`board-task:${projectId}`}
+            input={taskDraft.input}
+            pastes={taskDraft}
+            onInput={(input, pastes) => {
+              const current = taskDraftRef.current;
+              const next = pastes ?? rebasePastedText(current.input, input, current);
+              editTaskDraft({
+                ...current,
+                input,
+                inlinePastes: next.inlinePastes,
+                pasteBlocks: next.pasteBlocks,
+              });
             }}
+            onDraftFlush={() => void flushTaskDraft()}
+            images={taskDraft.images as ComposerImage[]}
+            onImagesChange={(images) => {
+              // The board keeps the formats and sizes its server stores.
+              const accepted = images.filter(boardImage);
+              if (accepted.length < images.length)
+                setError(t("Выберите изображение PNG, JPEG, GIF или WebP до 10 МБ"));
+              else if (accepted.length > KANBAN_IMAGE_LIMIT)
+                setError(
+                  t("Можно прикрепить до {{count}} изображений", { count: KANBAN_IMAGE_LIMIT }),
+                );
+              editTaskDraft({
+                ...taskDraftRef.current,
+                images: accepted.slice(0, KANBAN_IMAGE_LIMIT),
+              });
+            }}
+            onSubmit={() => void submitTask()}
+            busy={busy}
+            settings={taskDraft.settings ?? defaultTaskSettings}
+            onSettingsChange={(patch) => {
+              const current = taskDraftRef.current;
+              editTaskDraft({
+                ...current,
+                settings: applySessionSettingsPatch(
+                  current.settings ?? defaultTaskSettings,
+                  clientSessionSettingsPatch(patch),
+                ),
+              });
+            }}
+            models={models ?? []}
+            cwd={project?.path ?? null}
+            transcriptionConfig={transcriptionConfig}
+            transcriptionProvider={transcriptionProvider}
+            onRecordingReady={async (recording) => {
+              if (!(await submitTask(recording)))
+                throw new Error(t("Не удалось отправить запись на сервер"));
+            }}
+            error={error}
           />
         </Dialog>
       )}
@@ -1937,7 +2072,9 @@ type ComposerValue = {
   text: string;
   images: KanbanImageInput[];
   recording?: Recording;
+  settings?: SessionSettings;
 };
+const EMPTY_TASK_DRAFT: BoardTaskDraft = { input: "", images: [] };
 
 /** The board's recorder: the Composer's MIME choice, limits and microphone errors. */
 function useRecorder(

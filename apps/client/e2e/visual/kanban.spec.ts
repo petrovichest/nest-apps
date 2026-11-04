@@ -234,14 +234,31 @@ for (const width of [390, 1440]) {
       await expect(panel).toBeHidden();
       await page.getByRole("button", { name: "Добавить задачу", exact: true }).first().click();
       await expect(page.getByRole("dialog", { name: "Добавить задачу" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Начать запись", exact: true })).toBeVisible();
       const create = page.getByRole("dialog", { name: "Добавить задачу" });
-      await create.getByLabel("Задача", { exact: true }).fill("Исправить по скриншоту");
-      const chooser = page.waitForEvent("filechooser");
-      await create.getByRole("button", { name: "Прикрепить изображение", exact: true }).click();
-      await (
-        await chooser
-      ).setFiles({ name: "screenshot.png", mimeType: "image/png", buffer: png });
+      // The task field is the session's composer, focused at once.
+      const field = create.getByRole("textbox", { name: "Сообщение для Codex" });
+      await expect(field).toBeFocused();
+      await expect(
+        create.getByRole("button", { name: "Начать запись", exact: true }),
+      ).toBeVisible();
+      await expect(
+        create.getByRole("button", { name: "Модель и уровень рассуждений" }),
+      ).toBeVisible();
+      await create.getByRole("button", { name: "Добавить изображения" }).click();
+      // The attachment menu opens upwards and stays inside the dialog.
+      const attachments = create.getByRole("dialog", { name: "Вложения" });
+      await expect(attachments).toBeVisible();
+      const menuBox = (await attachments.boundingBox())!;
+      const dialogBox = (await create.boundingBox())!;
+      expect(menuBox.y).toBeGreaterThanOrEqual(dialogBox.y);
+      await page.screenshot({ path: info.outputPath(`kanban-create-empty-${width}-${theme}.png`) });
+      await page.keyboard.press("Escape");
+      await expect(attachments).toBeHidden();
+      await expect(create).toBeVisible();
+      await field.fill("Исправить по скриншоту");
+      await create
+        .locator('input[type="file"]')
+        .setInputFiles({ name: "screenshot.png", mimeType: "image/png", buffer: png });
       await expect(create.getByRole("img", { name: "screenshot.png", exact: true })).toBeVisible();
       expect(imageReads).toBe(0);
       await page.screenshot({ path: info.outputPath(`kanban-create-${width}-${theme}.png`) });

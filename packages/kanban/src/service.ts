@@ -14,6 +14,7 @@ import type {
   KanbanRun,
   KanbanRunKind,
   KanbanStageRole,
+  SessionSettings,
   UpdateKanbanCardRequest,
   UpdateKanbanStageRequest,
 } from "@codexnest/protocol";
@@ -46,6 +47,8 @@ export type KanbanLaunch = {
   images?: string[];
   kind: KanbanRunKind;
   title: string;
+  /** Settings chosen with the task in this application; absent means new-session defaults. */
+  settings?: SessionSettings;
 };
 export type KanbanProviderAdapter = {
   available?(): boolean;
@@ -186,6 +189,29 @@ function decodeAudio(input: KanbanAudioInput) {
   if (!bytes.length || !Number.isFinite(durationMs) || durationMs <= 0 || durationMs > 3_600_000)
     throw new KanbanError("invalid_request", "Invalid recording", 400);
   return { mediaType, bytes, durationMs: Math.round(durationMs) };
+}
+/** The application checks the model and effort when it starts the session. */
+function decodeSettings(input: unknown): SessionSettings | undefined {
+  if (input === undefined) return undefined;
+  const value = input as Record<string, unknown> | null;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !["default", "plan", "team"].includes(value.collaborationMode as string)
+  )
+    throw new KanbanError("invalid_request", "Invalid session settings", 400);
+  const settings: SessionSettings = {
+    collaborationMode: value.collaborationMode as SessionSettings["collaborationMode"],
+  };
+  for (const key of ["model", "reasoningEffort", "serviceTier", "personality"] as const) {
+    const field = value[key];
+    if (field === undefined) continue;
+    if (typeof field !== "string" || !field || field.length > 200)
+      throw new KanbanError("invalid_request", "Invalid session settings", 400);
+    settings[key] = field;
+  }
+  return settings;
 }
 /** New cards keep several images; older cards have one legacy image named after the card. */
 const cardImages = (card: KanbanCard): StoredImage[] =>
@@ -356,14 +382,16 @@ export class KanbanService {
           ? []
           : [null]),
     ]);
+    const settings = decodeSettings(request.settings);
     if (audio) this.requireTranscription();
     // Keep the original text-only fingerprint compatible with existing retries.
     let fingerprint = description;
-    if (images.length || audio) {
+    if (images.length || audio || settings) {
       const hash = createHash("sha256").update(JSON.stringify([description, images.length]));
       for (const image of images)
         hash.update(JSON.stringify([image.name, image.mediaType])).update(image.bytes);
       if (audio) hash.update(audio.mediaType).update(audio.bytes);
+      if (settings) hash.update(JSON.stringify(settings));
       fingerprint = hash.digest("hex");
     }
     const { board } = await this.store.update(projectPath, async (data) => {
@@ -396,7 +424,9 @@ export class KanbanService {
           size: image.size,
         }));
       data.board.cards.unshift(card);
-      data.cards[card.id] = {};
+      data.cards[card.id] = settings
+        ? { settings: { provider: this.options.provider, value: settings } }
+        : {};
       data.creations[key] = { fingerprint, cardId: card.id };
       if (audio) {
         // The card appears at once; classification starts after transcription.
@@ -1181,6 +1211,7 @@ export class KanbanService {
         ),
       );
       const imageInput = images.length ? { images } : {};
+      const chosen = document.cards[card.id]?.settings;
       if (runtime.interruptThreadId)
         await Promise.resolve(this.options.adapter.interrupt?.(runtime.interruptThreadId)).catch(
           (error) => this.options.onError?.(error),
@@ -1211,6 +1242,9 @@ export class KanbanService {
             ...imageInput,
             kind: run.kind,
             title: run.kind === "classify" ? `classify: ${card.title}` : card.title,
+            ...(run.kind === "execute" && chosen?.provider === this.options.provider
+              ? { settings: chosen.value }
+              : {}),
           });
       // Register before publishing running state: an immediate native completion must
       // already resolve to this run, including a continuation of an existing thread.

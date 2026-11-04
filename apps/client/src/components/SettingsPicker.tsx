@@ -141,7 +141,9 @@ export function SettingsPicker({
         </button>
       )}
 
+      {/* A field without goal mode (a board task) shows no goal toggle. */}
       {application.capabilities.goal &&
+        (goal || onGoalModeChange) &&
         (goal ? (
           <details className="goal-picker" data-dismiss-on-outside-click>
             <summary

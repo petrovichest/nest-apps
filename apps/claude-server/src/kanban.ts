@@ -42,6 +42,13 @@ export async function registerClaudeKanban(
           // Task classification is a short routine step: run it on the fastest, cheapest model.
           ...(job.kind === "classify" ? { model: "haiku" } : {}),
         });
+        // Settings chosen in the task field, applied like a new session's before its first message.
+        if (job.settings)
+          await ui.settings(thread.id, {
+            collaborationMode: job.settings.collaborationMode,
+            model: job.settings.model ?? "default",
+            reasoningEffort: job.settings.reasoningEffort,
+          });
         await ui.enqueue(thread.id, {
           input: job.prompt,
           ...(job.images?.length ? { images: job.images } : {}),

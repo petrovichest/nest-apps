@@ -2,7 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { KanbanBoard, KanbanStageRole } from "@codexnest/protocol";
+import type {
+  KanbanBoard,
+  KanbanProvider,
+  KanbanStageRole,
+  SessionSettings,
+} from "@codexnest/protocol";
 
 /** An image saved next to the board; file is relative to the board's image directory. */
 export type StoredImage = { name: string; mediaType: string; size: number; file: string };
@@ -16,6 +21,8 @@ export type VoiceRuntime = {
 };
 export type CardRuntime = {
   voice?: VoiceRuntime;
+  /** Settings chosen with the task; only the application that received them applies them. */
+  settings?: { provider: KanbanProvider; value: SessionSettings };
 };
 export type RunRuntime = {
   token: string;

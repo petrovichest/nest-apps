@@ -261,6 +261,71 @@ describe("project boards", () => {
     }
   });
 
+  it("starts a board task's session with the settings chosen in its task field", async () => {
+    const repository = await createApiTestRepository();
+    const { app, bridge, headers, projection } = await createTeamHarness({
+      projectPath: repository,
+    });
+    const original = bridge.request.getMockImplementation()!;
+    bridge.request.mockImplementation(async (method, params = {}) =>
+      method === "thread/start" && params.ephemeral
+        ? { thread: { ...testThread("classifier"), cwd: repository, ephemeral: true } }
+        : original(method, params),
+    );
+    const classifierStart = () =>
+      bridge.request.mock.calls.find(
+        ([method, params]) => method === "turn/start" && params.threadId === "classifier",
+      );
+    try {
+      await projection.sync();
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/kanban/cards",
+        headers,
+        payload: {
+          clientCreationId: "chosen-settings",
+          description: "Use the small model",
+          settings: { collaborationMode: "default", model: "gpt-b", reasoningEffort: "low" },
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      await vi.waitFor(() => expect(classifierStart()).toBeDefined());
+      const prompt = (classifierStart()![1].input as { text: string }[])[0]!.text;
+      const capability = /'([^']+\.json)' report/.exec(prompt)![1]!;
+      await execFileAsync(process.execPath, [
+        join(dirname(dirname(capability)), "agent.mjs"),
+        capability,
+        "report",
+        JSON.stringify({ title: "Small model", category: "Models" }),
+      ]);
+      // The classifier runs on its own model; only the task's session takes the chosen one.
+      expect(classifierStart()![1]).not.toMatchObject({ model: "gpt-b" });
+      const executed = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/kanban/actions",
+        headers,
+        payload: {
+          action: "execute",
+          cardIds: [created.json().cards[0].id],
+          clientActionId: "start-chosen",
+        },
+      });
+      expect(executed.statusCode).toBe(200);
+      await vi.waitFor(() =>
+        expect(projection.summary("created")?.settings).toMatchObject({
+          model: "gpt-b",
+          reasoningEffort: "low",
+        }),
+      );
+      expect(bridge.request).toHaveBeenCalledWith(
+        "thread/start",
+        expect.objectContaining({ model: "gpt-b", cwd: repository }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   it("keeps an isolated session in its originating project", async () => {
     const { app, projection, store } = await createTeamHarness();
     try {

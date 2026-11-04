@@ -1,3 +1,5 @@
+import type { SessionSettings } from "./index.js";
+
 /** Project boards are shared by the local CodexNest and ClaudeNest instances. */
 export type KanbanProvider = "codex" | "claude";
 /** The application moves cards between working, waiting and ready; the agent never does. */
@@ -77,6 +79,11 @@ export type CreateKanbanCardRequest = {
   image?: KanbanImageInput;
   images?: KanbanImageInput[];
   audio?: KanbanAudioInput;
+  /**
+   * Settings chosen in the task field. The application that received the task applies them when
+   * it starts the task's session; the other application uses its own new-session settings.
+   */
+  settings?: SessionSettings;
 };
 export type UpdateKanbanCardRequest = {
   title?: string;

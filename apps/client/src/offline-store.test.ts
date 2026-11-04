@@ -4,10 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   discardConsumedLocalDraft,
   listPendingVoiceRecordings,
+  loadBoardTaskDraft,
   loadLocalDraft,
   loadNewSessionDraft,
   loadPendingVoiceRecording,
   putPendingVoiceRecording,
+  saveBoardTaskDraft,
   saveLocalDraft,
   saveNewSessionDraft,
   connectionCacheKey,
@@ -121,6 +123,21 @@ describe("offline store recordings", () => {
     // A failed upload rewrites the record it read back.
     expect(await putPendingVoiceRecording({ ...loaded!, attempts: 1 })).toBe(true);
     expect(await listPendingVoiceRecordings(settings)).toHaveLength(1);
+  });
+
+  it("keeps a board task draft per project and drops it once the field is empty", async () => {
+    const stores = installIndexedDb({ refuseBlobs: false });
+    const task = {
+      input: "Fix login",
+      images: [{ id: "image", name: "shot.png", url: "data:image/png;base64,AA==" }],
+      settings: { collaborationMode: "plan" as const, model: "gpt-b" },
+    };
+    await saveBoardTaskDraft(settings, "project", task);
+    expect(await loadBoardTaskDraft(settings, "project")).toEqual(task);
+    expect(await loadBoardTaskDraft(settings, "other")).toBeNull();
+    await saveBoardTaskDraft(settings, "project", { input: "", images: [] });
+    expect(await loadBoardTaskDraft(settings, "project")).toBeNull();
+    expect(stores.get("drafts")!.size).toBe(0);
   });
 
   it("drops the local draft a voice message consumed, but not one edited since", async () => {

@@ -5,14 +5,46 @@ import type {
   KanbanBoard as Board,
   KanbanCard,
   KanbanRun,
+  ModelOption,
   Project,
   ThreadSummary,
   TranscriptionConfigResponse,
 } from "@codexnest/protocol";
+import type * as OfflineStore from "../offline-store";
 import { KanbanBoard } from "./KanbanBoard";
 
 const connection = vi.hoisted(() => vi.fn());
 vi.mock("../connection", () => ({ useConnection: connection }));
+// Board task drafts live in IndexedDB; a map stands in for it.
+const drafts = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("../offline-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof OfflineStore>()),
+  loadBoardTaskDraft: async (_settings: unknown, projectId: string) =>
+    structuredClone(drafts.get(projectId) ?? null),
+  saveBoardTaskDraft: async (_settings: unknown, projectId: string, value: unknown) => {
+    drafts.set(projectId, structuredClone(value));
+  },
+}));
+const models: ModelOption[] = [
+  {
+    id: "gpt-a",
+    displayName: "GPT A",
+    description: "",
+    isDefault: true,
+    reasoningEfforts: [{ value: "medium", description: null, isDefault: true }],
+    serviceTiers: [],
+    supportsPersonality: false,
+  },
+  {
+    id: "gpt-b",
+    displayName: "GPT B",
+    description: "",
+    isDefault: false,
+    reasoningEfforts: [{ value: "low", description: null, isDefault: true }],
+    serviceTiers: [],
+    supportsPersonality: false,
+  },
+];
 const project: Project = {
   id: "project",
   path: "/work/app",
@@ -96,6 +128,7 @@ function show(
               projects={[project]}
               threads={threads}
               transcriptionConfig={config}
+              transcriptionProvider={config?.provider ?? null}
               onOpenNavigation={vi.fn()}
             />
           }
@@ -117,7 +150,11 @@ beforeEach(() => {
     updateKanbanStage: vi.fn().mockResolvedValue(board()),
     deleteKanbanStage: vi.fn().mockResolvedValue(board()),
   };
-  connection.mockReturnValue({ api });
+  connection.mockReturnValue({
+    api: Object.assign(api, { settings: { baseUrl: "http://nest.test", token: "token" } }),
+    state: { snapshot: { models } },
+  });
+  drafts.clear();
   localStorage.clear();
 });
 afterEach(() => {
@@ -225,12 +262,14 @@ describe("KanbanBoard", () => {
     const dialog = screen.getByRole("dialog", { name: "Добавить задачу" });
     const send = within(dialog).getByRole("button", { name: "Отправить" });
     expect(send).toBeDisabled();
-    fireEvent.change(within(dialog).getByLabelText("Задача"), {
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Сообщение для Codex" }), {
       target: { value: "  Fix the login  " },
     });
     fireEvent.click(send);
     await within(dialog).findByText("Cannot save task");
-    expect(within(dialog).getByLabelText("Задача")).toHaveValue("  Fix the login  ");
+    expect(within(dialog).getByRole("textbox", { name: "Сообщение для Codex" })).toHaveValue(
+      "  Fix the login  ",
+    );
     const firstId = api.createKanbanCard.mock.calls[0][1].clientCreationId;
     fireEvent.click(send);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -240,17 +279,87 @@ describe("KanbanBoard", () => {
     });
   });
 
+  it("starts the task field focused, keeps its draft until Enter sends it", async () => {
+    const tree = (projects: Project[]) => (
+      <MemoryRouter initialEntries={["/projects/project/kanban"]}>
+        <Routes>
+          <Route
+            path="/projects/:projectId/kanban"
+            element={<KanbanBoard projects={projects} onOpenNavigation={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>
+    );
+    const view = render(tree([project]));
+    await screen.findByRole("button", { name: "Task one" });
+    const open = () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Добавить задачу" })[0]);
+      const dialog = screen.getByRole("dialog", { name: "Добавить задачу" });
+      return {
+        dialog,
+        field: within(dialog).getByRole("textbox", { name: "Сообщение для Codex" }),
+      };
+    };
+    const { dialog, field: first } = open();
+    let field = first;
+    expect(field).toHaveFocus();
+    fireEvent.change(field, { target: { value: "Keep this text" } });
+    // A reconnect brings a new project list; the open field stays as it is.
+    view.rerender(tree([{ ...project }]));
+    expect(screen.getByRole("dialog", { name: "Добавить задачу" })).toBe(dialog);
+    expect(field).toHaveValue("Keep this text");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+    ({ field } = open());
+    expect(field).toHaveValue("Keep this text");
+    // The draft is saved on the device and comes back after a reload.
+    await waitFor(() => expect(drafts.get("project")).toMatchObject({ input: "Keep this text" }));
+    view.unmount();
+    render(tree([project]));
+    await screen.findByRole("button", { name: "Task one" });
+    ({ field } = open());
+    await waitFor(() => expect(field).toHaveValue("Keep this text"));
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(api.createKanbanCard).toHaveBeenCalledWith("project", {
+      description: "Keep this text",
+      clientCreationId: expect.any(String),
+    });
+    await waitFor(() => expect(drafts.get("project")).toMatchObject({ input: "", images: [] }));
+  });
+
+  it("sends the settings chosen in the task field with the task", async () => {
+    show();
+    await screen.findByRole("button", { name: "Task one" });
+    fireEvent.click(screen.getAllByRole("button", { name: "Добавить задачу" })[0]);
+    const dialog = screen.getByRole("dialog", { name: "Добавить задачу" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Сообщение для Codex" }), {
+      target: { value: "Use the other model" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Модель и уровень рассуждений" }));
+    const picker = screen.getByRole("dialog", { name: "Настройки модели" });
+    fireEvent.click(within(picker).getByRole("radio", { name: /GPT B/ }));
+    fireEvent.click(within(picker).getByRole("button", { name: "Закрыть" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Отправить" }));
+    await waitFor(() =>
+      expect(api.createKanbanCard).toHaveBeenCalledWith("project", {
+        description: "Use the other model",
+        clientCreationId: expect.any(String),
+        settings: { collaborationMode: "default", model: "gpt-b" },
+      }),
+    );
+  });
+
   it("previews an image, retains it on failed creation and retries with the same identity", async () => {
     api.createKanbanCard.mockRejectedValueOnce(new Error("Cannot save task"));
     show();
     await screen.findByRole("button", { name: "Task one" });
     fireEvent.click(screen.getAllByRole("button", { name: "Добавить задачу" })[0]);
     const dialog = screen.getByRole("dialog", { name: "Добавить задачу" });
-    fireEvent.change(within(dialog).getByLabelText("Задача"), {
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Сообщение для Codex" }), {
       target: { value: "Fix screenshot" },
     });
     const file = new File(["image bytes"], "screenshot.png", { type: "image/png" });
-    fireEvent.change(within(dialog).getByLabelText("Прикрепить изображение"), {
+    fireEvent.change(dialog.querySelector<HTMLInputElement>('input[type="file"]')!, {
       target: { files: [file] },
     });
     await within(dialog).findByRole("img", { name: file.name });
@@ -274,9 +383,9 @@ describe("KanbanBoard", () => {
     await screen.findByRole("button", { name: "Task one" });
     fireEvent.click(screen.getAllByRole("button", { name: "Добавить задачу" })[0]);
     const dialog = screen.getByRole("dialog", { name: "Добавить задачу" });
-    const field = within(dialog).getByLabelText("Задача");
+    const field = within(dialog).getByRole("textbox", { name: "Сообщение для Codex" });
     fireEvent.change(field, { target: { value: "Task" } });
-    const input = within(dialog).getByLabelText("Прикрепить изображение");
+    const input = dialog.querySelector<HTMLInputElement>('input[type="file"]')!;
     for (const file of [
       new File(["svg"], "bad.svg", { type: "image/svg+xml" }),
       new File([new Uint8Array(10 * 1024 * 1024 + 1)], "large.png", { type: "image/png" }),
@@ -286,7 +395,7 @@ describe("KanbanBoard", () => {
     }
     const file = new File(["image"], "paste.png", { type: "image/png" });
     fireEvent.paste(field, {
-      clipboardData: { items: [{ type: file.type, getAsFile: () => file }] },
+      clipboardData: { items: [{ kind: "file", type: file.type, getAsFile: () => file }] },
     });
     await within(dialog).findByRole("img", { name: file.name });
     fireEvent.click(within(dialog).getByRole("button", { name: "Удалить изображение paste.png" }));
@@ -455,11 +564,11 @@ describe("KanbanBoard", () => {
     await screen.findByRole("button", { name: "Task one" });
     fireEvent.click(screen.getAllByRole("button", { name: "Добавить задачу" })[0]);
     const dialog = screen.getByRole("dialog", { name: "Добавить задачу" });
-    fireEvent.change(within(dialog).getByLabelText("Задача"), { target: { value: "Fix login" } });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Сообщение для Codex" }), {
+      target: { value: "Fix login" },
+    });
     fireEvent.click(within(dialog).getByRole("button", { name: "Начать запись" }));
-    fireEvent.click(
-      await within(dialog).findByRole("button", { name: "Остановить запись и отправить" }),
-    );
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Остановить запись" }));
     await waitFor(() =>
       expect(api.createKanbanCard).toHaveBeenCalledWith("project", {
         description: "Fix login",

@@ -1147,6 +1147,21 @@ textarea.kanban-edit-field {
   margin-top: var(--space-1);
 }
 
+/* The task field is the session's composer, placed in the dialog instead of the chat's bottom. */
+.kanban-task-dialog .composer {
+  position: static;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  pointer-events: auto;
+}
+
+/* Outranks the dialog field rule: the composer's text has no surface of its own. */
+.chat-dialog.kanban-task-dialog .composer-box textarea {
+  border-radius: 0;
+  background: transparent;
+}
+
 .kanban-text-dialog .dialog-header h2 {
   margin: 0;
   font-size: var(--text-dialog);

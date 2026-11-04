@@ -484,6 +484,7 @@ export function App({
                   projects={snapshot?.projects ?? []}
                   threads={snapshot?.threads ?? []}
                   transcriptionConfig={transcriptionConfig}
+                  transcriptionProvider={activeTranscriptionProvider(transcriptionConfig)}
                   onOpenNavigation={() => setDrawer(true)}
                 />
               }

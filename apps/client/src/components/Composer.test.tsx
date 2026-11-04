@@ -655,7 +655,11 @@ describe("Composer", () => {
   });
 
   it("renders plan, team, and goal as compact mutually exclusive controls", () => {
-    const view = render(<Harness />);
+    const withoutGoal = render(<Harness />);
+    // A field without goal mode (a board task) has no goal toggle.
+    expect(screen.queryByRole("button", { name: "Включить режим цели" })).toBeNull();
+    withoutGoal.unmount();
+    const view = render(<Harness onGoalModeChange={vi.fn()} />);
     const settings = view.container.querySelector(".settings-picker");
     const plan = screen.getByRole("button", { name: "Включить режим планирования" });
     const team = screen.getByRole("button", { name: "Включить командный режим" });
