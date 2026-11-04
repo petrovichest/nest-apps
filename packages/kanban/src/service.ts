@@ -30,6 +30,7 @@ import {
   PUBLISH_PROMPT,
   taskPrompt,
 } from "./agent.js";
+import type { ReplyVerdict } from "./reply.js";
 import {
   atomicJson,
   KanbanError,
@@ -60,9 +61,9 @@ export type KanbanProviderAdapter = {
   threadState?(threadId: string): Promise<string | null> | string | null;
   /**
    * Reads the session's last reply after a finished turn: a short reason when the agent waits
-   * for the operator (a question, a decision, a failure), or null when its work is done.
+   * for the operator (a question, a decision, a failure), and whether it says it pushed its work.
    */
-  awaitsAnswer?(threadId: string): Promise<string | null>;
+  readReply?(threadId: string): Promise<ReplyVerdict | null>;
 };
 export type KanbanServiceOptions = {
   provider: KanbanProvider;
@@ -1139,9 +1140,12 @@ export class KanbanService {
     state: string,
   ): Promise<void> {
     let question: string | null = null;
+    let published = false;
     let error: string | null = null;
     try {
-      question = (await this.options.adapter.awaitsAnswer?.(threadId)) ?? null;
+      const reply = await this.options.adapter.readReply?.(threadId);
+      question = reply?.question ?? null;
+      published = reply?.published ?? false;
     } catch (failure) {
       this.options.onError?.(failure);
       error = "Could not tell whether the agent finished; open the session";
@@ -1160,7 +1164,11 @@ export class KanbanService {
         setStage(
           data,
           card,
-          role(data.board, waiting ? "waiting" : run.kind === "publish" ? "done" : "ready"),
+          // Agents push like in any session; work they report pushed needs no board publication.
+          role(
+            data.board,
+            waiting ? "waiting" : run.kind === "publish" || published ? "done" : "ready",
+          ),
         );
         card.question = question;
         card.error = error;

@@ -175,13 +175,21 @@ describe("claudeTitleGenerator", () => {
 
 describe("claudeReplyCheck", () => {
   it.each([
-    ['{"structured_output":{"waiting":true,"reason":"  Нужна   ветка "}}', "Нужна ветка"],
-    ['{"structured_output":{"waiting":false,"reason":""}}', null],
+    [
+      '{"structured_output":{"waiting":true,"reason":"  Нужна   ветка ","published":false}}',
+      { question: "Нужна ветка", published: false },
+    ],
+    [
+      '{"structured_output":{"waiting":false,"reason":"","published":true}}',
+      { question: null, published: true },
+    ],
+    // An answer without the flag does not count as pushed.
+    ['{"structured_output":{"waiting":false,"reason":""}}', { question: null, published: false }],
   ])("tells a question from a finished result on the fast model: %s", async (answer, expected) => {
     const claude = await fakeClaude(answer);
-    await expect(claudeReplyCheck({ claudeBin: claude.bin })("Готово. Какая ветка?")).resolves.toBe(
-      expected,
-    );
+    await expect(
+      claudeReplyCheck({ claudeBin: claude.bin })("Готово. Какая ветка?"),
+    ).resolves.toEqual(expected);
     const call = await claude.call();
     expect(call.input).toBe("<reply>\nГотово. Какая ветка?\n</reply>");
     expect(call.args[call.args.indexOf("--model") + 1]).toBe("haiku");
@@ -189,6 +197,7 @@ describe("claudeReplyCheck", () => {
     expect(JSON.parse(call.args[call.args.indexOf("--json-schema") + 1]!).required).toEqual([
       "waiting",
       "reason",
+      "published",
     ]);
   });
   it("fails on an answer without a verdict", async () => {

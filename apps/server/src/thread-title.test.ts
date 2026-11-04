@@ -60,16 +60,23 @@ describe("ThreadTitleGenerator", () => {
   });
 
   it.each([
-    ['{"waiting":true,"reason":"  Нужно выбрать   ветку  "}', "Нужно выбрать ветку"],
-    ['{"waiting":true,"reason":""}', "The agent is waiting for an answer"],
-    ['{"waiting":false,"reason":"ignored"}', null],
+    [
+      '{"waiting":true,"reason":"  Нужно выбрать   ветку  ","published":false}',
+      { question: "Нужно выбрать ветку", published: false },
+    ],
+    [
+      '{"waiting":true,"reason":"","published":false}',
+      { question: "The agent is waiting for an answer", published: false },
+    ],
+    ['{"waiting":false,"reason":"ignored","published":true}', { question: null, published: true }],
+    ['{"waiting":false,"reason":""}', { question: null, published: false }],
   ])("reads whether a finished turn waits for the user: %s", async (response, expected) => {
     const bridge = fakeBridge(response);
     const generator = new ThreadTitleGenerator(bridge as unknown as CodexBridge);
 
     await expect(
-      generator.awaitsAnswer("Готово. Какую ветку выбрать?", { cwd: "/work", model: "fast" }),
-    ).resolves.toBe(expected);
+      generator.readReply("Готово. Какую ветку выбрать?", { cwd: "/work", model: "fast" }),
+    ).resolves.toEqual(expected);
     expect(bridge.request.mock.calls[0]?.[1]).toMatchObject({
       ephemeral: true,
       sandbox: "read-only",
@@ -84,7 +91,7 @@ describe("ThreadTitleGenerator", () => {
           text_elements: [],
         },
       ],
-      outputSchema: expect.objectContaining({ required: ["waiting", "reason"] }),
+      outputSchema: expect.objectContaining({ required: ["waiting", "reason", "published"] }),
     });
   });
 

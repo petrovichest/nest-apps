@@ -75,7 +75,7 @@ export async function registerClaudeKanban(
         });
         ui.publish({ type: "thread.upserted", thread: ui.summary(id) });
       },
-      async awaitsAnswer(id) {
+      async readReply(id) {
         if (!ui.checkReply || !ui.store.data.threads[id]) return null;
         const reply = lastReply((await ui.detail(id)).turns);
         return reply ? ui.checkReply(reply) : null;

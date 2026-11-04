@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { KanbanBoard, KanbanRun } from "@codexnest/protocol";
 import { PUBLISH_PROMPT } from "./agent.js";
 import { atomicJson, type KanbanDocument } from "./store.js";
+import type { ReplyVerdict } from "./reply.js";
 import { KanbanService, type KanbanLaunch } from "./service.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -38,6 +39,8 @@ async function fixture(
   const prompts = new Map<string, string>();
   // The fast check of a finished turn: what the agent asks, by session.
   const questions = new Map<string, string | null>();
+  // Sessions whose last reply says the work was pushed.
+  const pushed = new Set<string>();
   const services = {} as Record<"codex" | "claude", KanbanService>;
   for (const provider of ["codex", "claude"] as const) {
     const service = new KanbanService({
@@ -66,7 +69,10 @@ async function fixture(
         interrupt: async (threadId) => {
           interrupted[provider].push(threadId);
         },
-        awaitsAnswer: async (threadId) => questions.get(threadId) ?? null,
+        readReply: async (threadId) => ({
+          question: questions.get(threadId) ?? null,
+          published: pushed.has(threadId),
+        }),
       },
     });
     services[provider] = service;
@@ -146,6 +152,7 @@ async function fixture(
     interrupted,
     prompts,
     questions,
+    pushed,
     running,
     command,
     finish,
@@ -570,6 +577,23 @@ describe("shared provider board service", () => {
     board = await f.finish(rework);
     expect(stage(board, id)).toBe("ready");
   });
+  it("publishes a task whose agent reports its work pushed, unless it asks something", async () => {
+    const f = await fixture();
+    const id = await f.card("Pushed");
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    const run = await f.running("execute", id);
+    f.pushed.add(run.threadId!);
+    let board = await f.finish(run, "Checks failed; should I retry?");
+    expect(stage(board, id)).toBe("waiting");
+    board = await f.finish(run);
+    expect(stage(board, id)).toBe("done");
+    expect(runOf(board, run.id)?.status).toBe("completed");
+    expect(board.cards[0]!.doneAt).toEqual(expect.any(Number));
+  });
   it("keeps the card working when a new turn starts while the last reply is checked", async () => {
     const f = await fixture();
     const id = await f.card("Race");
@@ -579,12 +603,12 @@ describe("shared provider board service", () => {
       clientActionId: randomUUID(),
     });
     const run = await f.running("execute", id);
-    let release!: (question: string | null) => void;
+    let release!: (verdict: ReplyVerdict | null) => void;
     f.questions.clear();
     const service = f.services.codex as unknown as {
-      options: { adapter: { awaitsAnswer: (id: string) => Promise<string | null> } };
+      options: { adapter: { readReply: (id: string) => Promise<ReplyVerdict | null> } };
     };
-    service.options.adapter.awaitsAnswer = () =>
+    service.options.adapter.readReply = () =>
       new Promise((resolve) => {
         release = resolve;
       });
@@ -595,7 +619,7 @@ describe("shared provider board service", () => {
       (value) => Boolean(value),
     );
     await f.services.codex.notifyThread(run.threadId!, "running");
-    release("Old question");
+    release({ question: "Old question", published: false });
     await checking;
     const board = await f.services.codex.read(f.project);
     expect(stage(board, id)).toBe("working");
@@ -613,7 +637,7 @@ describe("shared provider board service", () => {
       adapter: {
         launch: async (job) => ({ threadId: job.id }),
         resume: async () => {},
-        awaitsAnswer: async () => {
+        readReply: async () => {
           throw new Error("Model unavailable");
         },
       },

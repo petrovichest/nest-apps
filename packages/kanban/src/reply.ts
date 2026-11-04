@@ -9,3 +9,6 @@ export function lastReply(turns: readonly TurnView[]): string | null {
   }
   return null;
 }
+
+/** A finished turn's last reply: what the agent waits for, and whether it says it pushed its work. */
+export type ReplyVerdict = { question: string | null; published: boolean };

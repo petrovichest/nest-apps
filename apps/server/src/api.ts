@@ -525,7 +525,7 @@ export interface ApiServices {
   appManager?: AppManager;
   lifecycle?: RuntimeLifecycle;
   threadTitles?: Pick<ThreadTitleGenerator, "generate"> &
-    Partial<Pick<ThreadTitleGenerator, "awaitsAnswer">>;
+    Partial<Pick<ThreadTitleGenerator, "readReply">>;
   transcription?: Pick<
     TranscriptionService,
     "configuration" | "updateConfiguration" | "transcribe"
@@ -4026,9 +4026,9 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       async archive(threadId) {
         await archiveKanbanThread(threadId);
       },
-      async awaitsAnswer(threadId) {
+      async readReply(threadId) {
         const summary = projection.summary(threadId);
-        if (!summary || !threadTitles?.awaitsAnswer) return null;
+        if (!summary || !threadTitles?.readReply) return null;
         const reply = lastReply((await projection.readThread(threadId)).turns);
         if (!reply) return null;
         // The same quick model as task classification, else the title model.
@@ -4040,7 +4040,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
             store.view().taskDefaults,
             projection.availableModels,
           );
-        return threadTitles.awaitsAnswer(reply, {
+        return threadTitles.readReply(reply, {
           cwd: summary.cwd,
           model: model?.id,
           effort: model?.reasoningEfforts[0]?.value,

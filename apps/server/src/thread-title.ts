@@ -1,3 +1,4 @@
+import type { ReplyVerdict } from "@nest-apps/kanban";
 import type { ServerNotification } from "./codex/generated/index";
 import type { CodexBridge } from "./codex/bridge";
 import { parseThreadStart, parseTurnStart } from "./codex/guards";
@@ -32,7 +33,8 @@ const ANSWER_INSTRUCTIONS = [
   "Decide whether the agent now waits for the user before the work can go on.",
   "It waits when it asks a question, asks for a decision, approval, access or missing information, says it cannot continue, or reports that the work or its checks failed.",
   "It does not wait when it reports finished work, even if it ends by offering optional further work.",
-  'Return only a JSON object: "waiting" is true or false; "reason" is, when waiting, what the agent needs in at most 200 characters in the language of the reply, otherwise an empty string.',
+  'Return only a JSON object: "waiting" is true or false; "reason" is, when waiting, what the agent needs in at most 200 characters in the language of the reply, otherwise an empty string;',
+  '"published" is true only when the reply says the agent pushed its work to the remote repository, and false when it only committed, did not push, changed nothing or does not say.',
   "Do not use tools.",
 ].join(" ");
 
@@ -41,8 +43,9 @@ const ANSWER_SCHEMA = {
   properties: {
     waiting: { type: "boolean" },
     reason: { type: "string", maxLength: 300 },
+    published: { type: "boolean" },
   },
-  required: ["waiting", "reason"],
+  required: ["waiting", "reason", "published"],
   additionalProperties: false,
 } as const;
 
@@ -62,8 +65,8 @@ export class ThreadTitleGenerator {
     return parseTitle(await this.ask(TITLE_INSTRUCTIONS, TITLE_SCHEMA, sourceText, options));
   }
 
-  /** Reads a finished turn's last reply: what the agent waits for, or null when it is done. */
-  async awaitsAnswer(reply: string, options: ThreadTitleOptions): Promise<string | null> {
+  /** Reads a finished turn's last reply: what the agent waits for, and whether it pushed its work. */
+  async readReply(reply: string, options: ThreadTitleOptions): Promise<ReplyVerdict> {
     const text = `<reply>\n${reply.trim().slice(-ANSWER_INPUT_LIMIT)}\n</reply>`;
     return parseAnswer(
       await this.ask(ANSWER_INSTRUCTIONS, ANSWER_SCHEMA, text, { ...options, images: [] }),
@@ -202,11 +205,12 @@ function parseTitle(text: string | undefined): string {
   return normalized;
 }
 
-function parseAnswer(text: string | undefined): string | null {
+function parseAnswer(text: string | undefined): ReplyVerdict {
   if (!text) throw new Error("Reply check response is empty");
-  const value = JSON.parse(text) as { waiting?: unknown; reason?: unknown };
+  const value = JSON.parse(text) as { waiting?: unknown; reason?: unknown; published?: unknown };
   if (typeof value?.waiting !== "boolean") throw new Error("Reply check response is invalid");
-  if (!value.waiting) return null;
+  const published = value.published === true;
+  if (!value.waiting) return { question: null, published };
   const reason = typeof value.reason === "string" ? value.reason.replace(/\s+/g, " ").trim() : "";
-  return reason.slice(0, 300) || "The agent is waiting for an answer";
+  return { question: reason.slice(0, 300) || "The agent is waiting for an answer", published };
 }

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ReplyVerdict } from "@nest-apps/kanban";
 import type { ClaudeAccounts } from "./accounts";
 import { createClaudeProxyEnvironment, type ClaudeProxyEnvironment } from "./proxy";
 
@@ -34,12 +35,17 @@ const ANSWER_INSTRUCTIONS = [
   "It waits when it asks a question, asks for a decision, approval, access or missing information, says it cannot continue, or reports that the work or its checks failed.",
   "It does not wait when it reports finished work, even if it ends by offering optional further work.",
   'Set "waiting" to true or false. When waiting, put what the agent needs in "reason" in at most 200 characters in the language of the reply; otherwise leave "reason" empty.',
+  'Set "published" to true only when the reply says the agent pushed its work to the remote repository; false when it only committed, did not push, changed nothing or does not say.',
   "Do not use tools.",
 ].join(" ");
 const ANSWER_SCHEMA = {
   type: "object",
-  properties: { waiting: { type: "boolean" }, reason: { type: "string", maxLength: 300 } },
-  required: ["waiting", "reason"],
+  properties: {
+    waiting: { type: "boolean" },
+    reason: { type: "string", maxLength: 300 },
+    published: { type: "boolean" },
+  },
+  required: ["waiting", "reason", "published"],
   additionalProperties: false,
 };
 type ClaudeHelperOptions = {
@@ -50,8 +56,8 @@ type ClaudeHelperOptions = {
   proxyEnvironment?: typeof createClaudeProxyEnvironment;
 };
 
-/** A finished turn's last reply: what the agent waits for, or null when its work is done. */
-export type ReplyCheck = (reply: string) => Promise<string | null>;
+/** A finished turn's last reply: what the agent waits for, and whether it pushed its work. */
+export type ReplyCheck = (reply: string) => Promise<ReplyVerdict>;
 
 export function claudeReplyCheck(options: ClaudeHelperOptions): ReplyCheck {
   return async (reply) => {
@@ -62,12 +68,13 @@ export function claudeReplyCheck(options: ClaudeHelperOptions): ReplyCheck {
       `<reply>\n${reply.trim().slice(-ANSWER_INPUT_LIMIT)}\n</reply>`,
       options.model || "haiku",
       [],
-    )) as { waiting?: unknown; reason?: unknown } | undefined;
+    )) as { waiting?: unknown; reason?: unknown; published?: unknown } | undefined;
     if (typeof output?.waiting !== "boolean") throw new Error("Invalid Claude reply check");
-    if (!output.waiting) return null;
+    const published = output.published === true;
+    if (!output.waiting) return { question: null, published };
     const reason =
       typeof output.reason === "string" ? output.reason.replace(/\s+/g, " ").trim() : "";
-    return reason.slice(0, 300) || "The agent is waiting for an answer";
+    return { question: reason.slice(0, 300) || "The agent is waiting for an answer", published };
   };
 }
 
