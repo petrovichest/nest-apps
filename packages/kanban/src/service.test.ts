@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { KanbanBoard, KanbanRun } from "@codexnest/protocol";
-import { PUBLISH_PROMPT, TASK_SUFFIX } from "./agent.js";
+import { PUBLISH_PROMPT } from "./agent.js";
 import { atomicJson, type KanbanDocument } from "./store.js";
 import { KanbanService, type KanbanLaunch } from "./service.js";
 
@@ -178,7 +178,7 @@ describe("shared provider board service", () => {
         kind: "execute",
         title: "Attach an image when creating a task",
       });
-      expect(launch.prompt).toBe(`Attach an image when creating a task\n\n${TASK_SUFFIX}`);
+      expect(launch.prompt).toBe("Attach an image when creating a task");
       // Only classification gets a board capability; the task knows nothing about the board.
       const capabilities = await readdir(join(service.store.directory, "capabilities"));
       expect(capabilities.some((name) => name.startsWith(executor.id))).toBe(false);
@@ -568,7 +568,7 @@ describe("shared provider board service", () => {
     );
     expect(f.interrupted.codex).toEqual([first.threadId]);
     expect(second.threadId).not.toBe(first.threadId);
-    expect(f.prompts.get(second.id)).toBe(`Draw a chart\n\n${TASK_SUFFIX}`);
+    expect(f.prompts.get(second.id)).toBe("Draw a chart");
     expect(runOf(await f.services.codex.read(f.project), first.id)?.status).toBe("completed");
 
     await f.services.codex.notifyThread(second.threadId!, "needsAttention");

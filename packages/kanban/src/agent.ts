@@ -58,14 +58,16 @@ export function shellQuote(value: string): string {
   return "'" + value.replaceAll("'", "'\"'\"'") + "'";
 }
 
-/** The only addition to a task: publication is a separate step the operator starts. */
-export const TASK_SUFFIX = "Закоммить, но не пушь.";
+/** Sent to the task's own session when the operator publishes it from the board. */
 export const PUBLISH_PROMPT =
   "Опубликуй: подтяни изменения с GitHub, разреши конфликты (если при этом правил код — прогони тесты), запушь и дождись проверок GitHub Actions.";
 
-/** A task starts like a message the operator typed into a new session. */
+/**
+ * A task starts exactly like a message the operator typed into a new session: the agent
+ * commits and pushes by the project's own rules, as without the board.
+ */
 export function taskPrompt(card: KanbanCard): string {
-  return [card.description.trim(), TASK_SUFFIX].filter(Boolean).join("\n\n");
+  return card.description.trim();
 }
 
 /** Classification reports through the board helper; tasks themselves never see it. */

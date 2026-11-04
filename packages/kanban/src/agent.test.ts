@@ -10,7 +10,6 @@ import {
   installAgentHelper,
   PUBLISH_PROMPT,
   shellQuote,
-  TASK_SUFFIX,
   taskPrompt,
 } from "./agent.js";
 import { atomicJson } from "./store.js";
@@ -37,16 +36,15 @@ describe("agent file bridge", () => {
     expect(prompt).toContain(shellQuote(process.execPath));
     expect(prompt).toContain(shellQuote(input));
   });
-  it("starts a task with its own text and one line about pushing, nothing about the board", () => {
+  it("starts a task with exactly its own text, nothing about the board or pushing", () => {
     const card = {
       id: "card",
       title: "Прикрепление изображения",
       description: "Добавить изображение при создании задачи.\n\nСохранить описание.  ",
     } as KanbanCard;
     expect(taskPrompt(card)).toBe(
-      "Добавить изображение при создании задачи.\n\nСохранить описание.\n\n" + TASK_SUFFIX,
+      "Добавить изображение при создании задачи.\n\nСохранить описание.",
     );
-    expect(TASK_SUFFIX).toBe("Закоммить, но не пушь.");
     expect(PUBLISH_PROMPT).toContain("GitHub Actions");
     expect(PUBLISH_PROMPT).not.toMatch(/board|доск/i);
   });

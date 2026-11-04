@@ -45,9 +45,9 @@ pictures and archives its sessions in the current application.
 
 Starting a card creates an ordinary session of the current application in the
 project folder, with that application's new-session defaults. Its first message is
-the task text and pictures as the operator wrote them, followed by one sentence:
-«Закоммить, но не пушь.» There are no board instructions, helper commands or reports;
-the agent follows the project's own rules as in any session. Tasks share the project
+exactly the task text and pictures as the operator wrote them. There are no board
+instructions, helper commands or reports: the agent follows the project's own rules as
+in any session, including committing and pushing its work. Tasks share the project
 folder, so the operator decides which tasks may run at the same time.
 
 The card follows the session:
@@ -68,6 +68,7 @@ is stopped first. A session working in the other application cannot be replaced.
 
 ## Publication
 
+An agent usually publishes its work itself. When it has not, or to wait for the checks,
 **Publish** in a ready task's panel, dragging it to Published, or **Publish all** in
 the Ready header sends the task's own session this message: «Опубликуй: подтяни
 изменения с GitHub, разреши конфликты (если при этом правил код — прогони тесты),
