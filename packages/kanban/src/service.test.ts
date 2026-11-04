@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { KanbanBoard, KanbanRun } from "@codexnest/protocol";
 import { PUBLISH_PROMPT } from "./agent.js";
@@ -976,6 +977,59 @@ describe("shared provider board service", () => {
     expect(run?.status).toBe("completed");
     expect(stage(board, id)).toBe("ready");
   });
+  it.each(["codex", "claude"] as const)(
+    "serves HTTP while %s startup recovery waits for a reply check",
+    async (provider) => {
+      const f = await fixture();
+      const id = await f.card("Restore a finished task");
+      await f.services[provider].action(f.project, {
+        action: "execute",
+        cardIds: [id],
+        clientActionId: randomUUID(),
+      });
+      const original = await f.running("execute", id, f.services[provider]);
+      await f.services[provider].close();
+      let release!: (verdict: ReplyVerdict) => void;
+      const blocked = new Promise<ReplyVerdict>((resolve) => {
+        release = resolve;
+      });
+      const readReply = vi.fn(() => blocked);
+      const launch = vi.fn(async () => {
+        throw new Error("Must not relaunch an existing session");
+      });
+      const restored = new KanbanService({
+        provider,
+        dataDir: f.services[provider].store.directory,
+        adapter: { launch, resume: async () => {}, threadState: () => "completed", readReply },
+      });
+      const app = Fastify({ pluginTimeout: 1000 });
+      app.addHook("onReady", () => restored.initialize());
+      app.addHook("onClose", () => restored.close());
+      app.get("/", async () => "app shell");
+      app.get("/api/v1/health", async () => ({ status: "ok" }));
+      try {
+        await app.listen({ host: "127.0.0.1", port: 0 });
+        await until(
+          async () => readReply.mock.calls.length,
+          (calls) => calls > 0,
+        );
+        expect((await app.inject("/")).body).toBe("app shell");
+        expect((await app.inject("/api/v1/health")).json()).toEqual({ status: "ok" });
+        expect(runOf(await restored.read(f.project), original.id)?.status).toBe("running");
+        release({ question: null, published: false });
+        const board = await until(
+          () => restored.read(f.project),
+          (board) => runOf(board, original.id)?.status === "completed",
+        );
+        expect(stage(board, id)).toBe("ready");
+        expect(readReply).toHaveBeenCalledExactlyOnceWith(original.threadId);
+        expect(launch).not.toHaveBeenCalled();
+      } finally {
+        release({ question: null, published: false });
+        await app.close();
+      }
+    },
+  );
   it.each(["completed", null] as const)(
     "reconciles a persisted running session once on startup when local state is %s",
     async (state) => {
@@ -999,7 +1053,10 @@ describe("shared provider board service", () => {
       });
       cleanups.push(() => restored.close());
       await restored.initialize();
-      const board = await restored.read(f.project);
+      const board = await until(
+        () => restored.read(f.project),
+        (board) => runOf(board, original.id)?.status === (state ? "completed" : "waiting"),
+      );
       // A finished turn is checked once; a vanished session waits for the operator.
       expect(board.runs.find((run) => run.id === original.id)?.status).toBe(
         state ? "completed" : "waiting",

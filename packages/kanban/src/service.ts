@@ -263,6 +263,8 @@ export class KanbanService {
     this.closed = false;
     this.threads.clear();
     this.observedStates.clear();
+    // Index persisted sessions before accepting HTTP requests so early events are not lost.
+    for (const document of await this.store.list()) this.indexThreads(document);
     for (const path of [this.store.boardsDirectory, join(this.store.directory, "inbox")]) {
       const watcher = watch(path, (_event, name) => {
         if (name?.toString().endsWith(".json")) this.schedule();
@@ -270,7 +272,9 @@ export class KanbanService {
       watcher.on("error", (error) => this.options.onError?.(error));
       this.watchers.push(watcher);
     }
-    await this.pump();
+    // Recovery may read native history and ask a model about a finished turn. It must not
+    // block HTTP readiness, including when an update rolls back against the same board.
+    this.schedule();
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -1279,24 +1283,10 @@ export class KanbanService {
               });
             this.pending.add(promise);
           }
-          // A finished task's session stays known: the operator may continue it there.
-          for (const card of document.board.cards) {
-            const session = card.archivedAt === undefined && taskSession(document, card.id);
-            if (
-              session &&
-              session.threadId &&
-              session.run.provider === this.options.provider &&
-              !this.threads.has(session.threadId)
-            )
-              this.threads.set(session.threadId, {
-                boardId: document.board.id,
-                runId: session.run.id,
-              });
-          }
+          this.indexThreads(document);
           for (const run of document.board.runs) {
             if (run.provider !== this.options.provider) continue;
             if (run.threadId && active(run)) {
-              this.threads.set(run.threadId, { boardId: document.board.id, runId: run.id });
               if (!this.observedStates.has(run.threadId) && this.options.adapter.threadState) {
                 const state = await this.options.adapter.threadState(run.threadId);
                 await this.notifyThread(run.threadId, state ?? "unavailable");
@@ -1329,6 +1319,25 @@ export class KanbanService {
       this.pumping = false;
       for (const resolve of this.pumpWaiters.splice(0)) resolve();
     }
+  }
+  private indexThreads(document: KanbanDocument): void {
+    // A finished task's session stays known: the operator may continue it there.
+    for (const card of document.board.cards) {
+      const session = card.archivedAt === undefined && taskSession(document, card.id);
+      if (
+        session &&
+        session.threadId &&
+        session.run.provider === this.options.provider &&
+        !this.threads.has(session.threadId)
+      )
+        this.threads.set(session.threadId, {
+          boardId: document.board.id,
+          runId: session.run.id,
+        });
+    }
+    for (const run of document.board.runs)
+      if (run.provider === this.options.provider && run.threadId && active(run))
+        this.threads.set(run.threadId, { boardId: document.board.id, runId: run.id });
   }
   private async dispatch(boardId: string, runId: string): Promise<void> {
     try {
