@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -19,6 +20,7 @@ import type {
   KanbanRun,
   KanbanStage,
   Project,
+  ThreadSummary,
   TranscriptionConfigResponse,
 } from "@codexnest/protocol";
 import { KANBAN_IMAGE_LIMIT, KANBAN_IMAGE_MAX_BYTES } from "@codexnest/protocol";
@@ -26,6 +28,7 @@ import { MessageImageGallery, MessageImageProvider } from "./MessageImageGallery
 import { application } from "../application";
 import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n, type Translate } from "../i18n";
+import { threadMarkerClasses } from "../thread-status";
 import { Dialog } from "./Dialog";
 import {
   ArchiveIcon,
@@ -60,7 +63,8 @@ import "../kanban.css";
 const activeStatuses = new Set<KanbanRun["status"]>(["queued", "preparing", "running", "waiting"]);
 const uuid = () => globalThis.crypto.randomUUID();
 
-function runLabel(run: KanbanRun, t: Translate): string {
+function runLabel(run: KanbanRun, t: Translate, session?: ThreadSummary): string {
+  if (run.status === "waiting" && session?.state === "interrupted") return t("Прервана");
   if (run.status === "waiting") return t("Ждёт ответа");
   if (run.status === "failed") return t("Ошибка");
   if (run.status === "queued") return t("В очереди");
@@ -116,8 +120,21 @@ function writeLayout(projectId: string, layout: LaneLayout) {
   }
 }
 
-/** The same markers as sessions in the navigation; completed runs need no marker on a card. */
-function runStatusClass(run: KanbanRun): string | null {
+/**
+ * The same markers as sessions in the navigation. A session of this application adds what the
+ * board does not record: its live state, an interruption and whether its result was read.
+ */
+function runStatusClass(run: KanbanRun, session?: ThreadSummary): string | null {
+  if (session) {
+    if (
+      session.queuedMessageCount > 0 ||
+      ["running", "queued", "needsAttention", "interrupted", "failed"].includes(session.state)
+    )
+      return threadMarkerClasses(session);
+    // A finished turn: the board outcome decides, the session tells whether it was read.
+    if (run.status === "completed") return session.unread ? threadMarkerClasses(session) : null;
+    if (run.status === "failed") return session.unread ? "status-failed" : "status-failed-read";
+  }
   if (run.status === "running" || run.status === "preparing") return "status-running";
   if (run.status === "queued") return "status-queued";
   if (run.status === "waiting") return "status-needsAttention";
@@ -185,10 +202,13 @@ function latestRun(board: Board, cardId: string): KanbanRun | undefined {
 
 export function KanbanBoard({
   projects,
+  threads = [],
   transcriptionConfig = null,
   onOpenNavigation,
 }: {
   projects: Project[];
+  /** Sessions of this application; they colour the markers of the tasks they run. */
+  threads?: ThreadSummary[];
   transcriptionConfig?: TranscriptionConfigResponse | null;
   onOpenNavigation(): void;
 }) {
@@ -588,6 +608,15 @@ export function KanbanBoard({
     // Listeners read the latest board through touchState; they are installed once.
   }, []);
 
+  // Archived sessions no longer ask for attention, so their tasks keep the board's own state.
+  const sessions = useMemo(
+    () =>
+      new Map(threads.filter((thread) => !thread.archived).map((thread) => [thread.id, thread])),
+    [threads],
+  );
+  const sessionOf = (run: KanbanRun) =>
+    run.threadId && run.provider === application.provider ? sessions.get(run.threadId) : undefined;
+
   const sessionLink = (run: KanbanRun, className: string, children: ReactNode) =>
     run.threadId && run.provider === application.provider ? (
       <Link className={className} to={`/threads/${encodeURIComponent(run.threadId)}`}>
@@ -601,13 +630,14 @@ export function KanbanBoard({
 
   function renderCard(item: KanbanCard, stage: KanbanStage, lane: KanbanCard[]) {
     const latest = latestRun(board!, item.id);
+    const session = latest && sessionOf(latest);
     const voice = item.voice;
     const statusClass = voice
       ? voice.status === "failed"
         ? "status-failed"
         : "status-queued"
       : latest
-        ? runStatusClass(latest)
+        ? runStatusClass(latest, session)
         : null;
     const imageCount = item.images?.length ?? (item.image ? 1 : 0);
     const categoryName = board!.categories.find((value) => value.id === item.categoryId)?.name;
@@ -638,10 +668,10 @@ export function KanbanBoard({
           {t("Категория не определена")}
         </span>,
       );
-    if (latest && statusClass && !voice)
+    if (latest && statusClass && !voice && latest.status !== "completed")
       meta.push(
         <span key="state" className={`kanban-card-state ${latest.status}`}>
-          {runLabel(latest, t)}
+          {runLabel(latest, t, session)}
         </span>,
       );
     return (
@@ -1522,7 +1552,7 @@ export function KanbanBoard({
                       const content = (
                         <>
                           <span
-                            className={`kanban-session-status ${runStatusClass(run) ?? ""}`}
+                            className={`kanban-session-status ${runStatusClass(run, sessionOf(run)) ?? ""}`}
                             aria-hidden="true"
                           />
                           <span className="kanban-session-text">
@@ -1534,7 +1564,7 @@ export function KanbanBoard({
                                   : t("Выполнение")}
                             </span>
                             <small>
-                              {providerName(run.provider)} · {runLabel(run, t)}
+                              {providerName(run.provider)} · {runLabel(run, t, sessionOf(run))}
                             </small>
                           </span>
                         </>

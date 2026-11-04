@@ -6,6 +6,7 @@ import type {
   KanbanCard,
   KanbanRun,
   Project,
+  ThreadSummary,
   TranscriptionConfigResponse,
 } from "@codexnest/protocol";
 import { KanbanBoard } from "./KanbanBoard";
@@ -85,6 +86,7 @@ let api: {
 function show(
   config: TranscriptionConfigResponse | null = null,
   path = "/projects/project/kanban",
+  threads: ThreadSummary[] = [],
 ) {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -94,6 +96,7 @@ function show(
           element={
             <KanbanBoard
               projects={[project]}
+              threads={threads}
               transcriptionConfig={config}
               onOpenNavigation={vi.fn()}
             />
@@ -546,6 +549,61 @@ describe("KanbanBoard", () => {
     const finished = screen.getByRole("button", { name: "Task two" }).closest("article")!;
     expect(finished).not.toHaveTextContent("Завершено");
     expect(finished.querySelector(".kanban-card-status")).toBeNull();
+  });
+
+  it("colours a card like its session in this application", async () => {
+    const session = (id: string, state: ThreadSummary["state"], unread: boolean) =>
+      ({
+        id,
+        state,
+        unread,
+        unseen: unread,
+        archived: false,
+        queuedMessageCount: 0,
+      }) as ThreadSummary;
+    const run = (
+      id: string,
+      status: KanbanRun["status"],
+      provider: KanbanRun["provider"] = "codex",
+    ) => ({
+      ...execution(id, status),
+      threadId: id,
+      provider,
+    });
+    const seed = board(
+      ["unread", "read", "stopped", "seen", "elsewhere"].map((id) => card(id, "review")),
+    );
+    seed.runs.push(
+      run("unread", "completed"),
+      run("read", "completed"),
+      run("stopped", "waiting"),
+      run("seen", "failed"),
+      run("elsewhere", "failed", "claude"),
+    );
+    api.readKanban.mockResolvedValue(seed);
+    show(null, undefined, [
+      session("unread", "completed", true),
+      session("read", "completed", false),
+      session("stopped", "interrupted", true),
+      session("seen", "completed", false),
+      session("elsewhere", "completed", false),
+    ]);
+    const marker = async (id: string) =>
+      (await screen.findByRole("button", { name: `Task ${id}` }))
+        .closest("article")!
+        .querySelector(".kanban-card-status")?.className;
+    expect(await marker("unread")).toContain("status-completed-unread");
+    expect(await marker("read")).toBeUndefined();
+    expect(await marker("stopped")).toContain("status-interrupted");
+    expect(
+      screen.getByRole("button", { name: "Task stopped" }).closest("article"),
+    ).toHaveTextContent("Прервана");
+    expect(await marker("seen")).toContain("status-failed-read");
+    // The other application's session is unknown here: the board's own outcome decides.
+    expect(await marker("elsewhere")).toBe("kanban-card-status status-failed");
+    expect(
+      screen.getByRole("button", { name: "Task unread" }).closest("article"),
+    ).not.toHaveTextContent("Завершено");
   });
 
   it("keeps collapsed and resized columns on this device", async () => {

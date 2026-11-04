@@ -18,11 +18,18 @@ export function hasAlwaysVisibleThreadStatus(
 export function threadStatusClasses(
   thread: Pick<ThreadSummary, "state" | "unread" | "unseen" | "queuedMessageCount">,
 ): string {
+  return `status ${threadMarkerClasses(thread)}`;
+}
+
+/** The marker classes without the base dot, for surfaces that draw their own marker shape. */
+export function threadMarkerClasses(
+  thread: Pick<ThreadSummary, "state" | "unread" | "unseen" | "queuedMessageCount">,
+): string {
   const stateClass = threadStatusClass(thread);
   const pulsing =
     thread.state === "needsAttention" ||
     (thread.state === "completed" && thread.unread && thread.unseen);
-  return `status ${stateClass}${thread.unseen ? " status-unseen" : ""}${pulsing ? " status-pulsing" : ""}`;
+  return `${stateClass}${thread.unseen ? " status-unseen" : ""}${pulsing ? " status-pulsing" : ""}`;
 }
 
 function threadStatusClass(
