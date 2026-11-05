@@ -7,13 +7,10 @@ Both applications must run as the same operating-system user and resolve the
 project to the same directory.
 
 The switch at the top of the navigation chooses **Sessions** or **Board**. Board mode
-opens the board of the project being viewed (or the one shown last) and lists that
-project's tasks instead of sessions: Waiting for answer and In progress first, then the
-other stages in board order, with Published collapsed. Choosing a task opens its
-session; a task without a session in this application opens on the board. The project
-name above the list switches to another project's board. The mode is remembered on
-each device, and in board mode the application opens on the board. While a session is open, the list asks for the board every few seconds;
-on the board page it uses the board the page already loaded.
+opens the board of the project being viewed (or the one shown last) and lists the
+projects instead of sessions; choosing a project opens its board, where its tasks are.
+The mode is remembered on each device, and in board mode the application opens on the
+board. The list makes no requests of its own.
 
 Column widths can be dragged and columns collapsed; Published starts collapsed. These
 choices are remembered on each device. On a phone the board shows one stage at a
