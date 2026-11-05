@@ -165,28 +165,42 @@ export function BoardNavigation({
                     (run) => run.threadId === openThreadId && run.cardIds.includes(card.id),
                   ),
                 );
-                // A session of the other application, or none yet, opens the card on the board.
-                const target =
-                  latest?.threadId && latest.provider === application.provider
-                    ? `/threads/${encodeURIComponent(latest.threadId)}`
-                    : `${boardPath(projectId)}?card=${encodeURIComponent(card.id)}`;
+                const content = (
+                  <>
+                    <span className="thread-link-title">
+                      <span className="thread-link-title-text">
+                        {card.title || t("Голосовая задача")}
+                      </span>
+                    </span>
+                    {marker && <span className={`status ${marker}`} />}
+                  </>
+                );
+                const ownThread =
+                  latest?.provider === application.provider ? latest.threadId : null;
                 return (
                   <div className="thread-branch" key={card.id}>
                     <div className="thread-branch-row">
                       <span className="thread-branch-spacer" />
-                      <Link
-                        aria-current={active ? "page" : undefined}
-                        className={`thread-link${active ? " active" : ""}`}
-                        onClick={onNavigate}
-                        to={target}
-                      >
-                        <span className="thread-link-title">
-                          <span className="thread-link-title-text">
-                            {card.title || t("Голосовая задача")}
-                          </span>
-                        </span>
-                        {marker && <span className={`status ${marker}`} />}
-                      </Link>
+                      {!ownThread && latest?.sessionUrl ? (
+                        // The other application's session opens there, as on the board.
+                        <a className="thread-link" href={latest.sessionUrl}>
+                          {content}
+                        </a>
+                      ) : (
+                        // A task without a session yet opens as a card on the board.
+                        <Link
+                          aria-current={active ? "page" : undefined}
+                          className={`thread-link${active ? " active" : ""}`}
+                          onClick={onNavigate}
+                          to={
+                            ownThread
+                              ? `/threads/${encodeURIComponent(ownThread)}`
+                              : `${boardPath(projectId)}?card=${encodeURIComponent(card.id)}`
+                          }
+                        >
+                          {content}
+                        </Link>
+                      )}
                     </div>
                   </div>
                 );

@@ -520,6 +520,11 @@ describe("App routing and navigation", () => {
     expect(
       within(nav).getByRole("link", { name: "Новая идея" }).querySelector(".status"),
     ).toBeNull();
+    // The other application's session opens there, as the board's own link does.
+    expect(within(nav).getByRole("link", { name: "Ответить про цвета" })).toHaveAttribute(
+      "href",
+      "http://127.0.0.1:4311/threads/claude-session",
+    );
     expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
       "href",
       "/projects/project/kanban",
@@ -4967,7 +4972,11 @@ function taskBoard(): KanbanBoard {
     ],
     runs: [
       run("working-run", "working-card", "newer", "running"),
-      run("waiting-run", "waiting-card", "other-session", "waiting"),
+      {
+        ...run("waiting-run", "waiting-card", "claude-session", "waiting"),
+        provider: "claude" as const,
+        sessionUrl: "http://127.0.0.1:4311/threads/claude-session",
+      },
     ],
     createdAt: 1,
     updatedAt: 1,
