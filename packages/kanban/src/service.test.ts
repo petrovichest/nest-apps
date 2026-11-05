@@ -935,6 +935,222 @@ describe("shared provider board service", () => {
     expect(board.runs[0]).toMatchObject({ status: "running", error: null });
     expect(created.cards[0]?.id).toBe(board.cards[0]?.id);
   });
+  it.each(["codex", "claude"] as const)(
+    "stops a silent %s classifier at its deadline and allows a fresh attempt",
+    async (provider) => {
+      const f = await fixture();
+      const service = f.services[provider];
+      await service.close();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      try {
+        await service.initialize();
+        const created = await service.createCard(f.project, {
+          description: "Classify without hanging",
+          clientCreationId: randomUUID(),
+        });
+        let run!: KanbanRun;
+        await vi.waitFor(async () => {
+          run = (await service.read(f.project)).runs[0]!;
+          expect(run.status).toBe("running");
+        });
+        const deadline = run.updatedAt + 120_000;
+        await vi.advanceTimersByTimeAsync(deadline - Date.now() - 1);
+        // State changes do not reset the deadline, including a permission prompt.
+        await service.notifyThread(run.threadId!, "needsAttention");
+        await service.notifyThread(run.threadId!, "running");
+        expect((await service.read(f.project)).cards[0]?.classification).toBe("pending");
+        expect(f.interrupted[provider]).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        await vi.waitFor(async () => {
+          const board = await service.read(f.project);
+          expect(board.runs[0]?.status).toBe("failed");
+          expect(board.cards[0]).toMatchObject({
+            classification: "failed",
+            description: "Classify without hanging",
+            error: "Task classification timed out after 2 minutes; retry classification",
+          });
+          expect(f.interrupted[provider]).toEqual([run.threadId]);
+          expect(f.archived[provider]).toEqual([run.threadId]);
+        });
+        await service.action(f.project, {
+          action: "retry-classification",
+          cardIds: [created.cards[0]!.id],
+          clientActionId: randomUUID(),
+        });
+        let retry!: KanbanRun;
+        await vi.waitFor(async () => {
+          retry = (await service.read(f.project)).runs.at(-1)!;
+          expect(retry.status).toBe("running");
+          expect(retry.id).not.toBe(run.id);
+        });
+        vi.useRealTimers();
+        // A late report from the expired attempt cannot replace the retry's result.
+        expect((await f.command(run, "report", { title: "Late", category: "Tasks" }))?.ok).toBe(
+          false,
+        );
+        expect((await f.command(retry, "report", { title: "Task", category: "Tasks" }))?.ok).toBe(
+          true,
+        );
+        expect((await service.read(f.project)).cards[0]).toMatchObject({
+          title: "Task",
+          classification: "ready",
+          error: null,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+  it.each([90_000, 180_000])(
+    "restores a classifier's deadline after %i ms and a restart",
+    async (elapsed) => {
+      const f = await fixture();
+      const service = f.services.codex;
+      const created = await service.createCard(f.project, {
+        description: "Recover a silent classifier",
+        clientCreationId: randomUUID(),
+      });
+      const run = await f.running("classify", created.cards[0]!.id);
+      await service.close();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      try {
+        vi.setSystemTime(run.updatedAt + elapsed);
+        await service.initialize();
+        await service.notifyThread(run.threadId!, "running");
+        if (elapsed < 120_000) {
+          await vi.advanceTimersByTimeAsync(120_000 - elapsed - 1);
+          expect((await service.read(f.project)).cards[0]?.classification).toBe("pending");
+          await vi.advanceTimersByTimeAsync(1);
+        } else await vi.advanceTimersByTimeAsync(0);
+        await vi.waitFor(() => expect(f.interrupted.codex).toEqual([run.threadId]));
+        expect((await service.read(f.project)).cards[0]?.classification).toBe("failed");
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+  it("leaves reported classifiers and ordinary long-running tasks alone", async () => {
+    const f = await fixture();
+    await f.services.codex.close();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      await f.services.codex.initialize();
+      const created = await f.services.codex.createCard(f.project, {
+        description: "Task that takes time",
+        clientCreationId: randomUUID(),
+      });
+      let run!: KanbanRun;
+      await vi.waitFor(async () => {
+        run = (await f.services.codex.read(f.project)).runs[0]!;
+        expect(run.status).toBe("running");
+      });
+      let reported = false;
+      const reporting = f
+        .command(run, "report", { title: "Task", category: "Tasks" })
+        .then((result) => {
+          reported = true;
+          return result;
+        });
+      await vi.waitFor(() => expect(reported).toBe(true));
+      expect((await reporting)?.ok).toBe(true);
+      await f.services.codex.action(f.project, {
+        action: "execute",
+        cardIds: [created.cards[0]!.id],
+        clientActionId: randomUUID(),
+      });
+      await vi.waitFor(async () =>
+        expect((await f.services.codex.read(f.project)).runs.at(-1)?.status).toBe("running"),
+      );
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      const board = await f.services.codex.read(f.project);
+      expect(board.cards[0]?.classification).toBe("ready");
+      expect(board.runs.map((item) => item.status)).toEqual(["completed", "running"]);
+      expect(f.interrupted.codex).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("fails a stalled launch and stops the session if it appears after the deadline", async () => {
+    const f = await fixture();
+    let unblock!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const interrupted: string[] = [],
+      archived: string[] = [];
+    const service = new KanbanService({
+      provider: "claude",
+      dataDir: join(f.directory, "slow-launch"),
+      adapter: {
+        launch: async () => {
+          await blocked;
+          return { threadId: "late-classifier" };
+        },
+        resume: async () => {},
+        interrupt: async (id) => {
+          interrupted.push(id);
+        },
+        archive: async (id) => {
+          archived.push(id);
+        },
+      },
+    });
+    cleanups.push(() => service.close());
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      await service.initialize();
+      await service.createCard(f.project, {
+        description: "A slow launch",
+        clientCreationId: randomUUID(),
+      });
+      let run!: KanbanRun;
+      await vi.waitFor(async () => {
+        run = (await service.read(f.project)).runs[0]!;
+        expect(run.status).toBe("preparing");
+      });
+      await vi.advanceTimersByTimeAsync(run.updatedAt + 120_000 - Date.now());
+      await vi.waitFor(async () =>
+        expect((await service.read(f.project)).cards[0]?.classification).toBe("failed"),
+      );
+      unblock();
+      await vi.waitFor(() => {
+        expect(interrupted).toEqual(["late-classifier"]);
+        expect(archived).toEqual(["late-classifier"]);
+      });
+      expect((await service.read(f.project)).runs[0]?.status).toBe("failed");
+    } finally {
+      unblock();
+      vi.useRealTimers();
+    }
+  });
+  it("gives a queued classifier its full time once the provider becomes available", async () => {
+    let available = false;
+    const f = await fixture(() => available);
+    await f.services.codex.close();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      await f.services.codex.initialize();
+      await f.services.codex.createCard(f.project, {
+        description: "Wait for the provider",
+        clientCreationId: randomUUID(),
+      });
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect((await f.services.codex.read(f.project)).runs[0]?.status).toBe("queued");
+      available = true;
+      f.services.codex.wake();
+      let run!: KanbanRun;
+      await vi.waitFor(async () => {
+        run = (await f.services.codex.read(f.project)).runs[0]!;
+        expect(run.status).toBe("running");
+      });
+      await vi.advanceTimersByTimeAsync(run.updatedAt + 119_999 - Date.now());
+      expect((await f.services.codex.read(f.project)).cards[0]?.classification).toBe("pending");
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(f.interrupted.codex).toEqual([run.threadId]));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("resumes provider-owned durable queued jobs after service initialization", async () => {
     const f = await fixture();
     await f.services.codex.close();

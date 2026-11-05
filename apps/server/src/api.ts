@@ -3936,7 +3936,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     await bridge.request("thread/archive", { threadId });
     await projection.setArchived(threadId, true);
   };
-  const kanbanClassifiers = new Map<string, { state: string; checked: boolean }>();
+  const kanbanClassifiers = new Map<string, { state: string; checked: boolean; turnId?: string }>();
   const kanban = new KanbanService({
     provider: "codex",
     classifies: () => store.view().taskDefaults?.classifyTasks !== false,
@@ -3971,17 +3971,25 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
               ...threadSettings(settings, projection.availableModels),
             }),
           );
-          kanbanClassifiers.set(thread.id, { state: "running", checked: false });
+          const classifier = {
+            state: "running",
+            checked: false,
+            turnId: undefined as string | undefined,
+          };
+          kanbanClassifiers.set(thread.id, classifier);
           try {
-            await bridge.request("turn/start", {
-              threadId: thread.id,
-              input: [
-                { type: "text", text: job.prompt, text_elements: [] },
-                ...(job.images ?? []).map((url) => ({ type: "image", url })),
-              ],
-              effort: settings.reasoningEffort,
-              ...threadSettings(settings, projection.availableModels),
-            });
+            const { turn } = parseTurnStart(
+              await bridge.request("turn/start", {
+                threadId: thread.id,
+                input: [
+                  { type: "text", text: job.prompt, text_elements: [] },
+                  ...(job.images ?? []).map((url) => ({ type: "image", url })),
+                ],
+                effort: settings.reasoningEffort,
+                ...threadSettings(settings, projection.availableModels),
+              }),
+            );
+            classifier.turnId = turn.id;
           } catch (error) {
             kanbanClassifiers.delete(thread.id);
             await bridge
@@ -4019,6 +4027,17 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         return projection.summary(threadId)?.state ?? null;
       },
       async interrupt(threadId) {
+        const classifier = kanbanClassifiers.get(threadId);
+        if (classifier) {
+          try {
+            if (classifier.state === "running" && classifier.turnId)
+              await bridge.request("turn/interrupt", { threadId, turnId: classifier.turnId });
+          } finally {
+            kanbanClassifiers.delete(threadId);
+            await bridge.request("thread/unsubscribe", { threadId });
+          }
+          return;
+        }
         const turnId = projection.summary(threadId)?.currentTurnId;
         if (!turnId) return;
         await withKeyLock(turnStartLocks, threadId, () =>

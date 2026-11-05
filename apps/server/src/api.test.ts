@@ -58,7 +58,15 @@ const TEAM_MARKER_TEXT =
   "Continue CodexNest Team orchestration using the attached managed-task results.";
 
 describe("project boards", () => {
-  it.each(["reported", "reported-immediate", "completed", "immediate", "start-failed"])(
+  const classifierOutcomes = [
+    "reported",
+    "reported-immediate",
+    "completed",
+    "immediate",
+    "start-failed",
+    "timed-out",
+  ];
+  it.each(classifierOutcomes)(
     "keeps classifier sessions hidden and reconciles %s completion",
     async (outcome) => {
       const repository = await createApiTestRepository();
@@ -103,6 +111,8 @@ describe("project boards", () => {
       });
       const readBoard = async () =>
         (await app.inject({ url: "/api/v1/projects/project/kanban", headers })).json();
+      if (outcome === "timed-out")
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       try {
         const image = {
           name: "layout.png",
@@ -130,6 +140,17 @@ describe("project boards", () => {
             await report((start![1].input as { text: string }[])[0]!.text);
           }
           complete();
+        }
+        if (outcome === "timed-out") {
+          await vi.waitFor(async () => expect((await readBoard()).runs[0]?.status).toBe("running"));
+          const run = (await readBoard()).runs[0];
+          await vi.advanceTimersByTimeAsync(run.updatedAt + 120_000 - Date.now());
+          await vi.waitFor(() =>
+            expect(bridge.request).toHaveBeenCalledWith("turn/interrupt", {
+              threadId: "classifier",
+              turnId: "turn-classifier",
+            }),
+          );
         }
         const success = outcome.startsWith("reported");
         await vi.waitFor(async () => {
@@ -177,6 +198,7 @@ describe("project boards", () => {
           ),
         ).toBe(false);
       } finally {
+        vi.useRealTimers();
         await app.close();
       }
     },

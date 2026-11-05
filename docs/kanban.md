@@ -48,7 +48,9 @@ appear in the execution session. There is no permanent board chat.
 
 In CodexNest, classification runs in a temporary helper session that never appears
 in the session list. If classification fails, use **Retry classification** in the
-card to start a new attempt. Settings → New tasks can turn classification off for
+card to start a new attempt. In both apps, an attempt that does not report within
+two minutes of starting is stopped automatically and marked as failed; queued time
+while the provider is unavailable does not count. Settings → New tasks can turn classification off for
 tasks created in that application (their title is then the start of the task text,
 without a category) and choose its model.
 

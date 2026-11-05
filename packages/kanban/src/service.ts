@@ -56,7 +56,7 @@ export type KanbanProviderAdapter = {
   launch(input: KanbanLaunch): Promise<{ threadId: string; sessionUrl?: string }>;
   resume(input: { threadId: string; prompt: string; id: string; images?: string[] }): Promise<void>;
   archive?(threadId: string): Promise<void>;
-  /** Stops a session that a restart replaces. */
+  /** Stops a replaced task session or a classifier that exceeded its deadline. */
   interrupt?(threadId: string): Promise<void>;
   threadState?(threadId: string): Promise<string | null> | string | null;
   /**
@@ -92,6 +92,7 @@ const text = (value: unknown, label: string, maximum = 100_000): string => {
 const role = (board: KanbanBoard, value: KanbanStageRole) =>
   board.stages.find((stage) => stage.role === value)!.id;
 const AUTO_ARCHIVE_MS = 7 * 24 * 60 * 60 * 1000;
+const CLASSIFICATION_TIMEOUT_MS = 2 * 60_000;
 const stageRole = (board: KanbanBoard, stageId: string) =>
   board.stages.find((stage) => stage.id === stageId)?.role ?? null;
 /** A card that changes stage moves to the top of its new column. */
@@ -314,6 +315,7 @@ export class KanbanService {
   private revisions = new Map<string, number>();
   private observedStates = new Map<string, string>();
   private scheduled: ReturnType<typeof setTimeout> | null = null;
+  private classificationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   constructor(private readonly options: KanbanServiceOptions) {
     this.store = new KanbanStore(options.dataDir);
   }
@@ -338,6 +340,8 @@ export class KanbanService {
   }
   async close(): Promise<void> {
     this.closed = true;
+    for (const timer of this.classificationTimers.values()) clearTimeout(timer);
+    this.classificationTimers.clear();
     for (const watcher of this.watchers.splice(0)) watcher.close();
     if (this.scheduled) clearTimeout(this.scheduled);
     this.scheduled = null;
@@ -1236,7 +1240,9 @@ export class KanbanService {
             card.error = run.error;
           }
         }
-        run.updatedAt = Date.now();
+        // Keep the attempt's start time for deadline recovery; native state events do not
+        // give a classifier more time to report.
+        if (classifierFailed) run.updatedAt = Date.now();
         return false;
       }
       // A continued session reports its previous turn's outcome until the new turn starts.
@@ -1485,9 +1491,62 @@ export class KanbanService {
           runId: session.run.id,
         });
     }
-    for (const run of document.board.runs)
-      if (run.provider === this.options.provider && run.threadId && active(run))
+    for (const run of document.board.runs) {
+      if (run.provider !== this.options.provider) continue;
+      this.watchClassification(document.board.id, run);
+      if (run.threadId && active(run))
         this.threads.set(run.threadId, { boardId: document.board.id, runId: run.id });
+    }
+  }
+  /** One deadline per active attempt, also restored after a server restart. No polling. */
+  private watchClassification(boardId: string, run: KanbanRun): void {
+    if (run.kind !== "classify") return;
+    if (!active(run)) {
+      clearTimeout(this.classificationTimers.get(run.id));
+      this.classificationTimers.delete(run.id);
+      return;
+    }
+    if (this.closed || run.status === "queued" || this.classificationTimers.has(run.id)) return;
+    const timer = setTimeout(
+      () => {
+        const promise = this.expireClassification(boardId, run.id)
+          .catch((error) => this.options.onError?.(error))
+          .finally(() => {
+            if (this.classificationTimers.get(run.id) === timer)
+              this.classificationTimers.delete(run.id);
+            this.pending.delete(promise);
+          });
+        this.pending.add(promise);
+      },
+      Math.max(0, run.updatedAt + CLASSIFICATION_TIMEOUT_MS - Date.now()),
+    );
+    timer.unref();
+    this.classificationTimers.set(run.id, timer);
+  }
+  private async stopClassifier(threadId: string): Promise<void> {
+    await Promise.resolve(this.options.adapter.interrupt?.(threadId)).catch((error) =>
+      this.options.onError?.(error),
+    );
+    await Promise.resolve(this.options.adapter.archive?.(threadId)).catch((error) =>
+      this.options.onError?.(error),
+    );
+  }
+  private async expireClassification(boardId: string, runId: string): Promise<void> {
+    const { board, result: threadId } = await this.store.updateById(boardId, (data) => {
+      const run = data.board.runs.find((item) => item.id === runId);
+      if (!run || run.kind !== "classify" || !active(run) || run.status === "queued") return;
+      run.status = "failed";
+      run.error = "Task classification timed out after 2 minutes; retry classification";
+      run.updatedAt = Date.now();
+      for (const id of run.cardIds) {
+        const card = findCard(data, id);
+        card.classification = "failed";
+        card.error = run.error;
+      }
+      return run.threadId;
+    });
+    this.changed(board);
+    if (threadId) await this.stopClassifier(threadId);
   }
   private async dispatch(boardId: string, runId: string): Promise<void> {
     try {
@@ -1501,12 +1560,16 @@ export class KanbanService {
           (run.kind === "publish" && run.status === "queued" && publishing(data.board))
         )
           return false;
+        if (run.kind !== "classify" || run.status === "queued") run.updatedAt = Date.now();
         run.status = "preparing";
         runtime.ownerPid = process.pid;
-        run.updatedAt = Date.now();
         return true;
       });
       if (!claim.result) return;
+      this.watchClassification(
+        boardId,
+        claim.board.runs.find((run) => run.id === runId)!,
+      );
       const document = (await this.store.readById(boardId))!;
       const run = document.board.runs.find((run) => run.id === runId)!;
       const runtime = document.runs[runId]!;
@@ -1591,9 +1654,17 @@ export class KanbanService {
         current.sessionUrl = launched.sessionUrl ?? null;
         // A very fast agent may have reported before launch() returned.
         if (current.status === "preparing") current.status = "running";
-        current.updatedAt = Date.now();
+        if (current.kind !== "classify") current.updatedAt = Date.now();
       });
       this.changed(board);
+      if (
+        run.kind === "classify" &&
+        board.runs.find((item) => item.id === run.id)?.status === "failed"
+      ) {
+        // Launch may return after the deadline. Stop that late session as well.
+        await this.stopClassifier(launched.threadId);
+        return;
+      }
       if (
         run.kind === "classify" &&
         board.runs.find((item) => item.id === run.id)?.status === "completed"
@@ -1697,6 +1768,8 @@ export class KanbanService {
     const { board } = await this.store.updateById(document.board.id, async (data) => {
       const current = findCard(data, card.id);
       const own = data.board.runs.find((item) => item.id === run.id)!;
+      if (!active(own))
+        throw new KanbanError("completed", "This board operation has already finished");
       const group = (category: string) => {
         let found = data.board.categories.find(
           (item) =>

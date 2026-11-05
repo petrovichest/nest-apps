@@ -1370,6 +1370,8 @@ const BOARD_REASONS: Record<string, string> = {
   "The agent is waiting for an answer": "Агент ждёт ответа.",
   "Task classification did not finish; retry classification":
     "Категория не определена. Повторите категоризацию.",
+  "Task classification timed out after 2 minutes; retry classification":
+    "Классификация не завершилась за 2 минуты и была остановлена. Повторите классификацию.",
   "The task's agent is working; wait or stop it":
     "Агент работает над задачей. Дождитесь его или остановите.",
   "A selected card already has an active session": "У задачи уже идёт сессия.",
