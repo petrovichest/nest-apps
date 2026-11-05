@@ -10,13 +10,19 @@ The navigation's Projects tab lists the projects with their menu, **+** and drag
 a project's name opens or folds it without closing the others, and the open projects
 are remembered on each device (at first those not folded before stay open). Under an
 open project are its board and its tasks: Waiting for answer and In progress first, then
-the other stages in board order, with Published collapsed, and last **Sessions**: the
+the other stages in board order, with Published initially collapsed, and last **Sessions**: the
 project's sessions that are not tasks on its board. Choosing a task opens its session,
 in the other application when that one runs it, as the board's own link does; a task
 without a session opens on the board. The Active tab still lists the active sessions.
 The application opens on the board of the project shown last. Only the open projects'
 boards are loaded: away from a project's board page the list asks for it every few
 seconds, on that page it uses the board the page already loaded.
+
+Stage and Sessions group choices are remembered on this device per server and project;
+refreshes, mode switches and reopening a project do not change them. Every sidebar task
+list starts with at most five rows, including stages, sessions, Active, pins, the archive
+and nested branches. **Show more** reveals up to five additional rows; **Show less** restores
+the preview. Returning to the application resets list previews without opening groups.
 
 A session started with a project's **+** joins its board as a task in In progress and
 moves on like any task. Its text is the first message; for a recorded first message the

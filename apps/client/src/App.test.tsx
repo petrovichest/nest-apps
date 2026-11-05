@@ -590,6 +590,137 @@ describe("App routing and navigation", () => {
     );
   });
 
+  it.each([...taskBoard().stages, { id: "sessions", name: "Сессии", role: null }])(
+    "preserves the chosen expansion of board group $id across folds, modes and reloads",
+    async (stage) => {
+      mockConnection(
+        snapshot([baseThread, { ...baseThread, id: "plain", title: "Обычная сессия" }]),
+      );
+      const board = taskBoard();
+      board.cards.push({ ...board.cards[0]!, id: "ready-card", stageId: "ready" });
+      Object.assign(connection().api, { readKanban: vi.fn().mockResolvedValue(board) });
+      const first = renderApp("/threads/newer");
+      const toggle = () =>
+        within(screen.getByRole("navigation", { name: "Задачи" })).getByRole("button", {
+          name: `${stage.name}1`,
+        });
+      await waitFor(() => expect(toggle()).toBeInTheDocument());
+      expect(toggle()).toHaveAttribute("aria-expanded", String(stage.role !== "done"));
+      fireEvent.click(toggle());
+      const chosen = String(stage.role === "done");
+      expect(toggle()).toHaveAttribute("aria-expanded", chosen);
+
+      fireEvent.click(screen.getByRole("button", { name: "Активные" }));
+      fireEvent.click(screen.getByRole("button", { name: "Проекты" }));
+      await waitFor(() => expect(toggle()).toHaveAttribute("aria-expanded", chosen));
+
+      fireEvent.click(screen.getByRole("button", { name: "Проект" }));
+      fireEvent.click(screen.getByRole("button", { name: "Проект" }));
+      await waitFor(() => expect(toggle()).toHaveAttribute("aria-expanded", chosen));
+
+      first.unmount();
+
+      renderApp("/threads/newer");
+      await waitFor(() => expect(toggle()).toHaveAttribute("aria-expanded", chosen));
+    },
+  );
+
+  it("keeps category choices independent between projects with matching stage IDs", async () => {
+    mockConnection(
+      snapshot([baseThread], [defaultProject(), testProject("second-project", "Второй")]),
+    );
+    Object.assign(connection().api, { readKanban: vi.fn().mockResolvedValue(taskBoard()) });
+    await renderList("/threads/newer");
+    const nav = screen.getByRole("navigation", { name: "Задачи" });
+    const group = (name: string) =>
+      within(nav).getByRole("button", { name }).closest(".project-group") as HTMLElement;
+    const toggle = (name: string) =>
+      within(group(name)).getByRole("button", { name: "К выполнению1" });
+    fireEvent.click(toggle("Проект"));
+    expect(toggle("Проект")).toHaveAttribute("aria-expanded", "false");
+    expect(toggle("Второй")).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Активные" }));
+    fireEvent.click(screen.getByRole("button", { name: "Проекты" }));
+    await waitFor(() => expect(toggle("Проект")).toHaveAttribute("aria-expanded", "false"));
+    expect(toggle("Второй")).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("keeps board stages folded through refreshes, empty stages and changes of role", async () => {
+    mockConnection(snapshot([baseThread]));
+    let board = taskBoard();
+    const readKanban = vi.fn(async () => board);
+    Object.assign(connection().api, { readKanban });
+    const first = renderApp("/threads/newer");
+    let nav = screen.getByRole("navigation", { name: "Задачи" });
+    fireEvent.click(await within(nav).findByRole("button", { name: "К выполнению1" }));
+
+    board = { ...board, revision: 2, cards: board.cards.filter((card) => card.stageId !== "todo") };
+    fireEvent.focus(window);
+    await waitFor(() =>
+      expect(within(nav).queryByRole("button", { name: "К выполнению1" })).toBeNull(),
+    );
+    board = { ...taskBoard(), revision: 3 };
+    fireEvent.focus(window);
+    await waitFor(() =>
+      expect(within(nav).getByRole("button", { name: "К выполнению1" })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      ),
+    );
+    expect(within(nav).queryByRole("link", { name: "Новая идея" })).toBeNull();
+
+    board = {
+      ...board,
+      revision: 4,
+      stages: board.stages.map((stage) =>
+        stage.id === "todo" ? { ...stage, name: "Проверка", role: null } : stage,
+      ),
+    };
+    fireEvent.focus(window);
+    await waitFor(() =>
+      expect(within(nav).getByRole("button", { name: "Проверка1" })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      ),
+    );
+    first.unmount();
+
+    // The same project/stage IDs on a different server have independent choices.
+    renderApp("/threads/newer", () => undefined, "https://other.local");
+    nav = screen.getByRole("navigation", { name: "Задачи" });
+    expect(await within(nav).findByRole("button", { name: "Проверка1" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it.each(taskBoard().stages)("pages tasks in board stage $id five at a time", async (stage) => {
+    mockConnection(snapshot([baseThread]));
+    const board = taskBoard();
+    board.cards = Array.from({ length: 12 }, (_, index) => ({
+      ...board.cards[0]!,
+      id: `card-${index}`,
+      title: `Задача ${index}`,
+      stageId: stage.id,
+    }));
+    Object.assign(connection().api, { readKanban: vi.fn().mockResolvedValue(board) });
+    const view = renderApp("/threads/newer");
+    const nav = screen.getByRole("navigation", { name: "Задачи" });
+    const toggle = await within(nav).findByRole("button", { name: `${stage.name}12` });
+    if (stage.role === "done") fireEvent.click(toggle);
+    const tasks = view.container.querySelector(".board-navigation-tasks") as HTMLElement;
+    const rows = () => within(tasks).getAllByRole("link");
+    expect(rows()).toHaveLength(5);
+    fireEvent.click(within(tasks).getByRole("button", { name: "Показать ещё 5" }));
+    expect(rows()).toHaveLength(10);
+    fireEvent.click(within(tasks).getByRole("button", { name: "Показать ещё 2" }));
+    expect(rows()).toHaveLength(12);
+    fireEvent.click(within(tasks).getByRole("button", { name: "Показать меньше" }));
+    expect(rows()).toHaveLength(5);
+    fireEvent.click(toggle);
+    expect(within(nav).queryByRole("button", { name: "Показать ещё 5" })).toBeNull();
+  });
+
   it("reuses the board page's tasks in the navigation", async () => {
     mockConnection(snapshot([baseThread]));
     const readKanban = vi.fn().mockResolvedValue(taskBoard());
@@ -874,7 +1005,7 @@ describe("App routing and navigation", () => {
     );
   });
 
-  it("shows every pinned project session before ordinary sessions without expanding history", async () => {
+  it("pages pinned project sessions before ordinary sessions", async () => {
     const pinned = Array.from({ length: 6 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `pin-${index}`,
@@ -891,11 +1022,11 @@ describe("App routing and navigation", () => {
         (element) => element.textContent,
       );
 
-    expect(titles()).toEqual(pinned.map((thread) => thread.title));
-    fireEvent.click(within(sessions).getByRole("button", { name: "Показать ещё 1" }));
+    expect(titles()).toEqual(pinned.slice(0, 5).map((thread) => thread.title));
+    fireEvent.click(within(sessions).getByRole("button", { name: "Показать ещё 2" }));
     expect(titles()).toEqual([...pinned.map((thread) => thread.title), normal.title]);
     fireEvent.click(within(sessions).getByRole("button", { name: "Показать меньше" }));
-    expect(titles()).toEqual(pinned.map((thread) => thread.title));
+    expect(titles()).toEqual(pinned.slice(0, 5).map((thread) => thread.title));
     fireEvent.click(screen.getByRole("button", { name: "Проект" }));
     expect(sessions).not.toBeVisible();
   });
@@ -1177,7 +1308,7 @@ describe("App routing and navigation", () => {
     });
   });
 
-  it("renders a flat unlimited cross-project active feed in recency order", () => {
+  it("pages the cross-project active feed in recency order", () => {
     localStorage.setItem("codexnest.sessionListMode", "active");
     const secondProject = testProject("second-project", "Второй");
     const threads = (
@@ -1277,6 +1408,8 @@ describe("App routing and navigation", () => {
 
     const view = renderApp("/threads/running");
     const activeList = view.container.querySelector(".active-session-list") as HTMLElement;
+    expect(activeList.querySelectorAll(":scope > .thread-branch")).toHaveLength(5);
+    fireEvent.click(within(activeList).getByRole("button", { name: "Показать ещё 4" }));
     const rootTitles = Array.from(
       activeList.querySelectorAll(
         ":scope > .thread-branch > .thread-branch-row .thread-link-title",
@@ -1311,8 +1444,60 @@ describe("App routing and navigation", () => {
       "Проект",
     ]);
     expect(activeList.querySelectorAll(":scope > .thread-branch")).toHaveLength(9);
-    expect(activeList.querySelector(".show-more")).toBeNull();
+    fireEvent.click(within(activeList).getByRole("button", { name: "Показать меньше" }));
+    expect(activeList.querySelectorAll(":scope > .thread-branch")).toHaveLength(5);
   });
+
+  it.each(["pinned", "active", "archive", "project-children", "active-children"])(
+    "pages the %s sidebar list without dumping its remaining tasks",
+    async (kind) => {
+      const nested = kind.endsWith("children");
+      const active = kind === "active" || kind === "pinned" || kind === "active-children";
+      if (active) localStorage.setItem("codexnest.sessionListMode", "active");
+      const threads = Array.from({ length: 12 }, (_, index): ThreadSummary => ({
+        ...baseThread,
+        id: `paged-${index}`,
+        title: `Пункт ${index}`,
+        state: active ? "running" : "idle",
+        pinned: kind === "pinned",
+        archived: kind === "archive",
+        updatedAt: 100 - index,
+        relation: nested
+          ? {
+              kind: "subagent",
+              sessionId: `paged-${index}`,
+              parentThreadId: baseThread.id,
+              nickname: null,
+              role: null,
+            }
+          : { kind: "session", sessionId: `paged-${index}` },
+      }));
+      mockConnection(
+        snapshot(nested ? [...threads, { ...baseThread, state: "running" }] : threads),
+      );
+      const view = await renderList(nested ? "/threads/newer" : "/threads/paged-0");
+      if (nested) expandSidebarSubagents(new RegExp(baseThread.title));
+      if (kind === "archive")
+        fireEvent.click(view.container.querySelector(".archive-group > summary")!);
+      const selector =
+        kind === "pinned"
+          ? ".active-pinned-sessions"
+          : kind === "active"
+            ? ".active-session-list"
+            : kind === "archive"
+              ? ".archive-group"
+              : ".thread-branch-children";
+      const list = view.container.querySelector(selector) as HTMLElement;
+      const rows = () => list.querySelectorAll(":scope > .thread-branch");
+      expect(rows()).toHaveLength(5);
+      fireEvent.click(within(list).getByRole("button", { name: "Показать ещё 5" }));
+      expect(rows()).toHaveLength(10);
+      fireEvent.click(within(list).getByRole("button", { name: "Показать ещё 2" }));
+      expect(rows()).toHaveLength(12);
+      fireEvent.click(within(list).getByRole("button", { name: "Показать меньше" }));
+      expect(rows()).toHaveLength(5);
+    },
+  );
 
   it("keeps running sessions stable while other active sessions follow branch recency", () => {
     localStorage.setItem("codexnest.sessionListMode", "active");
@@ -1549,6 +1734,8 @@ describe("App routing and navigation", () => {
     expect(screen.getByRole("link", { name: /Требует внимания/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Новый результат/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Новая ошибка/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Новое прерывание/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Показать ещё 2" }));
     expect(screen.getByRole("link", { name: /Новое прерывание/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Есть очередь/ })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Обычная история/ })).not.toBeInTheDocument();
@@ -2742,7 +2929,7 @@ describe("App routing and navigation", () => {
     expect(directBranches()).toHaveLength(5);
   });
 
-  it("always shows every non-gray and queued project session", async () => {
+  it("prioritizes highlighted sessions while still limiting every project preview to five", async () => {
     const gray = Array.from({ length: 5 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `gray-${index + 1}`,
@@ -2790,21 +2977,24 @@ describe("App routing and navigation", () => {
     const sessions = view.container.querySelector(".board-navigation-tasks") as HTMLElement;
     const directBranches = () => sessions.querySelectorAll(":scope > .thread-branch");
 
-    expect(directBranches()).toHaveLength(8);
-    highlighted.forEach((thread) =>
-      expect(screen.getByRole("link", { name: thread.title })).toBeInTheDocument(),
-    );
-    gray.forEach((thread) =>
+    expect(directBranches()).toHaveLength(5);
+    highlighted
+      .slice(0, 5)
+      .forEach((thread) =>
+        expect(screen.getByRole("link", { name: thread.title })).toBeInTheDocument(),
+      );
+    [...highlighted.slice(5), ...gray].forEach((thread) =>
       expect(screen.queryByRole("link", { name: thread.title })).not.toBeInTheDocument(),
     );
-
     fireEvent.click(within(sessions).getByRole("button", { name: "Показать ещё 5" }));
+    expect(directBranches()).toHaveLength(10);
+    fireEvent.click(within(sessions).getByRole("button", { name: "Показать ещё 3" }));
     expect(directBranches()).toHaveLength(13);
     fireEvent.click(within(sessions).getByRole("button", { name: "Показать меньше" }));
-    expect(directBranches()).toHaveLength(8);
+    expect(directBranches()).toHaveLength(5);
   });
 
-  it("counts always-visible sessions toward the five-session preview", async () => {
+  it("keeps highlighted sessions within the five-session preview", async () => {
     const gray = Array.from({ length: 5 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `preview-gray-${index + 1}`,
@@ -2837,11 +3027,11 @@ describe("App routing and navigation", () => {
       Array.from(sessions.querySelectorAll(".thread-link-title")).map((item) => item.textContent);
 
     expect(titles()).toEqual([
-      "Обычная 1",
-      "Обычная 2",
       "Старая выполняющаяся",
       "Старая в очереди",
       "Старая непрочитанная",
+      "Обычная 1",
+      "Обычная 2",
     ]);
     expect(within(sessions).getByRole("button", { name: "Показать ещё 3" })).toBeInTheDocument();
   });
@@ -2902,7 +3092,7 @@ describe("App routing and navigation", () => {
     expect(manualNavigationIntent).not.toHaveBeenCalled();
   });
 
-  it("expands nested subagent branches independently and pages completed history", async () => {
+  it("expands nested subagent branches independently and pages running and completed children", async () => {
     const activeChildren = Array.from({ length: 6 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `active-child-${index + 1}`,
@@ -2957,8 +3147,8 @@ describe("App routing and navigation", () => {
       Array.from(rootChildren.children).filter((element) =>
         element.classList.contains("thread-branch"),
       );
-    expect(directBranches()).toHaveLength(11);
-    expect(rootChildren.querySelector(":scope > .show-more")).toHaveTextContent("Показать ещё 1");
+    expect(directBranches()).toHaveLength(5);
+    expect(rootChildren.querySelector(":scope > .show-more")).toHaveTextContent("Показать ещё 5");
 
     const firstChildLink = within(rootChildren).getByRole("link", {
       name: /agent-1 · Активный 1/,
@@ -2980,12 +3170,15 @@ describe("App routing and navigation", () => {
     expect(nestedBranches()).toHaveLength(6);
 
     fireEvent.click(rootChildren.querySelector(":scope > .show-more") as HTMLButtonElement);
+    expect(directBranches()).toHaveLength(10);
+    expect(rootChildren.lastElementChild).toHaveTextContent("Показать ещё 2");
+    fireEvent.click(rootChildren.querySelector(":scope > .show-more") as HTMLButtonElement);
     expect(directBranches()).toHaveLength(12);
     expect(rootChildren.lastElementChild).toHaveTextContent("Показать меньше");
     expect(nestedBranches()).toHaveLength(6);
 
     fireEvent.click(rootChildren.querySelector(":scope > .show-more") as HTMLButtonElement);
-    expect(directBranches()).toHaveLength(11);
+    expect(directBranches()).toHaveLength(5);
     expect(nestedBranches()).toHaveLength(6);
   });
 

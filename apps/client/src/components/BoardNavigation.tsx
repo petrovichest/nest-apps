@@ -6,9 +6,11 @@ import { useConnection } from "../connection";
 import { useI18n } from "../i18n";
 import { ChevronDownIcon, ChevronRightIcon, KanbanIcon } from "./Icons";
 import { cardStatusClass, latestRun, stageLabel } from "./KanbanBoard";
+import { SidebarList } from "./SidebarList";
 
 /** A board shown by the board page, passed on so the navigation needs no requests of its own. */
 export type ShownBoard = { projectId: string; board: KanbanBoard };
+export type BoardStageExpansion = Record<string, Record<string, boolean>>;
 
 const REFRESH_MS = 4_000;
 /** Answers and running agents come first, the other stages keep the board's order. */
@@ -30,12 +32,18 @@ export function ProjectBoard({
   threads,
   shownBoard,
   renderSessions,
+  stageExpansion,
+  listResetKey,
+  onToggleStage,
   onNavigate,
 }: {
   projectId: string;
   /** Sessions of this application; they colour the markers like on the board. */
   threads: ThreadSummary[];
   shownBoard: ShownBoard | null;
+  stageExpansion: Record<string, boolean> | undefined;
+  listResetKey: number;
+  onToggleStage(projectId: string, stageId: string, expanded: boolean): void;
   /** The project's sessions without the given task sessions. */
   renderSessions(taskThreadIds: ReadonlySet<string>): ProjectSessions;
   onNavigate(): void;
@@ -50,8 +58,6 @@ export function ProjectBoard({
   const location = useLocation();
   const [fetched, setFetched] = useState<KanbanBoard | null>(null);
   const [failed, setFailed] = useState(false);
-  // Stages whose group the operator opened or closed against its default.
-  const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
   const onBoardPage =
     matchPath("/projects/:projectId/kanban", location.pathname)?.params.projectId === projectId;
   const openThreadId = matchPath("/threads/:threadId", location.pathname)?.params.threadId;
@@ -127,13 +133,7 @@ export function ProjectBoard({
     : failed
       ? renderSessions(new Set())
       : null;
-  const toggle = (id: string) =>
-    setToggled((current) => {
-      const next = new Set(current);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
-  const sessionsExpanded = !toggled.has(SESSIONS);
+  const sessionsExpanded = stageExpansion?.[SESSIONS] ?? true;
   const sessionsId = `board-navigation-${projectId}-sessions`;
 
   return (
@@ -155,8 +155,9 @@ export function ProjectBoard({
         </div>
       </div>
       {stages.map(({ stage, cards }) => {
-        // Published tasks stay closed until opened, like their column on the board.
-        const expanded = (stage.role !== "done") !== toggled.has(stage.id);
+        // Explicit choices survive project folds, mode switches and reloads, even if a
+        // stage becomes empty or changes role. Published tasks start closed.
+        const expanded = stageExpansion?.[stage.id] ?? stage.role !== "done";
         const listId = `board-navigation-${projectId}-${stage.id}`;
         return (
           <div className="board-navigation-stage" key={stage.id}>
@@ -166,7 +167,7 @@ export function ProjectBoard({
                 aria-expanded={expanded}
                 className="project-toggle"
                 type="button"
-                onClick={() => toggle(stage.id)}
+                onClick={() => onToggleStage(projectId, stage.id, !expanded)}
               >
                 {expanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
                 <span>{stageLabel(stage, t)}</span>
@@ -174,61 +175,63 @@ export function ProjectBoard({
               </button>
             </div>
             <div className="board-navigation-tasks" id={listId} hidden={!expanded}>
-              {cards.map((card) => {
-                const latest = latestRun(board!, card.id);
-                const session =
-                  latest?.threadId && latest.provider === application.provider
-                    ? sessions.get(latest.threadId)
-                    : undefined;
-                // To do has no agent at work yet, so no marker, as on the board.
-                const marker =
-                  stage.role === "todo" ? null : cardStatusClass(card, latest, session);
-                const active = Boolean(
-                  openThreadId &&
-                  board!.runs.some(
-                    (run) => run.threadId === openThreadId && run.cardIds.includes(card.id),
-                  ),
-                );
-                const content = (
-                  <>
-                    <span className="thread-link-title">
-                      <span className="thread-link-title-text">
-                        {card.title || t("Голосовая задача")}
+              <SidebarList resetKey={listResetKey}>
+                {cards.map((card) => {
+                  const latest = latestRun(board!, card.id);
+                  const session =
+                    latest?.threadId && latest.provider === application.provider
+                      ? sessions.get(latest.threadId)
+                      : undefined;
+                  // To do has no agent at work yet, so no marker, as on the board.
+                  const marker =
+                    stage.role === "todo" ? null : cardStatusClass(card, latest, session);
+                  const active = Boolean(
+                    openThreadId &&
+                    board!.runs.some(
+                      (run) => run.threadId === openThreadId && run.cardIds.includes(card.id),
+                    ),
+                  );
+                  const content = (
+                    <>
+                      <span className="thread-link-title">
+                        <span className="thread-link-title-text">
+                          {card.title || t("Голосовая задача")}
+                        </span>
                       </span>
-                    </span>
-                    {marker && <span className={`status ${marker}`} />}
-                  </>
-                );
-                const ownThread =
-                  latest?.provider === application.provider ? latest.threadId : null;
-                return (
-                  <div className="thread-branch" key={card.id}>
-                    <div className="thread-branch-row">
-                      <span className="thread-branch-spacer" />
-                      {!ownThread && latest?.sessionUrl ? (
-                        // The other application's session opens there, as on the board.
-                        <a className="thread-link" href={latest.sessionUrl}>
-                          {content}
-                        </a>
-                      ) : (
-                        // A task without a session yet opens as a card on the board.
-                        <Link
-                          aria-current={active ? "page" : undefined}
-                          className={`thread-link${active ? " active" : ""}`}
-                          onClick={onNavigate}
-                          to={
-                            ownThread
-                              ? `/threads/${encodeURIComponent(ownThread)}`
-                              : `${boardPath(projectId)}?card=${encodeURIComponent(card.id)}`
-                          }
-                        >
-                          {content}
-                        </Link>
-                      )}
+                      {marker && <span className={`status ${marker}`} />}
+                    </>
+                  );
+                  const ownThread =
+                    latest?.provider === application.provider ? latest.threadId : null;
+                  return (
+                    <div className="thread-branch" key={card.id}>
+                      <div className="thread-branch-row">
+                        <span className="thread-branch-spacer" />
+                        {!ownThread && latest?.sessionUrl ? (
+                          // The other application's session opens there, as on the board.
+                          <a className="thread-link" href={latest.sessionUrl}>
+                            {content}
+                          </a>
+                        ) : (
+                          // A task without a session yet opens as a card on the board.
+                          <Link
+                            aria-current={active ? "page" : undefined}
+                            className={`thread-link${active ? " active" : ""}`}
+                            onClick={onNavigate}
+                            to={
+                              ownThread
+                                ? `/threads/${encodeURIComponent(ownThread)}`
+                                : `${boardPath(projectId)}?card=${encodeURIComponent(card.id)}`
+                            }
+                          >
+                            {content}
+                          </Link>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </SidebarList>
             </div>
           </div>
         );
@@ -241,7 +244,7 @@ export function ProjectBoard({
               aria-expanded={sessionsExpanded}
               className="project-toggle"
               type="button"
-              onClick={() => toggle(SESSIONS)}
+              onClick={() => onToggleStage(projectId, SESSIONS, !sessionsExpanded)}
             >
               {sessionsExpanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
               <span>{t("Сессии")}</span>
