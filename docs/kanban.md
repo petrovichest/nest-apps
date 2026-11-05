@@ -7,8 +7,9 @@ Both applications must run as the same operating-system user and resolve the
 project to the same directory.
 
 The switch at the top of the navigation chooses **Sessions** or **Board**. Board mode
-opens the board of the project being viewed (or the one shown last) and lists the
-projects instead of sessions; choosing a project opens its board, where its tasks are.
+opens the board of the project being viewed (or the one shown last). Its Projects tab
+lists the projects instead of their sessions, and choosing a project opens its board,
+where its tasks are; the Active tab still lists the active sessions.
 The mode is remembered on each device, and in board mode the application opens on the
 board. The list makes no requests of its own.
 

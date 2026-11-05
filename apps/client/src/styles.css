@@ -1047,10 +1047,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.session-list-mode[hidden] {
-  display: none;
-}
-
 /* Sessions or board: the top switch of the navigation, two equal tabs like the list tabs. */
 .session-list-mode.navigation-mode {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

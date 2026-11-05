@@ -117,7 +117,7 @@ const BOARD_PROJECT_KEY = `${application.storagePrefix}.boardProject`;
 
 type ListExpansion = number | "all";
 type SessionListMode = "projects" | "active";
-/** Sessions mode lists sessions; board mode lists projects, each opening its board. */
+/** Board mode lists projects opening their boards in place of sessions grouped by project. */
 type NavigationMode = "sessions" | "board";
 
 type SidebarResizeGesture = {
@@ -1832,12 +1832,7 @@ function Sidebar({
           <SearchIcon />
         </button>
       </div>
-      <div
-        className="session-list-mode"
-        role="group"
-        aria-label={t("Режим списка сессий")}
-        hidden={navigationMode === "board"}
-      >
+      <div className="session-list-mode" role="group" aria-label={t("Режим списка сессий")}>
         <button
           aria-pressed={sessionListMode === "projects"}
           onClick={() => setSessionListMode("projects")}
@@ -1898,12 +1893,7 @@ function Sidebar({
         }}
         ref={threadNavRef}
       >
-        {navigationMode === "board" && boardProjectId ? (
-          <BoardNavigation
-            projects={projectListDirection === "bottom-up" ? [...projects].reverse() : projects}
-            onNavigate={onClose}
-          />
-        ) : sessionListMode === "active" ? (
+        {sessionListMode === "active" ? (
           <div className="active-session-list">
             {pinnedFeedRoots.length > 0 && (
               <div
@@ -1919,6 +1909,11 @@ function Sidebar({
               <div className="active-session-empty">{t("Нет активных сессий")}</div>
             )}
           </div>
+        ) : navigationMode === "board" && boardProjectId ? (
+          <BoardNavigation
+            projects={projectListDirection === "bottom-up" ? [...projects].reverse() : projects}
+            onNavigate={onClose}
+          />
         ) : (
           <div className={`project-list${projectDrag ? " project-list-dragging" : ""}`}>
             {projectListDirection === "bottom-up" && archive}
