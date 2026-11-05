@@ -1204,6 +1204,40 @@ describe("shared provider board service", () => {
     expect((await f.services.codex.read(f.project)).cards[0]!.archivedAt).toBeUndefined();
   });
 
+  it("archives a session once all its tasks left the board, and only once", async () => {
+    const f = await fixture();
+    const first = await f.card("Header");
+    const second = await f.card("Footer");
+    await f.services.codex.action(f.project, {
+      action: "execute",
+      cardIds: [first, second],
+      clientActionId: randomUUID(),
+    });
+    const run = await f.running("execute", first);
+    await f.finish(run);
+    const settled = async () => {
+      // Each application looks at the board on its own after a change.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return f.archived.codex.filter((thread) => thread === run.threadId).length;
+    };
+    // One task of the session is still on the board.
+    await f.services.codex.updateCard(f.project, first, { archived: true });
+    expect(await settled()).toBe(0);
+    // The other leaves after a week in Published.
+    await f.services.codex.store.update(f.project, (data) => {
+      const card = data.board.cards.find((item) => item.id === second)!;
+      card.stageId = data.board.stages.find((stage) => stage.role === "done")!.id;
+      card.doneAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    });
+    await f.services.claude.read(f.project);
+    await until(settled, (count) => count === 1);
+    // Only the application that owns the session archives it.
+    expect(f.archived.claude).not.toContain(run.threadId);
+    // A session brought back from the archive by hand stays there after later changes.
+    await f.services.codex.updateCard(f.project, first, { archived: false });
+    await f.services.codex.updateCard(f.project, first, { archived: true });
+    expect(await settled()).toBe(1);
+  });
   it("deletes only archived cards with this application's sessions", async () => {
     const f = await fixture();
     const id = await f.card("Delete me");

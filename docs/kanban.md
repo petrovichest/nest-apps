@@ -68,8 +68,11 @@ within a stage; new and moved cards go to the top. A card stays put while its ag
 works.
 
 Idle tasks can be moved to the archive; published tasks move there automatically
-after seven days. Restoring brings a task back. Deleting an archived task removes its
-pictures and archives its sessions in the current application.
+after seven days. Once all tasks of a session are in the archive, the application that
+runs the session moves it to the session archive too, once: a session brought back by hand
+stays, and restoring a task does not bring its session back. Restoring brings a task
+back. Deleting an archived task removes its pictures and archives its sessions in the
+current application.
 
 ## Execution
 

@@ -134,6 +134,21 @@ function sessionCards(
     return item && (item === card || item.archivedAt === undefined) ? [item] : [];
   });
 }
+/** This application's sessions whose tasks all left the board and that were not archived yet. */
+function retiredSessions(data: KanbanDocument, provider: KanbanProvider): Set<string> {
+  const live = new Set(
+    data.board.cards.filter((card) => card.archivedAt === undefined).map((card) => card.id),
+  );
+  const retired = new Set<string>();
+  const kept = new Set<string>();
+  for (const run of data.board.runs) {
+    if (run.kind === "classify" || run.provider !== provider || !run.threadId) continue;
+    if (busy(run) || run.cardIds.some((id) => live.has(id))) kept.add(run.threadId);
+    else if (!data.runs[run.id]?.sessionArchived) retired.add(run.threadId);
+  }
+  for (const threadId of kept) retired.delete(threadId);
+  return retired;
+}
 /** The task's agent is busy; classification does not count. */
 const working = (data: KanbanDocument, cardId: string) =>
   data.board.runs.some(
@@ -1399,6 +1414,7 @@ export class KanbanService {
             this.pending.add(promise);
           }
           this.indexThreads(document);
+          await this.retireSessions(document);
           for (const run of document.board.runs) {
             if (run.provider !== this.options.provider) continue;
             if (run.threadId && active(run)) {
@@ -1434,6 +1450,25 @@ export class KanbanService {
       this.pumping = false;
       for (const resolve of this.pumpWaiters.splice(0)) resolve();
     }
+  }
+  /**
+   * A session goes to the archive once all its tasks left the board, by hand or after a week in
+   * Published, so it does not return to the session list; one brought back stays.
+   */
+  private async retireSessions(document: KanbanDocument): Promise<void> {
+    if (!this.options.adapter.archive || !retiredSessions(document, this.options.provider).size)
+      return;
+    const { board, result: retired } = await this.store.updateById(document.board.id, (data) => {
+      const retired = retiredSessions(data, this.options.provider);
+      for (const run of data.board.runs)
+        if (run.threadId && retired.has(run.threadId)) data.runs[run.id]!.sessionArchived = true;
+      return retired;
+    });
+    this.changed(board);
+    for (const threadId of retired)
+      await Promise.resolve(this.options.adapter.archive(threadId)).catch((error) =>
+        this.options.onError?.(error),
+      );
   }
   private indexThreads(document: KanbanDocument): void {
     // A finished task's session stays known: the operator may continue it there.

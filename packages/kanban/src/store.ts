@@ -36,6 +36,8 @@ export type RunRuntime = {
   interruptThreadId?: string;
   /** The session has run this turn; until then its earlier finished state is not this run's. */
   started?: boolean;
+  /** The session went to the archive with its tasks; one brought back is not archived again. */
+  sessionArchived?: boolean;
   report?: unknown;
 };
 export type KanbanDocument = {
