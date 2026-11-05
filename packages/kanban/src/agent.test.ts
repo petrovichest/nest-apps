@@ -64,7 +64,7 @@ describe("agent file bridge", () => {
       "/agent.mjs",
       "/nonexistent/capability.json",
     );
-    expect(prompt).toContain("Classify this one task");
+    expect(prompt).toContain("Classify this task");
     expect(prompt).toContain("Fix layout");
     expect(prompt).toContain("/agent.mjs");
     expect(prompt).toContain('["Interface"]');

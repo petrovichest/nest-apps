@@ -1237,6 +1237,114 @@ describe("shared provider board service", () => {
     expect(f.inputs.codex.at(-1)?.images).toHaveLength(2);
   });
 
+  it("splits a task of several categories into cards with their own text and pictures", async () => {
+    const f = await fixture();
+    // Distinct bytes show which stored file each card ends up with.
+    const picture = (name: string, mark: number) => ({
+      name,
+      url: `data:image/png;base64,${Buffer.concat([
+        Buffer.from(png.url.split(",")[1]!, "base64"),
+        Buffer.from([mark]),
+      ]).toString("base64")}`,
+    });
+    const [first, second, third] = [picture("a.png", 1), picture("b.png", 2), picture("c.png", 3)];
+    const settings = { collaborationMode: "default", model: "opus" } as const;
+    let board = await f.services.claude.createCard(f.project, {
+      description: "Fix the header. Speed up the API.",
+      clientCreationId: randomUUID(),
+      images: [first, second, third],
+      settings,
+    });
+    const id = board.cards[0]!.id;
+    const classifier = await f.running("classify", id, f.services.claude);
+    const prompt = f.prompts.get(classifier.id)!;
+    expect(prompt).toContain('"tasks"');
+    expect(prompt).toContain("verbatim");
+    expect(prompt).toContain("3 attached pictures");
+    await expect(
+      f.command(classifier, "report", {
+        tasks: [
+          { title: "Header", category: "UI", text: "Fix the header.", images: [4] },
+          { title: "API", category: "Server", text: "Speed up the API." },
+        ],
+      }),
+    ).resolves.toMatchObject({ ok: false });
+    expect(
+      (
+        await f.command(classifier, "report", {
+          tasks: [
+            { title: "Header", category: "UI", text: "Fix the header.", images: [2] },
+            { title: "API", category: "Server", text: "Speed up the API.", images: [1] },
+          ],
+        })
+      )?.ok,
+    ).toBe(true);
+    board = await f.services.codex.read(f.project);
+    const category = (name: string) => board.categories.find((item) => item.name === name)?.id;
+    // The new card sits under the original; the third picture, claimed by none, goes to both.
+    expect(board.cards.map((card) => [card.title, card.description, card.categoryId])).toEqual([
+      ["Header", "Fix the header.", category("UI")],
+      ["API", "Speed up the API.", category("Server")],
+    ]);
+    expect(board.cards.every((card) => card.classification === "ready")).toBe(true);
+    const split = board.cards[1]!.id;
+    for (const [cardId, expected] of [
+      [id, [second, third]],
+      [split, [first, third]],
+    ] as const) {
+      const card = board.cards.find((item) => item.id === cardId)!;
+      expect(card.images?.map((image) => image.name)).toEqual(expected.map((image) => image.name));
+      for (const [index, image] of expected.entries())
+        expect(await f.services.codex.readImage(f.project, cardId, index)).toEqual(image);
+    }
+    await expect(f.services.codex.readImage(f.project, id, 2)).rejects.toThrow();
+    // The split task starts with its pictures and the settings chosen with the original.
+    await f.services.claude.action(f.project, {
+      action: "execute",
+      cardIds: [split],
+      clientActionId: randomUUID(),
+    });
+    const executor = await f.running("execute", split, f.services.claude);
+    const input = f.inputs.claude.find((item) => item.id === executor.id)!;
+    expect(input.prompt).toBe("Speed up the API.");
+    expect(input.images).toEqual([first.url, third.url]);
+    expect(input.settings).toEqual(settings);
+  });
+
+  it("keeps the operator's text whole when it changed during classification or is one task", async () => {
+    const f = await fixture();
+    let board = await f.services.codex.createCard(f.project, {
+      description: "Fix the header.",
+      clientCreationId: randomUUID(),
+    });
+    const id = board.cards[0]!.id;
+    let classifier = await f.running("classify", id);
+    await f.services.codex.updateCard(f.project, id, {
+      description: "Fix the header. Speed up the API.",
+    });
+    const tasks = [
+      { title: "Header", category: "UI", text: "Fix the header." },
+      { title: "API", category: "Server", text: "Speed up the API." },
+    ];
+    expect((await f.command(classifier, "report", { tasks }))?.ok).toBe(true);
+    board = await f.services.codex.read(f.project);
+    expect(board.cards.map((card) => [card.title, card.description])).toEqual([
+      ["Header", "Fix the header. Speed up the API."],
+    ]);
+    board = await f.services.codex.createCard(f.project, {
+      description: "Fix the header, please.",
+      clientCreationId: randomUUID(),
+    });
+    const other = board.cards[0]!.id;
+    classifier = await f.running("classify", other);
+    expect((await f.command(classifier, "report", { tasks: tasks.slice(0, 1) }))?.ok).toBe(true);
+    board = await f.services.codex.read(f.project);
+    expect(board.cards.map((card) => [card.title, card.description])).toEqual([
+      ["Header", "Fix the header, please."],
+      ["Header", "Fix the header. Speed up the API."],
+    ]);
+  });
+
   it("keeps new tasks unclassified, with their text as the title, when classification is off", async () => {
     let classifies = false;
     const f = await fixture(

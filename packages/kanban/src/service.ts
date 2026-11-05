@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   KanbanAudioInput,
@@ -238,6 +238,48 @@ const cardImages = (card: KanbanCard): StoredImage[] =>
     : card.image
       ? [{ ...card.image, file: card.id }]
       : [];
+type ClassifiedTask = { title: string; category: string; text?: string; images: number[] };
+/**
+ * A classifier reports one task, or several when the text holds independent tasks; each part
+ * gets zero-based picture indexes, and a picture no part claims goes to every part.
+ */
+function classifiedTasks(payload: Record<string, unknown>, pictures: number): ClassifiedTask[] {
+  const all = Array.from({ length: pictures }, (_, index) => index);
+  if (!Array.isArray(payload.tasks) || payload.tasks.length === 1) {
+    const one = (Array.isArray(payload.tasks) ? payload.tasks[0] : payload) as Record<
+      string,
+      unknown
+    >;
+    return [
+      {
+        title: text(one?.title, "Task title", 300),
+        category: text(one?.category, "Category", 100),
+        images: all,
+      },
+    ];
+  }
+  if (!payload.tasks.length || payload.tasks.length > 10)
+    throw new KanbanError("invalid_request", "Report from one to ten tasks", 400);
+  const tasks = payload.tasks.map((value: unknown) => {
+    const task = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+    const images = task.images ?? [];
+    if (
+      !Array.isArray(images) ||
+      images.some((number) => !Number.isInteger(number) || number < 1 || number > pictures)
+    )
+      throw new KanbanError("invalid_request", `Pictures are numbered from 1 to ${pictures}`, 400);
+    return {
+      title: text(task.title, "Task title", 300),
+      category: text(task.category, "Category", 100),
+      text: text(task.text, "Task text"),
+      images: (images as number[]).map((number) => number - 1),
+    };
+  });
+  const claimed = new Set(tasks.flatMap((task) => task.images));
+  for (const task of tasks)
+    task.images = all.filter((index) => task.images.includes(index) || !claimed.has(index));
+  return tasks;
+}
 
 export class KanbanService {
   readonly store: KanbanStore;
@@ -1543,24 +1585,70 @@ export class KanbanService {
     payload: Record<string, unknown>,
   ): Promise<unknown> {
     const card = findCard(document, run.cardIds[0]!);
-    const title = text(payload.title, "Task title", 300);
-    const category = text(payload.category, "Category", 100);
-    const { board } = await this.store.updateById(document.board.id, (data) => {
+    const tasks = classifiedTasks(payload, cardImages(card).length);
+    const { board } = await this.store.updateById(document.board.id, async (data) => {
       const current = findCard(data, card.id);
-      let group = data.board.categories.find(
-        (item) =>
-          item.id === category || item.name.toLocaleLowerCase() === category.toLocaleLowerCase(),
-      );
-      if (!group) {
-        group = { id: randomUUID(), name: category };
-        data.board.categories.push(group);
+      const own = data.board.runs.find((item) => item.id === run.id)!;
+      const group = (category: string) => {
+        let found = data.board.categories.find(
+          (item) =>
+            item.id === category || item.name.toLocaleLowerCase() === category.toLocaleLowerCase(),
+        );
+        if (!found) {
+          found = { id: randomUUID(), name: category };
+          data.board.categories.push(found);
+        }
+        return found.id;
+      };
+      const now = Date.now();
+      // Text added or edited after the classifier read it is never replaced by the split.
+      if (tasks.length > 1 && current.updatedAt <= own.createdAt) {
+        const images = cardImages(current);
+        const path = (file: string) => this.imagePath(data.board.id, file);
+        const meta = (index: number) => {
+          const { name, mediaType, size } = images[index]!;
+          return { name, mediaType, size };
+        };
+        const added: KanbanCard[] = [];
+        for (const task of tasks.slice(1)) {
+          const id = randomUUID();
+          for (const [position, index] of task.images.entries())
+            await copyFile(path(images[index]!.file), path(`${id}.${position}`));
+          added.push({
+            id,
+            title: task.title,
+            description: task.text!,
+            categoryId: group(task.category),
+            ...(task.images.length ? { images: task.images.map(meta) } : {}),
+            stageId: current.stageId,
+            classification: "ready",
+            error: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+          const settings = data.cards[card.id]?.settings;
+          data.cards[id] = settings ? { settings } : {};
+        }
+        // The original card keeps the first task; its pictures are renumbered from zero.
+        const kept = tasks[0]!.images;
+        for (const [index, image] of images.entries())
+          if (!kept.includes(index)) await rm(path(image.file), { force: true });
+        for (const [position, index] of kept.entries())
+          if (images[index]!.file !== `${current.id}.${position}`)
+            await rename(path(images[index]!.file), path(`${current.id}.${position}`));
+        if (images.length) {
+          delete current.image;
+          if (kept.length) current.images = kept.map(meta);
+          else delete current.images;
+        }
+        current.description = tasks[0]!.text!;
+        data.board.cards.splice(data.board.cards.indexOf(current) + 1, 0, ...added);
       }
-      current.title = title;
-      current.categoryId = group.id;
+      current.title = tasks[0]!.title;
+      current.categoryId = group(tasks[0]!.category);
       current.classification = "ready";
       current.error = null;
-      current.updatedAt = Date.now();
-      const own = data.board.runs.find((item) => item.id === run.id)!;
+      current.updatedAt = now;
       own.status = "completed";
       own.updatedAt = Date.now();
       data.runs[run.id]!.report = payload;

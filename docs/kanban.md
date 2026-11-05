@@ -34,6 +34,13 @@ card to start a new attempt. Settings → New tasks can turn classification off 
 tasks created in that application (their title is then the start of the task text,
 without a category) and choose its model.
 
+When a new task holds several independent tasks of different categories, the
+classifier splits it: the card keeps the first task and the others appear right
+below it in To do. Each part gets the original sentences that belong to it, word for
+word, its own images (an image the classifier does not assign goes to every part)
+and the settings chosen with the task. A task whose text changed while it was being
+classified is never split.
+
 The initial stages are **To do → In progress → Waiting for answer → Ready →
 Published**. Additional stages have a name and an optional description; they can be
 renamed, moved and deleted (their tasks return to To do). Standard stages can be
@@ -118,4 +125,4 @@ can override the sibling application addresses with `KANBAN_CODEX_URL` and
 `KANBAN_CLAUDE_URL` on both servers.
 
 Only task classification talks to the board, through a file-based helper limited to
-reporting one card's title and category.
+reporting one card's title and category, or the parts of a split task.
