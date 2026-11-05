@@ -84,6 +84,11 @@ export type CreateKanbanCardRequest = {
    * it starts the task's session; the other application uses its own new-session settings.
    */
   settings?: SessionSettings;
+  /**
+   * A session just started in the project with this application: the card goes straight to In
+   * progress and follows that session. An empty description is read from its first message.
+   */
+  threadId?: string;
 };
 export type UpdateKanbanCardRequest = {
   title?: string;

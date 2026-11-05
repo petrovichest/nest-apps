@@ -260,7 +260,8 @@ describe("App routing and navigation", () => {
         role: null,
       },
     };
-    mockConnection(snapshot([older, baseThread, child]));
+    // With a project the root route opens its board instead.
+    mockConnection(snapshot([older, baseThread, child], []));
 
     renderApp("/");
 
@@ -293,7 +294,7 @@ describe("App routing and navigation", () => {
       const other = { ...baseThread, id: "other", title: "Другая задача", updatedAt: 10 };
       mockConnection(snapshot([baseThread, other]));
       if (mobile) mockMobileViewport();
-      renderApp("/threads/newer");
+      await renderList("/threads/newer");
 
       fireEvent.click(screen.getByRole("link", { name: "Другая задача" }));
 
@@ -303,7 +304,7 @@ describe("App routing and navigation", () => {
   );
 
   it("shows project-only session creation when only archived tasks exist", async () => {
-    mockConnection(snapshot([{ ...baseThread, archived: true }]));
+    mockConnection(snapshot([{ ...baseThread, archived: true }], []));
 
     renderApp("/");
 
@@ -319,9 +320,7 @@ describe("App routing and navigation", () => {
 
     renderApp("/new");
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "Нет открытых сессий" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Доска задач" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Сообщение для Codex" })).not.toBeInTheDocument();
   });
 
@@ -473,46 +472,56 @@ describe("App routing and navigation", () => {
     await waitFor(() => expect(localStorage.getItem("codexnest.sessionListMode")).toBe("projects"));
   });
 
-  it("lists the projects in board mode with the open project's tasks by stage", async () => {
-    localStorage.setItem("codexnest.navigationMode", "board");
+  it("lists each open project's board, its tasks by stage and its other sessions", async () => {
     localStorage.setItem("codexnest.layoutDefaultsVersion", "1");
     localStorage.setItem("codexnest.projectListDirection", "bottom-up");
+    const plain = { ...baseThread, id: "plain", title: "Обычная сессия", updatedAt: 1 };
     mockConnection(
       snapshot(
-        [{ ...baseThread, state: "running" }],
+        [{ ...baseThread, state: "running" }, plain],
         [defaultProject(), testProject("second-project", "Второй")],
       ),
     );
-    const readKanban = vi.fn().mockResolvedValue(taskBoard());
+    const readKanban = vi.fn(async (projectId: string) =>
+      projectId === "project" ? taskBoard() : { ...taskBoard(), cards: [], runs: [] },
+    );
     Object.assign(connection().api, { readKanban });
 
     renderApp("/threads/newer");
 
     const nav = screen.getByRole("navigation", { name: "Задачи" });
     await within(nav).findByRole("link", { name: "Ответить про цвета" });
-    expect(readKanban).toHaveBeenCalledTimes(1);
     expect(readKanban).toHaveBeenCalledWith("project");
-    expect(screen.getByRole("button", { name: "Доска" })).toHaveAttribute("aria-pressed", "true");
+    expect(readKanban).toHaveBeenCalledWith("second-project");
+    // No switch between sessions and the board any more.
+    expect(screen.queryByRole("button", { name: "Доска" })).toBeNull();
     expect(screen.getByRole("button", { name: "Проекты" })).toHaveAttribute("aria-pressed", "true");
-    expect(within(nav).queryByRole("link", { name: "Новая задача в истории" })).toBeNull();
-    // The projects in the session list's order and direction, the open session's project open:
-    // answers first, then running agents, then the board's order; published stays closed.
+    // The projects in the list's order and direction: answers first, then running agents, then
+    // the board's order, published closed, then the sessions that are not tasks.
     expect(
-      within(nav)
-        .getAllByRole("button")
-        .map((button) => [button.textContent, button.getAttribute("aria-expanded")]),
+      Array.from(nav.querySelectorAll(".project-toggle")).map((button) => [
+        button.textContent,
+        button.getAttribute("aria-expanded"),
+      ]),
     ).toEqual([
-      ["Второй", "false"],
+      ["Второй", "true"],
       ["Проект", "true"],
       ["Ждёт ответа1", "true"],
       ["В работе1", "true"],
       ["К выполнению1", "true"],
       ["Опубликовано1", "false"],
+      ["Сессии1", "true"],
     ]);
+    // The task's session is listed once, as its task.
+    expect(within(nav).queryByRole("link", { name: /^Новая задача в истории/ })).toBeNull();
     const working = within(nav).getByRole("link", { name: "Исправить зависание" });
     expect(working).toHaveAttribute("href", "/threads/newer");
     expect(working).toHaveAttribute("aria-current", "page");
     expect(working.querySelector(".status")).toHaveClass("status-running");
+    expect(within(nav).getByRole("link", { name: /^Обычная сессия/ })).toHaveAttribute(
+      "href",
+      "/threads/plain",
+    );
     expect(within(nav).getByRole("link", { name: "Новая идея" })).toHaveAttribute(
       "href",
       "/projects/project/kanban?card=todo-card",
@@ -525,35 +534,21 @@ describe("App routing and navigation", () => {
       "href",
       "http://127.0.0.1:4311/threads/claude-session",
     );
-    expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
-      "href",
-      "/projects/project/kanban",
-    );
-
-    // Another project opens beside the first without leaving the session.
-    fireEvent.click(within(nav).getByRole("button", { name: "Второй" }));
-    await waitFor(() => expect(readKanban).toHaveBeenCalledWith("second-project"));
-    expect(within(nav).getByRole("button", { name: "Второй" })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
-    expect(within(nav).getByRole("button", { name: "Проект" })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
     expect(
       within(nav)
         .getAllByRole("link", { name: "Доска" })
         .map((link) => link.getAttribute("href")),
     ).toEqual(["/projects/second-project/kanban", "/projects/project/kanban"]);
-    expect(localStorage.getItem("codexnest.boardProject")).toBe("project");
-    // Its name folds it again, the first one stays open.
+    expect(within(nav).getByText("Пока нет задач")).toBeInTheDocument();
+    // A project's name folds it, the other stays open; folded, it reads no board.
     fireEvent.click(within(nav).getByRole("button", { name: "Второй" }));
     expect(within(nav).getByRole("button", { name: "Второй" })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
     expect(within(nav).getAllByRole("link", { name: "Доска" })).toHaveLength(1);
+    fireEvent.click(within(nav).getByRole("button", { name: "Сессии1" }));
+    expect(within(nav).queryByRole("link", { name: /^Обычная сессия/ })).toBeNull();
 
     // Active sessions stay one tab away and open as sessions.
     fireEvent.click(screen.getByRole("button", { name: "Активные" }));
@@ -562,18 +557,9 @@ describe("App routing and navigation", () => {
       "/threads/newer",
     );
     expect(within(nav).queryByRole("button", { name: "Второй" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Проекты" }));
-
-    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
-    expect(screen.getByRole("group", { name: "Режим списка сессий" })).toBeInTheDocument();
-    expect(
-      await within(nav).findByRole("link", { name: "Новая задача в истории" }),
-    ).toBeInTheDocument();
-    await waitFor(() => expect(localStorage.getItem("codexnest.navigationMode")).toBe("sessions"));
   });
 
-  it("keeps the projects open or folded in board mode", async () => {
-    localStorage.setItem("codexnest.navigationMode", "board");
+  it("keeps the projects open or folded", async () => {
     mockConnection(
       snapshot(
         [{ ...baseThread, state: "running" }],
@@ -582,14 +568,13 @@ describe("App routing and navigation", () => {
     );
     Object.assign(connection().api, { readKanban: vi.fn().mockResolvedValue(taskBoard()) });
 
-    const first = renderApp("/threads/newer");
+    const first = await renderList("/threads/newer");
     let nav = screen.getByRole("navigation", { name: "Задачи" });
-    fireEvent.click(within(nav).getByRole("button", { name: "Второй" }));
     fireEvent.click(within(nav).getByRole("button", { name: "Проект" }));
     first.unmount();
 
     // The open session's project stays folded as it was left.
-    renderApp("/threads/newer");
+    await renderList("/threads/newer");
     nav = screen.getByRole("navigation", { name: "Задачи" });
     expect(within(nav).getByRole("button", { name: "Второй" })).toHaveAttribute(
       "aria-expanded",
@@ -605,36 +590,25 @@ describe("App routing and navigation", () => {
     );
   });
 
-  it("opens the board when switching to board mode and reuses the board page's tasks", async () => {
+  it("reuses the board page's tasks in the navigation", async () => {
     mockConnection(snapshot([baseThread]));
     const readKanban = vi.fn().mockResolvedValue(taskBoard());
     Object.assign(connection().api, { readKanban });
 
-    renderApp("/threads/newer");
-    expect(readKanban).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Доска" }));
+    renderApp("/projects/project/kanban");
 
     const nav = screen.getByRole("navigation", { name: "Задачи" });
-    await waitFor(() =>
-      expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
-        "aria-current",
-        "page",
-      ),
-    );
     await within(nav).findByRole("link", { name: "Ответить про цвета" });
+    expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
     await waitFor(() => expect(localStorage.getItem("codexnest.boardProject")).toBe("project"));
     // On the board page only the page asks for the board.
     expect(readKanban).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
-    expect(
-      await within(nav).findByRole("link", { name: "Новая задача в истории" }),
-    ).toHaveAttribute("aria-current", "page");
-    expect(localStorage.getItem("codexnest.navigationMode")).toBe("sessions");
   });
 
-  it("opens the remembered board from the root route in board mode", async () => {
-    localStorage.setItem("codexnest.navigationMode", "board");
+  it("opens the remembered board from the root route", async () => {
     localStorage.setItem("codexnest.boardProject", "missing");
     mockConnection(snapshot([baseThread]));
     Object.assign(connection().api, { readKanban: vi.fn().mockResolvedValue(taskBoard()) });
@@ -691,7 +665,7 @@ describe("App routing and navigation", () => {
     expect(titles()).toEqual([running.title]);
   });
 
-  it("collapses every pinned branch without hiding ordinary active sessions or navigating", () => {
+  it("collapses every pinned branch without hiding ordinary active sessions or navigating", async () => {
     localStorage.setItem("codexnest.sessionListMode", "active");
     const pinned: ThreadSummary = {
       ...baseThread,
@@ -729,7 +703,7 @@ describe("App routing and navigation", () => {
         { ...pinned, id: "archived", title: "Архивная", archived: true },
       ]),
     );
-    renderApp("/threads/pinned-running");
+    await renderList("/threads/pinned-running");
     const toggle = screen.getByRole("button", { name: "Свернуть закрепленные (2)" });
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getAllByRole("link", { name: /Закрепленная\s*Проект/ })).toHaveLength(1);
@@ -748,6 +722,7 @@ describe("App routing and navigation", () => {
     expect(manualNavigationIntent).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Проекты" }));
+    await act(async () => {});
     expect(screen.getByRole("button", { name: "Показать закрепленные (2)" })).toBeVisible();
     expect(screen.getByRole("link", { name: pinned.title })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Активные" }));
@@ -899,7 +874,7 @@ describe("App routing and navigation", () => {
     );
   });
 
-  it("shows every pinned project session before ordinary sessions without expanding history", () => {
+  it("shows every pinned project session before ordinary sessions without expanding history", async () => {
     const pinned = Array.from({ length: 6 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `pin-${index}`,
@@ -909,8 +884,8 @@ describe("App routing and navigation", () => {
     }));
     const normal = { ...baseThread, updatedAt: 100 };
     mockConnection(snapshot([normal, ...pinned]));
-    const view = renderApp("/threads/newer");
-    const sessions = view.container.querySelector(".project-sessions") as HTMLElement;
+    const view = await renderList("/threads/newer");
+    const sessions = view.container.querySelector(".board-navigation-tasks") as HTMLElement;
     const titles = () =>
       Array.from(sessions.querySelectorAll(".thread-link-title")).map(
         (element) => element.textContent,
@@ -933,7 +908,7 @@ describe("App routing and navigation", () => {
       const api = mockConnection(snapshot([thread]));
       const request = deferred<ThreadSummary>();
       api.updateThread.mockReturnValueOnce(request.promise);
-      renderApp("/threads/newer");
+      await renderList("/threads/newer");
       fireEvent.click(screen.getByLabelText(`Действия с сессией «${thread.title}»`));
       const pin = screen.getByRole("button", { name: `Закрепить сессию «${thread.title}»` });
 
@@ -2028,7 +2003,7 @@ describe("App routing and navigation", () => {
     expect(await screen.findByText(`${formatted} 75%`)).toBeInTheDocument();
   });
 
-  it("pulses unseen outcomes and dims acknowledged sessions", () => {
+  it("pulses unseen outcomes and dims acknowledged sessions", async () => {
     const threads: ThreadSummary[] = [
       { ...baseThread, id: "completed-read", title: "Прочитана", state: "completed" },
       {
@@ -2072,7 +2047,7 @@ describe("App routing and navigation", () => {
       { ...baseThread, id: "attention", title: "Нужно внимание", state: "needsAttention" },
     ];
     mockConnection(snapshot(threads));
-    const { container } = renderApp("/threads/running");
+    const { container } = await renderList("/threads/running");
     fireEvent.click(screen.getByRole("button", { name: /Показать ещё/ }));
 
     expect(statusFor("Прочитана")).toHaveClass("status-completed");
@@ -2124,7 +2099,7 @@ describe("App routing and navigation", () => {
         resolveFinish = resolve;
       }),
     );
-    renderApp("/threads/running");
+    await renderList("/threads/running");
 
     fireEvent.click(screen.getByLabelText("Действия с сессией «Готовая сессия»"));
     const finish = screen.getByRole("button", { name: "Закончить сессию «Готовая сессия»" });
@@ -2206,7 +2181,7 @@ describe("App routing and navigation", () => {
     };
     const api = mockConnection(snapshot([finishable]));
     api.markRead.mockRejectedValue(new Error("Сеть недоступна"));
-    renderApp("/threads/finishable");
+    await renderList("/threads/finishable");
 
     fireEvent.click(screen.getByLabelText("Действия с сессией «Готовая сессия»"));
     const finish = screen.getByRole("button", { name: "Закончить сессию «Готовая сессия»" });
@@ -2224,7 +2199,7 @@ describe("App routing and navigation", () => {
     expect(api.markRead).toHaveBeenCalledTimes(2);
   });
 
-  it("does not offer sidebar finishing for a green managed subagent", () => {
+  it("does not offer sidebar finishing for a green managed subagent", async () => {
     const parent = {
       ...baseThread,
       id: "parent",
@@ -2246,7 +2221,7 @@ describe("App routing and navigation", () => {
       },
     };
     mockConnection(snapshot([parent, child]));
-    renderApp("/threads/parent");
+    await renderList("/threads/parent");
 
     const parentBranch = screen.getByRole("link", { name: /Родитель/ }).closest(".thread-branch")!;
     fireEvent.click(
@@ -2257,7 +2232,7 @@ describe("App routing and navigation", () => {
     expect(screen.queryByRole("button", { name: /Дочерний результат/ })).toBeNull();
   });
 
-  it("marks browser-enabled sessions in the sidebar", () => {
+  it("marks browser-enabled sessions in the sidebar", async () => {
     const connectedThread = {
       ...baseThread,
       id: "connected-browser-thread",
@@ -2271,7 +2246,7 @@ describe("App routing and navigation", () => {
       browserStatus: "disconnected" as const,
     };
     mockConnection(snapshot([connectedThread, enabledThread]));
-    const view = renderApp("/threads/connected-browser-thread");
+    const view = await renderList("/threads/connected-browser-thread");
 
     const connectedMarker = view.container.querySelector(
       'a[href="/threads/connected-browser-thread"] .thread-browser-status',
@@ -2289,57 +2264,62 @@ describe("App routing and navigation", () => {
     [18, "400ms"],
     [90, "2000ms"],
     [180, "4000ms"],
-  ] as const)("scrolls overflowing titles at 45 px/s (overflow: %s)", (overflow, duration) => {
-    const overflowingThread = {
-      ...baseThread,
-      id: "overflowing-title",
-      title: "Очень длинное название сессии",
-    };
-    const fittingThread = {
-      ...baseThread,
-      id: "fitting-title",
-      title: "Короткое название",
-    };
-    mockConnection(snapshot([overflowingThread, fittingThread]));
-    const view = renderApp("/threads/overflowing-title");
-    const overflowingLink = view.container.querySelector(
-      'a[href="/threads/overflowing-title"]',
-    ) as HTMLAnchorElement;
-    const overflowingTitle = overflowingLink.querySelector(".thread-link-title") as HTMLSpanElement;
-    const fittingLink = view.container.querySelector(
-      'a[href="/threads/fitting-title"]',
-    ) as HTMLAnchorElement;
-    const fittingTitle = fittingLink.querySelector(".thread-link-title") as HTMLSpanElement;
-    Object.defineProperties(overflowingTitle, {
-      clientWidth: { configurable: true, value: 120 },
-      scrollWidth: { configurable: true, value: 120 },
-    });
-    Object.defineProperties(overflowingTitle.firstElementChild!, {
-      scrollWidth: { configurable: true, value: 120 + overflow },
-    });
-    Object.defineProperties(fittingTitle, {
-      clientWidth: { configurable: true, value: 160 },
-    });
-    Object.defineProperties(fittingTitle.firstElementChild!, {
-      scrollWidth: { configurable: true, value: 160 },
-    });
+  ] as const)(
+    "scrolls overflowing titles at 45 px/s (overflow: %s)",
+    async (overflow, duration) => {
+      const overflowingThread = {
+        ...baseThread,
+        id: "overflowing-title",
+        title: "Очень длинное название сессии",
+      };
+      const fittingThread = {
+        ...baseThread,
+        id: "fitting-title",
+        title: "Короткое название",
+      };
+      mockConnection(snapshot([overflowingThread, fittingThread]));
+      const view = await renderList("/threads/overflowing-title");
+      const overflowingLink = view.container.querySelector(
+        'a[href="/threads/overflowing-title"]',
+      ) as HTMLAnchorElement;
+      const overflowingTitle = overflowingLink.querySelector(
+        ".thread-link-title",
+      ) as HTMLSpanElement;
+      const fittingLink = view.container.querySelector(
+        'a[href="/threads/fitting-title"]',
+      ) as HTMLAnchorElement;
+      const fittingTitle = fittingLink.querySelector(".thread-link-title") as HTMLSpanElement;
+      Object.defineProperties(overflowingTitle, {
+        clientWidth: { configurable: true, value: 120 },
+        scrollWidth: { configurable: true, value: 120 },
+      });
+      Object.defineProperties(overflowingTitle.firstElementChild!, {
+        scrollWidth: { configurable: true, value: 120 + overflow },
+      });
+      Object.defineProperties(fittingTitle, {
+        clientWidth: { configurable: true, value: 160 },
+      });
+      Object.defineProperties(fittingTitle.firstElementChild!, {
+        scrollWidth: { configurable: true, value: 160 },
+      });
 
-    fireEvent.mouseEnter(overflowingLink.parentElement!.querySelector("summary")!);
-    fireEvent.mouseEnter(fittingLink);
+      fireEvent.mouseEnter(overflowingLink.parentElement!.querySelector("summary")!);
+      fireEvent.mouseEnter(fittingLink);
 
-    expect(overflowingTitle).toHaveAttribute("data-overflowing", "true");
-    expect(overflowingTitle.style.getPropertyValue("--thread-title-scroll-distance")).toBe(
-      `${overflow}px`,
-    );
-    expect(overflowingTitle.style.getPropertyValue("--thread-title-scroll-duration")).toBe(
-      duration,
-    );
-    expect(fittingTitle).not.toHaveAttribute("data-overflowing");
-    expect(fittingTitle.style.getPropertyValue("--thread-title-scroll-distance")).toBe("");
-    expect(fittingTitle.style.getPropertyValue("--thread-title-scroll-duration")).toBe("");
-  });
+      expect(overflowingTitle).toHaveAttribute("data-overflowing", "true");
+      expect(overflowingTitle.style.getPropertyValue("--thread-title-scroll-distance")).toBe(
+        `${overflow}px`,
+      );
+      expect(overflowingTitle.style.getPropertyValue("--thread-title-scroll-duration")).toBe(
+        duration,
+      );
+      expect(fittingTitle).not.toHaveAttribute("data-overflowing");
+      expect(fittingTitle.style.getPropertyValue("--thread-title-scroll-distance")).toBe("");
+      expect(fittingTitle.style.getPropertyValue("--thread-title-scroll-duration")).toBe("");
+    },
+  );
 
-  it("nests pending fork operations under their source and limits actions to failures", () => {
+  it("nests pending fork operations under their source and limits actions to failures", async () => {
     const preparing: ForkOperationSummary = {
       id: "preparing-fork",
       sourceThreadId: baseThread.id,
@@ -2365,7 +2345,7 @@ describe("App routing and navigation", () => {
     appSnapshot.forkOperations = [preparing, failed];
     mockConnection(appSnapshot);
 
-    const view = renderApp(`/threads/${baseThread.id}`);
+    const view = await renderList(`/threads/${baseThread.id}`);
     const rows = view.container.querySelectorAll(".fork-operation-row");
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveTextContent(`Ответвление от ${baseThread.title}`);
@@ -2656,7 +2636,7 @@ describe("App routing and navigation", () => {
     expect(navigation.scrollTop).toBe(240);
   });
 
-  it("reverses only project order while sessions still expand top-down", () => {
+  it("reverses only project order while sessions still expand top-down", async () => {
     localStorage.setItem("codexnest.layoutDefaultsVersion", "1");
     localStorage.setItem("codexnest.projectListDirection", "bottom-up");
     const threads: ThreadSummary[] = [
@@ -2676,16 +2656,16 @@ describe("App routing and navigation", () => {
     };
     mockConnection(snapshot(threads, [defaultProject(), secondProject]));
 
-    const view = renderApp("/threads/fresh");
+    const view = await renderList("/threads/fresh");
     expect(
-      Array.from(view.container.querySelectorAll(".project-toggle")).map(
-        (item) => item.textContent,
-      ),
+      Array.from(
+        view.container.querySelectorAll(".project-group > .project-title > .project-toggle"),
+      ).map((item) => item.textContent),
     ).toEqual(["Второй", "Проект"]);
     const projectGroup = screen
       .getByRole("button", { name: "Проект" })
       .closest(".project-group") as HTMLElement;
-    const sessions = projectGroup.querySelector(".project-sessions") as HTMLElement;
+    const sessions = projectGroup.querySelector(".board-navigation-tasks") as HTMLElement;
     const sessionTitles = () =>
       Array.from(sessions.querySelectorAll(".thread-link-title")).map((item) => item.textContent);
 
@@ -2701,7 +2681,7 @@ describe("App routing and navigation", () => {
     expect(sessions.lastElementChild).toHaveTextContent("Показать меньше");
   });
 
-  it("sorts project sessions by the latest activity in each branch", () => {
+  it("sorts project sessions by the latest activity in each branch", async () => {
     const recentRoot = {
       ...baseThread,
       id: "recent-root",
@@ -2730,8 +2710,8 @@ describe("App routing and navigation", () => {
     };
     mockConnection(snapshot([recentRoot, childRoot, freshChild]));
 
-    const view = renderApp("/threads/recent-root");
-    const sessions = view.container.querySelector(".project-sessions") as HTMLElement;
+    const view = await renderList("/threads/recent-root");
+    const sessions = view.container.querySelector(".board-navigation-tasks") as HTMLElement;
     const rootTitles = Array.from(
       sessions.querySelectorAll(":scope > .thread-branch > .thread-branch-row .thread-link-title"),
     ).map((item) => item.textContent);
@@ -2739,7 +2719,7 @@ describe("App routing and navigation", () => {
     expect(rootTitles).toEqual(["Корень со свежим агентом", "Свежий корень"]);
   });
 
-  it("reveals project sessions five at a time", () => {
+  it("reveals project sessions five at a time", async () => {
     const threads = Array.from({ length: 12 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `root-${index + 1}`,
@@ -2749,8 +2729,8 @@ describe("App routing and navigation", () => {
     }));
     mockConnection(snapshot(threads));
 
-    const view = renderApp("/threads/root-1");
-    const sessions = view.container.querySelector(".project-sessions") as HTMLElement;
+    const view = await renderList("/threads/root-1");
+    const sessions = view.container.querySelector(".board-navigation-tasks") as HTMLElement;
     const directBranches = () => sessions.querySelectorAll(":scope > .thread-branch");
 
     expect(directBranches()).toHaveLength(5);
@@ -2762,7 +2742,7 @@ describe("App routing and navigation", () => {
     expect(directBranches()).toHaveLength(5);
   });
 
-  it("always shows every non-gray and queued project session", () => {
+  it("always shows every non-gray and queued project session", async () => {
     const gray = Array.from({ length: 5 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `gray-${index + 1}`,
@@ -2806,8 +2786,8 @@ describe("App routing and navigation", () => {
     }));
     mockConnection(snapshot([...gray, ...highlighted]));
 
-    const view = renderApp("/threads/running-1");
-    const sessions = view.container.querySelector(".project-sessions") as HTMLElement;
+    const view = await renderList("/threads/running-1");
+    const sessions = view.container.querySelector(".board-navigation-tasks") as HTMLElement;
     const directBranches = () => sessions.querySelectorAll(":scope > .thread-branch");
 
     expect(directBranches()).toHaveLength(8);
@@ -2824,7 +2804,7 @@ describe("App routing and navigation", () => {
     expect(directBranches()).toHaveLength(8);
   });
 
-  it("counts always-visible sessions toward the five-session preview", () => {
+  it("counts always-visible sessions toward the five-session preview", async () => {
     const gray = Array.from({ length: 5 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `preview-gray-${index + 1}`,
@@ -2851,8 +2831,8 @@ describe("App routing and navigation", () => {
     }));
     mockConnection(snapshot([...gray, ...highlighted]));
 
-    const view = renderApp("/threads/preview-running");
-    const sessions = view.container.querySelector(".project-sessions") as HTMLElement;
+    const view = await renderList("/threads/preview-running");
+    const sessions = view.container.querySelector(".board-navigation-tasks") as HTMLElement;
     const titles = () =>
       Array.from(sessions.querySelectorAll(".thread-link-title")).map((item) => item.textContent);
 
@@ -2866,7 +2846,7 @@ describe("App routing and navigation", () => {
     expect(within(sessions).getByRole("button", { name: "Показать ещё 3" })).toBeInTheDocument();
   });
 
-  it("collapses running and completed subagents by default and reveals them without navigating", () => {
+  it("collapses running and completed subagents by default and reveals them without navigating", async () => {
     const running: ThreadSummary = {
       ...baseThread,
       id: "running-child",
@@ -2897,7 +2877,7 @@ describe("App routing and navigation", () => {
     };
     const api = mockConnection(snapshot([running, completed, baseThread]));
 
-    const view = renderApp("/threads/newer");
+    const view = await renderList("/threads/newer");
 
     const root = screen
       .getByRole("link", { name: baseThread.title })
@@ -2915,12 +2895,14 @@ describe("App routing and navigation", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("link", { name: /tester · Проверить тесты/ })).toBeNull();
     expect(screen.queryByRole("link", { name: /historian · Старый отчёт/ })).toBeNull();
-    expect(view.container.querySelectorAll(".project-sessions > .thread-branch")).toHaveLength(1);
+    expect(
+      view.container.querySelectorAll(".board-navigation-tasks > .thread-branch"),
+    ).toHaveLength(1);
     expect(api.updateThread).not.toHaveBeenCalled();
     expect(manualNavigationIntent).not.toHaveBeenCalled();
   });
 
-  it("expands nested subagent branches independently and pages completed history", () => {
+  it("expands nested subagent branches independently and pages completed history", async () => {
     const activeChildren = Array.from({ length: 6 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `active-child-${index + 1}`,
@@ -2964,12 +2946,12 @@ describe("App routing and navigation", () => {
     }));
     mockConnection(snapshot([...activeChildren, ...historyChildren, ...grandchildren, baseThread]));
 
-    const view = renderApp("/threads/newer");
+    const view = await renderList("/threads/newer");
 
     expect(view.container.querySelector(".thread-branch-children")).toBeNull();
     expandSidebarSubagents(new RegExp(baseThread.title));
     const rootChildren = view.container.querySelector(
-      ".project-sessions > .thread-branch > .thread-branch-children",
+      ".board-navigation-tasks > .thread-branch > .thread-branch-children",
     ) as HTMLElement;
     const directBranches = () =>
       Array.from(rootChildren.children).filter((element) =>
@@ -3007,7 +2989,7 @@ describe("App routing and navigation", () => {
     expect(nestedBranches()).toHaveLength(6);
   });
 
-  it("restores collapsed projects and resets expanded project and branch lists", () => {
+  it("restores collapsed projects and resets expanded project and branch lists", async () => {
     const rootSiblings = Array.from({ length: 5 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `root-${index + 1}`,
@@ -3030,9 +3012,9 @@ describe("App routing and navigation", () => {
     }));
     mockConnection(snapshot([baseThread, ...rootSiblings, ...children]));
 
-    const firstView = renderApp("/threads/newer");
+    const firstView = await renderList("/threads/newer");
     const firstProjectSessions = firstView.container.querySelector(
-      ".project-sessions",
+      ".board-navigation-tasks",
     ) as HTMLElement;
     fireEvent.click(within(firstProjectSessions).getByRole("button", { name: "Показать ещё 1" }));
     const firstRootBranch = screen
@@ -3047,13 +3029,14 @@ describe("App routing and navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Проект" }));
     firstView.unmount();
 
-    const secondView = renderApp("/threads/newer");
+    const secondView = await renderList("/threads/newer");
     const projectToggle = screen.getByRole("button", { name: "Проект" });
     expect(projectToggle).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(projectToggle);
+    await act(async () => {});
     const restoredProjectSessions = secondView.container.querySelector(
-      ".project-sessions",
+      ".board-navigation-tasks",
     ) as HTMLElement;
     expect(restoredProjectSessions.querySelectorAll(":scope > .thread-branch")).toHaveLength(5);
     expect(
@@ -3107,8 +3090,10 @@ describe("App routing and navigation", () => {
     }));
     mockConnection(snapshot(threads));
 
-    const view = renderApp("/threads/legacy-root-1");
-    expect(view.container.querySelectorAll(".project-sessions > .thread-branch")).toHaveLength(5);
+    const view = await renderList("/threads/legacy-root-1");
+    expect(
+      view.container.querySelectorAll(".board-navigation-tasks > .thread-branch"),
+    ).toHaveLength(5);
     await waitFor(() =>
       expect(JSON.parse(localStorage.getItem(storageKey) ?? "{}")).toEqual({
         version: 1,
@@ -3160,8 +3145,8 @@ describe("App routing and navigation", () => {
     }));
     mockConnection(snapshot(threads));
 
-    const view = renderApp("/threads/native-root-1");
-    const sessions = view.container.querySelector(".project-sessions") as HTMLElement;
+    const view = await renderList("/threads/native-root-1");
+    const sessions = view.container.querySelector(".board-navigation-tasks") as HTMLElement;
     const directBranches = () => sessions.querySelectorAll(":scope > .thread-branch");
     fireEvent.click(within(sessions).getByRole("button", { name: "Показать ещё 5" }));
     expect(directBranches()).toHaveLength(10);
@@ -3176,7 +3161,7 @@ describe("App routing and navigation", () => {
     await waitFor(() => expect(capacitor.removeListener).toHaveBeenCalledOnce());
   });
 
-  it("resets expanded project lists when the browser becomes visible", () => {
+  it("resets expanded project lists when the browser becomes visible", async () => {
     const threads = Array.from({ length: 12 }, (_, index): ThreadSummary => ({
       ...baseThread,
       id: `browser-root-${index + 1}`,
@@ -3186,8 +3171,8 @@ describe("App routing and navigation", () => {
     }));
     mockConnection(snapshot(threads));
 
-    const view = renderApp("/threads/browser-root-1");
-    const sessions = view.container.querySelector(".project-sessions") as HTMLElement;
+    const view = await renderList("/threads/browser-root-1");
+    const sessions = view.container.querySelector(".board-navigation-tasks") as HTMLElement;
     const directBranches = () => sessions.querySelectorAll(":scope > .thread-branch");
     fireEvent.click(within(sessions).getByRole("button", { name: "Показать ещё 5" }));
     expect(directBranches()).toHaveLength(10);
@@ -3200,7 +3185,7 @@ describe("App routing and navigation", () => {
     expect(directBranches()).toHaveLength(5);
   });
 
-  it("keeps a selected non-running child inside a collapsed branch", () => {
+  it("keeps a selected non-running child inside a collapsed branch", async () => {
     const child: ThreadSummary = {
       ...baseThread,
       id: "child",
@@ -3217,7 +3202,7 @@ describe("App routing and navigation", () => {
     };
     mockConnection(snapshot([child, baseThread]));
 
-    renderApp("/threads/child");
+    await renderList("/threads/child");
 
     expect(screen.queryByRole("link", { name: /reviewer · Нужно решение/ })).toBeNull();
     const sidebar = document.querySelector(".sidebar") as HTMLElement;
@@ -3227,10 +3212,10 @@ describe("App routing and navigation", () => {
     );
   });
 
-  it("collapses project sessions without toggling from project actions", () => {
+  it("collapses project sessions without toggling from project actions", async () => {
     mockConnection(snapshot([baseThread]));
 
-    renderApp("/threads/newer");
+    await renderList("/threads/newer");
     const toggle = screen.getByRole("button", { name: "Проект" });
     const projectTitle = toggle.closest(".project-title") as HTMLElement;
     expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -3247,7 +3232,7 @@ describe("App routing and navigation", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("link", { name: "Новая задача в истории" })).not.toBeInTheDocument();
     fireEvent.click(toggle);
-    expect(screen.getByRole("link", { name: "Новая задача в истории" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Новая задача в истории" })).toBeInTheDocument();
   });
 
   it("closes popups when clicking anywhere outside them", () => {
@@ -4864,6 +4849,13 @@ function expandSidebarSubagents(title: RegExp) {
   fireEvent.click(within(branch).getByRole("button", { name: "Показать субагентов" }));
 }
 
+/** Renders the application and lets its open projects read their boards and list sessions. */
+async function renderList(...args: Parameters<typeof renderApp>) {
+  const view = renderApp(...args);
+  await act(async () => {});
+  return view;
+}
+
 function renderApp(path: string, onDisconnected = () => undefined, baseUrl = "https://pi.local") {
   return render(
     <MemoryRouter initialEntries={[path]} useTransitions={false}>
@@ -5062,6 +5054,9 @@ function mockConnection(
       },
     ),
     createProjectThread: vi.fn(),
+    // A board without tasks: every session of the project is listed under Sessions.
+    readKanban: vi.fn().mockResolvedValue({ ...taskBoard(), cards: [], runs: [] }),
+    createKanbanCard: vi.fn().mockResolvedValue({ ...taskBoard(), cards: [], runs: [] }),
     updateThreadDraft: vi.fn().mockImplementation(async (_id, draft) => ({
       ...draft,
       updatedAt: Date.now(),

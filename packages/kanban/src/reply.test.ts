@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TurnView } from "@codexnest/protocol";
-import { lastReply } from "./reply.js";
+import { firstRequest, lastReply } from "./reply.js";
 
 const message = (type: string, text: string) => ({ type, id: text, text, status: "completed" });
 const turn = (...items: unknown[]) => ({ id: "t", items }) as unknown as TurnView;
@@ -23,5 +23,19 @@ describe("last reply", () => {
       lastReply([turn(message("agentMessage", "Old")), turn(message("userMessage", "Hi"))]),
     ).toBe(null);
     expect(lastReply([])).toBeNull();
+  });
+});
+
+describe("first request", () => {
+  it("reads the first operator message with text", () => {
+    expect(
+      firstRequest([
+        turn(message("userMessage", "  "), message("agentMessage", "Send text")),
+        turn(message("userMessage", " Fix the board \n"), message("agentMessage", "Done")),
+        turn(message("userMessage", "Later")),
+      ]),
+    ).toBe("Fix the board");
+    expect(firstRequest([turn(message("agentMessage", "Hello"))])).toBeNull();
+    expect(firstRequest([])).toBeNull();
   });
 });

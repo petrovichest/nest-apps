@@ -45,7 +45,7 @@ import {
 import type { ConnectionSettings } from "./storage";
 import { copyText } from "./clipboard";
 import { AttentionPanel } from "./components/AttentionPanel";
-import { BoardNavigation, type ShownBoard } from "./components/BoardNavigation";
+import { ProjectBoard, type ProjectSessions, type ShownBoard } from "./components/BoardNavigation";
 import { Dialog } from "./components/Dialog";
 import { ThreadSearchDialog } from "./components/ThreadSearchDialog";
 import {
@@ -112,13 +112,10 @@ const THREAD_TITLE_SCROLL_PX_PER_SECOND = 45;
 const THREAD_LEAVE_DURATION_MS = 900;
 const SIDEBAR_TREE_STATE_KEY_PREFIX = `${application.storagePrefix}.sidebarTree.v1:`;
 const SESSION_LIST_MODE_KEY = `${application.storagePrefix}.sessionListMode`;
-const NAVIGATION_MODE_KEY = `${application.storagePrefix}.navigationMode`;
 const BOARD_PROJECT_KEY = `${application.storagePrefix}.boardProject`;
 
 type ListExpansion = number | "all";
 type SessionListMode = "projects" | "active";
-/** Board mode lists projects with their board tasks in place of their sessions. */
-type NavigationMode = "sessions" | "board";
 
 type SidebarResizeGesture = {
   pointerId: number;
@@ -131,7 +128,10 @@ type SidebarResizeGesture = {
 type SidebarTreeState = {
   collapsedProjectIds: Set<string>;
   pinnedGroupCollapsed: boolean;
-  /** Projects open in board mode; until one is opened or folded, the board's project is open. */
+  /**
+   * Open projects of the list. Until one is opened or folded the projects not folded in the
+   * earlier sessions list are open.
+   */
   boardOpenProjectIds: Set<string> | null;
 };
 
@@ -848,17 +848,6 @@ function writeSidebarTreeState(serverBaseUrl: string, state: SidebarTreeState): 
   }
 }
 
-function toggleSidebarTreeEntry(
-  state: SidebarTreeState,
-  field: "collapsedProjectIds",
-  id: string,
-): SidebarTreeState {
-  const values = new Set(state[field]);
-  if (values.has(id)) values.delete(id);
-  else values.add(id);
-  return { ...state, [field]: values };
-}
-
 function pruneSidebarTreeState(state: SidebarTreeState, projectIds: Set<string>): SidebarTreeState {
   projectIds.add("ungrouped");
   const collapsedProjectIds = retainSidebarTreeEntries(state.collapsedProjectIds, projectIds);
@@ -911,13 +900,11 @@ function HomeRoute({
   onOpenNavigation(): void;
 }) {
   const { t } = useI18n();
-  // In board mode the application opens on the board, as the session list opens a session.
-  if (readStoredText(NAVIGATION_MODE_KEY) === "board") {
-    const stored = readStoredText(BOARD_PROJECT_KEY);
-    const project = projects.find((item) => item.id === stored) ?? projects[0];
-    if (project)
-      return <Navigate to={`/projects/${encodeURIComponent(project.id)}/kanban`} replace />;
-  }
+  // The application opens on the board shown last, or the first project's.
+  const stored = readStoredText(BOARD_PROJECT_KEY);
+  const project = projects.find((item) => item.id === stored) ?? projects[0];
+  if (project)
+    return <Navigate to={`/projects/${encodeURIComponent(project.id)}/kanban`} replace />;
   const childrenByParent = childThreadsByParent(threads);
   const latest = sortThreadBranchesByActivity(
     threads.filter((thread) => !thread.archived && thread.relation.kind === "session"),
@@ -976,9 +963,6 @@ function Sidebar({
     readSidebarTreeState(serverBaseUrl),
   );
   const [sessionListMode, setSessionListMode] = useState<SessionListMode>(readSessionListMode);
-  const [navigationMode, setNavigationMode] = useState<NavigationMode>(() =>
-    readStoredText(NAVIGATION_MODE_KEY) === "board" ? "board" : "sessions",
-  );
   const [storedBoardProject, setStoredBoardProject] = useState(() =>
     readStoredText(BOARD_PROJECT_KEY),
   );
@@ -1062,6 +1046,11 @@ function Sidebar({
   const archivedRoots = roots.filter((thread) => thread.archived);
   const groups = groupedThreads(snapshot?.projects ?? [], activeRoots);
   const orderedGroups = projectListDirection === "bottom-up" ? [...groups].reverse() : groups;
+  const openGroups = (tree: SidebarTreeState) =>
+    groups
+      .map((group) => group.project?.id ?? "ungrouped")
+      .filter((key) => !tree.collapsedProjectIds.has(key));
+  const openProjectKeys = sidebarTree.boardOpenProjectIds ?? new Set(openGroups(sidebarTree));
   const dissolveFinished = sessionListMode === "active" && canAnimateThreadLeave();
   const leavingThreads = leavingThreadsRef.current;
   const activeRootsById = new Map(activeRoots.map((thread) => [thread.id, thread]));
@@ -1132,19 +1121,6 @@ function Sidebar({
     storeText(BOARD_PROJECT_KEY, boardProjectId);
     setStoredBoardProject(boardProjectId);
   }, [boardProjectId]);
-
-  function chooseNavigationMode(mode: NavigationMode) {
-    // Stored before navigating: the root route reads it to choose where to open.
-    storeText(NAVIGATION_MODE_KEY, mode);
-    setNavigationMode(mode);
-    if (mode === "board" && boardProjectId && !boardRoute) {
-      onManualNavigationIntent();
-      navigate(`/projects/${encodeURIComponent(boardProjectId)}/kanban`);
-    } else if (mode === "sessions" && boardRoute) {
-      onManualNavigationIntent();
-      navigate("/");
-    }
-  }
 
   useEffect(() => {
     writeSidebarTreeState(serverBaseUrl, sidebarTree);
@@ -1268,16 +1244,12 @@ function Sidebar({
     clearProjectDragGesture(gesture);
   }, [projectOrderKey]);
 
-  function toggleBoardProject(projectId: string) {
+  function toggleProject(key: string) {
     setSidebarTree((current) => {
-      const open = new Set(current.boardOpenProjectIds ?? (boardProjectId ? [boardProjectId] : []));
-      if (!open.delete(projectId)) open.add(projectId);
+      const open = new Set(current.boardOpenProjectIds ?? openGroups(current));
+      if (!open.delete(key)) open.add(key);
       return { ...current, boardOpenProjectIds: open };
     });
-  }
-
-  function toggleCollapsed(key: string) {
-    setSidebarTree((current) => toggleSidebarTreeEntry(current, "collapsedProjectIds", key));
   }
 
   function toggleProjectFromClick(projectId: string, key: string) {
@@ -1289,7 +1261,7 @@ function Sidebar({
       }
       return;
     }
-    toggleCollapsed(key);
+    toggleProject(key);
   }
 
   function suppressProjectToggleClick(projectId: string) {
@@ -1785,23 +1757,6 @@ function Sidebar({
 
   return (
     <aside className={`sidebar ${drawer ? "open" : ""}`} id="sidebar-navigation" ref={containerRef}>
-      <div className="session-list-mode navigation-mode" role="group" aria-label={t("Режим")}>
-        <button
-          aria-pressed={navigationMode === "sessions"}
-          onClick={() => chooseNavigationMode("sessions")}
-          type="button"
-        >
-          {t("Сессии")}
-        </button>
-        <button
-          aria-pressed={navigationMode === "board"}
-          disabled={!boardProjectId}
-          onClick={() => chooseNavigationMode("board")}
-          type="button"
-        >
-          {t("Доска")}
-        </button>
-      </div>
       <div className="sidebar-controls">
         <NavLink
           className="sidebar-control-action"
@@ -1943,57 +1898,93 @@ function Sidebar({
               <div className="active-session-empty">{t("Нет активных сессий")}</div>
             )}
           </div>
-        ) : navigationMode === "board" && boardProjectId ? (
-          <BoardNavigation
-            projects={projectListDirection === "bottom-up" ? [...projects].reverse() : projects}
-            openProjectIds={sidebarTree.boardOpenProjectIds ?? new Set([boardProjectId])}
-            threads={allThreads}
-            shownBoard={shownBoard}
-            onToggleProject={toggleBoardProject}
-            onNavigate={onClose}
-          />
         ) : (
           <div className={`project-list${projectDrag ? " project-list-dragging" : ""}`}>
             {projectListDirection === "bottom-up" && archive}
             {orderedGroups.map((group) => {
               const key = group.project?.id ?? "ungrouped";
-              const groupCollapsed = sidebarTree.collapsedProjectIds.has(key);
-              const alwaysVisibleThreads = group.threads.filter(
-                (thread) =>
-                  thread.pinned ||
-                  hasAlwaysVisibleThreadStatus(thread) ||
-                  pendingForkSourceIds.has(thread.id),
-              );
-              const collapsibleThreads = group.threads.filter(
-                (thread) =>
-                  !thread.pinned &&
-                  !hasAlwaysVisibleThreadStatus(thread) &&
-                  !pendingForkSourceIds.has(thread.id),
-              );
-              const initialCollapsibleLimit = Math.max(
-                0,
-                THREAD_PREVIEW_LIMIT - alwaysVisibleThreads.length,
-              );
-              const projectListExpansion = projectListExpansions.get(key);
-              const requestedCollapsibleLimit =
-                projectListExpansion === "all"
-                  ? collapsibleThreads.length
-                  : (projectListExpansion ?? initialCollapsibleLimit);
-              const collapsibleLimit = Math.max(initialCollapsibleLimit, requestedCollapsibleLimit);
-              const groupShowsAll =
-                collapsibleThreads.length > initialCollapsibleLimit &&
-                collapsibleLimit >= collapsibleThreads.length;
+              const groupCollapsed = !openProjectKeys.has(key);
               const isBottomUp = projectListDirection === "bottom-up";
-              const visibleCollapsibleIds = new Set(
-                collapsibleThreads.slice(0, collapsibleLimit).map((thread) => thread.id),
-              );
-              const visible = group.threads.filter(
-                (thread) =>
-                  thread.pinned ||
-                  hasAlwaysVisibleThreadStatus(thread) ||
-                  pendingForkSourceIds.has(thread.id) ||
-                  visibleCollapsibleIds.has(thread.id),
-              );
+              // The project's sessions apart from its board tasks, listed under their stages.
+              const listSessions = (taskThreadIds: ReadonlySet<string>): ProjectSessions => {
+                const threads = group.threads.filter((thread) => !taskThreadIds.has(thread.id));
+                const alwaysVisibleThreads = threads.filter(
+                  (thread) =>
+                    thread.pinned ||
+                    hasAlwaysVisibleThreadStatus(thread) ||
+                    pendingForkSourceIds.has(thread.id),
+                );
+                const collapsibleThreads = threads.filter(
+                  (thread) =>
+                    !thread.pinned &&
+                    !hasAlwaysVisibleThreadStatus(thread) &&
+                    !pendingForkSourceIds.has(thread.id),
+                );
+                const initialCollapsibleLimit = Math.max(
+                  0,
+                  THREAD_PREVIEW_LIMIT - alwaysVisibleThreads.length,
+                );
+                const projectListExpansion = projectListExpansions.get(key);
+                const requestedCollapsibleLimit =
+                  projectListExpansion === "all"
+                    ? collapsibleThreads.length
+                    : (projectListExpansion ?? initialCollapsibleLimit);
+                const collapsibleLimit = Math.max(
+                  initialCollapsibleLimit,
+                  requestedCollapsibleLimit,
+                );
+                const groupShowsAll =
+                  collapsibleThreads.length > initialCollapsibleLimit &&
+                  collapsibleLimit >= collapsibleThreads.length;
+                const visibleCollapsibleIds = new Set(
+                  collapsibleThreads.slice(0, collapsibleLimit).map((thread) => thread.id),
+                );
+                const visible = threads.filter(
+                  (thread) =>
+                    thread.pinned ||
+                    hasAlwaysVisibleThreadStatus(thread) ||
+                    pendingForkSourceIds.has(thread.id) ||
+                    visibleCollapsibleIds.has(thread.id),
+                );
+                return {
+                  count: threads.length,
+                  list: (
+                    <>
+                      {visible.map((thread) => (
+                        <ThreadBranch
+                          branchHistoryExpansions={branchHistoryExpansions}
+                          thread={thread}
+                          childrenByParent={childrenByParent}
+                          key={thread.id}
+                          onNavigate={onClose}
+                          onToggleHistory={toggleBranchHistory}
+                        />
+                      ))}
+                      {collapsibleThreads.length > initialCollapsibleLimit && (
+                        <button
+                          className="show-more"
+                          onClick={() =>
+                            toggleProjectList(
+                              key,
+                              collapsibleThreads.length,
+                              initialCollapsibleLimit,
+                            )
+                          }
+                        >
+                          {groupShowsAll
+                            ? t("Показать меньше")
+                            : t("Показать ещё {{count}}", {
+                                count: Math.min(
+                                  THREAD_PREVIEW_LIMIT,
+                                  collapsibleThreads.length - collapsibleLimit,
+                                ),
+                              })}
+                        </button>
+                      )}
+                    </>
+                  ),
+                };
+              };
               const projectThreads = group.project
                 ? (snapshot?.threads.filter((thread) => thread.projectId === group.project!.id) ??
                   [])
@@ -2018,7 +2009,7 @@ function Sidebar({
                     onClick={() =>
                       group.project
                         ? toggleProjectFromClick(group.project.id, key)
-                        : toggleCollapsed(key)
+                        : toggleProject(key)
                     }
                     onContextMenu={(event) => {
                       const gesture = projectDragRef.current;
@@ -2176,35 +2167,24 @@ function Sidebar({
               );
               const sessions = (
                 <div className="project-sessions" hidden={groupCollapsed} id={sessionsId}>
-                  {visible.map((thread) => (
-                    <ThreadBranch
-                      branchHistoryExpansions={branchHistoryExpansions}
-                      thread={thread}
-                      childrenByParent={childrenByParent}
-                      key={thread.id}
-                      onNavigate={onClose}
-                      onToggleHistory={toggleBranchHistory}
-                    />
-                  ))}
-                  {collapsibleThreads.length > initialCollapsibleLimit && (
-                    <button
-                      className="show-more"
-                      onClick={() =>
-                        toggleProjectList(key, collapsibleThreads.length, initialCollapsibleLimit)
-                      }
-                    >
-                      {groupShowsAll
-                        ? t("Показать меньше")
-                        : t("Показать ещё {{count}}", {
-                            count: Math.min(
-                              THREAD_PREVIEW_LIMIT,
-                              collapsibleThreads.length - collapsibleLimit,
-                            ),
-                          })}
-                    </button>
-                  )}
-                  {!group.threads.length && (
-                    <span className="project-empty">{t("Пока нет задач")}</span>
+                  {group.project ? (
+                    // Only an open project reads its board.
+                    !groupCollapsed && (
+                      <ProjectBoard
+                        projectId={group.project.id}
+                        threads={allThreads}
+                        shownBoard={shownBoard}
+                        renderSessions={listSessions}
+                        onNavigate={onClose}
+                      />
+                    )
+                  ) : (
+                    <>
+                      {listSessions(new Set()).list}
+                      {!group.threads.length && (
+                        <span className="project-empty">{t("Пока нет задач")}</span>
+                      )}
+                    </>
                   )}
                 </div>
               );

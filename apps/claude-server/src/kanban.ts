@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { ServerFrame, ThreadSummary } from "@codexnest/protocol";
-import { KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
+import { firstRequest, KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
 import type { UiService } from "./ui-service";
 import type { ClaudeVoiceService } from "./voice";
 
@@ -83,6 +83,9 @@ export async function registerClaudeKanban(
         if (!ui.checkReply || !ui.store.data.threads[id]) return null;
         const reply = lastReply((await ui.detail(id)).turns);
         return reply ? ui.checkReply(reply, ui.store.data.taskDefaults.replyCheckModel) : null;
+      },
+      async readRequest(id) {
+        return ui.store.data.threads[id] ? firstRequest((await ui.detail(id)).turns) : null;
       },
     },
   });

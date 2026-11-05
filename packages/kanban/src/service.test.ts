@@ -43,6 +43,8 @@ async function fixture(
   const questions = new Map<string, string | null>();
   // Sessions whose last reply says the work was pushed.
   const pushed = new Set<string>();
+  // The operator's first message, by session.
+  const requests = new Map<string, string>();
   const services = {} as Record<"codex" | "claude", KanbanService>;
   for (const provider of ["codex", "claude"] as const) {
     const service = new KanbanService({
@@ -76,6 +78,7 @@ async function fixture(
           question: questions.get(threadId) ?? null,
           published: pushed.has(threadId),
         }),
+        readRequest: async (threadId) => requests.get(threadId) ?? null,
       },
     });
     services[provider] = service;
@@ -156,6 +159,7 @@ async function fixture(
     prompts,
     questions,
     pushed,
+    requests,
     running,
     command,
     finish,
@@ -579,6 +583,74 @@ describe("shared provider board service", () => {
     expect(runOf(board, rework.id)?.status).toBe("running");
     board = await f.finish(rework);
     expect(stage(board, id)).toBe("ready");
+  });
+  it("follows a session started in the project as one task in progress", async () => {
+    const f = await fixture();
+    const request = { description: "Fix the login form", clientCreationId: randomUUID() };
+    let board = await f.services.codex.createCard(f.project, { ...request, threadId: "own-1" });
+    const id = board.cards[0]!.id;
+    expect(board.cards[0]).toMatchObject({
+      title: "Fix the login form",
+      classification: "pending",
+    });
+    expect(stage(board, id)).toBe("working");
+    const run = board.runs.find((item) => item.kind === "execute")!;
+    expect(run).toMatchObject({
+      provider: "codex",
+      cardIds: [id],
+      threadId: "own-1",
+      sessionUrl: "/threads/own-1",
+      status: "running",
+    });
+    // Retried creation does not add the session twice.
+    board = await f.services.codex.createCard(f.project, { ...request, threadId: "own-1" });
+    expect(board.cards).toHaveLength(1);
+    // The classifier names the task, but a task with its session is never split.
+    const classifier = await f.running("classify", id);
+    expect(
+      (
+        await f.command(classifier, "report", {
+          tasks: [
+            { title: "Login form", category: "Auth", text: "Fix the login" },
+            { title: "Other", category: "UI", text: "form" },
+          ],
+        })
+      )?.ok,
+    ).toBe(true);
+    board = await f.services.codex.read(f.project);
+    expect(board.cards).toHaveLength(1);
+    expect(board.cards[0]).toMatchObject({ title: "Login form", classification: "ready" });
+    // The session before its first message is not a finished task.
+    await f.services.codex.notifyThread("own-1", "idle");
+    board = await f.services.codex.read(f.project);
+    expect(stage(board, id)).toBe("working");
+    board = await f.finish(run);
+    expect(stage(board, id)).toBe("ready");
+    expect(f.launches.codex).not.toContain(run.id);
+  });
+  it("reads a recorded first message from the session, then classifies it", async () => {
+    const f = await fixture();
+    let board = await f.services.claude.createCard(f.project, {
+      description: "",
+      clientCreationId: randomUUID(),
+      threadId: "spoken-1",
+    });
+    const id = board.cards[0]!.id;
+    expect(board.cards[0]).toMatchObject({ title: "", classification: "pending" });
+    expect(board.runs.map((run) => run.kind)).toEqual(["execute"]);
+    // Speech recognition is not done yet: the session has no text.
+    await f.services.claude.notifyThread("spoken-1", "queued");
+    board = await f.services.claude.read(f.project);
+    expect(board.cards[0]!.description).toBe("");
+    f.requests.set("spoken-1", "Speed up the price table");
+    await f.services.claude.notifyThread("spoken-1", "running");
+    board = await f.services.claude.read(f.project);
+    expect(board.cards[0]).toMatchObject({
+      title: "Speed up the price table",
+      description: "Speed up the price table",
+    });
+    expect(stage(board, id)).toBe("working");
+    await f.running("classify", id, f.services.claude);
   });
   it("publishes a task whose agent reports its work pushed, unless it asks something", async () => {
     const f = await fixture();

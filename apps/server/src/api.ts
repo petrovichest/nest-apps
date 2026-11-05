@@ -11,7 +11,7 @@ import {
   type PastedText,
 } from "@codexnest/protocol";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
+import { firstRequest, KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
 import { constants, createReadStream, type Stats } from "node:fs";
 import { access, lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -4051,6 +4051,10 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           model: model?.id,
           effort: model?.reasoningEfforts[0]?.value,
         });
+      },
+      async readRequest(threadId) {
+        if (!projection.summary(threadId)) return null;
+        return firstRequest((await projection.readThread(threadId)).turns);
       },
     },
   });

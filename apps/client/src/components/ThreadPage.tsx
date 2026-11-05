@@ -1497,6 +1497,20 @@ export function ThreadPage({
     else composerDraftRef.current = next;
   }
 
+  /**
+   * A session started in a project is a task in progress on the project's board. Its text is read
+   * from the session when a recording carries it; the session works without its card.
+   */
+  function joinBoard(projectId: string, createdThreadId: string, description: string) {
+    void api
+      .createKanbanCard(projectId, {
+        description,
+        clientCreationId: `session:${createdThreadId}`,
+        threadId: createdThreadId,
+      })
+      .catch(() => undefined);
+  }
+
   async function ensureCreatedThread(
     activeProject: Project,
     generation: number,
@@ -1947,6 +1961,7 @@ export function ThreadPage({
         assertPreparationGeneration(generation);
         submission.draft = structuredClone(preparationRef.current.value);
         let thread = await ensureCreatedThread(activeProject, generation);
+        joinBoard(activeProject.id, thread.id, "");
         thread = await applyPendingSettings(thread, generation);
         await uploadPreparationFiles(thread.id, generation);
         assertPreparationGeneration(generation);
@@ -3230,6 +3245,7 @@ export function ThreadPage({
       } else if (submission) submission.staged = stagedInPreparation;
       let thread = await ensureCreatedThread(activeProject, generation);
       assertPreparationGeneration(generation);
+      joinBoard(activeProject.id, thread.id, completeInput);
       thread = await applyPendingSettings(thread, generation);
       assertPreparationGeneration(generation);
       preparationRef.current = { ...preparationRef.current, thread };

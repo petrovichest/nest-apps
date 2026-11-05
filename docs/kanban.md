@@ -6,17 +6,22 @@ in the session header. From a task's session the board opens with that task.
 Both applications must run as the same operating-system user and resolve the
 project to the same directory.
 
-The switch at the top of the navigation chooses **Sessions** or **Board**. Board mode
-opens the board of the project being viewed (or the one shown last). Its Projects tab
-lists the projects instead of their sessions; a project's name opens or folds it without
-closing the others, and the open projects are remembered on each device (at first the
-one being viewed is open). Under an open project are its board and its tasks: Waiting
-for answer and In progress first, then the other stages in board order, with Published
-collapsed. Choosing a task opens its session, in the other application when that one
-runs it, as the board's own link does; a task without a session opens on the board. The Active tab still lists the active sessions. The
-mode is remembered on each device, and in board mode the application opens on the
-board. Only the open projects' boards are loaded: away from a project's board page the
-list asks for it every few seconds, on that page it uses the board the page already loaded.
+The navigation's Projects tab lists the projects with their menu, **+** and drag handle;
+a project's name opens or folds it without closing the others, and the open projects
+are remembered on each device (at first those not folded before stay open). Under an
+open project are its board and its tasks: Waiting for answer and In progress first, then
+the other stages in board order, with Published collapsed, and last **Sessions**: the
+project's sessions that are not tasks on its board. Choosing a task opens its session,
+in the other application when that one runs it, as the board's own link does; a task
+without a session opens on the board. The Active tab still lists the active sessions.
+The application opens on the board of the project shown last. Only the open projects'
+boards are loaded: away from a project's board page the list asks for it every few
+seconds, on that page it uses the board the page already loaded.
+
+A session started with a project's **+** joins its board as a task in In progress and
+moves on like any task. Its text is the first message; for a recorded first message the
+application that runs the session reads it once recognised. The classifier names the
+task and gives it a category but never splits a task that already has its session.
 
 Column widths can be dragged and columns collapsed; Published starts collapsed. These
 choices are remembered on each device. On a phone the board shows one stage at a

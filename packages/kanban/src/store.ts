@@ -23,6 +23,8 @@ export type CardRuntime = {
   voice?: VoiceRuntime;
   /** Settings chosen with the task; only the application that received them applies them. */
   settings?: { provider: KanbanProvider; value: SessionSettings };
+  /** A session's card whose text is still the session's first message to be read. */
+  awaitsText?: true;
 };
 export type RunRuntime = {
   token: string;

@@ -126,6 +126,12 @@ describe("NewSession", () => {
         draft: expect.objectContaining({ input: "Контекст перед голосом" }),
       }),
     );
+    // The recording's text is not known yet: the board reads it from the session.
+    expect(context.api.createKanbanCard).toHaveBeenCalledWith(project.id, {
+      description: "",
+      clientCreationId: `session:${thread.id}`,
+      threadId: thread.id,
+    });
     expect(drafts.delete).not.toHaveBeenCalled();
     expect(context.api.updateProjectDraft).not.toHaveBeenCalled();
     upload.resolve();
@@ -572,9 +578,11 @@ describe("NewSession", () => {
   it("carries immediate submission through session creation", async () => {
     const sendReliable = vi.fn().mockResolvedValue("delivered");
     const sendQueuedNow = vi.fn().mockResolvedValue({ turnId: "turn" });
+    const createKanbanCard = vi.fn().mockResolvedValue({});
     connection.mockReturnValue(
       mockConnection({
         createProjectThread: vi.fn().mockResolvedValue({ thread }),
+        createKanbanCard,
         sendQueuedNow,
         sendReliable,
       }),
@@ -589,6 +597,12 @@ describe("NewSession", () => {
     const clientMessageId = sendReliable.mock.calls[0]?.[1].clientMessageId;
     expect(clientMessageId).toEqual(expect.any(String));
     expect(sendQueuedNow).toHaveBeenCalledWith(thread.id, clientMessageId);
+    // The new session is a task in progress on its project's board.
+    expect(createKanbanCard).toHaveBeenCalledWith(thread.projectId, {
+      description: "Отправь сразу",
+      clientCreationId: `session:${thread.id}`,
+      threadId: thread.id,
+    });
   });
 
   it("retains the first draft and does not create a session when local persistence fails", async () => {
@@ -1212,6 +1226,7 @@ function mockConnection({
   updateThreadDraft = vi.fn(),
   dispatch = vi.fn(),
   queueVoiceRecording = vi.fn(),
+  createKanbanCard = vi.fn().mockResolvedValue({}),
 }: {
   readProjectDraft?: ReturnType<typeof vi.fn>;
   updateProjectDraft?: ReturnType<typeof vi.fn>;
@@ -1232,6 +1247,7 @@ function mockConnection({
   updateThreadDraft?: ReturnType<typeof vi.fn>;
   dispatch?: ReturnType<typeof vi.fn>;
   queueVoiceRecording?: ReturnType<typeof vi.fn>;
+  createKanbanCard?: ReturnType<typeof vi.fn>;
 }) {
   return {
     api: {
@@ -1239,6 +1255,7 @@ function mockConnection({
       updateProjectDraft,
       uploadProjectAttachment,
       createProjectThread,
+      createKanbanCard,
       uploadAttachment,
       readThread,
       sendQueuedNow,

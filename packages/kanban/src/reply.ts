@@ -10,5 +10,13 @@ export function lastReply(turns: readonly TurnView[]): string | null {
   return null;
 }
 
+/** The operator's first message in the session; null until it has one with text. */
+export function firstRequest(turns: readonly TurnView[]): string | null {
+  for (const turn of turns)
+    for (const item of turn.items)
+      if (item.type === "userMessage" && item.text.trim()) return item.text.trim();
+  return null;
+}
+
 /** A finished turn's last reply: what the agent waits for, and whether it says it pushed its work. */
 export type ReplyVerdict = { question: string | null; published: boolean };

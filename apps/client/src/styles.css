@@ -1047,18 +1047,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Sessions or board: the top switch of the navigation, two equal tabs like the list tabs. */
-.session-list-mode.navigation-mode {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  margin-top: var(--space-2);
-  margin-bottom: 0;
-}
-
-.board-navigation {
-  padding-top: var(--space-2);
-}
-
-.board-navigation [hidden] {
+.board-navigation-tasks[hidden] {
   display: none;
 }
 
@@ -1081,9 +1070,23 @@
   padding-left: calc(var(--space-1) + 22px);
 }
 
-.board-navigation-tasks .thread-branch-spacer {
+.board-navigation-tasks > .thread-branch > .thread-branch-row > .thread-branch-spacer {
   width: 48px;
   flex-basis: 48px;
+}
+
+/* A session with subagents in the sessions group keeps the deeper indent of the tasks. */
+.board-navigation-tasks > .thread-branch > .thread-branch-row:has(> .thread-subagent-count) {
+  grid-template-columns: 48px minmax(0, 1fr) max-content max-content;
+}
+
+.board-navigation-tasks > .thread-branch > .thread-branch-children {
+  margin-left: 34px;
+}
+
+.board-navigation-tasks > .show-more {
+  width: calc(100% - 52px);
+  margin-left: calc(var(--space-8) + 20px);
 }
 
 .project-toggle > .board-navigation-count {

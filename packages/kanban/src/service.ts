@@ -64,6 +64,8 @@ export type KanbanProviderAdapter = {
    * for the operator (a question, a decision, a failure), and whether it says it pushed its work.
    */
   readReply?(threadId: string): Promise<ReplyVerdict | null>;
+  /** The operator's first message in the session; null until it has one. */
+  readRequest?(threadId: string): Promise<string | null>;
 };
 export type KanbanServiceOptions = {
   provider: KanbanProvider;
@@ -290,6 +292,7 @@ export class KanbanService {
   private helper = "";
   private launching = new Set<string>();
   private transcribing = new Set<string>();
+  private describing = new Set<string>();
   private pending = new Set<Promise<unknown>>();
   private pumpWaiters: (() => void)[] = [];
   private threads = new Map<string, { boardId: string; runId: string }>();
@@ -435,6 +438,7 @@ export class KanbanService {
       throw new KanbanError("transcription_unavailable", "Speech recognition is not configured");
   }
   async createCard(projectPath: string, request: CreateKanbanCardRequest): Promise<KanbanBoard> {
+    if (request.threadId !== undefined) return this.createSessionCard(projectPath, request);
     const audio = request.audio === undefined ? undefined : decodeAudio(request.audio);
     const description = audio
       ? typeof request.description === "string" && request.description.length <= 100_000
@@ -516,6 +520,44 @@ export class KanbanService {
     });
     this.changed(board);
     if (audio) this.schedule();
+    return board;
+  }
+  /** A session started in the project joins the board as a task in progress. */
+  private async createSessionCard(
+    projectPath: string,
+    request: CreateKanbanCardRequest,
+  ): Promise<KanbanBoard> {
+    const threadId = text(request.threadId, "Session", 512);
+    // A recorded first message has no text yet; it is read from the session once sent.
+    const description =
+      typeof request.description === "string" && request.description.length <= 100_000
+        ? request.description.trim()
+        : text(request.description, "Task");
+    const { board } = await this.store.update(projectPath, (data) => {
+      if (data.board.runs.some((run) => run.threadId === threadId)) return;
+      const now = Date.now();
+      const card: KanbanCard = {
+        id: randomUUID(),
+        title: description.replace(/\s+/g, " ").slice(0, 100),
+        description,
+        categoryId: null,
+        stageId: role(data.board, "working"),
+        classification: "pending",
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      data.board.cards.unshift(card);
+      data.cards[card.id] = description ? {} : { awaitsText: true };
+      if (description) this.classify(data, card);
+      // Followed like a task the board started: its turns move the card from In progress on.
+      const run = this.addRun(data, "execute", [card.id]);
+      run.threadId = threadId;
+      run.sessionUrl = `/threads/${encodeURIComponent(threadId)}`;
+      run.status = "running";
+      this.threads.set(threadId, { boardId: data.board.id, runId: run.id });
+    });
+    this.changed(board);
     return board;
   }
   async readImage(projectPath: string, cardId: string, index = 0): Promise<KanbanImageInput> {
@@ -1155,6 +1197,7 @@ export class KanbanService {
     // Remember the initial idle state until a real turn transition arrives.
     if (state === "idle" && this.launching.has(known.runId)) return;
     let classifierFailed = false;
+    let awaitingText: string[] = [];
     let target = known;
     const { board, result: finished } = await this.store.updateById(known.boardId, (data) => {
       // A turn the operator started in the session may have registered a new run meanwhile.
@@ -1185,6 +1228,7 @@ export class KanbanService {
       if (["running", "queued", "needsAttention"].includes(state)) runtime.started = true;
       else if (!runtime.resumeThreadId && state !== "idle") runtime.started = true;
       if (!runtime.started) return false;
+      awaitingText = run.cardIds.filter((id) => data.cards[id]?.awaitsText);
       const cards = run.cardIds.map((id) => findCard(data, id));
       run.updatedAt = Date.now();
       if (state === "running" || state === "queued") {
@@ -1221,7 +1265,36 @@ export class KanbanService {
       await Promise.resolve(this.options.adapter.archive?.(threadId)).catch((error) =>
         this.options.onError?.(error),
       );
+    for (const cardId of awaitingText)
+      await this.describe(target.boardId, cardId, threadId).catch((error) =>
+        this.options.onError?.(error),
+      );
     if (finished) await this.settle(target, threadId, state);
+  }
+  /** A session's card takes its text from the session's first message, then is classified. */
+  private async describe(boardId: string, cardId: string, threadId: string): Promise<void> {
+    const key = `${boardId}:${cardId}`;
+    if (this.describing.has(key) || !this.options.adapter.readRequest) return;
+    this.describing.add(key);
+    try {
+      const request = await this.options.adapter.readRequest(threadId);
+      if (!request) return;
+      const { board } = await this.store.updateById(boardId, (data) => {
+        const card = data.board.cards.find((item) => item.id === cardId);
+        if (!card || !data.cards[cardId]?.awaitsText) return;
+        delete data.cards[cardId]!.awaitsText;
+        // Text the operator wrote on the card meanwhile stays.
+        if (!card.description) {
+          card.description = request;
+          card.title = request.replace(/\s+/g, " ").slice(0, 100);
+          card.updatedAt = Date.now();
+        }
+        this.classify(data, card);
+      });
+      this.changed(board);
+    } finally {
+      this.describing.delete(key);
+    }
   }
   /**
    * The operator wrote to a finished task's session: the new turn is the tasks' work again, so
@@ -1602,7 +1675,12 @@ export class KanbanService {
       };
       const now = Date.now();
       // Text added or edited after the classifier read it is never replaced by the split.
-      if (tasks.length > 1 && current.updatedAt <= own.createdAt) {
+      // A task that already has its session stays one card.
+      if (
+        tasks.length > 1 &&
+        current.updatedAt <= own.createdAt &&
+        !taskSession(data, current.id)
+      ) {
         const images = cardImages(current);
         const path = (file: string) => this.imagePath(data.board.id, file);
         const meta = (index: number) => {
