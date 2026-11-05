@@ -13,7 +13,15 @@ import {
   useRef,
   useState,
 } from "react";
-import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router";
+import {
+  matchPath,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router";
 
 import { App as CapacitorApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
@@ -37,6 +45,7 @@ import {
 import type { ConnectionSettings } from "./storage";
 import { copyText } from "./clipboard";
 import { AttentionPanel } from "./components/AttentionPanel";
+import { BoardNavigation, type ShownBoard } from "./components/BoardNavigation";
 import { Dialog } from "./components/Dialog";
 import { ThreadSearchDialog } from "./components/ThreadSearchDialog";
 import {
@@ -103,9 +112,13 @@ const THREAD_TITLE_SCROLL_PX_PER_SECOND = 45;
 const THREAD_LEAVE_DURATION_MS = 900;
 const SIDEBAR_TREE_STATE_KEY_PREFIX = `${application.storagePrefix}.sidebarTree.v1:`;
 const SESSION_LIST_MODE_KEY = `${application.storagePrefix}.sessionListMode`;
+const NAVIGATION_MODE_KEY = `${application.storagePrefix}.navigationMode`;
+const BOARD_PROJECT_KEY = `${application.storagePrefix}.boardProject`;
 
 type ListExpansion = number | "all";
 type SessionListMode = "projects" | "active";
+/** Sessions mode lists sessions; board mode lists one project's board tasks by stage. */
+type NavigationMode = "sessions" | "board";
 
 type SidebarResizeGesture = {
   pointerId: number;
@@ -162,6 +175,16 @@ export function App({
   const { language, setLanguage, t } = useI18n();
   const location = useLocation();
   const navigate = useNavigate();
+  const [shownBoard, setShownBoard] = useState<ShownBoard | null>(null);
+  const showBoard = useCallback((projectId: string, board: ShownBoard["board"]) => {
+    setShownBoard((previous) =>
+      previous?.projectId === projectId &&
+      previous.board.id === board.id &&
+      previous.board.revision > board.revision
+        ? previous
+        : { projectId, board },
+    );
+  }, []);
   const pendingForkMatch = location.pathname.match(/^\/fork-operations\/([^/]+)\/?$/u);
   const pendingForkOperationId = pendingForkMatch?.[1]
     ? decodeURIComponent(pendingForkMatch[1])
@@ -428,6 +451,7 @@ export function App({
         onNewProject={() => setNewProject(true)}
         projectListDirection={projectListDirection}
         serverBaseUrl={settings.baseUrl}
+        shownBoard={shownBoard}
         updateAvailable={updateAvailable}
       />
       <SidebarResizeHandle
@@ -486,6 +510,7 @@ export function App({
                   transcriptionConfig={transcriptionConfig}
                   transcriptionProvider={activeTranscriptionProvider(transcriptionConfig)}
                   onOpenNavigation={() => setDrawer(true)}
+                  onBoardChange={showBoard}
                 />
               }
             />
@@ -493,6 +518,7 @@ export function App({
               path="/"
               element={
                 <HomeRoute
+                  projects={snapshot?.projects ?? []}
                   threads={snapshot?.threads ?? []}
                   onOpenNavigation={() => setDrawer(true)}
                 />
@@ -752,6 +778,22 @@ function readSessionListMode(): SessionListMode {
   }
 }
 
+function readStoredText(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storeText(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Without storage the choice lasts until the page is reloaded.
+  }
+}
+
 function sidebarTreeStateStorageKey(serverBaseUrl: string): string {
   const normalizedBaseUrl = serverBaseUrl.replace(/\/+$/u, "");
   return `${SIDEBAR_TREE_STATE_KEY_PREFIX}${encodeURIComponent(normalizedBaseUrl)}`;
@@ -847,13 +889,22 @@ function toggleListExpansion(
 }
 
 function HomeRoute({
+  projects,
   threads,
   onOpenNavigation,
 }: {
+  projects: Project[];
   threads: ThreadSummary[];
   onOpenNavigation(): void;
 }) {
   const { t } = useI18n();
+  // In board mode the application opens on the board, as the session list opens a session.
+  if (readStoredText(NAVIGATION_MODE_KEY) === "board") {
+    const stored = readStoredText(BOARD_PROJECT_KEY);
+    const project = projects.find((item) => item.id === stored) ?? projects[0];
+    if (project)
+      return <Navigate to={`/projects/${encodeURIComponent(project.id)}/kanban`} replace />;
+  }
   const childrenByParent = childThreadsByParent(threads);
   const latest = sortThreadBranchesByActivity(
     threads.filter((thread) => !thread.archived && thread.relation.kind === "session"),
@@ -891,6 +942,7 @@ function Sidebar({
   onNewProject,
   projectListDirection,
   serverBaseUrl,
+  shownBoard,
   updateAvailable,
 }: {
   containerRef: RefObject<HTMLElement | null>;
@@ -900,6 +952,7 @@ function Sidebar({
   onNewProject(): void;
   projectListDirection: ProjectListDirection;
   serverBaseUrl: string;
+  shownBoard: ShownBoard | null;
   updateAvailable: boolean;
 }) {
   const { api, state, dispatch } = useConnection();
@@ -910,6 +963,12 @@ function Sidebar({
     readSidebarTreeState(serverBaseUrl),
   );
   const [sessionListMode, setSessionListMode] = useState<SessionListMode>(readSessionListMode);
+  const [navigationMode, setNavigationMode] = useState<NavigationMode>(() =>
+    readStoredText(NAVIGATION_MODE_KEY) === "board" ? "board" : "sessions",
+  );
+  const [storedBoardProject, setStoredBoardProject] = useState(() =>
+    readStoredText(BOARD_PROJECT_KEY),
+  );
   const [projectListExpansions, setProjectListExpansions] = useState<Map<string, ListExpansion>>(
     () => new Map(),
   );
@@ -1043,6 +1102,37 @@ function Sidebar({
     group.project ? [group.project.id] : [],
   );
   const projectOrderKey = snapshot?.projects.map((project) => project.id).join(":") ?? "";
+  const projects = snapshot?.projects ?? [];
+  const boardRoute = matchPath("/projects/:projectId/kanban", location.pathname);
+  const threadRouteId = matchPath("/threads/:threadId", location.pathname)?.params.threadId;
+  // Board mode follows the project being looked at, else the board shown last on this device.
+  const boardProjectId =
+    [
+      boardRoute?.params.projectId,
+      allThreads.find((thread) => thread.id === threadRouteId)?.projectId,
+      storedBoardProject,
+    ].find((id) => id && projects.some((project) => project.id === id)) ??
+    projects[0]?.id ??
+    null;
+
+  useEffect(() => {
+    if (!boardProjectId) return;
+    storeText(BOARD_PROJECT_KEY, boardProjectId);
+    setStoredBoardProject(boardProjectId);
+  }, [boardProjectId]);
+
+  function chooseNavigationMode(mode: NavigationMode) {
+    // Stored before navigating: the root route reads it to choose where to open.
+    storeText(NAVIGATION_MODE_KEY, mode);
+    setNavigationMode(mode);
+    if (mode === "board" && boardProjectId && !boardRoute) {
+      onManualNavigationIntent();
+      navigate(`/projects/${encodeURIComponent(boardProjectId)}/kanban`);
+    } else if (mode === "sessions" && boardRoute) {
+      onManualNavigationIntent();
+      navigate("/");
+    }
+  }
 
   useEffect(() => {
     writeSidebarTreeState(serverBaseUrl, sidebarTree);
@@ -1675,6 +1765,23 @@ function Sidebar({
 
   return (
     <aside className={`sidebar ${drawer ? "open" : ""}`} id="sidebar-navigation" ref={containerRef}>
+      <div className="session-list-mode navigation-mode" role="group" aria-label={t("Режим")}>
+        <button
+          aria-pressed={navigationMode === "sessions"}
+          onClick={() => chooseNavigationMode("sessions")}
+          type="button"
+        >
+          {t("Сессии")}
+        </button>
+        <button
+          aria-pressed={navigationMode === "board"}
+          disabled={!boardProjectId}
+          onClick={() => chooseNavigationMode("board")}
+          type="button"
+        >
+          {t("Доска")}
+        </button>
+      </div>
       <div className="sidebar-controls">
         <NavLink
           className="sidebar-control-action"
@@ -1739,7 +1846,12 @@ function Sidebar({
           <SearchIcon />
         </button>
       </div>
-      <div className="session-list-mode" role="group" aria-label={t("Режим списка сессий")}>
+      <div
+        className="session-list-mode"
+        role="group"
+        aria-label={t("Режим списка сессий")}
+        hidden={navigationMode === "board"}
+      >
         <button
           aria-pressed={sessionListMode === "projects"}
           onClick={() => setSessionListMode("projects")}
@@ -1800,7 +1912,16 @@ function Sidebar({
         }}
         ref={threadNavRef}
       >
-        {sessionListMode === "active" ? (
+        {navigationMode === "board" && boardProjectId ? (
+          <BoardNavigation
+            key={boardProjectId}
+            projects={projects}
+            projectId={boardProjectId}
+            threads={allThreads}
+            shownBoard={shownBoard}
+            onNavigate={onClose}
+          />
+        ) : sessionListMode === "active" ? (
           <div className="active-session-list">
             {pinnedFeedRoots.length > 0 && (
               <div

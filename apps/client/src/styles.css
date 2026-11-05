@@ -1047,6 +1047,87 @@
   font-variant-numeric: tabular-nums;
 }
 
+.session-list-mode[hidden] {
+  display: none;
+}
+
+/* Sessions or board: the top switch of the navigation, two equal tabs like the list tabs. */
+.session-list-mode.navigation-mode {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-top: var(--space-2);
+  margin-bottom: 0;
+}
+
+.board-navigation {
+  padding-top: var(--space-2);
+}
+
+.board-navigation .project-sessions[hidden] {
+  display: none;
+}
+
+.board-navigation-project {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+}
+
+.board-navigation-project > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.board-navigation-project > summary::-webkit-details-marker {
+  display: none;
+}
+
+.board-navigation-project .project-toggle svg:first-child {
+  width: 16px;
+  height: 16px;
+}
+
+.board-navigation-project .project-toggle svg:last-child {
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+}
+
+.board-navigation-project .project-toggle > span {
+  flex: 0 1 auto;
+}
+
+.board-navigation-project .project-action-popover {
+  right: auto;
+  left: 0;
+  max-height: min(360px, 60vh);
+  overflow-y: auto;
+}
+
+.board-navigation-project .project-action-popover button[aria-pressed="true"] {
+  color: var(--text-strong);
+  font-weight: var(--weight-medium);
+}
+
+.board-navigation-board .thread-link-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.board-navigation-board svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: var(--muted-strong);
+}
+
+.project-toggle > .board-navigation-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-weight: var(--weight-regular);
+  font-variant-numeric: tabular-nums;
+}
+
 @container sidebar (max-width: 260px) {
   .session-list-mode {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 48px;

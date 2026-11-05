@@ -6,6 +6,8 @@ import type * as CapacitorCore from "@capacitor/core";
 import type {
   AppSnapshot,
   AppUpdateStatus,
+  KanbanBoard,
+  KanbanRun,
   Project,
   QueueMessageRequest,
   ThreadDraft,
@@ -469,6 +471,108 @@ describe("App routing and navigation", () => {
     renderApp("/threads/newer");
     expect(screen.getByRole("button", { name: "Проекты" })).toHaveAttribute("aria-pressed", "true");
     await waitFor(() => expect(localStorage.getItem("codexnest.sessionListMode")).toBe("projects"));
+  });
+
+  it("lists one project's board tasks by stage in board mode and opens their sessions", async () => {
+    localStorage.setItem("codexnest.navigationMode", "board");
+    mockConnection(snapshot([{ ...baseThread, state: "running" }]));
+    const readKanban = vi.fn().mockResolvedValue(taskBoard());
+    Object.assign(connection().api, { readKanban });
+
+    renderApp("/threads/newer");
+
+    const nav = screen.getByRole("navigation", { name: "Задачи" });
+    await within(nav).findByRole("link", { name: "Ответить про цвета" });
+    expect(readKanban).toHaveBeenCalledWith("project");
+    expect(screen.getByRole("button", { name: "Доска" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("group", { name: "Режим списка сессий" })).toBeNull();
+    expect(within(nav).queryByRole("link", { name: "Новая задача в истории" })).toBeNull();
+    // Answers first, then running agents, then the board's order; published stays closed.
+    expect(
+      within(nav)
+        .getAllByRole("button", { expanded: true })
+        .map((button) => button.textContent),
+    ).toEqual(["Ждёт ответа1", "В работе1", "К выполнению1"]);
+    expect(within(nav).getByRole("button", { name: /Опубликовано/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    const working = within(nav).getByRole("link", { name: "Исправить зависание" });
+    expect(working).toHaveAttribute("href", "/threads/newer");
+    expect(working).toHaveAttribute("aria-current", "page");
+    expect(working.querySelector(".status")).toHaveClass("status-running");
+    expect(within(nav).getByRole("link", { name: "Новая идея" })).toHaveAttribute(
+      "href",
+      "/projects/project/kanban?card=todo-card",
+    );
+    expect(
+      within(nav).getByRole("link", { name: "Новая идея" }).querySelector(".status"),
+    ).toBeNull();
+    expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
+      "href",
+      "/projects/project/kanban",
+    );
+    // Escape closes the project menu without stopping the open session.
+    const picker = nav.querySelector("details")!;
+    fireEvent.click(within(nav).getByText("Проект", { selector: "summary span" }));
+    expect(picker.open).toBe(true);
+    const windowEscape = vi.fn();
+    window.addEventListener("keydown", windowEscape);
+    fireEvent.keyDown(picker.querySelector("summary")!, { key: "Escape" });
+    window.removeEventListener("keydown", windowEscape);
+    expect(picker.open).toBe(false);
+    expect(windowEscape).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    expect(screen.getByRole("group", { name: "Режим списка сессий" })).toBeInTheDocument();
+    expect(within(nav).getByRole("link", { name: "Новая задача в истории" })).toBeInTheDocument();
+    await waitFor(() => expect(localStorage.getItem("codexnest.navigationMode")).toBe("sessions"));
+  });
+
+  it("opens the board when switching to board mode and reuses the board page's tasks", async () => {
+    mockConnection(snapshot([baseThread]));
+    const readKanban = vi.fn().mockResolvedValue(taskBoard());
+    Object.assign(connection().api, { readKanban });
+
+    renderApp("/threads/newer");
+    expect(readKanban).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Доска" }));
+
+    const nav = screen.getByRole("navigation", { name: "Задачи" });
+    await waitFor(() =>
+      expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+    await within(nav).findByRole("link", { name: "Ответить про цвета" });
+    await waitFor(() => expect(localStorage.getItem("codexnest.boardProject")).toBe("project"));
+    // On the board page only the page asks for the board.
+    expect(readKanban).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    expect(
+      await within(nav).findByRole("link", { name: "Новая задача в истории" }),
+    ).toHaveAttribute("aria-current", "page");
+    expect(localStorage.getItem("codexnest.navigationMode")).toBe("sessions");
+  });
+
+  it("opens the remembered board from the root route in board mode", async () => {
+    localStorage.setItem("codexnest.navigationMode", "board");
+    localStorage.setItem("codexnest.boardProject", "missing");
+    mockConnection(snapshot([baseThread]));
+    Object.assign(connection().api, { readKanban: vi.fn().mockResolvedValue(taskBoard()) });
+
+    renderApp("/");
+
+    const nav = screen.getByRole("navigation", { name: "Задачи" });
+    await waitFor(() =>
+      expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+    expect(screen.getByRole("heading", { name: "Доска задач" })).toBeInTheDocument();
   });
 
   it("keeps pinned read sessions above running sessions and removes them after unpinning", () => {
@@ -4775,6 +4879,58 @@ function testProject(id: string, displayName: string): Project {
     path: `/work/${id}`,
     createdAt: "2026-01-02",
     updatedAt: "2026-01-02",
+  };
+}
+
+function taskBoard(): KanbanBoard {
+  const card = (id: string, title: string, stageId: string) => ({
+    id,
+    title,
+    description: title,
+    categoryId: null,
+    stageId,
+    classification: "ready" as const,
+    error: null,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  const run = (id: string, cardId: string, threadId: string, status: KanbanRun["status"]) => ({
+    id,
+    kind: "execute" as const,
+    cardIds: [cardId],
+    provider: "codex" as const,
+    threadId,
+    sessionUrl: null,
+    status,
+    error: null,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  return {
+    id: "board",
+    projectPath: "/work/project",
+    revision: 1,
+    stages: [
+      { id: "todo", name: "К выполнению", description: "", role: "todo" },
+      { id: "working", name: "В работе", description: "", role: "working" },
+      { id: "waiting", name: "Ждёт ответа", description: "", role: "waiting" },
+      { id: "ready", name: "Готовые", description: "", role: "ready" },
+      { id: "done", name: "Опубликовано", description: "", role: "done" },
+    ],
+    categories: [],
+    cards: [
+      card("todo-card", "Новая идея", "todo"),
+      card("working-card", "Исправить зависание", "working"),
+      card("waiting-card", "Ответить про цвета", "waiting"),
+      card("done-card", "Старая задача", "done"),
+      { ...card("archived-card", "Убрана в архив", "waiting"), archivedAt: 2 },
+    ],
+    runs: [
+      run("working-run", "working-card", "newer", "running"),
+      run("waiting-run", "waiting-card", "other-session", "waiting"),
+    ],
+    createdAt: 1,
+    updatedAt: 1,
   };
 }
 
