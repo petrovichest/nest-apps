@@ -45,7 +45,7 @@ import {
 import type { ConnectionSettings } from "./storage";
 import { copyText } from "./clipboard";
 import { AttentionPanel } from "./components/AttentionPanel";
-import { BoardNavigation } from "./components/BoardNavigation";
+import { BoardNavigation, type ShownBoard } from "./components/BoardNavigation";
 import { Dialog } from "./components/Dialog";
 import { ThreadSearchDialog } from "./components/ThreadSearchDialog";
 import {
@@ -117,7 +117,7 @@ const BOARD_PROJECT_KEY = `${application.storagePrefix}.boardProject`;
 
 type ListExpansion = number | "all";
 type SessionListMode = "projects" | "active";
-/** Board mode lists projects opening their boards in place of sessions grouped by project. */
+/** Board mode lists projects with one project's board tasks in place of their sessions. */
 type NavigationMode = "sessions" | "board";
 
 type SidebarResizeGesture = {
@@ -175,6 +175,16 @@ export function App({
   const { language, setLanguage, t } = useI18n();
   const location = useLocation();
   const navigate = useNavigate();
+  const [shownBoard, setShownBoard] = useState<ShownBoard | null>(null);
+  const showBoard = useCallback((projectId: string, board: ShownBoard["board"]) => {
+    setShownBoard((previous) =>
+      previous?.projectId === projectId &&
+      previous.board.id === board.id &&
+      previous.board.revision > board.revision
+        ? previous
+        : { projectId, board },
+    );
+  }, []);
   const pendingForkMatch = location.pathname.match(/^\/fork-operations\/([^/]+)\/?$/u);
   const pendingForkOperationId = pendingForkMatch?.[1]
     ? decodeURIComponent(pendingForkMatch[1])
@@ -441,6 +451,7 @@ export function App({
         onNewProject={() => setNewProject(true)}
         projectListDirection={projectListDirection}
         serverBaseUrl={settings.baseUrl}
+        shownBoard={shownBoard}
         updateAvailable={updateAvailable}
       />
       <SidebarResizeHandle
@@ -499,6 +510,7 @@ export function App({
                   transcriptionConfig={transcriptionConfig}
                   transcriptionProvider={activeTranscriptionProvider(transcriptionConfig)}
                   onOpenNavigation={() => setDrawer(true)}
+                  onBoardChange={showBoard}
                 />
               }
             />
@@ -930,6 +942,7 @@ function Sidebar({
   onNewProject,
   projectListDirection,
   serverBaseUrl,
+  shownBoard,
   updateAvailable,
 }: {
   containerRef: RefObject<HTMLElement | null>;
@@ -939,6 +952,7 @@ function Sidebar({
   onNewProject(): void;
   projectListDirection: ProjectListDirection;
   serverBaseUrl: string;
+  shownBoard: ShownBoard | null;
   updateAvailable: boolean;
 }) {
   const { api, state, dispatch } = useConnection();
@@ -955,6 +969,11 @@ function Sidebar({
   const [storedBoardProject, setStoredBoardProject] = useState(() =>
     readStoredText(BOARD_PROJECT_KEY),
   );
+  // A project opened in the board list, kept while the same project is being looked at.
+  const [chosenBoard, setChosenBoard] = useState<{
+    projectId: string;
+    viewed: string | undefined;
+  } | null>(null);
   const [projectListExpansions, setProjectListExpansions] = useState<Map<string, ListExpansion>>(
     () => new Map(),
   );
@@ -1091,13 +1110,17 @@ function Sidebar({
   const projects = snapshot?.projects ?? [];
   const boardRoute = matchPath("/projects/:projectId/kanban", location.pathname);
   const threadRouteId = matchPath("/threads/:threadId", location.pathname)?.params.threadId;
-  // Board mode follows the project being looked at, else the board shown last on this device.
+  const knownProject = (id: string | null | undefined) =>
+    id && projects.some((project) => project.id === id) ? id : undefined;
+  const viewedProjectId =
+    knownProject(boardRoute?.params.projectId) ??
+    knownProject(allThreads.find((thread) => thread.id === threadRouteId)?.projectId);
+  // Board mode opens the project chosen in its list, else the one being looked at, else the
+  // board shown last on this device.
   const boardProjectId =
-    [
-      boardRoute?.params.projectId,
-      allThreads.find((thread) => thread.id === threadRouteId)?.projectId,
-      storedBoardProject,
-    ].find((id) => id && projects.some((project) => project.id === id)) ??
+    (chosenBoard?.viewed === viewedProjectId ? knownProject(chosenBoard?.projectId) : undefined) ??
+    viewedProjectId ??
+    knownProject(storedBoardProject) ??
     projects[0]?.id ??
     null;
 
@@ -1911,7 +1934,12 @@ function Sidebar({
           </div>
         ) : navigationMode === "board" && boardProjectId ? (
           <BoardNavigation
+            key={boardProjectId}
             projects={projectListDirection === "bottom-up" ? [...projects].reverse() : projects}
+            projectId={boardProjectId}
+            threads={allThreads}
+            shownBoard={shownBoard}
+            onChooseProject={(projectId) => setChosenBoard({ projectId, viewed: viewedProjectId })}
             onNavigate={onClose}
           />
         ) : (

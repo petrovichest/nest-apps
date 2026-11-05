@@ -93,7 +93,7 @@ function runLabel(run: KanbanRun, t: Translate, session?: ThreadSummary): string
   return run.kind === "publish" ? t("Публикуется…") : t("В работе");
 }
 
-function stageLabel(stage: KanbanStage, t: Translate): string {
+export function stageLabel(stage: KanbanStage, t: Translate): string {
   // User-created names are content, not translation keys.
   const defaults: Record<string, string> = {
     todo: "К выполнению",
@@ -140,7 +140,7 @@ function writeLayout(projectId: string, layout: LaneLayout) {
  * The same markers as sessions in the navigation. A session of this application adds what the
  * board does not record: its live state, an interruption and whether its result was read.
  */
-function runStatusClass(run: KanbanRun, session?: ThreadSummary): string | null {
+export function runStatusClass(run: KanbanRun, session?: ThreadSummary): string | null {
   if (session) {
     if (
       session.queuedMessageCount > 0 ||
@@ -214,10 +214,20 @@ const selectable = (board: Board, card: KanbanCard) =>
 const classified = (card: KanbanCard) => card.classification === "ready" && !card.voice;
 const startable = (board: Board, card: KanbanCard) => classified(card) && selectable(board, card);
 
-function latestRun(board: Board, cardId: string): KanbanRun | undefined {
+export function latestRun(board: Board, cardId: string): KanbanRun | undefined {
   return board.runs
     .filter((run) => run.cardIds.includes(cardId) && run.kind !== "classify")
     .sort((a, b) => b.createdAt - a.createdAt)[0];
+}
+
+/** A card's marker colour: a recording being transcribed, else its newest session's state. */
+export function cardStatusClass(
+  card: KanbanCard,
+  latest: KanbanRun | undefined,
+  session?: ThreadSummary,
+): string | null {
+  if (card.voice) return card.voice.status === "failed" ? "status-failed" : "status-queued";
+  return latest ? runStatusClass(latest, session) : null;
 }
 
 export function KanbanBoard({
@@ -226,6 +236,7 @@ export function KanbanBoard({
   transcriptionConfig = null,
   transcriptionProvider = null,
   onOpenNavigation,
+  onBoardChange,
 }: {
   projects: Project[];
   /** Sessions of this application; they colour the markers of the tasks they run. */
@@ -233,6 +244,8 @@ export function KanbanBoard({
   transcriptionConfig?: TranscriptionConfigResponse | null;
   transcriptionProvider?: TranscriptionProvider | null;
   onOpenNavigation(): void;
+  /** Every board this page receives, so the navigation shows it without its own requests. */
+  onBoardChange?(projectId: string, board: Board): void;
 }) {
   const { projectId = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -288,7 +301,12 @@ export function KanbanBoard({
   );
   const locale = useRef({ language, t });
   locale.current = { language, t };
+  const reportBoard = useRef(onBoardChange);
+  reportBoard.current = onBoardChange;
+  // The project of the current request generation, set together with it.
+  const boardProject = useRef(projectId);
   const threadParam = searchParams.get("thread");
+  const cardParam = searchParams.get("card");
 
   const displayError = useCallback((caught: unknown) => {
     const { language: currentLanguage, t: translate } = locale.current;
@@ -301,11 +319,13 @@ export function KanbanBoard({
     setBoard((previous) =>
       previous?.id === next.id && previous.revision > next.revision ? previous : next,
     );
+    reportBoard.current?.(boardProject.current, next);
   }, []);
 
   useEffect(() => {
     alive.current = true;
     const generation = ++requestGeneration.current;
+    boardProject.current = projectId;
     let inFlight = false;
     setBoard(null);
     setError(null);
@@ -396,19 +416,22 @@ export function KanbanBoard({
     [defaultReasoningEffort, models, taskDefaults],
   );
 
-  // A session's board link names the session; its card opens once the board arrives.
+  // A session's board link names the session, the navigation names the card; it opens once
+  // the board arrives.
   useEffect(() => {
-    if (!board || !threadParam) return;
-    const run = board.runs.find((item) => item.threadId === threadParam);
-    if (run?.cardIds[0]) setCardId(run.cardIds[0]);
+    if (!board || (!threadParam && !cardParam)) return;
+    const run = threadParam ? board.runs.find((item) => item.threadId === threadParam) : undefined;
+    const id = board.cards.some((item) => item.id === cardParam) ? cardParam : run?.cardIds[0];
+    if (id) setCardId(id);
     setSearchParams(
       (params) => {
         params.delete("thread");
+        params.delete("card");
         return params;
       },
       { replace: true },
     );
-  }, [board, threadParam, setSearchParams]);
+  }, [board, threadParam, cardParam, setSearchParams]);
 
   useEffect(() => {
     if (cardId) panelTitle.current?.focus();
@@ -724,13 +747,7 @@ export function KanbanBoard({
     const latest = latestRun(board!, item.id);
     const session = latest && sessionOf(latest);
     const voice = item.voice;
-    const statusClass = voice
-      ? voice.status === "failed"
-        ? "status-failed"
-        : "status-queued"
-      : latest
-        ? runStatusClass(latest, session)
-        : null;
+    const statusClass = cardStatusClass(item, latest, session);
     // To do has no agent at work yet: its cards carry no coloured marker, recognition is text.
     const marker = stage.role === "todo" ? null : statusClass;
     const imageCount = item.images?.length ?? (item.image ? 1 : 0);

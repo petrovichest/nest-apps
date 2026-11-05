@@ -1058,15 +1058,39 @@
   padding-top: var(--space-2);
 }
 
-/* A project of board mode: a session row whose folder stands where the controls' icons do. */
-.thread-link.board-navigation-project {
-  padding: 0 var(--space-3);
+.board-navigation [hidden] {
+  display: none;
 }
 
-.board-navigation-project svg {
+.board-navigation-board .thread-link-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.board-navigation-board svg {
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
+  color: var(--muted-strong);
+}
+
+/* Inside the open project a stage's chevron stands under the folder, its name and its tasks
+   under the project name. */
+.board-navigation-stage > .project-title {
+  padding-left: calc(var(--space-1) + 22px);
+}
+
+.board-navigation-tasks .thread-branch-spacer {
+  width: 48px;
+  flex-basis: 48px;
+}
+
+.project-toggle > .board-navigation-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-weight: var(--weight-regular);
+  font-variant-numeric: tabular-nums;
 }
 
 @container sidebar (max-width: 260px) {

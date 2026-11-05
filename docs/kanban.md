@@ -8,10 +8,14 @@ project to the same directory.
 
 The switch at the top of the navigation chooses **Sessions** or **Board**. Board mode
 opens the board of the project being viewed (or the one shown last). Its Projects tab
-lists the projects instead of their sessions, and choosing a project opens its board,
-where its tasks are; the Active tab still lists the active sessions.
-The mode is remembered on each device, and in board mode the application opens on the
-board. The list makes no requests of its own.
+lists the projects instead of their sessions, with one project open: the one being
+viewed, or another chosen by its name. Under it are its board and its tasks: Waiting
+for answer and In progress first, then the other stages in board order, with Published
+collapsed. Choosing a task opens its session; a task without a session in this
+application opens on the board. The Active tab still lists the active sessions. The
+mode is remembered on each device, and in board mode the application opens on the
+board. Only the open project's board is loaded: while a session is open the list asks
+for it every few seconds, on the board page it uses the board the page already loaded.
 
 Column widths can be dragged and columns collapsed; Published starts collapsed. These
 choices are remembered on each device. On a phone the board shows one stage at a

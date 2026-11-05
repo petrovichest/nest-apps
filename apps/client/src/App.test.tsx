@@ -473,7 +473,7 @@ describe("App routing and navigation", () => {
     await waitFor(() => expect(localStorage.getItem("codexnest.sessionListMode")).toBe("projects"));
   });
 
-  it("lists the projects in board mode, each opening its board, and keeps active sessions", async () => {
+  it("lists the projects in board mode with the open project's tasks by stage", async () => {
     localStorage.setItem("codexnest.navigationMode", "board");
     localStorage.setItem("codexnest.layoutDefaultsVersion", "1");
     localStorage.setItem("codexnest.projectListDirection", "bottom-up");
@@ -489,19 +489,68 @@ describe("App routing and navigation", () => {
     renderApp("/threads/newer");
 
     const nav = screen.getByRole("navigation", { name: "Задачи" });
+    await within(nav).findByRole("link", { name: "Ответить про цвета" });
+    expect(readKanban).toHaveBeenCalledTimes(1);
+    expect(readKanban).toHaveBeenCalledWith("project");
     expect(screen.getByRole("button", { name: "Доска" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Проекты" })).toHaveAttribute("aria-pressed", "true");
     expect(within(nav).queryByRole("link", { name: "Новая задача в истории" })).toBeNull();
-    // The projects in the session list's order and direction; the tasks stay on the board.
+    // The projects in the session list's order and direction, the open session's project open:
+    // answers first, then running agents, then the board's order; published stays closed.
     expect(
       within(nav)
-        .getAllByRole("link")
-        .map((link) => [link.textContent, link.getAttribute("href"), link.ariaCurrent]),
+        .getAllByRole("button")
+        .map((button) => [button.textContent, button.getAttribute("aria-expanded")]),
     ).toEqual([
-      ["Второй", "/projects/second-project/kanban", null],
-      ["Проект", "/projects/project/kanban", null],
+      ["Второй", "false"],
+      ["Проект", "true"],
+      ["Ждёт ответа1", "true"],
+      ["В работе1", "true"],
+      ["К выполнению1", "true"],
+      ["Опубликовано1", "false"],
     ]);
-    expect(readKanban).not.toHaveBeenCalled();
+    const working = within(nav).getByRole("link", { name: "Исправить зависание" });
+    expect(working).toHaveAttribute("href", "/threads/newer");
+    expect(working).toHaveAttribute("aria-current", "page");
+    expect(working.querySelector(".status")).toHaveClass("status-running");
+    expect(within(nav).getByRole("link", { name: "Новая идея" })).toHaveAttribute(
+      "href",
+      "/projects/project/kanban?card=todo-card",
+    );
+    expect(
+      within(nav).getByRole("link", { name: "Новая идея" }).querySelector(".status"),
+    ).toBeNull();
+    expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
+      "href",
+      "/projects/project/kanban",
+    );
+
+    // Another project opens in place of the first without leaving the session.
+    fireEvent.click(within(nav).getByRole("button", { name: "Второй" }));
+    await waitFor(() => expect(readKanban).toHaveBeenCalledWith("second-project"));
+    expect(within(nav).getByRole("button", { name: "Второй" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(within(nav).getByRole("button", { name: "Проект" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
+      "href",
+      "/projects/second-project/kanban",
+    );
+    expect(within(nav).getByRole("link", { name: "Доска" })).not.toHaveAttribute("aria-current");
+    await waitFor(() =>
+      expect(localStorage.getItem("codexnest.boardProject")).toBe("second-project"),
+    );
+    // Its name folds it again.
+    fireEvent.click(within(nav).getByRole("button", { name: "Второй" }));
+    expect(within(nav).getByRole("button", { name: "Второй" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(within(nav).queryByRole("link", { name: "Доска" })).toBeNull();
 
     // Active sessions stay one tab away and open as sessions.
     fireEvent.click(screen.getByRole("button", { name: "Активные" }));
@@ -509,21 +558,8 @@ describe("App routing and navigation", () => {
       "href",
       "/threads/newer",
     );
-    expect(within(nav).queryByRole("link", { name: "Второй" })).toBeNull();
+    expect(within(nav).queryByRole("button", { name: "Второй" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Проекты" }));
-
-    fireEvent.click(within(nav).getByRole("link", { name: "Второй" }));
-    await waitFor(() =>
-      expect(within(nav).getByRole("link", { name: "Второй" })).toHaveAttribute(
-        "aria-current",
-        "page",
-      ),
-    );
-    expect(within(nav).getByRole("link", { name: "Проект" })).not.toHaveAttribute("aria-current");
-    await waitFor(() => expect(readKanban).toHaveBeenCalledWith("second-project"));
-    await waitFor(() =>
-      expect(localStorage.getItem("codexnest.boardProject")).toBe("second-project"),
-    );
 
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     expect(screen.getByRole("group", { name: "Режим списка сессий" })).toBeInTheDocument();
@@ -533,7 +569,7 @@ describe("App routing and navigation", () => {
     await waitFor(() => expect(localStorage.getItem("codexnest.navigationMode")).toBe("sessions"));
   });
 
-  it("opens the board of the shown session's project when switching to board mode", async () => {
+  it("opens the board when switching to board mode and reuses the board page's tasks", async () => {
     mockConnection(snapshot([baseThread]));
     const readKanban = vi.fn().mockResolvedValue(taskBoard());
     Object.assign(connection().api, { readKanban });
@@ -544,14 +580,14 @@ describe("App routing and navigation", () => {
 
     const nav = screen.getByRole("navigation", { name: "Задачи" });
     await waitFor(() =>
-      expect(within(nav).getByRole("link", { name: "Проект" })).toHaveAttribute(
+      expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
         "aria-current",
         "page",
       ),
     );
-    expect(await screen.findByText("Ответить про цвета")).toBeInTheDocument();
+    await within(nav).findByRole("link", { name: "Ответить про цвета" });
     await waitFor(() => expect(localStorage.getItem("codexnest.boardProject")).toBe("project"));
-    // Only the board page asks for the board.
+    // On the board page only the page asks for the board.
     expect(readKanban).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
@@ -571,7 +607,7 @@ describe("App routing and navigation", () => {
 
     const nav = screen.getByRole("navigation", { name: "Задачи" });
     await waitFor(() =>
-      expect(within(nav).getByRole("link", { name: "Проект" })).toHaveAttribute(
+      expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
         "aria-current",
         "page",
       ),

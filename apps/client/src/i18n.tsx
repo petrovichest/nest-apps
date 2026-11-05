@@ -494,6 +494,8 @@ const ENGLISH: Record<string, string> = {
   Режим: "Mode",
   Сессии: "Sessions",
   Доска: "Board",
+  "Задач пока нет": "No tasks yet",
+  "Не удалось загрузить задачи": "Could not load the tasks",
   "Нет активных сессий": "No active sessions",
   Задачи: "Tasks",
   "Без проекта": "No project",
