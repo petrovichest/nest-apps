@@ -117,7 +117,7 @@ const BOARD_PROJECT_KEY = `${application.storagePrefix}.boardProject`;
 
 type ListExpansion = number | "all";
 type SessionListMode = "projects" | "active";
-/** Board mode lists projects with one project's board tasks in place of their sessions. */
+/** Board mode lists projects with their board tasks in place of their sessions. */
 type NavigationMode = "sessions" | "board";
 
 type SidebarResizeGesture = {
@@ -131,6 +131,8 @@ type SidebarResizeGesture = {
 type SidebarTreeState = {
   collapsedProjectIds: Set<string>;
   pinnedGroupCollapsed: boolean;
+  /** Projects open in board mode; until one is opened or folded, the board's project is open. */
+  boardOpenProjectIds: Set<string> | null;
 };
 
 type ActiveFeedRunningOrder = {
@@ -767,6 +769,7 @@ function emptySidebarTreeState(): SidebarTreeState {
   return {
     collapsedProjectIds: new Set(),
     pinnedGroupCollapsed: false,
+    boardOpenProjectIds: null,
   };
 }
 
@@ -811,7 +814,11 @@ function readSidebarTreeState(serverBaseUrl: string): SidebarTreeState {
     if (record.version !== 1) return emptySidebarTreeState();
     const collapsedProjectIds = readStringSet(record.collapsedProjectIds);
     return collapsedProjectIds
-      ? { collapsedProjectIds, pinnedGroupCollapsed: record.pinnedGroupCollapsed === true }
+      ? {
+          collapsedProjectIds,
+          pinnedGroupCollapsed: record.pinnedGroupCollapsed === true,
+          boardOpenProjectIds: readStringSet(record.boardOpenProjectIds),
+        }
       : emptySidebarTreeState();
   } catch {
     return emptySidebarTreeState();
@@ -831,6 +838,9 @@ function writeSidebarTreeState(serverBaseUrl: string, state: SidebarTreeState): 
         version: 1,
         collapsedProjectIds: [...state.collapsedProjectIds].sort(),
         pinnedGroupCollapsed: state.pinnedGroupCollapsed,
+        boardOpenProjectIds: state.boardOpenProjectIds
+          ? [...state.boardOpenProjectIds].sort()
+          : undefined,
       }),
     );
   } catch {
@@ -852,9 +862,12 @@ function toggleSidebarTreeEntry(
 function pruneSidebarTreeState(state: SidebarTreeState, projectIds: Set<string>): SidebarTreeState {
   projectIds.add("ungrouped");
   const collapsedProjectIds = retainSidebarTreeEntries(state.collapsedProjectIds, projectIds);
-  return collapsedProjectIds.size === state.collapsedProjectIds.size
+  const boardOpenProjectIds =
+    state.boardOpenProjectIds && retainSidebarTreeEntries(state.boardOpenProjectIds, projectIds);
+  return collapsedProjectIds.size === state.collapsedProjectIds.size &&
+    boardOpenProjectIds?.size === state.boardOpenProjectIds?.size
     ? state
-    : { ...state, collapsedProjectIds };
+    : { ...state, collapsedProjectIds, boardOpenProjectIds };
 }
 
 function retainSidebarTreeEntries(values: Set<string>, validIds: Set<string>): Set<string> {
@@ -969,11 +982,6 @@ function Sidebar({
   const [storedBoardProject, setStoredBoardProject] = useState(() =>
     readStoredText(BOARD_PROJECT_KEY),
   );
-  // A project opened in the board list, kept while the same project is being looked at.
-  const [chosenBoard, setChosenBoard] = useState<{
-    projectId: string;
-    viewed: string | undefined;
-  } | null>(null);
   const [projectListExpansions, setProjectListExpansions] = useState<Map<string, ListExpansion>>(
     () => new Map(),
   );
@@ -1115,14 +1123,9 @@ function Sidebar({
   const viewedProjectId =
     knownProject(boardRoute?.params.projectId) ??
     knownProject(allThreads.find((thread) => thread.id === threadRouteId)?.projectId);
-  // Board mode opens the project chosen in its list, else the one being looked at, else the
-  // board shown last on this device.
+  // Board mode opens the board of the project being looked at, else the one shown last here.
   const boardProjectId =
-    (chosenBoard?.viewed === viewedProjectId ? knownProject(chosenBoard?.projectId) : undefined) ??
-    viewedProjectId ??
-    knownProject(storedBoardProject) ??
-    projects[0]?.id ??
-    null;
+    viewedProjectId ?? knownProject(storedBoardProject) ?? projects[0]?.id ?? null;
 
   useEffect(() => {
     if (!boardProjectId) return;
@@ -1264,6 +1267,14 @@ function Sidebar({
     if (!gesture) return;
     clearProjectDragGesture(gesture);
   }, [projectOrderKey]);
+
+  function toggleBoardProject(projectId: string) {
+    setSidebarTree((current) => {
+      const open = new Set(current.boardOpenProjectIds ?? (boardProjectId ? [boardProjectId] : []));
+      if (!open.delete(projectId)) open.add(projectId);
+      return { ...current, boardOpenProjectIds: open };
+    });
+  }
 
   function toggleCollapsed(key: string) {
     setSidebarTree((current) => toggleSidebarTreeEntry(current, "collapsedProjectIds", key));
@@ -1934,12 +1945,11 @@ function Sidebar({
           </div>
         ) : navigationMode === "board" && boardProjectId ? (
           <BoardNavigation
-            key={boardProjectId}
             projects={projectListDirection === "bottom-up" ? [...projects].reverse() : projects}
-            projectId={boardProjectId}
+            openProjectIds={sidebarTree.boardOpenProjectIds ?? new Set([boardProjectId])}
             threads={allThreads}
             shownBoard={shownBoard}
-            onChooseProject={(projectId) => setChosenBoard({ projectId, viewed: viewedProjectId })}
+            onToggleProject={toggleBoardProject}
             onNavigate={onClose}
           />
         ) : (

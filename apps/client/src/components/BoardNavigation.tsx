@@ -17,25 +17,78 @@ const stageRank = (stage: KanbanStage) =>
 const boardPath = (projectId: string) => `/projects/${encodeURIComponent(projectId)}/kanban`;
 
 /**
- * Board mode of the navigation: the projects, one of them open with its board and its tasks by
- * stage, each task opening its session.
+ * Board mode of the navigation: the projects, each opening on its own to its board and its tasks
+ * by stage, each task opening its session.
  */
 export function BoardNavigation({
   projects,
-  projectId,
+  openProjectIds,
   threads,
   shownBoard,
-  onChooseProject,
+  onToggleProject,
   onNavigate,
 }: {
   /** In the order of the session list's projects. */
   projects: Project[];
-  /** The open project; only its board is loaded. */
-  projectId: string;
+  /** The open projects; only their boards are loaded. */
+  openProjectIds: ReadonlySet<string>;
   /** Sessions of this application; they colour the markers like on the board. */
   threads: ThreadSummary[];
   shownBoard: ShownBoard | null;
-  onChooseProject(projectId: string): void;
+  onToggleProject(projectId: string): void;
+  onNavigate(): void;
+}) {
+  const sessions = useMemo(
+    () =>
+      new Map(threads.filter((thread) => !thread.archived).map((thread) => [thread.id, thread])),
+    [threads],
+  );
+  return (
+    <div className="project-list board-navigation">
+      {projects.map((project) => {
+        const open = openProjectIds.has(project.id);
+        return (
+          <section className="project-group" key={project.id}>
+            <div className="project-title">
+              <button
+                aria-controls={open ? tasksId(project.id) : undefined}
+                aria-expanded={open}
+                className="project-toggle"
+                type="button"
+                onClick={() => onToggleProject(project.id)}
+              >
+                {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
+                <FolderIcon />
+                <span>{project.displayName}</span>
+              </button>
+            </div>
+            {open && (
+              <ProjectTasks
+                projectId={project.id}
+                sessions={sessions}
+                shownBoard={shownBoard}
+                onNavigate={onNavigate}
+              />
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+const tasksId = (projectId: string) => `board-navigation-${projectId}`;
+
+/** An open project's board row and its tasks by stage. */
+function ProjectTasks({
+  projectId,
+  sessions,
+  shownBoard,
+  onNavigate,
+}: {
+  projectId: string;
+  sessions: ReadonlyMap<string, ThreadSummary>;
+  shownBoard: ShownBoard | null;
   onNavigate(): void;
 }) {
   const { api } = useConnection();
@@ -43,8 +96,6 @@ export function BoardNavigation({
   const location = useLocation();
   const [fetched, setFetched] = useState<KanbanBoard | null>(null);
   const [failed, setFailed] = useState(false);
-  // The open project folded by its name; the list then asks for no board at all.
-  const [collapsed, setCollapsed] = useState(false);
   // Stages whose group the operator opened or closed against its default.
   const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
   const onBoardPage =
@@ -55,7 +106,7 @@ export function BoardNavigation({
 
   // The board page refreshes its own board; elsewhere the navigation keeps the list current.
   useEffect(() => {
-    if (onBoardPage || collapsed) return;
+    if (onBoardPage) return;
     let alive = true;
     let inFlight = false;
     async function refresh() {
@@ -85,13 +136,8 @@ export function BoardNavigation({
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
-  }, [api, projectId, onBoardPage, collapsed]);
+  }, [api, projectId, onBoardPage]);
 
-  const sessions = useMemo(
-    () =>
-      new Map(threads.filter((thread) => !thread.archived).map((thread) => [thread.id, thread])),
-    [threads],
-  );
   const stages = board
     ? board.stages
         .map((stage, index) => ({ stage, index }))
@@ -105,9 +151,8 @@ export function BoardNavigation({
         .filter((group) => group.cards.length > 0)
     : [];
 
-  const tasksId = `board-navigation-${projectId}`;
-  const tasks = (
-    <div className="project-sessions" id={tasksId} hidden={collapsed}>
+  return (
+    <div className="project-sessions" id={tasksId(projectId)}>
       <div className="thread-branch">
         <div className="thread-branch-row">
           <span className="thread-branch-spacer" />
@@ -211,36 +256,6 @@ export function BoardNavigation({
       })}
       {board && !stages.length && <div className="project-empty">{t("Задач пока нет")}</div>}
       {!board && failed && <div className="project-empty">{t("Не удалось загрузить задачи")}</div>}
-    </div>
-  );
-
-  return (
-    <div className="project-list board-navigation">
-      {projects.map((project) => {
-        const open = project.id === projectId && !collapsed;
-        return (
-          <section className="project-group" key={project.id}>
-            <div className="project-title">
-              <button
-                aria-controls={project.id === projectId ? tasksId : undefined}
-                aria-expanded={open}
-                className="project-toggle"
-                type="button"
-                onClick={() =>
-                  project.id === projectId
-                    ? setCollapsed((current) => !current)
-                    : onChooseProject(project.id)
-                }
-              >
-                {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
-                <FolderIcon />
-                <span>{project.displayName}</span>
-              </button>
-            </div>
-            {project.id === projectId && tasks}
-          </section>
-        );
-      })}
     </div>
   );
 }

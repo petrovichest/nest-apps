@@ -530,7 +530,7 @@ describe("App routing and navigation", () => {
       "/projects/project/kanban",
     );
 
-    // Another project opens in place of the first without leaving the session.
+    // Another project opens beside the first without leaving the session.
     fireEvent.click(within(nav).getByRole("button", { name: "Второй" }));
     await waitFor(() => expect(readKanban).toHaveBeenCalledWith("second-project"));
     expect(within(nav).getByRole("button", { name: "Второй" })).toHaveAttribute(
@@ -539,23 +539,21 @@ describe("App routing and navigation", () => {
     );
     expect(within(nav).getByRole("button", { name: "Проект" })).toHaveAttribute(
       "aria-expanded",
-      "false",
+      "true",
     );
-    expect(within(nav).getByRole("link", { name: "Доска" })).toHaveAttribute(
-      "href",
-      "/projects/second-project/kanban",
-    );
-    expect(within(nav).getByRole("link", { name: "Доска" })).not.toHaveAttribute("aria-current");
-    await waitFor(() =>
-      expect(localStorage.getItem("codexnest.boardProject")).toBe("second-project"),
-    );
-    // Its name folds it again.
+    expect(
+      within(nav)
+        .getAllByRole("link", { name: "Доска" })
+        .map((link) => link.getAttribute("href")),
+    ).toEqual(["/projects/second-project/kanban", "/projects/project/kanban"]);
+    expect(localStorage.getItem("codexnest.boardProject")).toBe("project");
+    // Its name folds it again, the first one stays open.
     fireEvent.click(within(nav).getByRole("button", { name: "Второй" }));
     expect(within(nav).getByRole("button", { name: "Второй" })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
-    expect(within(nav).queryByRole("link", { name: "Доска" })).toBeNull();
+    expect(within(nav).getAllByRole("link", { name: "Доска" })).toHaveLength(1);
 
     // Active sessions stay one tab away and open as sessions.
     fireEvent.click(screen.getByRole("button", { name: "Активные" }));
@@ -572,6 +570,39 @@ describe("App routing and navigation", () => {
       await within(nav).findByRole("link", { name: "Новая задача в истории" }),
     ).toBeInTheDocument();
     await waitFor(() => expect(localStorage.getItem("codexnest.navigationMode")).toBe("sessions"));
+  });
+
+  it("keeps the projects open or folded in board mode", async () => {
+    localStorage.setItem("codexnest.navigationMode", "board");
+    mockConnection(
+      snapshot(
+        [{ ...baseThread, state: "running" }],
+        [defaultProject(), testProject("second-project", "Второй")],
+      ),
+    );
+    Object.assign(connection().api, { readKanban: vi.fn().mockResolvedValue(taskBoard()) });
+
+    const first = renderApp("/threads/newer");
+    let nav = screen.getByRole("navigation", { name: "Задачи" });
+    fireEvent.click(within(nav).getByRole("button", { name: "Второй" }));
+    fireEvent.click(within(nav).getByRole("button", { name: "Проект" }));
+    first.unmount();
+
+    // The open session's project stays folded as it was left.
+    renderApp("/threads/newer");
+    nav = screen.getByRole("navigation", { name: "Задачи" });
+    expect(within(nav).getByRole("button", { name: "Второй" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(within(nav).getByRole("button", { name: "Проект" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(await within(nav).findByRole("link", { name: "Доска" })).toHaveAttribute(
+      "href",
+      "/projects/second-project/kanban",
+    );
   });
 
   it("opens the board when switching to board mode and reuses the board page's tasks", async () => {
