@@ -439,7 +439,7 @@ describe("KanbanBoard", () => {
     seed.runs.push(execution("one"), execution("two"));
     api.readKanban.mockResolvedValue(seed);
     show();
-    expect(await screen.findByRole("button", { name: "Task two" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Task two" })).toBeInTheDocument();
     expect(
       within(screen.getByRole("region", { name: "Готовые" })).queryByRole("checkbox"),
     ).toBeNull();
@@ -530,7 +530,7 @@ describe("KanbanBoard", () => {
     seed.runs.push({ ...execution("one"), cardIds: ["one", "two"] }, execution("three"));
     api.readKanban.mockResolvedValue(seed);
     show();
-    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить задачу «Task one»" }));
     const panel = screen.getByRole("complementary");
     const together = within(panel).getByRole("heading", { name: "В той же сессии" }).parentElement!;
     expect(
@@ -573,7 +573,12 @@ describe("KanbanBoard", () => {
     api.readKanban.mockResolvedValue(seed);
     api.kanbanAction.mockResolvedValue(seed);
     show();
-    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    // The card opens the other application's session there.
+    expect(await screen.findByRole("link", { name: "Task one" })).toHaveAttribute(
+      "href",
+      "http://localhost:4311/threads/original",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Изменить задачу «Task one»" }));
     const panel = screen.getByRole("complementary", { name: "Task one" });
     // A continuation is a turn of the same session, listed once.
     expect(within(panel).getAllByRole("link", { name: /Выполнение/ })).toHaveLength(1);
@@ -618,9 +623,14 @@ describe("KanbanBoard", () => {
     api.readKanban.mockResolvedValue(seed);
     api.kanbanAction.mockResolvedValue(seed);
     show();
-    const waiting = (await screen.findByRole("button", { name: "Task one" })).closest("article")!;
+    const waiting = (await screen.findByText("Task one")).closest("article")!;
     expect(waiting).toHaveTextContent("Which file should change?");
-    fireEvent.click(screen.getByRole("button", { name: "Task one" }));
+    // The card opens its session; the pencil beside the marker opens the task.
+    expect(within(waiting).getByRole("link", { name: "Task one" })).toHaveAttribute(
+      "href",
+      "/threads/thread-one",
+    );
+    fireEvent.click(within(waiting).getByRole("button", { name: "Изменить задачу «Task one»" }));
     const panel = screen.getByRole("complementary", { name: "Task one" });
     expect(within(panel).getByRole("link", { name: "Ответить" })).toHaveAttribute(
       "href",
@@ -789,10 +799,10 @@ describe("KanbanBoard", () => {
     );
     api.readKanban.mockResolvedValue(seed);
     show();
-    const waiting = (await screen.findByRole("button", { name: "Task one" })).closest("article")!;
+    const waiting = (await screen.findByText("Task one")).closest("article")!;
     expect(waiting).toHaveTextContent("Ждёт ответа");
     expect(waiting.querySelector(".kanban-card-status.status-needsAttention")).not.toBeNull();
-    const finished = screen.getByRole("button", { name: "Task two" }).closest("article")!;
+    const finished = screen.getByText("Task two").closest("article")!;
     expect(finished).not.toHaveTextContent("Завершено");
     expect(finished.querySelector(".kanban-card-status")).toBeNull();
   });
@@ -835,21 +845,17 @@ describe("KanbanBoard", () => {
       session("elsewhere", "completed", false),
     ]);
     const marker = async (id: string) =>
-      (await screen.findByRole("button", { name: `Task ${id}` }))
+      (await screen.findByText(`Task ${id}`))
         .closest("article")!
         .querySelector(".kanban-card-status")?.className;
     expect(await marker("unread")).toContain("status-completed-unread");
     expect(await marker("read")).toBeUndefined();
     expect(await marker("stopped")).toContain("status-interrupted");
-    expect(
-      screen.getByRole("button", { name: "Task stopped" }).closest("article"),
-    ).toHaveTextContent("Прервана");
+    expect(screen.getByText("Task stopped").closest("article")).toHaveTextContent("Прервана");
     expect(await marker("seen")).toContain("status-failed-read");
     // The other application's session is unknown here: the board's own outcome decides.
     expect(await marker("elsewhere")).toBe("kanban-card-status status-failed");
-    expect(
-      screen.getByRole("button", { name: "Task unread" }).closest("article"),
-    ).not.toHaveTextContent("Завершено");
+    expect(screen.getByText("Task unread").closest("article")).not.toHaveTextContent("Завершено");
   });
 
   it("keeps collapsed and resized columns on this device", async () => {
@@ -910,11 +916,11 @@ describe("KanbanBoard", () => {
     seed.runs.push(execution("one"), execution("two", "running"));
     api.readKanban.mockResolvedValue(seed);
     show();
-    const running = (await screen.findByRole("button", { name: "Task two" })).closest("article")!;
+    const running = (await screen.findByText("Task two")).closest("article")!;
     fireEvent.dragStart(running, { dataTransfer: transfer() });
     expect(screen.getByRole("region", { name: "К выполнению" })).toHaveClass("drop-disabled");
     fireEvent.dragEnd(running);
-    const ready = screen.getByRole("button", { name: "Task one" }).closest("article")!;
+    const ready = screen.getByText("Task one").closest("article")!;
     const dataTransfer = transfer();
     fireEvent.dragStart(ready, { dataTransfer });
     expect(screen.getByRole("region", { name: "Ждёт ответа" })).toHaveClass("drop-disabled");
@@ -1034,7 +1040,7 @@ describe("KanbanBoard", () => {
     seed.runs.push(execution("one", "completed"));
     api.readKanban.mockResolvedValue(seed);
     show();
-    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить задачу «Task one»" }));
     const panel = screen.getByRole("complementary", { name: "Task one" });
     expect(within(panel).queryByRole("button", { name: "Дописать" })).toBeNull();
     expect(within(panel).getByRole("button", { name: "На доработку" })).toBeInTheDocument();

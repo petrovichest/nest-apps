@@ -753,6 +753,20 @@ export function KanbanBoard({
     const imageCount = item.images?.length ?? (item.image ? 1 : 0);
     // The card's own start button is for To do; other stages start from the panel.
     const launch = selectable(board!, item);
+    const title = item.title || t("Голосовая задача");
+    const sessionHref = !latest?.threadId
+      ? null
+      : latest.provider === application.provider
+        ? `/threads/${encodeURIComponent(latest.threadId)}`
+        : latest.sessionUrl;
+    const reorder = (event: React.KeyboardEvent<HTMLElement>) => {
+      if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+      event.preventDefault();
+      const index = lane.indexOf(item);
+      if (event.key === "ArrowUp" && index > 0) void dropCard(item, stage, lane[index - 1]!.id);
+      else if (event.key === "ArrowDown" && index < lane.length - 1)
+        void dropCard(item, stage, lane[index + 2]?.id ?? null);
+    };
     const categoryName = board!.categories.find((value) => value.id === item.categoryId)?.name;
     const meta: ReactNode[] = [];
     if (categoryName) meta.push(<span key="category">{categoryName}</span>);
@@ -843,22 +857,41 @@ export function KanbanBoard({
               }}
             />
           )}
-          <button
-            className="kanban-card-open"
-            aria-expanded={cardId === item.id}
-            onClick={(event) => openCard(item.id, event.currentTarget)}
-            onKeyDown={(event) => {
-              if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
-              event.preventDefault();
-              const index = lane.indexOf(item);
-              if (event.key === "ArrowUp" && index > 0)
-                void dropCard(item, stage, lane[index - 1]!.id);
-              else if (event.key === "ArrowDown" && index < lane.length - 1)
-                void dropCard(item, stage, lane[index + 2]?.id ?? null);
-            }}
-          >
-            {item.title || t("Голосовая задача")}
-          </button>
+          {sessionHref ? (
+            // A task with a session opens it; the pencil beside the marker opens the task.
+            <Link
+              className="kanban-card-open"
+              draggable={false}
+              to={sessionHref}
+              onClick={(event) => {
+                if (!suppressClick.current) return;
+                suppressClick.current = false;
+                event.preventDefault();
+              }}
+              onKeyDown={reorder}
+            >
+              {title}
+            </Link>
+          ) : (
+            <button
+              className="kanban-card-open"
+              aria-expanded={cardId === item.id}
+              onClick={(event) => openCard(item.id, event.currentTarget)}
+              onKeyDown={reorder}
+            >
+              {title}
+            </button>
+          )}
+          {sessionHref && (
+            <button
+              className="icon-button kanban-card-edit"
+              aria-expanded={cardId === item.id}
+              aria-label={t("Изменить задачу «{{title}}»", { title })}
+              onClick={(event) => openCard(item.id, event.currentTarget)}
+            >
+              <PencilIcon />
+            </button>
+          )}
           {launch && (
             <button
               className="kanban-card-launch"

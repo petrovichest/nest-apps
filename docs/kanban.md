@@ -20,7 +20,9 @@ list asks for it every few seconds, on that page it uses the board the page alre
 
 Column widths can be dragged and columns collapsed; Published starts collapsed. These
 choices are remembered on each device. On a phone the board shows one stage at a
-time. Task details open in a side panel.
+time. Choosing a task that has a session opens that session, in the other application
+when that one runs it; its pencil opens the task's details in a side panel. A task
+without a session opens its details directly.
 
 Create a card with **+**: type its description, attach up to ten images (choose,
 paste or drop them) and send it. Pressing the microphone and stopping the

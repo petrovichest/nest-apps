@@ -218,8 +218,9 @@
     transform var(--motion-fast) var(--motion-ease);
 }
 
-.kanban-card.has-status {
-  padding-right: 28px;
+/* Text, the image mark and the pencil end 8px left of the marker (10px + 3px from the edge). */
+.kanban-card:is(.has-status, :has(.kanban-card-edit)) {
+  padding-right: calc(var(--space-2-5) + 3px + var(--space-2));
 }
 
 @media (hover: hover) {
@@ -251,7 +252,8 @@
   z-index: 1;
 }
 
-/* The title button covers the whole card, so any part of it opens the task. */
+/* The title covers the whole card, so any part of it opens the task's session, or the task
+   while it has none. */
 .kanban-card .kanban-card-open,
 .kanban-card .kanban-card-open:is(:hover, :active, :focus-visible) {
   flex: 1;
@@ -270,6 +272,7 @@
   font-weight: var(--weight-medium);
   line-height: 20px;
   text-align: left;
+  text-decoration: none;
   overflow-wrap: anywhere;
   outline: none;
   -webkit-box-orient: vertical;
@@ -327,6 +330,25 @@
 .kanban-card-images svg {
   width: 14px;
   height: 14px;
+}
+
+/* The pencil opens the task: a 28px circle over the first title line, its icon 8px from the
+   title and ending where the text below ends. */
+.kanban-workspace .kanban-card .kanban-card-edit {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1-5));
+  color: var(--muted);
+}
+
+.kanban-card-edit svg {
+  width: 16px;
+  height: 16px;
 }
 
 /* Starting from the card: the panel's ink «Запустить агента» as a circle, in the corner. */
