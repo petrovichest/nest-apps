@@ -6709,6 +6709,38 @@ describe("Activity", () => {
     expect(context.loadOlderDetail).not.toHaveBeenCalled();
   });
 
+  it.each(["empty", "live tail"])(
+    "keeps a bounded history when a %s preview is replaced by the full session",
+    (preview) => {
+      const turns = Array.from({ length: 25 }, (_, index) => ({
+        ...completedAgentTurn(),
+        id: `turn-${index}`,
+        items: [
+          { ...completedAgentTurn().items[0]!, id: `answer-${index}`, text: `Ответ ${index}` },
+        ],
+      }));
+      const context = mockThreadConnection(threadApi(), summary, {
+        turns: preview === "empty" ? [] : turns.slice(-1),
+      });
+      const view = renderThread();
+      context.state.details.thread = { ...context.state.details.thread, turns };
+      view.rerender(threadRoute());
+
+      expect(screen.getByText("Ответ 24")).toBeInTheDocument();
+      expect(screen.getByText("Ответ 5")).toBeInTheDocument();
+      expect(screen.queryByText("Ответ 4")).toBeNull();
+      expect(view.container.querySelectorAll(".turn")).toHaveLength(20);
+
+      context.state.details.thread = {
+        ...context.state.details.thread,
+        turns: [...turns, { ...turns[24]!, id: "new-turn", items: [] }],
+      };
+      view.rerender(threadRoute());
+      expect(screen.getByText("Ответ 5")).toBeInTheDocument();
+      expect(view.container.querySelectorAll(".turn")).toHaveLength(21);
+    },
+  );
+
   it("corrects a late browser scroll without loading older history or losing tail following", async () => {
     const context = mockThreadConnection(threadApi(), summary, { olderTurnsCursor: "older" });
     const view = renderThread();

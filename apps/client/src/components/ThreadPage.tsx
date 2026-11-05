@@ -804,19 +804,30 @@ export function ThreadPage({
     scrollHeight: number;
     scrollTop: number;
   } | null>(null);
-  // Pinned when a session opens, so turns arriving later do not push the first drawn one out.
+  // Anchor to a turn, not an index: a live/cache preview may later gain older history.
+  // Null explicitly includes all loaded turns after the reader asks for earlier history.
   const [renderedTurnsStart, setRenderedTurnsStart] = useState<{
     threadId: string;
-    start: number;
+    firstTurnId: string | null;
   } | null>(null);
   const tailTurnsStart = Math.max(0, (detail?.turns.length ?? 0) - RENDERED_TURNS_PAGE);
-  if (detail && renderedTurnsStart?.threadId !== threadId) {
-    setRenderedTurnsStart({ threadId, start: tailTurnsStart });
-  }
-  const turnsStart =
+  const anchoredTurnsStart =
     renderedTurnsStart?.threadId === threadId
-      ? Math.min(renderedTurnsStart.start, tailTurnsStart)
-      : tailTurnsStart;
+      ? renderedTurnsStart.firstTurnId === null
+        ? 0
+        : (detail?.turns.findIndex((turn) => turn.id === renderedTurnsStart.firstTurnId) ?? -1)
+      : -1;
+  const turnsStart =
+    anchoredTurnsStart < 0 ? tailTurnsStart : Math.min(anchoredTurnsStart, tailTurnsStart);
+  const firstRenderedTurnId = detail?.turns[turnsStart]?.id;
+  if (
+    firstRenderedTurnId &&
+    (renderedTurnsStart?.threadId !== threadId ||
+      (renderedTurnsStart.firstTurnId !== null &&
+        renderedTurnsStart.firstTurnId !== firstRenderedTurnId))
+  ) {
+    setRenderedTurnsStart({ threadId, firstTurnId: firstRenderedTurnId });
+  }
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [olderError, setOlderError] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -2704,7 +2715,10 @@ export function ThreadPage({
         scrollHeight: node.scrollHeight,
         scrollTop: node.scrollTop,
       };
-      setRenderedTurnsStart({ threadId, start: Math.max(0, turnsStart - RENDERED_TURNS_PAGE) });
+      setRenderedTurnsStart({
+        threadId,
+        firstTurnId: detail!.turns[Math.max(0, turnsStart - RENDERED_TURNS_PAGE)]!.id,
+      });
       return;
     }
     if (isSubagent || !cursor) return;
@@ -2713,6 +2727,7 @@ export function ThreadPage({
       scrollHeight: node.scrollHeight,
       scrollTop: node.scrollTop,
     };
+    setRenderedTurnsStart({ threadId, firstTurnId: null });
     setLoadingOlder(true);
     setOlderError(false);
     try {
@@ -2723,15 +2738,7 @@ export function ThreadPage({
     } finally {
       setLoadingOlder(false);
     }
-  }, [
-    detail?.olderTurnsCursor,
-    isSubagent,
-    loadOlderDetail,
-    loadingOlder,
-    searchTarget,
-    threadId,
-    turnsStart,
-  ]);
+  }, [detail, isSubagent, loadOlderDetail, loadingOlder, searchTarget, threadId, turnsStart]);
 
   const loadSessionArtifacts = useCallback(async () => {
     if (!application.capabilities.artifacts) return;
