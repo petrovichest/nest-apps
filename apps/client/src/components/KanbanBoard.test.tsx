@@ -529,6 +529,7 @@ describe("KanbanBoard", () => {
     "starts returned To do tasks from another application through %s",
     async (control) => {
       const seed = board([card("one"), card("two")]);
+      if (control === "panel") seed.cards[0]!.description = seed.cards[0]!.title;
       seed.runs.push({
         ...execution("one"),
         provider: "claude",
@@ -551,6 +552,9 @@ describe("KanbanBoard", () => {
         );
         // Additions still belong to the existing session, separate from a fresh start.
         expect(within(panel).queryByRole("button", { name: "Дописать" })).toBeNull();
+        fireEvent.click(within(panel).getByRole("button", { name: "Дописать задачу" }));
+        expect(within(panel).getByLabelText("Описание")).toHaveValue("Task one");
+        fireEvent.keyDown(within(panel).getByLabelText("Описание"), { key: "Escape" });
         fireEvent.click(within(panel).getByRole("button", { name: "Запустить агента" }));
       } else if (control === "together") {
         fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать задачу «Task one»" }));

@@ -1586,7 +1586,7 @@ export function KanbanBoard({
                 />
               </h2>
               {/* A short task that no agent has taken is added to with the Add more button. */}
-              {(card.description !== card.title || !launchable(board, card)) && (
+              {(card.description !== card.title || session || !launchable(board, card)) && (
                 <EditableText
                   key={`description-${card.id}`}
                   className="kanban-panel-description"
