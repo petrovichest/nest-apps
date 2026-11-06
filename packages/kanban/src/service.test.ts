@@ -1045,7 +1045,10 @@ describe("shared provider board service", () => {
           expect(retry.status).toBe("running");
           expect(retry.id).not.toBe(run.id);
         });
+        // Stop the fake-timer pump before reopening the inbox with real timers.
+        await service.close();
         vi.useRealTimers();
+        await service.initialize();
         // A late report from the expired attempt cannot replace the retry's result.
         expect((await f.command(run, "report", { title: "Late", category: "Tasks" }))?.ok).toBe(
           false,
