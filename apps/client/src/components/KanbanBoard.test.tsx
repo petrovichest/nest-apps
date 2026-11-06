@@ -525,6 +525,57 @@ describe("KanbanBoard", () => {
     expect(screen.queryByRole("complementary")).toBeNull();
   });
 
+  it.each(["card", "panel", "together", "drag"])(
+    "starts returned To do tasks from another application through %s",
+    async (control) => {
+      const seed = board([card("one"), card("two")]);
+      seed.runs.push({
+        ...execution("one"),
+        provider: "claude",
+        cardIds: ["one", "two"],
+        sessionUrl: "http://localhost:4311/threads/thread-one",
+        error: "The session was stopped; continue it or start again",
+      });
+      api.readKanban.mockResolvedValue(seed);
+      api.kanbanAction.mockResolvedValue(seed);
+      show();
+      await screen.findByRole("button", { name: "Изменить задачу «Task one»" });
+      if (control === "card")
+        fireEvent.click(screen.getByRole("button", { name: "Запустить задачу «Task one»" }));
+      else if (control === "panel") {
+        fireEvent.click(screen.getByRole("button", { name: "Изменить задачу «Task one»" }));
+        const panel = screen.getByRole("complementary");
+        expect(within(panel).getByRole("link", { name: /Выполнение/ })).toHaveAttribute(
+          "href",
+          "http://localhost:4311/threads/thread-one",
+        );
+        // Additions still belong to the existing session, separate from a fresh start.
+        expect(within(panel).queryByRole("button", { name: "Дописать" })).toBeNull();
+        fireEvent.click(within(panel).getByRole("button", { name: "Запустить агента" }));
+      } else if (control === "together") {
+        fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать задачу «Task one»" }));
+        fireEvent.click(screen.getByRole("checkbox", { name: "Выбрать задачу «Task two»" }));
+        fireEvent.click(screen.getByRole("button", { name: "Запустить вместе (2)" }));
+      } else {
+        const item = screen
+          .getByRole("button", { name: "Изменить задачу «Task one»" })
+          .closest("article")!;
+        const dataTransfer = transfer();
+        fireEvent.dragStart(item, { dataTransfer });
+        const working = screen.getByRole("region", { name: "В работе" });
+        fireEvent.dragOver(working, { dataTransfer });
+        fireEvent.drop(working, { dataTransfer });
+      }
+      await waitFor(() =>
+        expect(api.kanbanAction).toHaveBeenCalledWith("project", {
+          action: "execute",
+          cardIds: control === "together" ? ["one", "two"] : ["one"],
+          clientActionId: expect.any(String),
+        }),
+      );
+    },
+  );
+
   it("lists the tasks that share a session in the task panel", async () => {
     const seed = board([card("one", "ready"), card("two", "ready"), card("three", "ready")]);
     seed.runs.push({ ...execution("one"), cardIds: ["one", "two"] }, execution("three"));

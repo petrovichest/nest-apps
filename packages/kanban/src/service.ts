@@ -1023,7 +1023,13 @@ export class KanbanService {
         const session = taskSession(data, card.id);
         let resumeThreadId: string | undefined;
         let provider = this.options.provider;
-        if (request.action === "execute" && cards.some((item) => taskSession(data, item.id)))
+        // Returning to To do allows a fresh session in the application that starts it.
+        if (
+          request.action === "execute" &&
+          cards.some(
+            (item) => stageRole(data.board, item.stageId) !== "todo" && taskSession(data, item.id),
+          )
+        )
           throw new KanbanError(
             "already_started",
             "The task already has a session; continue it or start again",

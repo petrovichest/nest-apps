@@ -459,6 +459,68 @@ describe("shared provider board service", () => {
     expect(restart.threadId).not.toBe(run.threadId);
     expect(f.prompts.get(restart.id)).toContain("## Задача 2\n\nValidate the email field");
   });
+  it.each([
+    ["claude", "codex"],
+    ["codex", "claude"],
+    ["codex", "codex"],
+  ] as const)("starts returned To do tasks from %s in a new %s session", async (from, to) => {
+    const f = await fixture();
+    const first = await f.card("Add a login form");
+    const second = await f.card("Validate the email field");
+    const unselected = await f.card("Show password strength");
+    const fresh = await f.card("Add a logout button");
+    await f.services[from].action(f.project, {
+      action: "execute",
+      cardIds: [first, second, unselected],
+      clientActionId: randomUUID(),
+    });
+    const original = await f.running("execute", first, f.services[from]);
+    await f.services[from].notifyThread(original.threadId!, "interrupted");
+    // Existing sessions outside To do still need an explicit continuation or restart.
+    await expect(
+      f.services[to].action(f.project, {
+        action: "execute",
+        cardIds: [first],
+        clientActionId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "already_started" });
+    for (const id of [first, second])
+      await f.services[to].updateCard(f.project, id, { stageId: "todo" });
+
+    const request = {
+      action: "execute" as const,
+      cardIds: [first, second, fresh],
+      clientActionId: randomUUID(),
+    };
+    await f.services[to].action(f.project, request);
+    const next = await f.running("execute", first, f.services[to]);
+    expect(next).toMatchObject({ provider: to, cardIds: [first, second, fresh] });
+    expect(next.threadId).not.toBe(original.threadId);
+    expect(f.prompts.get(next.id)).toBe(
+      "## Задача 1\n\nAdd a login form\n\n## Задача 2\n\nValidate the email field\n\n## Задача 3\n\nAdd a logout button",
+    );
+    expect(f.inputs[to].some((input) => input.id === next.id)).toBe(true);
+    expect(f.resumes).toEqual({ codex: [], claude: [] });
+    expect(f.interrupted).toEqual({ codex: [], claude: [] });
+    // Retrying the same request and late events from the old session leave the new run alone.
+    await f.services[to].action(f.project, request);
+    await f.services[from].notifyThread(original.threadId!, "completed");
+    const board = await f.services[to].read(f.project);
+    expect(board.runs.filter((run) => run.kind === "execute")).toHaveLength(2);
+    expect(runOf(board, original.id)).toMatchObject({
+      threadId: original.threadId,
+      provider: from,
+      status: "completed",
+      cardIds: [first, second, unselected],
+    });
+    expect([stage(board, first), stage(board, second), stage(board, fresh)]).toEqual([
+      "working",
+      "working",
+      "working",
+    ]);
+    expect(stage(board, unselected)).toBe("waiting");
+    expect(board.cards.find((card) => card.id === first)?.error).toBeNull();
+  });
   it("moves the card by its session: working, waiting for an answer, ready", async () => {
     const f = await fixture();
     const id = await f.card("Pick a database");

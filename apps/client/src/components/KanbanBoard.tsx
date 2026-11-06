@@ -178,7 +178,11 @@ function dropRule(board: Board, card: KanbanCard, target: KanbanStage): DropRule
     (run) => run.kind !== "classify" && run.cardIds.includes(card.id),
   );
   if (target.role === "working")
-    return started ? "rework" : card.classification === "ready" ? "execute" : null;
+    return started && from !== "todo"
+      ? "rework"
+      : card.classification === "ready"
+        ? "execute"
+        : null;
   if (target.role === "waiting") return null;
   if (target.role === "ready") return from === "waiting" ? "move" : null;
   if (target.role === "done") return from === "ready" ? "publish" : null;
@@ -195,15 +199,17 @@ function insertionPoint(lane: Element, clientY: number, draggedId: string): stri
   return null;
 }
 
-/** No agent has taken the task yet: it starts from its card or its panel. */
+/** New tasks and tasks returned to To do start a fresh session in this application. */
 const launchable = (board: Board, card: KanbanCard) => {
   const role = board.stages.find((stage) => stage.id === card.stageId)?.role;
   return (
     card.archivedAt === undefined &&
+    !cardBusy(board, card.id) &&
     role !== "done" &&
     role !== "ready" &&
     role !== "waiting" &&
-    !board.runs.some((run) => run.kind !== "classify" && run.cardIds.includes(card.id))
+    (role === "todo" ||
+      !board.runs.some((run) => run.kind !== "classify" && run.cardIds.includes(card.id)))
   );
 };
 /** A task in To do can also start together with others in one session. */
@@ -458,7 +464,7 @@ export function KanbanBoard({
     mutate(() =>
       api.kanbanAction(projectId, { action: value, cardIds: ids, clientActionId: uuid() }),
     );
-  // Selected tasks in column order; started or moved ones drop out of the selection.
+  // Selected tasks in column order; running or moved ones drop out of the selection.
   const together = board
     ? board.cards.filter((item) => selected.has(item.id) && startable(board, item))
     : [];
@@ -1692,7 +1698,7 @@ export function KanbanBoard({
                     {t("Запустить агента")}
                   </button>
                 )}
-                {launchable(board, card) && (
+                {launchable(board, card) && !session && (
                   <button
                     disabled={busy || Boolean(card.voice)}
                     aria-expanded={appendId === card.id}
@@ -1732,7 +1738,7 @@ export function KanbanBoard({
                   </button>
                 )}
               </div>
-              {appendId === card.id && !card.voice && launchable(board, card) && (
+              {appendId === card.id && !card.voice && !session && launchable(board, card) && (
                 <section className="kanban-panel-section">
                   <h3>{t("Дописать задачу")}</h3>
                   <TaskComposer
