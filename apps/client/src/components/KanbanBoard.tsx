@@ -242,7 +242,6 @@ export function KanbanBoard({
   transcriptionConfig = null,
   transcriptionProvider = null,
   onOpenNavigation,
-  onBoardChange,
 }: {
   projects: Project[];
   /** Sessions of this application; they colour the markers of the tasks they run. */
@@ -250,8 +249,6 @@ export function KanbanBoard({
   transcriptionConfig?: TranscriptionConfigResponse | null;
   transcriptionProvider?: TranscriptionProvider | null;
   onOpenNavigation(): void;
-  /** Every board this page receives, so the navigation shows it without its own requests. */
-  onBoardChange?(projectId: string, board: Board): void;
 }) {
   const { projectId = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -307,10 +304,6 @@ export function KanbanBoard({
   );
   const locale = useRef({ language, t });
   locale.current = { language, t };
-  const reportBoard = useRef(onBoardChange);
-  reportBoard.current = onBoardChange;
-  // The project of the current request generation, set together with it.
-  const boardProject = useRef(projectId);
   const threadParam = searchParams.get("thread");
   const cardParam = searchParams.get("card");
 
@@ -325,13 +318,11 @@ export function KanbanBoard({
     setBoard((previous) =>
       previous?.id === next.id && previous.revision > next.revision ? previous : next,
     );
-    reportBoard.current?.(boardProject.current, next);
   }, []);
 
   useEffect(() => {
     alive.current = true;
     const generation = ++requestGeneration.current;
-    boardProject.current = projectId;
     let inFlight = false;
     setBoard(null);
     setError(null);

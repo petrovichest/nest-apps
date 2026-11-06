@@ -48,7 +48,6 @@ for (const { width, side, theme } of [
     await page.goto("/threads/session-main");
     await expect(page.locator(".thread-link").first()).toBeAttached();
     if (mobile) await page.getByRole("button", { name: "Открыть список задач" }).click();
-    await expectFades(page, 0, 28);
     await page.getByRole("button", { name: "Активные", exact: true }).click();
     await expectFades(page, 0, 28);
 
@@ -108,7 +107,17 @@ for (const { width, side, theme } of [
 test("bottom-up projects initialize at the bottom and reset fades when switching modes", async ({
   page,
 }) => {
-  await installVisualFixture(page, { theme: "light", snapshot: longSidebarSnapshot() });
+  // Project previews are paged; use enough projects to overflow without expanding sessions.
+  const seed = longSidebarSnapshot();
+  seed.projects.push(
+    ...Array.from({ length: 12 }, (_, index) => ({
+      ...seed.projects[0]!,
+      id: `scroll-project-${index}`,
+      displayName: `Проект ${index + 1}`,
+      path: `/work/scroll-project-${index}`,
+    })),
+  );
+  await installVisualFixture(page, { theme: "light", snapshot: seed });
   await page.addInitScript(() =>
     localStorage.setItem("codexnest.projectListDirection", "bottom-up"),
   );

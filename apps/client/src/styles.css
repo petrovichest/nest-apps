@@ -229,6 +229,28 @@
   color: var(--text);
 }
 
+.project-heading {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.project-heading .project-toggle {
+  display: grid;
+  grid-template-columns: 13px 16px minmax(0, 1fr);
+  width: 100%;
+}
+
+.project-heading .project-toggle > span {
+  grid-column: 3;
+}
+
+.project-board-link {
+  position: absolute;
+  top: 5px;
+  left: 20px;
+}
+
 .project-toggle {
   min-width: 0;
   height: 36px;
@@ -964,7 +986,7 @@
 .project-empty {
   display: block;
   padding: var(--space-1) var(--space-2-5) 5px var(--space-8);
-  color: color-mix(in srgb, var(--muted) 72%, transparent);
+  color: var(--muted);
   font-size: var(--text-ui);
 }
 
@@ -1044,55 +1066,6 @@
   gap: 3px;
   padding: 0 var(--space-1);
   font-size: var(--text-caption);
-  font-variant-numeric: tabular-nums;
-}
-
-.board-navigation-tasks[hidden] {
-  display: none;
-}
-
-.board-navigation-board .thread-link-title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.board-navigation-board svg {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
-  color: var(--muted-strong);
-}
-
-/* Inside the open project a stage's chevron stands under the folder, its name and its tasks
-   under the project name. */
-.board-navigation-stage > .project-title {
-  padding-left: calc(var(--space-1) + 22px);
-}
-
-.board-navigation-tasks > .thread-branch > .thread-branch-row > .thread-branch-spacer {
-  width: 48px;
-  flex-basis: 48px;
-}
-
-/* A session with subagents in the sessions group keeps the deeper indent of the tasks. */
-.board-navigation-tasks > .thread-branch > .thread-branch-row:has(> .thread-subagent-count) {
-  grid-template-columns: 48px minmax(0, 1fr) max-content max-content;
-}
-
-.board-navigation-tasks > .thread-branch > .thread-branch-children {
-  margin-left: 34px;
-}
-
-.board-navigation-tasks > .show-more {
-  width: calc(100% - 52px);
-  margin-left: calc(var(--space-8) + 20px);
-}
-
-.project-toggle > .board-navigation-count {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-weight: var(--weight-regular);
   font-variant-numeric: tabular-nums;
 }
 
@@ -7789,6 +7762,15 @@ button.composer-card-filter:active {
   .project-toggle,
   .project-drag-handle {
     height: var(--control-touch-height);
+  }
+
+  .project-heading .project-toggle {
+    grid-template-columns: 13px var(--control-touch-height) minmax(0, 1fr);
+  }
+
+  .project-board-link {
+    top: 0;
+    left: 25px;
   }
 
   .project-icon-action {

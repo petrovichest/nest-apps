@@ -3,7 +3,7 @@ import { useI18n } from "../i18n";
 
 const PREVIEW_LIMIT = 5;
 
-/** All task lists in the sidebar reveal at most five more rows per click. */
+/** Project and archive lists reveal at most five more rows per click. */
 export function SidebarList({ children, resetKey }: { children: ReactNode; resetKey: number }) {
   const { t } = useI18n();
   const [preview, setPreview] = useState({ resetKey, limit: PREVIEW_LIMIT });

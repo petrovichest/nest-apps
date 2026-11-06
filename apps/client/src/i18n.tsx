@@ -24,6 +24,7 @@ const LEGACY_INSTALLATION_KEYS = [
 
 const ENGLISH: Record<string, string> = {
   "Доска задач": "Task board",
+  "Доска проекта {{project}}": "Board for {{project}}",
   "Открыть доску задач проекта {{project}}": "Open the task board of {{project}}",
   "Развернуть стадию «{{name}}», задач: {{count}}": "Expand stage “{{name}}”, tasks: {{count}}",
   "Действия со стадией «{{name}}»": "Stage “{{name}}” actions",
