@@ -1853,7 +1853,8 @@ describe("shared provider board service", () => {
   });
 
   it("adds text, pictures and a recording to a task no agent has taken yet", async () => {
-    const transcribe = vi.fn(async () => "Spoken addition");
+    const transcript = Promise.withResolvers<string>();
+    const transcribe = vi.fn(() => transcript.promise);
     const f = await fixture(undefined, transcribe);
     const id = await f.card("Fix the list");
     let board = await f.services.codex.action(f.project, {
@@ -1888,6 +1889,7 @@ describe("shared provider board service", () => {
         clientActionId: randomUUID(),
       }),
     ).rejects.toMatchObject({ code: "voice_pending" });
+    transcript.resolve("Spoken addition");
     board = await until(
       () => f.services.codex.read(f.project),
       (current) => !current.cards[0]?.voice,
