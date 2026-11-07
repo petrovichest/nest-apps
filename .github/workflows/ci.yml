@@ -30,7 +30,7 @@ jobs:
       - run: npm run build
       - run: npm run typecheck
       - run: NODE_ENV=test npm test
-      - run: bash -n deploy/install.sh deploy/adopt-existing.sh deploy/adopt-existing.test.sh deploy/codexnest deploy/claudenest/install.sh deploy/claudenest/claudenest
+      - run: bash -n deploy/install.sh deploy/adopt-existing.sh deploy/adopt-existing.test.sh deploy/codexnest deploy/claudenest/install.sh deploy/claudenest/claudenest deploy/gemininest/install.sh
       - run: deploy/adopt-existing.test.sh
       - name: Verify pinned Node.js checksums are published
         run: |
@@ -46,8 +46,11 @@ jobs:
           unzip -t apps/extension/artifacts/claudenest-browser-*.zip
           test -s apps/client/dist/index.html
           test -s apps/client/dist-claude/index.html
+          test -s apps/client/dist-gemini/index.html
           test -s apps/server/dist/index.js
           test -s apps/claude-server/dist/index.js
+          test -s apps/gemini-server/dist/daemon.js
+          test -s apps/gemini-server/dist/index.js
       - name: Upload verified release inputs
         if: github.event_name == 'push'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -55,8 +58,10 @@ jobs:
           name: nest-apps-build-${{ github.sha }}
           path: |
             apps/client/dist/
+            apps/client/dist-gemini/
             apps/client/dist-claude/
             apps/server/dist/
+            apps/gemini-server/dist/
             apps/claude-server/dist/
             apps/extension/artifacts/codexnest-browser-*.zip
             apps/extension/artifacts/claudenest-browser-*.zip
@@ -114,8 +119,10 @@ jobs:
           sed -e "s/^claudenest_default_version=.*/claudenest_default_version=\"$version\"/" \
               -e "s/^claudenest_default_ref=.*/claudenest_default_ref=\"$GITHUB_SHA\"/" \
               deploy/claudenest/install.sh > release/install-claudenest.sh
+          sed -e "s/^gemininest_default_ref=.*/gemininest_default_ref=\"$GITHUB_SHA\"/" \
+              deploy/gemininest/install.sh > release/install-gemininest.sh
           chmod 0755 release/*.sh
-          bash -n release/install.sh release/install-claudenest.sh
+          bash -n release/install.sh release/install-claudenest.sh release/install-gemininest.sh
           printf '{"schemaVersion":1,"version":"%s","commit":"%s"}\n' "$version" "$GITHUB_SHA" > release/NestApps-latest.json
           cp release/NestApps-latest.json release/CodexNest-latest.json
           shopt -s nullglob
@@ -174,13 +181,17 @@ jobs:
           keystore_certificate="$(sha256sum "$signing_certificate" | cut -d ' ' -f 1)"
           rm -f -- "$signing_certificate"
           printf 'Keystore certificate SHA-256: %s\n' "$keystore_certificate"
-          for provider in codex claude; do
+          for provider in codex claude gemini; do
             export NEST_APP_PROVIDER="$provider"
             app_name=CodexNest
             application_id=com.codexnest.app
             if [[ "$provider" == claude ]]; then
               app_name=ClaudeNest
               application_id=com.claudenest.app
+            fi
+            if [[ "$provider" == gemini ]]; then
+              app_name=GeminiNest
+              application_id=com.gemininest.app
             fi
             npm --prefix .. run android:sync
             ./gradlew testDebugUnitTest assembleRelease
@@ -200,7 +211,9 @@ jobs:
             [[ "$apk_metadata" == *"versionCode='$CODEXNEST_ANDROID_VERSION_CODE'"* ]]
             [[ "$apk_metadata" == *"versionName='$CODEXNEST_ANDROID_VERSION_NAME'"* ]]
             unzip -p "$apk" assets/capacitor.config.json | node -e 'let text = ""; process.stdin.on("data", chunk => text += chunk); process.stdin.on("end", () => { if (JSON.parse(text).appId !== process.argv[1]) process.exit(1); });' "$application_id"
-            if [[ "$provider" == claude ]]; then
+            if [[ "$provider" == gemini ]]; then
+              unzip -p "$apk" assets/public/index.html | grep -F 'data-application="gemininest"' > /dev/null
+            elif [[ "$provider" == claude ]]; then
               unzip -p "$apk" assets/public/index.html | grep -F 'data-application="claudenest"' > /dev/null
             else
               if unzip -p "$apk" assets/public/index.html | grep -F 'data-application="claudenest"' > /dev/null; then
@@ -233,12 +246,13 @@ jobs:
             tag=rolling-latest
             latest=true
           fi
-          release_assets=(release/install.sh release/install-claudenest.sh release/codexnest-browser-*.zip release/claudenest-browser-*.zip)
+          release_assets=(release/install.sh release/install-claudenest.sh release/install-gemininest.sh release/codexnest-browser-*.zip release/claudenest-browser-*.zip)
           printf 'CodexNest and ClaudeNest from verified commit `%s`.\n\nCodexNest: `curl -fsSL https://github.com/%s/releases/download/%s/install.sh | bash`\n\nClaudeNest: `curl -fsSL https://github.com/%s/releases/download/%s/install-claudenest.sh | bash`\n\nThe installers build the server and web client from this exact commit.\n' \
             "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$tag" "$GITHUB_REPOSITORY" "$tag" > release/notes.md
+          printf '\nGeminiNest (Google AI Ultra through Antigravity ACP): `curl -fsSL https://github.com/%s/releases/download/%s/install-gemininest.sh | bash`\n' "$GITHUB_REPOSITORY" "$tag" >> release/notes.md
           if [[ "$GITHUB_REF_TYPE" != tag ]]; then
-            release_assets+=(release/CodexNest-latest.apk release/ClaudeNest-latest.apk)
-            printf '\nThe signed CodexNest and ClaudeNest Android APKs and the CodexNest and ClaudeNest Chrome extensions are built from the same verified commit.\n' >> release/notes.md
+            release_assets+=(release/CodexNest-latest.apk release/ClaudeNest-latest.apk release/GeminiNest-latest.apk)
+            printf '\nThe signed CodexNest, ClaudeNest and GeminiNest Android APKs and the CodexNest and ClaudeNest Chrome extensions are built from the same verified commit.\n' >> release/notes.md
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${release_assets[@]}" --clobber

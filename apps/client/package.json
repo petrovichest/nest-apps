@@ -21,7 +21,13 @@
     "android:release:claude": "npm run build:claude && npm run android:sync:claude && cd android && NEST_APP_PROVIDER=claude ./gradlew assembleRelease",
     "dev:claude": "vite --mode claude",
     "build:claude": "tsc -b && vite build --mode claude",
-    "smoke:claude": "npm run build:claude && node e2e/claude/smoke.mjs"
+    "smoke:claude": "npm run build:claude && node e2e/claude/smoke.mjs",
+    "build:gemini": "tsc -b && vite build --mode gemini",
+    "dev:gemini": "vite --mode gemini",
+    "android:sync:gemini": "NEST_APP_PROVIDER=gemini cap sync android",
+    "android:debug:gemini": "npm run build:gemini && npm run android:sync:gemini && cd android && NEST_APP_PROVIDER=gemini ./gradlew assembleDebug",
+    "android:release:gemini": "npm run build:gemini && npm run android:sync:gemini && cd android && NEST_APP_PROVIDER=gemini ./gradlew assembleRelease",
+    "smoke:gemini": "node e2e/gemini/smoke.mjs"
   },
   "dependencies": {
     "@aparajita/capacitor-secure-storage": "8.0.0",

@@ -1,15 +1,16 @@
 import type { CapacitorConfig } from "@capacitor/cli";
 
 const provider = process.env.NEST_APP_PROVIDER ?? "codex";
-if (provider !== "codex" && provider !== "claude") {
-  throw new Error("NEST_APP_PROVIDER must be codex or claude");
+if (!["codex", "claude", "gemini"].includes(provider)) {
+  throw new Error("NEST_APP_PROVIDER must be codex, claude or gemini");
 }
 const claude = provider === "claude";
+const gemini = provider === "gemini";
 
 const config: CapacitorConfig = {
-  appId: claude ? "com.claudenest.app" : "com.codexnest.app",
-  appName: claude ? "ClaudeNest" : "CodexNest",
-  webDir: claude ? "dist-claude" : "dist",
+  appId: gemini ? "com.gemininest.app" : claude ? "com.claudenest.app" : "com.codexnest.app",
+  appName: gemini ? "GeminiNest" : claude ? "ClaudeNest" : "CodexNest",
+  webDir: gemini ? "dist-gemini" : claude ? "dist-claude" : "dist",
   server: {
     androidScheme: "http",
     hostname: "localhost",

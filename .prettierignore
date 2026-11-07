@@ -8,3 +8,5 @@ apps/extension/playwright-report/
 apps/extension/test-results/
 package-lock.json
 output/
+
+dist-gemini/

@@ -48,6 +48,7 @@ import {
 import { ApplicationSettingsCard } from "./ApplicationSettingsCard";
 import { CodexSettingsCard, CodexSettingsProvider, ProxySettingsCard } from "./CodexSettingsCard";
 import { ClaudeAccountsSettings } from "./ClaudeAccountsSettings";
+import { GeminiConnectionSettings } from "./GeminiConnectionSettings";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { RecoverySettingsCard } from "./RecoverySettingsCard";
 import { SettingsGroup, SettingsRow } from "./SettingsPresentation";
@@ -168,7 +169,7 @@ export function SettingsPage({
   const [settings, setSettings] = useState<GlobalPermissionSettings | null>(null);
   const savedPermissionsRef = useRef<GlobalPermissionSettings | null>(null);
   const [selected, setSelected] = useState<PermissionPreset>(
-    application.isClaude ? "full-access" : "auto",
+    application.isGemini ? "ask" : application.isClaude ? "full-access" : "auto",
   );
   const snapshotPermissionsRef = useRef(state?.snapshot?.permissionSettings);
   snapshotPermissionsRef.current = state?.snapshot?.permissionSettings;
@@ -271,11 +272,14 @@ export function SettingsPage({
       setError(null);
       try {
         const current =
-          (application.isClaude && !forceRead && snapshotPermissionsRef.current) ||
+          (!application.isCodex && !forceRead && snapshotPermissionsRef.current) ||
           (await api.readPermissionSettings());
         savedPermissionsRef.current = current;
         setSettings(current);
-        setSelected(current.preset ?? (application.isClaude ? "full-access" : "auto"));
+        setSelected(
+          current.preset ??
+            (application.isGemini ? "ask" : application.isClaude ? "full-access" : "auto"),
+        );
       } catch (caught) {
         const localization = localizationRef.current;
         setError(
@@ -295,12 +299,14 @@ export function SettingsPage({
   }, [load]);
 
   useEffect(() => {
-    if (!application.isClaude || !state?.snapshot?.permissionSettings) return;
+    if (application.isCodex || !state?.snapshot?.permissionSettings) return;
     const next = state.snapshot.permissionSettings;
     const previous = savedPermissionsRef.current;
     savedPermissionsRef.current = next;
     setSelected((current) =>
-      previous === null || current === previous.preset ? (next.preset ?? "full-access") : current,
+      previous === null || current === previous.preset
+        ? (next.preset ?? (application.isGemini ? "ask" : "full-access"))
+        : current,
     );
     setSettings(next);
   }, [state?.snapshot?.permissionSettings]);
@@ -607,11 +613,13 @@ export function SettingsPage({
               </SettingsGroup>
             )}
 
-            <TranscriptionSettingsCard
-              config={transcriptionConfig}
-              configError={transcriptionConfigError}
-              onChange={onTranscriptionConfigChange}
-            />
+            {!application.isGemini && (
+              <TranscriptionSettingsCard
+                config={transcriptionConfig}
+                configError={transcriptionConfigError}
+                onChange={onTranscriptionConfigChange}
+              />
+            )}
           </div>
 
           <div
@@ -622,6 +630,7 @@ export function SettingsPage({
             role="tabpanel"
           >
             {application.isClaude && activeSection === "codex" && <ClaudeAccountsSettings />}
+            {application.isGemini && activeSection === "codex" && <GeminiConnectionSettings />}
             <SettingsGroup
               as="form"
               description={t(
@@ -666,21 +675,23 @@ export function SettingsPage({
                   ))}
                 </select>
               </SettingsRow>
-              <SettingsRow
-                description={t("Модель для автоматических названий сессий.")}
-                label="Title model"
-                labelFor="settings-title-model"
-              >
-                <TaskModelSelect
-                  disabled={!defaultModel || taskDefaultsSaving}
-                  id="settings-title-model"
-                  models={models}
-                  value={taskDefaults.titleModel}
-                  onChange={(titleModel) =>
-                    setTaskDefaults((current) => ({ ...current, titleModel }))
-                  }
-                />
-              </SettingsRow>
+              {!application.isGemini && (
+                <SettingsRow
+                  description={t("Модель для автоматических названий сессий.")}
+                  label="Title model"
+                  labelFor="settings-title-model"
+                >
+                  <TaskModelSelect
+                    disabled={!defaultModel || taskDefaultsSaving}
+                    id="settings-title-model"
+                    models={models}
+                    value={taskDefaults.titleModel}
+                    onChange={(titleModel) =>
+                      setTaskDefaults((current) => ({ ...current, titleModel }))
+                    }
+                  />
+                </SettingsRow>
+              )}
               <SettingsRow
                 description={t("Уровень reasoning, выбранный для новых сессий.")}
                 label={t("Reasoning по умолчанию")}
@@ -713,7 +724,7 @@ export function SettingsPage({
                   ))}
                 </select>
               </SettingsRow>
-              {!application.isClaude && (
+              {application.isCodex && (
                 <SettingsRow
                   description={t("Ускоряет ответы Codex и увеличивает расход лимитов.")}
                   label={t("Fast mode по умолчанию")}
@@ -734,7 +745,7 @@ export function SettingsPage({
                   />
                 </SettingsRow>
               )}
-              {!application.isClaude && (
+              {application.isCodex && (
                 <SettingsRow
                   description={t("Стиль ответов для новых задач.")}
                   label="Personality"
@@ -764,63 +775,67 @@ export function SettingsPage({
                   </select>
                 </SettingsRow>
               )}
-              <SettingsRow
-                description={t(
-                  "Даёт новым задачам доски название и категорию. Без неё название — начало текста задачи.",
-                )}
-                label={t("Классификация задач доски")}
-                labelFor="settings-classify-tasks"
-              >
-                <input
-                  id="settings-classify-tasks"
-                  type="checkbox"
-                  role="switch"
-                  checked={taskDefaults.classifyTasks !== false}
-                  disabled={taskDefaultsSaving}
-                  onChange={(event) =>
-                    setTaskDefaults((current) => ({
-                      ...current,
-                      classifyTasks: event.target.checked ? undefined : false,
-                    }))
-                  }
-                />
-              </SettingsRow>
-              <SettingsRow
-                description={t(
-                  "Модель, которая классифицирует задачи доски. По умолчанию — самая быстрая.",
-                )}
-                label={t("Модель классификации")}
-                labelFor="settings-classification-model"
-              >
-                <TaskModelSelect
-                  disabled={
-                    !defaultModel || taskDefaultsSaving || taskDefaults.classifyTasks === false
-                  }
-                  id="settings-classification-model"
-                  models={models}
-                  value={taskDefaults.classificationModel}
-                  onChange={(classificationModel) =>
-                    setTaskDefaults((current) => ({ ...current, classificationModel }))
-                  }
-                />
-              </SettingsRow>
-              <SettingsRow
-                description={t(
-                  "Читает последний ответ задачи доски: ждёт ли агент оператора и опубликовал ли работу. По умолчанию — самая быстрая модель.",
-                )}
-                label={t("Модель проверки задач")}
-                labelFor="settings-reply-check-model"
-              >
-                <TaskModelSelect
-                  disabled={!defaultModel || taskDefaultsSaving}
-                  id="settings-reply-check-model"
-                  models={models}
-                  value={taskDefaults.replyCheckModel}
-                  onChange={(replyCheckModel) =>
-                    setTaskDefaults((current) => ({ ...current, replyCheckModel }))
-                  }
-                />
-              </SettingsRow>
+              {application.supportsKanban && (
+                <>
+                  <SettingsRow
+                    description={t(
+                      "Даёт новым задачам доски название и категорию. Без неё название — начало текста задачи.",
+                    )}
+                    label={t("Классификация задач доски")}
+                    labelFor="settings-classify-tasks"
+                  >
+                    <input
+                      id="settings-classify-tasks"
+                      type="checkbox"
+                      role="switch"
+                      checked={taskDefaults.classifyTasks !== false}
+                      disabled={taskDefaultsSaving}
+                      onChange={(event) =>
+                        setTaskDefaults((current) => ({
+                          ...current,
+                          classifyTasks: event.target.checked ? undefined : false,
+                        }))
+                      }
+                    />
+                  </SettingsRow>
+                  <SettingsRow
+                    description={t(
+                      "Модель, которая классифицирует задачи доски. По умолчанию — самая быстрая.",
+                    )}
+                    label={t("Модель классификации")}
+                    labelFor="settings-classification-model"
+                  >
+                    <TaskModelSelect
+                      disabled={
+                        !defaultModel || taskDefaultsSaving || taskDefaults.classifyTasks === false
+                      }
+                      id="settings-classification-model"
+                      models={models}
+                      value={taskDefaults.classificationModel}
+                      onChange={(classificationModel) =>
+                        setTaskDefaults((current) => ({ ...current, classificationModel }))
+                      }
+                    />
+                  </SettingsRow>
+                  <SettingsRow
+                    description={t(
+                      "Читает последний ответ задачи доски: ждёт ли агент оператора и опубликовал ли работу. По умолчанию — самая быстрая модель.",
+                    )}
+                    label={t("Модель проверки задач")}
+                    labelFor="settings-reply-check-model"
+                  >
+                    <TaskModelSelect
+                      disabled={!defaultModel || taskDefaultsSaving}
+                      id="settings-reply-check-model"
+                      models={models}
+                      value={taskDefaults.replyCheckModel}
+                      onChange={(replyCheckModel) =>
+                        setTaskDefaults((current) => ({ ...current, replyCheckModel }))
+                      }
+                    />
+                  </SettingsRow>
+                </>
+              )}
               {taskDefaultsError && (
                 <div className="settings-notice danger" role="alert">
                   {taskDefaultsError}
@@ -867,7 +882,7 @@ export function SettingsPage({
                   aria-busy={loading || undefined}
                 >
                   <legend className="sr-only">{t("Режим разрешений")}</legend>
-                  {(application.isClaude ? CLAUDE_PRESETS : PRESETS).map((preset) => (
+                  {(!application.isCodex ? CLAUDE_PRESETS : PRESETS).map((preset) => (
                     <label
                       className={`permission-preset${selected === preset.id ? " selected" : ""}${preset.id === "full-access" ? " dangerous" : ""}`}
                       key={preset.id}

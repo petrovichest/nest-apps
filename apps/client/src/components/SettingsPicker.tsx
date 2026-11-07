@@ -51,7 +51,7 @@ export function SettingsPicker({
   const modelDisplayName = model ? compactModelName(model.displayName) : t("Модель");
   const defaultEffort = model?.reasoningEfforts.find((option) => option.isDefault)?.value;
   const effortDisplayName = value.reasoningEffort ?? defaultEffort ?? t("По умолчанию");
-  const fastEnabled = !application.isClaude && isFastServiceTier(value.serviceTier);
+  const fastEnabled = application.isCodex && isFastServiceTier(value.serviceTier);
 
   return (
     <div className="settings-picker">
@@ -303,7 +303,7 @@ function ModelSettingsPopup({
       </section>
 
       {application.capabilities.reasoningEffort &&
-        (!application.isClaude || !!model?.reasoningEfforts.length) && (
+        (application.isCodex || !!model?.reasoningEfforts.length) && (
           <section className="model-settings-section">
             <h3>{t("Уровень рассуждений")}</h3>
             <div
@@ -331,7 +331,7 @@ function ModelSettingsPopup({
             </div>
           </section>
         )}
-      {!application.isClaude && (
+      {application.isCodex && (
         <section className="model-settings-section">
           <button
             type="button"

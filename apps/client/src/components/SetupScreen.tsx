@@ -11,7 +11,7 @@ export function SetupScreen({ onConnected }: { onConnected(settings: ConnectionS
   const { language, t } = useI18n();
   const nativePlatform = Capacitor.isNativePlatform();
   const [baseUrl, setBaseUrl] = useState(
-    application.isClaude && !nativePlatform ? window.location.origin : "http://",
+    !application.isCodex && !nativePlatform ? window.location.origin : "http://",
   );
   const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -26,6 +26,8 @@ export function SetupScreen({ onConnected }: { onConnected(settings: ConnectionS
       if (!settings.token) throw new Error(t("Введите bearer token"));
       const api = new ApiClient(settings);
       const health = await api.health();
+      if (application.isGemini && health.provider !== "gemini")
+        throw new Error(t("Это приложение подключается к GeminiNest"));
       if (application.isClaude && health.provider !== "claude" && health.app !== "claudenest") {
         throw new Error(t("Это приложение подключается к ClaudeNest"));
       }
@@ -59,11 +61,15 @@ export function SetupScreen({ onConnected }: { onConnected(settings: ConnectionS
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
             placeholder={
-              application.isClaude
+              application.isGemini
                 ? nativePlatform
-                  ? "http://192.168.1.42:4311"
-                  : "https://claude.home.arpa"
-                : "http://192.168.1.42:4310"
+                  ? "http://192.168.1.42:4312"
+                  : "https://gemini.home.arpa"
+                : application.isClaude
+                  ? nativePlatform
+                    ? "http://192.168.1.42:4311"
+                    : "https://claude.home.arpa"
+                  : "http://192.168.1.42:4310"
             }
             autoCapitalize="none"
             required

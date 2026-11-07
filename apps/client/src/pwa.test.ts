@@ -61,23 +61,26 @@ describe("PWA metadata", () => {
     expect(readPngSize("/apple-touch-icon.png")).toEqual({ width: 180, height: 180 });
   });
 
-  it("ships a separate Claude standalone identity and correctly sized icons", () => {
+  it.each([
+    ["claude", "ClaudeNest"],
+    ["gemini", "GeminiNest"],
+  ])("ships a separate %s standalone identity and correctly sized icons", (provider, name) => {
     const manifest = JSON.parse(
-      readFileSync(resolve(process.cwd(), "public/claude/manifest.webmanifest"), "utf8"),
+      readFileSync(resolve(process.cwd(), `public/${provider}/manifest.webmanifest`), "utf8"),
     );
     expect(manifest).toMatchObject({
-      name: "ClaudeNest",
-      short_name: "ClaudeNest",
+      name,
+      short_name: name,
       start_url: "/",
       scope: "/",
       display: "standalone",
     });
     for (const icon of manifest.icons) {
       const size = Number(icon.sizes.split("x")[0]);
-      expect(icon.src).toMatch(/^\/claude\//);
+      expect(icon.src.startsWith(`/${provider}/`)).toBe(true);
       expect(readPngSize(icon.src)).toEqual({ width: size, height: size });
     }
-    expect(readPngSize("/claude/apple-touch-icon.png")).toEqual({ width: 180, height: 180 });
+    expect(readPngSize(`/${provider}/apple-touch-icon.png`)).toEqual({ width: 180, height: 180 });
   });
 
   it("reads the Claude theme without accessing Codex preferences before React starts", () => {

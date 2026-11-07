@@ -2,7 +2,8 @@ import { pastedText, type PastedText } from "./pasted-text.js";
 import type { ClaudeAccountsStatus } from "./claude-accounts.js";
 export * from "./pasted-text.js";
 
-export type AppProvider = "codex" | "claude";
+export type AppProvider = "codex" | "claude" | "gemini";
+export * from "./gemini.js";
 
 /** Optional provider capabilities; existing Codex clients retain their defaults. */
 export type AppCapabilities = {
@@ -28,7 +29,7 @@ export type RecoveryState =
 
 export type HealthResponse = {
   provider?: AppProvider;
-  app?: "codexnest" | "claudenest";
+  app?: "codexnest" | "claudenest" | "gemininest";
   status: "ok" | "degraded";
   serverVersion: string;
   recoveryState: RecoveryState;

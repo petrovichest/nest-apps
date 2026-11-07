@@ -8,6 +8,42 @@ afterEach(() => {
 });
 
 describe("application variants", () => {
+  it("isolates Gemini sign-in and storage and disables unsupported controls", async () => {
+    vi.stubEnv("VITE_APP_PROVIDER", "gemini");
+    vi.resetModules();
+    const { application } = await import("./application");
+    const { ApiClient } = await import("./api");
+    const { saveConnectionSettings } = await import("./storage");
+    const { translate } = await import("./i18n");
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+    const settings = { baseUrl: "https://gemini.home.arpa", token: "gemini-secret" };
+    const api = new ApiClient(settings);
+    expect(application.name).toBe("GeminiNest");
+    expect(application.supportsKanban).toBe(false);
+    expect(application.capabilities).toMatchObject({
+      team: false,
+      goal: false,
+      appUpdates: false,
+      browserIntegration: false,
+      skills: false,
+    });
+    expect(api.webSocketUrl()).toBe("wss://gemini.home.arpa/api/v1/ui/events");
+    await api.health();
+    expect((fetchMock.mock.calls[0]![1]!.headers as Headers).get("Authorization")).toBe(
+      "Bearer gemini-secret",
+    );
+    await api.enqueue("thread", { input: "Addition", deliveryMode: "steer" });
+    expect(String(fetchMock.mock.calls[1]![0])).toBe(
+      "https://gemini.home.arpa/api/v1/threads/thread/steer",
+    );
+    await saveConnectionSettings(settings);
+    expect(localStorage.getItem("gemininest.token")).toBe("gemini-secret");
+    expect(localStorage.getItem("claudenest.token")).toBeNull();
+    expect(localStorage.getItem("codexnest.token")).toBeNull();
+    expect(translate("en", "Войти через Google")).toBe("Sign in with Google");
+    expect(translate("en", "Подключение к CodexNest")).toBe("Connect to GeminiNest");
+  });
   it("preserves the default Codex identity, capabilities, storage and event endpoint", async () => {
     vi.stubEnv("VITE_APP_PROVIDER", "");
     vi.resetModules();

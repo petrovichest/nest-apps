@@ -23,6 +23,7 @@ import type {
   GitChangesSummary,
   GlobalPermissionSettings,
   HealthResponse,
+  GeminiConnectionStatus,
   MarkReadRequest,
   MarkViewedRequest,
   MoveProjectRequest,
@@ -88,7 +89,7 @@ export class ApiClient {
   constructor(public readonly settings: ConnectionSettings) {}
 
   health(): Promise<HealthResponse> {
-    return this.request("/api/v1/health", { authenticated: application.isClaude });
+    return this.request("/api/v1/health", { authenticated: !application.isCodex });
   }
 
   summary(): Promise<SummaryResponse> {
@@ -253,6 +254,31 @@ export class ApiClient {
 
   readClaudeAccounts(): Promise<ClaudeAccountsStatus> {
     return this.request("/api/v1/settings/claude");
+  }
+
+  readGeminiConnection(): Promise<GeminiConnectionStatus> {
+    return this.request("/api/v1/settings/gemini");
+  }
+  saveGeminiProxy(proxy: string): Promise<GeminiConnectionStatus> {
+    return this.request("/api/v1/settings/gemini/proxy", { method: "PUT", body: { proxy } });
+  }
+  testGeminiProxy(): Promise<{ ok: boolean; message: string }> {
+    return this.request("/api/v1/settings/gemini/proxy/test", {
+      method: "POST",
+      timeoutMs: 20_000,
+    });
+  }
+  startGeminiLogin(): Promise<GeminiConnectionStatus> {
+    return this.request("/api/v1/settings/gemini/logins", { method: "POST" });
+  }
+  submitGeminiLoginCode(id: string, code: string): Promise<GeminiConnectionStatus> {
+    return this.request(`/api/v1/settings/gemini/logins/${encodeURIComponent(id)}/code`, {
+      method: "POST",
+      body: { code },
+    });
+  }
+  cancelGeminiLogin(): Promise<GeminiConnectionStatus> {
+    return this.request("/api/v1/settings/gemini/logins/current", { method: "DELETE" });
   }
 
   refreshClaudeAccounts(accountId?: string): Promise<ClaudeAccountsStatus> {
@@ -767,7 +793,8 @@ export class ApiClient {
   }
 
   enqueue(id: string, body: QueueMessageRequest): Promise<QueuedMessage> {
-    const action = application.isClaude && body.deliveryMode === "steer" ? "steer" : "queue";
+    const action =
+      application.supportsSteering && body.deliveryMode === "steer" ? "steer" : "queue";
     return this.request(`/api/v1/threads/${encodeURIComponent(id)}/${action}`, {
       method: "POST",
       body,

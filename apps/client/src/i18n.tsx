@@ -23,6 +23,38 @@ const LEGACY_INSTALLATION_KEYS = [
 ];
 
 const ENGLISH: Record<string, string> = {
+  "Страница Google использует настройки сети вашего браузера. При необходимости включите прокси и в нём.":
+    "The Google page uses your browser's network settings. Enable its proxy as well if needed.",
+  "Не удалось загрузить настройки Gemini.": "Could not load Gemini settings.",
+  "Связь прервалась. Проверяем состояние входа…": "Connection lost. Checking sign-in status…",
+  "Не удалось выполнить действие. Повторите попытку.": "Could not complete this action. Try again.",
+  "Прокси Gemini": "Gemini proxy",
+  "Авторизация и запросы Gemini проходят через этот прокси. Для начала работы сохраните адрес.":
+    "Gemini sign-in and requests use this proxy. Save its address to get started.",
+  "Прокси сохранён.": "Proxy saved.",
+  "Настроен: {{address}}": "Configured: {{address}}",
+  "HTTP, HTTPS или SOCKS5. Можно вставить host:port:login:password.":
+    "HTTP, HTTPS or SOCKS5. You can paste host:port:login:password.",
+  "Сохранить прокси": "Save proxy",
+  "Проверить соединение": "Test connection",
+  "Аккаунт Google": "Google account",
+  "Войдите в аккаунт с подпиской Google AI Ultra. Доступ и авторизацию проверяет Antigravity CLI.":
+    "Sign in to your Google AI Ultra account. Antigravity CLI checks sign-in and access.",
+  "Требуется вход": "Sign-in required",
+  "Не найден": "Not found",
+  "Войти через Google": "Sign in with Google",
+  "Начинаем вход…": "Starting sign-in…",
+  "Получаем ссылку для входа…": "Getting a sign-in link…",
+  "Открыть вход Google": "Open Google sign-in",
+  "Код или URL после входа": "Code or URL after sign-in",
+  "После входа скопируйте код или полный адрес страницы и вставьте сюда.":
+    "After signing in, copy the code or the full page URL and paste it here.",
+  "Завершить вход": "Complete sign-in",
+  "Проверяем вход через прокси…": "Completing sign-in through the proxy…",
+  "Отменить вход": "Cancel sign-in",
+  "Соединение с Google через прокси установлено.": "Connected to Google through the proxy.",
+  "Не удалось подключиться к Google через прокси. Проверьте адрес и учётные данные.":
+    "Could not connect to Google through the proxy. Check its address and credentials.",
   "Доска задач": "Task board",
   "Доска проекта {{project}}": "Board for {{project}}",
   "Открыть доску задач проекта {{project}}": "Open the task board of {{project}}",

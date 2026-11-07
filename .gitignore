@@ -17,3 +17,5 @@ apps/client/android/app/google-services.json
 *.keystore
 release/
 /output/
+
+dist-gemini/

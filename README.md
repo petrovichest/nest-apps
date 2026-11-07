@@ -22,6 +22,7 @@
   <a href="#how-it-works">How it works</a> ·
   <a href="#screenshots">Screenshots</a> ·
   <a href="./apps/claude-server/README.md">ClaudeNest</a> ·
+  <a href="./apps/gemini-server/README.md">GeminiNest</a> ·
   <a href="./deploy/DEPLOYMENT.md">Documentation</a>
 </p>
 
@@ -160,6 +161,8 @@ it only inside an encrypted private VPN or on a fully trusted LAN. Use private
 HTTPS for shared or otherwise untrusted networks. See the
 [deployment security guidance](./deploy/DEPLOYMENT.md) and the
 [Android network caveat](./apps/client/android/README.md).
+
+GeminiNest is the separate Antigravity ACP client for Google AI Ultra, with Google sign-in and a required proxy configured in its own UI. See [GeminiNest setup and current capabilities](./apps/gemini-server/README.md).
 
 ## Architecture and sources of truth
 

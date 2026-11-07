@@ -862,7 +862,7 @@ function HomeRoute({
   // The application opens on the board shown last, or the first project's.
   const stored = readStoredText(BOARD_PROJECT_KEY);
   const project = projects.find((item) => item.id === stored) ?? projects[0];
-  if (project)
+  if (project && application.supportsKanban)
     return <Navigate to={`/projects/${encodeURIComponent(project.id)}/kanban`} replace />;
   const childrenByParent = childThreadsByParent(threads);
   const latest = sortThreadBranchesByActivity(
@@ -1899,7 +1899,7 @@ function Sidebar({
                       {!group.project && <FolderIcon />}
                       <span>{group.project?.displayName ?? t("Без проекта")}</span>
                     </button>
-                    {group.project && (
+                    {group.project && application.supportsKanban && (
                       <NavLink
                         aria-label={t("Доска проекта {{project}}", {
                           project: group.project.displayName,

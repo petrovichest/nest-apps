@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">GeminiNest</string>
+    <string name="title_activity_main">GeminiNest</string>
+    <string name="notification_channel_connection">Подключение GeminiNest</string>
+    <string name="notification_channel_events">События GeminiNest</string>
+    <string name="notification_attention">Gemini ждёт решения</string>
+    <string name="notification_default_task">Задача Gemini</string>
+    <string name="notification_open_details">Откройте GeminiNest для подробностей</string>
+</resources>

@@ -1,0 +1,27 @@
+{
+  "name": "@gemininest/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/index.ts src/daemon.ts --format esm --platform node --target node24 --sourcemap --out-dir dist --clean --no-splitting",
+    "dev": "npm run build && node dist/daemon.js --tcp",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@codexnest/protocol": "*",
+    "@fastify/cors": "^11.1.0",
+    "@fastify/static": "^10.1.2",
+    "@fastify/websocket": "^11.2.0",
+    "fastify": "^5.6.1",
+    "proxy-chain": "3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

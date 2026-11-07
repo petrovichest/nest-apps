@@ -295,7 +295,7 @@ export function initialSessionSettings(
   const settings = {
     ...DEFAULT_SESSION_SETTINGS,
     ...(explicitModel ? { model: explicitModel.id } : {}),
-    ...(!application.isClaude &&
+    ...(!application.supportsSteering &&
     isFastServiceTier(taskDefaults?.serviceTier) &&
     fastServiceTier(model)
       ? { serviceTier: "fast" }
@@ -305,7 +305,8 @@ export function initialSessionSettings(
       : {}),
   };
   const effort =
-    taskDefaults?.reasoningEffort ?? (application.isClaude ? undefined : defaultReasoningEffort);
+    taskDefaults?.reasoningEffort ??
+    (application.supportsSteering ? undefined : defaultReasoningEffort);
   if (effort && (!model || model.reasoningEfforts.some((option) => option.value === effort))) {
     settings.reasoningEffort = effort;
   }
@@ -314,7 +315,8 @@ export function initialSessionSettings(
 
 function clientSessionSettings(value: SessionSettings): ClientSessionSettings {
   const next = { ...value };
-  if (!application.isClaude && isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
+  if (!application.supportsSteering && isFastServiceTier(next.serviceTier))
+    next.serviceTier = "fast";
   else delete next.serviceTier;
   return next;
 }
@@ -323,7 +325,7 @@ export function clientSessionSettingsPatch(
   value: UpdateThreadSettingsRequest,
 ): UpdateThreadSettingsRequest {
   const next = { ...value };
-  if (application.isClaude) delete next.serviceTier;
+  if (application.supportsSteering) delete next.serviceTier;
   else if (isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
   else if (next.serviceTier !== null) delete next.serviceTier;
   return next;
@@ -511,14 +513,14 @@ function resolveVoiceTranscriptionMode(
   currentTurnId: string | null,
   ownerRunning = false,
 ): VoiceTranscriptionMode {
-  return currentTurnId || (application.isClaude && ownerRunning) ? "steer" : "send";
+  return currentTurnId || (application.supportsSteering && ownerRunning) ? "steer" : "send";
 }
 
 /** The session is working, so the composer queues messages and the context cannot be compacted. */
 function sessionIsRunning(summary: ThreadSummary): boolean {
   return (
     Boolean(summary.currentTurnId) ||
-    (application.isClaude && summary.state === "running") ||
+    (application.supportsSteering && summary.state === "running") ||
     Boolean(summary.capacityRetry) ||
     (summary.settings.collaborationMode === "team" && summary.state === "running")
   );
@@ -910,7 +912,7 @@ export function ThreadPage({
     if (!attentionIds.has(id)) standaloneAttentionIds.current.delete(id);
   }
   function userInputToDismiss(targetThreadId: string): QueuedMessage["dismissUserInput"] {
-    if (application.isClaude) return undefined;
+    if (application.supportsSteering) return undefined;
     const request = state.snapshot?.attention?.find(
       (item) =>
         item.threadId === targetThreadId && item.kind === "userInput" && item.turnId && item.itemId,
@@ -937,7 +939,7 @@ export function ThreadPage({
     (message) => message.destination === "turn",
   );
   let turnMessagesNeedSort = false;
-  if (application.isClaude) {
+  if (application.supportsSteering) {
     for (const message of detail?.queuedMessages ?? []) {
       if (message.deliveryMode !== "steer") continue;
       const optimisticIndex = optimisticTurnMessages.findIndex((item) => item.id === message.id);
@@ -1502,6 +1504,7 @@ export function ThreadPage({
    * from the session when a recording carries it; the session works without its card.
    */
   function joinBoard(projectId: string, createdThreadId: string, description: string) {
+    if (!application.supportsKanban) return;
     void api
       .createKanbanCard(projectId, {
         description,
@@ -1531,7 +1534,7 @@ export function ThreadPage({
           if (existingThreadId) {
             const existing = await api.readThread(existingThreadId, { fresh: true });
             thread = existing.summary;
-            if (application.isClaude)
+            if (application.supportsSteering)
               savedDraftUpdatedAtRef.current.set(
                 existingThreadId,
                 existing.draft?.updatedAt ?? null,
@@ -1552,7 +1555,7 @@ export function ThreadPage({
             );
             assertPreparationGeneration(generation);
             thread = created.thread;
-            if (application.isClaude)
+            if (application.supportsSteering)
               savedDraftUpdatedAtRef.current.set(thread.id, created.draft?.updatedAt ?? null);
             const voice = preparationRef.current.voiceSubmission;
             if (voice) {
@@ -2175,7 +2178,7 @@ export function ThreadPage({
           }
         }
         // A recovered preparation keeps Fast off even if the global default changed.
-        if (!application.isClaude) pendingSettingsTouchedRef.current.add("serviceTier");
+        if (!application.supportsSteering) pendingSettingsTouchedRef.current.add("serviceTier");
         pendingSettingsRef.current = settings;
         pendingSettingsRevisionRef.current += 1;
         setPendingSettings(settings);
@@ -3013,7 +3016,7 @@ export function ThreadPage({
     const submittedEditRevision = composerEditRevisionRef.current;
     const clientMessageId = createClientMessageId();
     const dismissUserInput = userInputToDismiss(targetThreadId);
-    const steering = application.isClaude && intent === "immediate";
+    const steering = application.supportsSteering && intent === "immediate";
     const steerTurnId = steering ? currentTurnIdRef.current : null;
     const submittedIdentity: SubmittedMessageIdentity = {
       text: submittedInput,
@@ -3056,7 +3059,7 @@ export function ThreadPage({
         targetThreadId,
         {
           input: submittedInput,
-          ...(application.isClaude
+          ...(application.supportsSteering
             ? {
                 deliveryMode: steering ? "steer" : "queue",
                 draftUpdatedAt: savedDraftUpdatedAtRef.current.get(targetThreadId) ?? null,
@@ -3299,7 +3302,7 @@ export function ThreadPage({
         thread.id,
         {
           input: completeInput,
-          ...(application.isClaude
+          ...(application.supportsSteering
             ? { draftUpdatedAt: savedDraftUpdatedAtRef.current.get(thread.id) ?? null }
             : {}),
           ...pastedText(trimPastedMessage(completeDraft.input, completeDraft)),
@@ -3914,11 +3917,12 @@ export function ThreadPage({
     );
 
   // The board opens on this session's card when the session belongs to a task.
-  const boardPath = project
-    ? `/projects/${encodeURIComponent(project.id)}/kanban${
-        summary ? `?thread=${encodeURIComponent(threadId)}` : ""
-      }`
-    : null;
+  const boardPath =
+    project && application.supportsKanban
+      ? `/projects/${encodeURIComponent(project.id)}/kanban${
+          summary ? `?thread=${encodeURIComponent(threadId)}` : ""
+        }`
+      : null;
   const workspaceSummary =
     summary ??
     preparationRef.current.thread ??
@@ -4798,9 +4802,10 @@ export function ThreadPage({
         ) : (
           <Composer
             effortDisabled={
-              application.isClaude &&
-              !preparationRef.current.active &&
-              (!detail || detail.turns.length > 0)
+              (application.isClaude &&
+                !preparationRef.current.active &&
+                (!detail || detail.turns.length > 0)) ||
+              (application.isGemini && sessionIsRunning(workspaceSummary))
             }
             onLayoutChange={handleComposerLayoutChange}
             inputUnavailable={inputUnavailable}
@@ -5923,7 +5928,9 @@ export function Activity({
           markdown={item.type === "agentMessage"}
           timestamp={item.timestamp}
           forkAction={item.type === "agentMessage" ? forkAction : undefined}
-          status={item.type === "agentMessage" || application.isClaude ? footerStatus : undefined}
+          status={
+            item.type === "agentMessage" || application.supportsSteering ? footerStatus : undefined
+          }
         />
       </article>
     );
@@ -5942,7 +5949,7 @@ export function Activity({
     );
   }
   if (item.type === "reasoning") {
-    if (application.isClaude) {
+    if (application.supportsSteering) {
       return (
         <article className="message agentMessage">
           <div className="message-body">
@@ -7664,7 +7671,7 @@ function groupActivities(items: ActivityItem[]): Array<ActivityItem | ActivityIt
 }
 
 function isTechnicalActivity(item: ActivityItem): boolean {
-  if (item.type === "reasoning" && application.isClaude) return false;
+  if (item.type === "reasoning" && application.supportsSteering) return false;
   return ["reasoning", "command", "fileChange", "tool"].includes(item.type);
 }
 
