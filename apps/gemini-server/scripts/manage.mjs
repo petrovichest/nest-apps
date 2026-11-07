@@ -92,7 +92,7 @@ if (command === "setup") {
     ["gemininest-daemon", "daemon", "GeminiNest ACP session owner"],
     ["gemininest", "index", "GeminiNest HTTP gateway"],
   ]) {
-    const unit = `[Unit]\nDescription=${description}\nAfter=network-online.target${name === "gemininest" ? " gemininest-daemon.service\nWants=gemininest-daemon.service" : ""}\n\n[Service]\nType=exec\nEnvironment=GEMININEST_CONFIG_DIR=${quote(configRoot)}\nEnvironmentFile=${quote(envPath)}\nExecStart=${quote(await realpath(process.execPath))} ${quote(join(release, `apps/gemini-server/dist/${file}.js`))}\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=30\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+    const unit = `[Unit]\nDescription=${description}\nAfter=network-online.target${name === "gemininest" ? " gemininest-daemon.service\nWants=gemininest-daemon.service" : ""}\n\n[Service]\nType=exec\nEnvironment=GEMININEST_CONFIG_DIR=${quote(configRoot)}\nExecStart=${quote(await realpath(process.execPath))} ${quote(join(release, `apps/gemini-server/dist/${file}.js`))}\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=30\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
     await writeFile(join(unitDir, `${name}.service`), unit, { mode: 0o600 });
   }
   await exec("systemctl", ["--user", "daemon-reload"]);
@@ -104,8 +104,9 @@ if (command === "setup") {
       "gemininest-daemon.service",
       "gemininest.service",
     ]);
+  process.loadEnvFile(envPath);
   process.stdout.write(
-    `GeminiNest configured. Owner token: ${tokenPath}\nOpen http://127.0.0.1:4312 and use Settings → Gemini to configure the proxy and sign in with Google.\n`,
+    `GeminiNest configured. Owner token: ${tokenPath}\nOpen http://127.0.0.1:${process.env.GEMININEST_PORT || 4312} and use Settings → Gemini to configure the proxy and sign in with Google.\n`,
   );
 } else if (command === "status") {
   const result = await exec("systemctl", [
