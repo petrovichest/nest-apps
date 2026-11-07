@@ -270,6 +270,7 @@ const ENGLISH: Record<string, string> = {
   "Откройте страницу Claude и войдите в нужный аккаунт. Вернитесь сюда, чтобы завершить подключение.":
     "Open the Claude page and sign in to the account you want. Return here to finish connecting.",
   "Открыть страницу входа": "Open sign-in page",
+  "Ссылка для входа": "Sign-in link",
   "Скопировать ссылку": "Copy link",
   "Ссылка скопирована": "Link copied",
   "Не удалось скопировать ссылку.": "Could not copy the link.",

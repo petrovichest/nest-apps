@@ -57,6 +57,7 @@ try {
   assert.ok(ready, output);
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, locale: "ru-RU" });
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: url });
   await page.addInitScript(() => {
     localStorage.setItem("gemininest.uiLanguage", "ru");
     localStorage.setItem("gemininest.notificationPromptDismissed", "true");
@@ -69,6 +70,27 @@ try {
   await page.getByRole("link", { name: "Настройки", exact: true }).click();
   await page.getByRole("tab", { name: "Gemini", exact: true }).click();
   await page.getByRole("button", { name: "Войти через Google", exact: true }).click();
+  const loginUrl = page.getByLabel("Ссылка для входа", { exact: true });
+  await loginUrl.waitFor();
+  const googleUrl = await loginUrl.inputValue();
+  assert.ok(googleUrl.startsWith("https://accounts.google.com/"));
+  assert.equal(await loginUrl.getAttribute("readonly"), "");
+  assert.equal(
+    await page.getByRole("link", { name: "Открыть вход Google", exact: true }).getAttribute("href"),
+    googleUrl,
+  );
+  await page.getByRole("button", { name: "Скопировать ссылку", exact: true }).click();
+  await page.getByRole("button", { name: "Ссылка скопирована", exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), googleUrl);
+  await page.screenshot({ path: join(screenshots, "desktop-login.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(600);
+  await loginUrl.scrollIntoViewIfNeeded();
+  await page.getByRole("button", { name: "Ссылка скопирована", exact: true }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), googleUrl);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({ path: join(screenshots, "phone-login.png"), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByLabel("Код или URL после входа", { exact: true }).fill("fixture-code");
   await page.getByRole("button", { name: "Завершить вход", exact: true }).click();
   await page.getByText("Вход выполнен", { exact: true }).waitFor();
@@ -106,7 +128,7 @@ try {
   await page.screenshot({ path: join(screenshots, "desktop-chat.png") });
   assert.deepEqual(errors, []);
   console.log(
-    "Gemini browser smoke passed: Google login, proxy redaction, responsive settings, chat, approval and reconnect.",
+    "Gemini browser smoke passed: Google sign-in link and clipboard, login, proxy redaction, responsive settings, chat, approval and reconnect.",
   );
 } finally {
   await browser?.close();

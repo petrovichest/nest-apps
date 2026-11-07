@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { Browser } from "@capacitor/browser";
 import { Capacitor } from "@capacitor/core";
 import type { GeminiConnectionStatus } from "@codexnest/protocol";
+import { copyText } from "../clipboard";
 import { useConnection } from "../connection";
 import { useI18n } from "../i18n";
 import { SettingsGroup, SettingsRow } from "./SettingsPresentation";
-import { ServerIcon, ShieldIcon } from "./Icons";
+import { CopyIcon, ServerIcon, ShieldIcon } from "./Icons";
 import { ActionLabel } from "./ActionLabel";
 
 export function GeminiConnectionSettings() {
@@ -14,6 +15,7 @@ export function GeminiConnectionSettings() {
   const [status, setStatus] = useState<GeminiConnectionStatus | null>(null);
   const [proxy, setProxy] = useState("");
   const [code, setCode] = useState("");
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -192,7 +194,17 @@ export function GeminiConnectionSettings() {
               });
             }}
           >
-            <p>
+            <SettingsRow label={t("Ссылка для входа")} labelFor="gemini-login-url">
+              <input
+                id="gemini-login-url"
+                type="url"
+                value={login.url}
+                readOnly
+                spellCheck={false}
+                onFocus={(event) => event.currentTarget.select()}
+              />
+            </SettingsRow>
+            <div className="settings-actions">
               <a
                 className="button primary"
                 href={login.url}
@@ -212,7 +224,20 @@ export function GeminiConnectionSettings() {
               >
                 {t("Открыть вход Google")}
               </a>
-            </p>
+              <button
+                type="button"
+                onClick={() => {
+                  const url = login.url!;
+                  void copyText(url).then(
+                    () => setCopiedUrl(url),
+                    () => setError(t("Не удалось скопировать ссылку.")),
+                  );
+                }}
+              >
+                <CopyIcon />
+                {t(copiedUrl === login.url ? "Ссылка скопирована" : "Скопировать ссылку")}
+              </button>
+            </div>
             <p>
               {t(
                 "Страница Google использует настройки сети вашего браузера. При необходимости включите прокси и в нём.",
