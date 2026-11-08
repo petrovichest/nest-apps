@@ -1641,8 +1641,7 @@ function Sidebar({
   }
 
   async function refreshRateLimits() {
-    if (!supportsRateLimits || rateLimitsLoading || rateLimitsRequestPending.current)
-      return;
+    if (!supportsRateLimits || rateLimitsLoading || rateLimitsRequestPending.current) return;
     const generation = ++rateLimitsGeneration.current;
     rateLimitsRequestPending.current = true;
     setManualRateLimitsLoading(true);
