@@ -246,6 +246,8 @@ export async function buildApp(engine: Engine, options: BuildAppOptions = {}) {
     pendingAttentionCount: engine.snapshot().attention.length,
     syncedAt: new Date().toISOString(),
   }));
+  // Shared client contract; the path keeps the Codex name used by the sidebar.
+  app.get("/api/v1/codex/rate-limits", () => engine.refreshRateLimits());
   app.get("/api/v1/settings/gemini", () => engine.account.status());
   app.put("/api/v1/settings/gemini/proxy", async (req) => {
     const value = text(object(req.body).proxy, "proxy", 4096);

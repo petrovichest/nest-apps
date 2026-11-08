@@ -952,6 +952,8 @@ function Sidebar({
   const [legacyRateLimitsUpdatedAt, setLegacyRateLimitsUpdatedAt] = useState<number | null>(null);
   const [manualRateLimitsLoading, setManualRateLimitsLoading] = useState(false);
   const [manualRateLimitsError, setManualRateLimitsError] = useState(false);
+  const supportsRateLimits =
+    state.snapshot?.capabilities?.rateLimits ?? application.capabilities.rateLimits;
   const sharedRateLimits = state.snapshot?.codexRateLimits;
   const rateLimits = sharedRateLimits ? sharedRateLimits.limits : legacyRateLimits;
   const rateLimitsUpdatedAt = sharedRateLimits
@@ -1639,11 +1641,7 @@ function Sidebar({
   }
 
   async function refreshRateLimits() {
-    if (
-      !application.capabilities.rateLimits ||
-      rateLimitsLoading ||
-      rateLimitsRequestPending.current
-    )
+    if (!supportsRateLimits || rateLimitsLoading || rateLimitsRequestPending.current)
       return;
     const generation = ++rateLimitsGeneration.current;
     rateLimitsRequestPending.current = true;
@@ -1732,7 +1730,7 @@ function Sidebar({
             <ArrowDownIcon />
           </NavLink>
         )}
-        {application.capabilities.rateLimits && (
+        {supportsRateLimits && (
           <button
             aria-busy={rateLimitsLoading}
             aria-label={rateLimitsDescription}

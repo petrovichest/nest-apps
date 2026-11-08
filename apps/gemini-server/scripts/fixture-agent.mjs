@@ -7,6 +7,42 @@ if (process.argv.includes("--version")) {
   process.exit(0);
 }
 if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(process.env.HTTPS_PROXY || "")) process.exit(2);
+if (process.argv.includes("/usage")) {
+  process.stdout.write(
+    JSON.stringify({
+      conversation_id: "",
+      status: "SUCCESS",
+      response: "",
+      command: {
+        name: "usage",
+        data: {
+          groups: [
+            {
+              name: "Gemini Models",
+              buckets: [
+                {
+                  id: "gemini-weekly",
+                  name: "Weekly Limit Remaining",
+                  window: "weekly",
+                  remaining_fraction: 0.82,
+                  reset_time: "2026-11-14T23:24:41Z",
+                },
+                {
+                  id: "gemini-5h",
+                  name: "Five Hour Limit Remaining",
+                  window: "5h",
+                  remaining_fraction: 0.8,
+                  reset_time: "2026-11-08T14:24:41Z",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    }) + "\n",
+  );
+  process.exit(0);
+}
 if (process.argv.includes("--login")) {
   process.stdout.write(
     "Open this link in a browser to log in with Google:\nhttps://accounts.google.com/o/oauth2/auth?state=fixture\nThen paste the authorization code, or the full URL of the page you land on, and press Enter:\n",

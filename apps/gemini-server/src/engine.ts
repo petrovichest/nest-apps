@@ -10,6 +10,8 @@ import type {
   AttentionRequest,
   AttentionResponse,
   BrowserThreadStatus,
+  CodexRateLimitsResponse,
+  CodexRateLimitsState,
   ModelOption,
   Project,
   QueuedMessage,
@@ -30,6 +32,7 @@ import { Account } from "./account";
 import { AcpClient, RpcError } from "./acp";
 import type { StoredArtifactRecord } from "./artifacts";
 import type { Config } from "./config";
+import { readGeminiUsage } from "./rate-limits";
 import {
   geminiReplyCheck,
   geminiTitleGenerator,
@@ -38,9 +41,11 @@ import {
 } from "./title";
 import type { StoredVoice, VoiceSettings, VoiceTimingSample } from "./voice";
 
+const RATE_LIMITS_POLL_MS = 300_000;
+
 export const capabilities: AppCapabilities = {
   codexManagement: false,
-  rateLimits: false,
+  rateLimits: true,
   plan: false,
   team: false,
   goal: false,
@@ -185,6 +190,8 @@ export function text(value: any, name = "input", limit = 200_000): string {
 export interface EngineOptions {
   generateTitle?: TitleGenerator;
   checkReply?: ReplyCheck;
+  readRateLimits?: () => Promise<CodexRateLimitsResponse>;
+  pollRateLimits?: boolean;
 }
 
 /** The daemon owns ACP and durable admissions. The HTTP gateway can restart independently. */
@@ -197,6 +204,16 @@ export class Engine extends EventEmitter {
   readonly attachments: AttachmentStore;
   generateTitle?: TitleGenerator;
   checkReply?: ReplyCheck;
+  private rateLimits: CodexRateLimitsState = {
+    limits: null,
+    updatedAt: null,
+    refreshing: false,
+    refreshError: false,
+  };
+  private rateLimitsRequest?: Promise<CodexRateLimitsResponse>;
+  private rateLimitsTimer?: NodeJS.Timeout;
+  private readonly customReadRateLimits?: () => Promise<CodexRateLimitsResponse>;
+  private readonly pollRateLimitsEnabled: boolean;
   private browserStatusProvider?: (threadId: string) => BrowserThreadStatus;
   private browserMcpProvider?: (threadId: string) => Array<Record<string, unknown>>;
   private client?: AcpClient;
@@ -230,13 +247,18 @@ export class Engine extends EventEmitter {
   ) {
     super();
     this.accepting = !config.startPaused;
-    this.account = new Account(config, () => this.emit("account"));
+    const isTestFake = config.agyBin === "/bin/true";
+    this.customReadRateLimits = options.readRateLimits;
+    this.pollRateLimitsEnabled = options.pollRateLimits ?? !isTestFake;
+    this.account = new Account(config, () => {
+      this.emit("account");
+      if (this.pollRateLimitsEnabled) this.pollRateLimits();
+    });
     this.attachments = new AttachmentStore(join(config.stateDir, "attachments"));
     const resolveEnv = async () => {
       if (!this.account.status().authenticated) return null;
       return this.connection?.env ?? process.env;
     };
-    const isTestFake = config.agyBin === "/bin/true";
     this.generateTitle =
       options.generateTitle ??
       (isTestFake ? undefined : geminiTitleGenerator({ config, resolveEnv }));
@@ -275,6 +297,11 @@ export class Engine extends EventEmitter {
           };
     }
     await this.account.initialize();
+    if (this.pollRateLimitsEnabled) {
+      this.rateLimitsTimer = setInterval(() => this.pollRateLimits(), RATE_LIMITS_POLL_MS);
+      this.rateLimitsTimer.unref?.();
+      this.pollRateLimits();
+    }
   }
 
   get activeCount() {
@@ -410,9 +437,59 @@ export class Engine extends EventEmitter {
       })),
       models: this.data.models,
       taskDefaults: this.data.taskDefaults,
+      codexRateLimits: this.rateLimits,
       forkOperations: [],
       voiceTranscriptions,
     };
+  }
+  async readRateLimits(): Promise<CodexRateLimitsResponse> {
+    if (this.customReadRateLimits) return this.customReadRateLimits();
+    if (!this.account.status().authenticated)
+      throw new AppError("unavailable", "Войдите в Google в настройках Gemini.", 503);
+    if (this.connection) return readGeminiUsage(this.config, this.connection.env);
+    const connection = await this.account.connection();
+    try {
+      return await readGeminiUsage(this.config, connection.env);
+    } finally {
+      await connection.close();
+    }
+  }
+  private setRateLimits(state: CodexRateLimitsState): void {
+    this.rateLimits = state;
+    this.publish({ type: "codexRateLimits.changed", codexRateLimits: state });
+  }
+  refreshRateLimits(): Promise<CodexRateLimitsResponse> {
+    if (this.rateLimitsRequest) return this.rateLimitsRequest;
+    if (this.closing)
+      return Promise.reject(new AppError("unavailable", "GeminiNest перезапускается.", 503));
+    this.setRateLimits({ ...this.rateLimits, refreshing: true, refreshError: false });
+    this.rateLimitsRequest = this.readRateLimits()
+      .then((limits) => {
+        this.setRateLimits({
+          limits,
+          updatedAt: Date.now(),
+          refreshing: false,
+          refreshError: false,
+        });
+        return limits;
+      })
+      .catch((error: unknown) => {
+        this.setRateLimits({ ...this.rateLimits, refreshing: false, refreshError: true });
+        throw error;
+      })
+      .finally(() => {
+        this.rateLimitsRequest = undefined;
+      });
+    return this.rateLimitsRequest;
+  }
+  private pollRateLimits(): void {
+    const status = this.account.status();
+    if (
+      this.closing ||
+      (!this.customReadRateLimits && (!status.authenticated || !status.proxy.configured))
+    )
+      return;
+    void this.refreshRateLimits().catch(() => undefined);
   }
   permissions() {
     return {
@@ -1237,9 +1314,12 @@ export class Engine extends EventEmitter {
   }
   async close() {
     this.closing = true;
+    if (this.rateLimitsTimer) clearInterval(this.rateLimitsTimer);
+    this.rateLimitsTimer = undefined;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
     this.client?.close();
+    await this.rateLimitsRequest?.catch(() => undefined);
     await this.account.close();
     await this.connection?.close();
     await this.save();

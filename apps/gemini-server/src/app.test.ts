@@ -459,7 +459,33 @@ it("supports full-text search, skills, brain artifacts, voice transcriptions, ka
   );
   await vi.waitFor(() => expect(engine.summary(thread.id).browserStatus).toBe("connected"));
 
-  // 7. App update status & internal restart prepare/resume
+  // 7. Rate limits & App update status & internal restart prepare/resume
+  expect(engine.snapshot().capabilities?.rateLimits).toBe(true);
+  const rateLimitsRes = await app.inject({
+    method: "GET",
+    url: "/api/v1/codex/rate-limits",
+    headers,
+  });
+  expect(rateLimitsRes.statusCode).toBe(200);
+  expect(rateLimitsRes.json()).toEqual({
+    primary: {
+      usedPercent: 20,
+      windowDurationMins: 300,
+      resetsAt: Date.parse("2026-11-08T14:24:41Z"),
+    },
+    secondary: {
+      usedPercent: 18,
+      windowDurationMins: 10_080,
+      resetsAt: Date.parse("2026-11-14T23:24:41Z"),
+    },
+  });
+  expect(engine.snapshot().codexRateLimits).toMatchObject({
+    limits: rateLimitsRes.json(),
+    refreshing: false,
+    refreshError: false,
+    updatedAt: expect.any(Number),
+  });
+
   const appStatus = await app.inject({
     method: "GET",
     url: "/api/v1/settings/app",

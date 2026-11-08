@@ -24,7 +24,7 @@ export const application = {
   skillPrefix: isCodex ? "$" : "/",
   capabilities: {
     codexManagement: isCodex,
-    rateLimits: !isGemini,
+    rateLimits: true,
     plan: !isGemini,
     team: isCodex,
     goal: isCodex,

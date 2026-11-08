@@ -23,7 +23,7 @@ describe("application variants", () => {
     expect(application.supportsKanban).toBe(true);
     expect(application.capabilities).toMatchObject({
       codexManagement: false,
-      rateLimits: false,
+      rateLimits: true,
       plan: false,
       team: false,
       goal: false,
@@ -34,6 +34,8 @@ describe("application variants", () => {
       skills: true,
       artifacts: true,
     });
+    expect(translate("ru", "Лимиты Codex")).toBe("Лимиты Gemini");
+    expect(translate("en", "Лимиты Codex")).toBe("Gemini limits");
     expect(api.webSocketUrl()).toBe("wss://gemini.home.arpa/api/v1/ui/events");
     await api.health();
     expect((fetchMock.mock.calls[0]![1]!.headers as Headers).get("Authorization")).toBe(
