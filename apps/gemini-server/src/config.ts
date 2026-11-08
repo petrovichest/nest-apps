@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type Config = ReturnType<typeof paths> & { token: string };
@@ -15,6 +15,12 @@ export function paths(env = process.env) {
   const release = resolve(
     env.GEMININEST_RELEASE_PATH || fileURLToPath(new URL("../../../", import.meta.url)),
   );
+  const releaseBase = basename(release);
+  const derivedVersion = /^v\d+\.\d+\.\d+(-[0-9a-f]{7,40})?$/i.test(releaseBase)
+    ? releaseBase.slice(1)
+    : /^[0-9a-f]{40}$/i.test(releaseBase)
+      ? `0.1.9-${releaseBase.slice(0, 7).toLowerCase()}`
+      : "0.1.9";
   const port = Number(env.GEMININEST_PORT || 4312);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error("Invalid GEMININEST_PORT");
@@ -26,6 +32,13 @@ export function paths(env = process.env) {
     socket: join(runtimeDir, "daemon.sock"),
     host: env.GEMININEST_HOST || "127.0.0.1",
     agyBin: env.GEMININEST_AGY_BIN || "agy",
+    nodeBin: env.GEMININEST_NODE_BIN || process.execPath,
+    releasePath: release,
+    version: env.GEMININEST_VERSION || derivedVersion,
+    managedInstall:
+      env.GEMININEST_MANAGED_INSTALL === "1" ||
+      (env.GEMININEST_MANAGED_INSTALL !== "0" && Boolean(env.GEMININEST_RELEASE_PATH)),
+    startPaused: env.GEMININEST_START_PAUSED === "1",
     nativeDir: join(stateDir, "native"),
     clientDist: resolve(env.GEMININEST_CLIENT_DIST || join(release, "apps/client/dist-gemini")),
     allowedOrigins: new Set(

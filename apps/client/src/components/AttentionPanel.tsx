@@ -95,7 +95,7 @@ function AttentionCard({
     setError(null);
     try {
       if (
-        !application.isClaude &&
+        application.isCodex &&
         response.kind === "userInput" &&
         request.kind === "userInput" &&
         request.threadId &&
@@ -462,7 +462,7 @@ function UserInputForm({
   const showVoiceQueue = Boolean(submitting || submission || localSubmission);
   const locked = busy || submitting || Boolean(submission || localSubmission);
   const backgroundVoice = Boolean(
-    !application.isClaude && request.threadId && request.draftKey && connection.queueVoiceRecording,
+    application.isCodex && request.threadId && request.draftKey && connection.queueVoiceRecording,
   );
   const AnswerInput = questionInputTag(
     request.questions.find((candidate) => candidate.id === viewDraft.currentQuestionId)?.isSecret,

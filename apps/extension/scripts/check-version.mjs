@@ -3,22 +3,25 @@ import { resolve } from "node:path";
 
 const extensionRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(extensionRoot, "../..");
-const [rootPackage, extensionPackage, chromeManifest, claudeManifest] = await Promise.all([
-  readJson(resolve(repositoryRoot, "package.json")),
-  readJson(resolve(extensionRoot, "package.json")),
-  readJson(resolve(extensionRoot, "public/chrome/manifest.json")),
-  readJson(resolve(extensionRoot, "public/claude/manifest.json")),
-]);
+const [rootPackage, extensionPackage, chromeManifest, claudeManifest, geminiManifest] =
+  await Promise.all([
+    readJson(resolve(repositoryRoot, "package.json")),
+    readJson(resolve(extensionRoot, "package.json")),
+    readJson(resolve(extensionRoot, "public/chrome/manifest.json")),
+    readJson(resolve(extensionRoot, "public/claude/manifest.json")),
+    readJson(resolve(extensionRoot, "public/gemini/manifest.json")),
+  ]);
 
 const versions = [
   rootPackage.version,
   extensionPackage.version,
   chromeManifest.version,
   claudeManifest.version,
+  geminiManifest.version,
 ];
 if (versions.some((version) => typeof version !== "string") || new Set(versions).size !== 1) {
   throw new Error(
-    `CodexNest and extension versions must match: root=${rootPackage.version}, package=${extensionPackage.version}, chrome=${chromeManifest.version}, claude=${claudeManifest.version}`,
+    `CodexNest and extension versions must match: root=${rootPackage.version}, package=${extensionPackage.version}, chrome=${chromeManifest.version}, claude=${claudeManifest.version}, gemini=${geminiManifest.version}`,
   );
 }
 

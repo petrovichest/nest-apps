@@ -613,13 +613,11 @@ export function SettingsPage({
               </SettingsGroup>
             )}
 
-            {!application.isGemini && (
-              <TranscriptionSettingsCard
-                config={transcriptionConfig}
-                configError={transcriptionConfigError}
-                onChange={onTranscriptionConfigChange}
-              />
-            )}
+            <TranscriptionSettingsCard
+              config={transcriptionConfig}
+              configError={transcriptionConfigError}
+              onChange={onTranscriptionConfigChange}
+            />
           </div>
 
           <div
@@ -675,23 +673,21 @@ export function SettingsPage({
                   ))}
                 </select>
               </SettingsRow>
-              {!application.isGemini && (
-                <SettingsRow
-                  description={t("Модель для автоматических названий сессий.")}
-                  label="Title model"
-                  labelFor="settings-title-model"
-                >
-                  <TaskModelSelect
-                    disabled={!defaultModel || taskDefaultsSaving}
-                    id="settings-title-model"
-                    models={models}
-                    value={taskDefaults.titleModel}
-                    onChange={(titleModel) =>
-                      setTaskDefaults((current) => ({ ...current, titleModel }))
-                    }
-                  />
-                </SettingsRow>
-              )}
+              <SettingsRow
+                description={t("Модель для автоматических названий сессий.")}
+                label="Title model"
+                labelFor="settings-title-model"
+              >
+                <TaskModelSelect
+                  disabled={!defaultModel || taskDefaultsSaving}
+                  id="settings-title-model"
+                  models={models}
+                  value={taskDefaults.titleModel}
+                  onChange={(titleModel) =>
+                    setTaskDefaults((current) => ({ ...current, titleModel }))
+                  }
+                />
+              </SettingsRow>
               <SettingsRow
                 description={t("Уровень reasoning, выбранный для новых сессий.")}
                 label={t("Reasoning по умолчанию")}
@@ -1433,7 +1429,9 @@ function transcriptionForm(config: TranscriptionConfigResponse | null): Transcri
     openAiModel: config?.openAiModel ?? "gpt-4o-transcribe",
     language: config?.language ?? "ru",
     refineLocal: config?.refineLocal ?? true,
-    refinementModel: config?.refinementModel ?? (application.isClaude ? "haiku" : "gpt-5.6-luna"),
+    refinementModel:
+      config?.refinementModel ??
+      (application.isClaude ? "haiku" : application.isGemini ? "gemini-3-flash" : "gpt-5.6-luna"),
   };
 }
 

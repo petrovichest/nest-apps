@@ -19,9 +19,16 @@ export function registerKanbanRoutes(
       if (!run.sessionUrl || run.provider === provider || !run.sessionUrl.startsWith("/"))
         return run;
       const configured =
-        process.env[run.provider === "codex" ? "KANBAN_CODEX_URL" : "KANBAN_CLAUDE_URL"];
+        process.env[
+          run.provider === "codex"
+            ? "KANBAN_CODEX_URL"
+            : run.provider === "claude"
+              ? "KANBAN_CLAUDE_URL"
+              : "KANBAN_GEMINI_URL"
+        ];
       const base = new URL(configured ?? `${request.protocol}://${request.host}`);
-      if (!configured) base.port = run.provider === "codex" ? "4310" : "4311";
+      if (!configured)
+        base.port = run.provider === "codex" ? "4310" : run.provider === "claude" ? "4311" : "4312";
       return { ...run, sessionUrl: new URL(run.sessionUrl, base).href };
     }),
   });

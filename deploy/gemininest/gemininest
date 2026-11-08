@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+gemininest_root="${XDG_DATA_HOME:-$HOME/.local/share}/gemininest"
+gemininest_node="${GEMININEST_NODE_BIN:-node}"
+if [[ -x "$gemininest_root/runtime/current/bin/node" ]]; then
+  gemininest_node="$gemininest_root/runtime/current/bin/node"
+fi
+case "$gemininest_node" in
+  */*) export PATH="$(dirname "$gemininest_node"):$PATH" ;;
+esac
+case "${1:-help}" in
+  update) exec systemctl --user start --no-block gemininest-update.service ;;
+  logs) exec journalctl --user -u gemininest.service -u gemininest-daemon.service -f ;;
+  *) exec "$gemininest_node" "$gemininest_root/current/apps/gemini-server/scripts/manage.mjs" "$@" ;;
+esac

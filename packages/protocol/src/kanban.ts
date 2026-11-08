@@ -1,7 +1,7 @@
 import type { SessionSettings } from "./index.js";
 
 /** Project boards are shared by the local CodexNest and ClaudeNest instances. */
-export type KanbanProvider = "codex" | "claude";
+export type KanbanProvider = "codex" | "claude" | "gemini";
 /** The application moves cards between working, waiting and ready; the agent never does. */
 export type KanbanStageRole = "todo" | "working" | "waiting" | "ready" | "done";
 export type KanbanStage = {

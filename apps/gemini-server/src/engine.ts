@@ -9,6 +9,7 @@ import type {
   AppSnapshot,
   AttentionRequest,
   AttentionResponse,
+  BrowserThreadStatus,
   ModelOption,
   Project,
   QueuedMessage,
@@ -20,13 +21,22 @@ import type {
   ThreadDraft,
   ThreadSummary,
   UiLanguage,
+  UserInputDraft,
 } from "@codexnest/protocol";
 import { pastedText, serializePastedMessage, validPastedText } from "@codexnest/protocol";
 import { readJson, writeJsonAtomic } from "../../claude-server/src/io";
 import { AttachmentStore } from "../../claude-server/src/attachments";
 import { Account } from "./account";
 import { AcpClient, RpcError } from "./acp";
+import type { StoredArtifactRecord } from "./artifacts";
 import type { Config } from "./config";
+import {
+  geminiReplyCheck,
+  geminiTitleGenerator,
+  type ReplyCheck,
+  type TitleGenerator,
+} from "./title";
+import type { StoredVoice, VoiceSettings, VoiceTimingSample } from "./voice";
 
 export const capabilities: AppCapabilities = {
   codexManagement: false,
@@ -35,22 +45,33 @@ export const capabilities: AppCapabilities = {
   team: false,
   goal: false,
   forks: false,
-  browserIntegration: false,
-  fullTextSearch: false,
+  browserIntegration: true,
+  fullTextSearch: true,
   sessionApprovalGrants: true,
-  skills: false,
+  skills: true,
   gitChanges: true,
-  artifacts: false,
-  appUpdates: false,
+  artifacts: true,
+  appUpdates: true,
   reasoningEffort: true,
 };
 
-type StoredThread = {
+export interface BrowserBindingState {
+  bindingId: string;
+  instanceId: string;
+  attachedAt: number;
+  detachedAt?: number;
+}
+
+export type StoredThread = {
   detail: ThreadDetail;
   nativeId?: string;
   receipts: Record<string, { fingerprint: string; message: QueuedMessage }>;
   options?: any[];
   defaults?: Pick<SessionSettings, "model" | "reasoningEffort">;
+  browserEnabled?: boolean;
+  browserBinding?: BrowserBindingState;
+  artifacts?: StoredArtifactRecord[];
+  customTitle?: boolean;
 };
 type State = {
   version: 1;
@@ -61,8 +82,15 @@ type State = {
   models: ModelOption[];
   taskDefaults: TaskDefaults;
   language: UiLanguage;
+  uiLanguage: UiLanguage;
   permission: "ask" | "full-access";
   permissionVersion: number;
+  voice?: Record<string, StoredVoice>;
+  voiceUploads?: Record<string, string>;
+  voiceSettings?: Partial<VoiceSettings>;
+  voiceTimings?: Record<string, VoiceTimingSample[]>;
+  skillOverrides?: Record<string, boolean>;
+  userInputDrafts?: Record<string, UserInputDraft>;
 };
 const initial = (): State => ({
   version: 1,
@@ -73,8 +101,14 @@ const initial = (): State => ({
   models: [],
   taskDefaults: {},
   language: "ru",
+  uiLanguage: "ru",
   permission: "ask",
   permissionVersion: 1,
+  voice: {},
+  voiceUploads: {},
+  voiceTimings: {},
+  skillOverrides: {},
+  userInputDrafts: {},
 });
 const blankProgress = () => ({
   startedAt: null,
@@ -93,13 +127,49 @@ export const blankDraft = (): ThreadDraft => ({
 });
 const fingerprint = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const KNOWN_ERROR_CODES = new Set([
+  "invalid_request",
+  "validation_failed",
+  "unauthorized",
+  "forbidden",
+  "not_found",
+  "conflict",
+  "draft_conflict",
+  "unavailable",
+  "timeout",
+  "failed",
+  "internal_error",
+]);
 export class AppError extends Error {
+  readonly statusCode: number;
+  readonly code: string;
   constructor(
-    message: string,
-    readonly statusCode = 400,
-    readonly code = "validation_failed",
+    first: string,
+    second: number | string = 400,
+    third: string | number = "validation_failed",
   ) {
-    super(message);
+    if (typeof second === "string" && KNOWN_ERROR_CODES.has(first)) {
+      super(second);
+      this.code = first;
+      this.statusCode =
+        typeof third === "number"
+          ? third
+          : first === "not_found"
+            ? 404
+            : first === "conflict" || first === "draft_conflict"
+              ? 409
+              : first === "forbidden"
+                ? 403
+                : first === "unauthorized"
+                  ? 401
+                  : first === "unavailable"
+                    ? 503
+                    : 400;
+    } else {
+      super(first);
+      this.statusCode = typeof second === "number" ? second : 400;
+      this.code = typeof third === "string" ? third : "validation_failed";
+    }
   }
 }
 export const object = (value: any): Record<string, any> => {
@@ -112,13 +182,23 @@ export function text(value: any, name = "input", limit = 200_000): string {
   return value;
 }
 
+export interface EngineOptions {
+  generateTitle?: TitleGenerator;
+  checkReply?: ReplyCheck;
+}
+
 /** The daemon owns ACP and durable admissions. The HTTP gateway can restart independently. */
 export class Engine extends EventEmitter {
   data = initial();
   readonly instanceId = randomUUID();
   sequence = 0;
+  accepting: boolean;
   readonly account: Account;
   readonly attachments: AttachmentStore;
+  generateTitle?: TitleGenerator;
+  checkReply?: ReplyCheck;
+  private browserStatusProvider?: (threadId: string) => BrowserThreadStatus;
+  private browserMcpProvider?: (threadId: string) => Array<Record<string, unknown>>;
   private client?: AcpClient;
   private starting?: Promise<AcpClient>;
   private connection?: Awaited<ReturnType<Account["connection"]>>;
@@ -146,16 +226,36 @@ export class Engine extends EventEmitter {
   constructor(
     readonly config: Config,
     private readonly clientFactory = (env: NodeJS.ProcessEnv) => new AcpClient(config, env),
+    options: EngineOptions = {},
   ) {
     super();
+    this.accepting = !config.startPaused;
     this.account = new Account(config, () => this.emit("account"));
     this.attachments = new AttachmentStore(join(config.stateDir, "attachments"));
+    const resolveEnv = async () => {
+      if (!this.account.status().authenticated) return null;
+      return this.connection?.env ?? process.env;
+    };
+    const isTestFake = config.agyBin === "/bin/true";
+    this.generateTitle =
+      options.generateTitle ??
+      (isTestFake ? undefined : geminiTitleGenerator({ config, resolveEnv }));
+    this.checkReply =
+      options.checkReply ?? (isTestFake ? undefined : geminiReplyCheck({ config, resolveEnv }));
   }
 
   async initialize() {
     const saved = await readJson<State>(join(this.config.stateDir, "state.json"));
     if (saved && saved.version !== 1) throw new Error("Unsupported GeminiNest state version");
-    if (saved) this.data = saved;
+    if (saved) {
+      const lang = saved.language ?? saved.uiLanguage ?? "ru";
+      this.data = {
+        ...initial(),
+        ...saved,
+        language: lang,
+        uiLanguage: lang,
+      };
+    }
     for (const thread of Object.values(this.data.threads)) {
       const summary = thread.detail.summary;
       if (summary.currentTurnId) {
@@ -180,6 +280,80 @@ export class Engine extends EventEmitter {
   get activeCount() {
     return this.active.size + this.loading.size + this.admissions.size + this.settingThreads.size;
   }
+  canAcceptWork(): boolean {
+    return this.accepting && !this.closing;
+  }
+  prepareRestart(supportedRunnerProtocols?: number[]) {
+    if (
+      Array.isArray(supportedRunnerProtocols) &&
+      supportedRunnerProtocols.length > 0 &&
+      !supportedRunnerProtocols.includes(1)
+    ) {
+      return {
+        canRestart: false,
+        reason: "protocol_incompatible",
+        activeRunnerSessionIds: [...this.active.keys()],
+        unsupportedSessionIds: [...this.active.keys()],
+      };
+    }
+    this.accepting = false;
+    return {
+      canRestart: true,
+      reason: null,
+      activeRunnerSessionIds: [...this.active.keys()],
+      unsupportedSessionIds: [],
+    };
+  }
+  resumeAccepting() {
+    this.accepting = true;
+  }
+  setBrowserStatusProvider(provider: (threadId: string) => BrowserThreadStatus) {
+    this.browserStatusProvider = provider;
+  }
+  setBrowserMcpProvider(provider: (threadId: string) => Array<Record<string, unknown>>) {
+    this.browserMcpProvider = provider;
+  }
+  async mutateBrowser(id: string, fn: (thread: StoredThread) => void): Promise<void> {
+    const thread = this.thread(id);
+    fn(thread);
+    thread.detail.summary.browserStatus =
+      this.browserStatusProvider?.(id) ?? (thread.browserEnabled ? "disconnected" : "disabled");
+    await this.save();
+  }
+  resetOwner(id: string): void {
+    if (!this.active.has(id)) {
+      this.loaded.delete(id);
+    }
+  }
+  async mutateVoice(
+    fn: (voice: Record<string, StoredVoice>, uploads: Record<string, string>) => void,
+  ): Promise<void> {
+    this.data.voice ??= {};
+    this.data.voiceUploads ??= {};
+    fn(this.data.voice, this.data.voiceUploads);
+    await this.save();
+  }
+  async patchThread(
+    id: string,
+    patch: { title?: string; pinned?: boolean; archived?: boolean; projectId?: string | null },
+  ): Promise<ThreadSummary> {
+    const thread = this.thread(id);
+    const summary = thread.detail.summary;
+    if (patch.title !== undefined) {
+      summary.title = text(patch.title, "title", 200);
+      thread.customTitle = true;
+    }
+    if (typeof patch.pinned === "boolean") summary.pinned = patch.pinned;
+    if (typeof patch.archived === "boolean") summary.archived = patch.archived;
+    if (patch.projectId !== undefined) {
+      if (patch.projectId !== null) this.project(patch.projectId);
+      summary.projectId = patch.projectId;
+    }
+    summary.updatedAt = Date.now();
+    await this.save();
+    this.changed(id);
+    return this.summary(id);
+  }
   assertIdle() {
     if (this.activeCount || this.requests.size)
       throw new AppError("Сначала дождитесь завершения задач.", 409, "conflict");
@@ -189,33 +363,55 @@ export class Engine extends EventEmitter {
     if (!result) throw new AppError("Сессия не найдена.", 404, "not_found");
     return result;
   }
+  summary(id: string): ThreadSummary {
+    const thread = this.thread(id);
+    thread.detail.summary.browserStatus =
+      this.browserStatusProvider?.(id) ?? (thread.browserEnabled ? "disconnected" : "disabled");
+    return thread.detail.summary;
+  }
   project(id: string) {
     const result = this.data.projects.find((project) => project.id === id);
     if (!result) throw new AppError("Проект не найден.", 404, "not_found");
     return result;
   }
   detail(id: string): ThreadDetail {
+    const thread = this.thread(id);
+    thread.detail.summary.browserStatus =
+      this.browserStatusProvider?.(id) ?? (thread.browserEnabled ? "disconnected" : "disabled");
     return {
-      ...this.thread(id).detail,
+      ...thread.detail,
       version: { instanceId: this.instanceId, sequence: this.sequence },
     };
   }
   snapshot(): AppSnapshot {
+    const voiceTranscriptions = Object.values(this.data.voice ?? {})
+      .filter((record) => !record.cancelled && !record.applied)
+      .map((record) => structuredClone(record.job))
+      .sort((a, b) => a.createdAt - b.createdAt);
     return {
       provider: "gemini",
       capabilities,
       instanceId: this.instanceId,
       sequence: this.sequence,
       uiLanguage: this.data.language,
-      connection: { state: "ready", message: null, syncedAt: new Date().toISOString() },
+      connection: {
+        state: this.accepting ? "ready" : "starting",
+        message: this.accepting ? null : "GeminiNest перезапускается",
+        syncedAt: new Date().toISOString(),
+      },
       permissionSettings: this.permissions(),
       projects: this.data.projects,
-      threads: Object.values(this.data.threads).map((t) => t.detail.summary),
-      attention: [...this.requests.values()].map((r) => r.attention),
+      threads: Object.keys(this.data.threads).map((id) => this.summary(id)),
+      attention: [...this.requests.values()].map((r) => ({
+        ...r.attention,
+        ...(r.attention.kind === "userInput" && this.data.userInputDrafts?.[r.attention.id]
+          ? { draft: this.data.userInputDrafts[r.attention.id] }
+          : {}),
+      })),
       models: this.data.models,
       taskDefaults: this.data.taskDefaults,
       forkOperations: [],
-      voiceTranscriptions: [],
+      voiceTranscriptions,
     };
   }
   permissions() {
@@ -235,7 +431,10 @@ export class Engine extends EventEmitter {
     });
   }
   changed(id: string) {
-    const detail = this.thread(id).detail;
+    const thread = this.thread(id);
+    const detail = thread.detail;
+    detail.summary.browserStatus =
+      this.browserStatusProvider?.(id) ?? (thread.browserEnabled ? "disconnected" : "disabled");
     detail.summary.queuedMessageCount = detail.queuedMessages.filter(
       (m) => m.deliveryMode !== "steer",
     ).length;
@@ -256,6 +455,7 @@ export class Engine extends EventEmitter {
     );
   }
   save(): Promise<void> {
+    this.data.uiLanguage = this.data.language;
     const snapshot = structuredClone(this.data);
     const task = this.writing
       .catch(() => undefined)
@@ -283,23 +483,33 @@ export class Engine extends EventEmitter {
     return project;
   }
 
-  createThread(projectId: string, clientId: string, draft?: ThreadDraft) {
+  createThread(
+    projectId: string,
+    clientId: string,
+    draft?: ThreadDraft,
+    options?: { cwd?: string; title?: string; model?: string },
+  ) {
     const key = `${projectId}:${clientId}`;
     const pending = this.creations.get(key);
     if (pending) return pending;
-    const task = this.createThreadOnce(projectId, clientId, draft).finally(() =>
+    const task = this.createThreadOnce(projectId, clientId, draft, options).finally(() =>
       this.creations.delete(key),
     );
     this.creations.set(key, task);
     return task;
   }
 
-  private async createThreadOnce(projectId: string, clientId: string, draft?: ThreadDraft) {
+  private async createThreadOnce(
+    projectId: string,
+    clientId: string,
+    draft?: ThreadDraft,
+    options?: { cwd?: string; title?: string; model?: string },
+  ) {
     const key = `${projectId}:${clientId}`;
     const existing = this.data.creations[key];
     if (existing)
       return {
-        thread: this.thread(existing).detail.summary,
+        thread: this.summary(existing),
         draft: this.thread(existing).detail.draft ?? null,
       };
     const project = this.project(projectId);
@@ -325,12 +535,13 @@ export class Engine extends EventEmitter {
       }
     }
     const now = Date.now();
+    const customTitle = Boolean(options?.title?.trim());
     const summary: ThreadSummary = {
       id,
       projectId,
-      title: "Новая сессия",
+      title: options?.title?.trim().slice(0, 200) || "Новая сессия",
       preview: "",
-      cwd: project.path,
+      cwd: options?.cwd || project.path,
       state: "idle",
       unread: false,
       unseen: false,
@@ -341,7 +552,11 @@ export class Engine extends EventEmitter {
       currentTurnId: null,
       queuedMessageCount: 0,
       browserStatus: "disabled",
-      settings: { collaborationMode: "default", ...this.data.taskDefaults },
+      settings: {
+        collaborationMode: "default",
+        ...this.data.taskDefaults,
+        ...(options?.model ? { model: options.model } : {}),
+      },
       relation: { kind: "session", sessionId: id },
       canAcceptDirectInput: true,
     };
@@ -354,6 +569,7 @@ export class Engine extends EventEmitter {
         draft: draft ?? null,
       },
       receipts: {},
+      ...(customTitle ? { customTitle: true } : {}),
     };
     this.data.creations[key] = id;
     await this.save();
@@ -439,13 +655,14 @@ export class Engine extends EventEmitter {
     const task = (async () => {
       const thread = this.thread(id);
       const client = await this.getClient();
+      const mcpServers = this.browserMcpProvider?.(id) ?? [];
       let result: any;
       if (thread.nativeId) {
         this.replaying.add(thread.nativeId);
         try {
           result = await client.request(
             "session/load",
-            { sessionId: thread.nativeId, cwd: thread.detail.summary.cwd, mcpServers: [] },
+            { sessionId: thread.nativeId, cwd: thread.detail.summary.cwd, mcpServers },
             90_000,
           );
         } finally {
@@ -454,7 +671,7 @@ export class Engine extends EventEmitter {
       } else {
         result = await client.request(
           "session/new",
-          { cwd: thread.detail.summary.cwd, mcpServers: [] },
+          { cwd: thread.detail.summary.cwd, mcpServers },
           90_000,
         );
         if (typeof result.sessionId !== "string")
@@ -619,6 +836,12 @@ export class Engine extends EventEmitter {
       )
     )
       throw new AppError("Invalid image attachment");
+    if (!this.accepting)
+      throw new AppError(
+        "GeminiNest перезапускается. Повторите попытку через несколько секунд.",
+        503,
+        "unavailable",
+      );
     if (this.account.loggingIn) throw new AppError("Завершите вход в Google.", 409, "conflict");
     await this.load(id);
     if (!this.active.has(id)) await this.applySettings(thread, thread.detail.summary.settings);
@@ -651,10 +874,32 @@ export class Engine extends EventEmitter {
         draft: cleared,
       });
     }
-    if (thread.detail.summary.title === "Новая сессия")
-      thread.detail.summary.title = rawText.trim().slice(0, 100) || "Вложения";
+    const wasDefaultTitle = thread.detail.summary.title === "Новая сессия" && !thread.customTitle;
+    if (wasDefaultTitle) thread.detail.summary.title = rawText.trim().slice(0, 100) || "Вложения";
     await this.save();
     this.changed(id);
+    if (wasDefaultTitle && rawText.trim() && this.generateTitle) {
+      const fallbackTitle = thread.detail.summary.title;
+      const model =
+        this.data.taskDefaults.titleModel ??
+        thread.detail.summary.settings.model ??
+        this.data.taskDefaults.model;
+      void this.generateTitle(rawText, model)
+        .then(async (generated) => {
+          const current = this.data.threads[id];
+          if (
+            !generated ||
+            !current ||
+            current.customTitle ||
+            current.detail.summary.title !== fallbackTitle
+          )
+            return;
+          current.detail.summary.title = generated;
+          await this.save();
+          this.changed(id);
+        })
+        .catch(() => undefined);
+    }
     if (!queue || !this.active.has(id))
       await this.dispatch(id, message, serializePastedMessage(rawText, input));
     return message;
@@ -808,7 +1053,7 @@ export class Engine extends EventEmitter {
     const update = params.update;
     const id = thread.detail.summary.id;
     if (update.sessionUpdate === "config_option_update") this.configure(thread, update);
-    if (update.sessionUpdate === "session_info_update" && update.title)
+    if (update.sessionUpdate === "session_info_update" && update.title && !thread.customTitle)
       thread.detail.summary.title = String(update.title).slice(0, 200);
     const turn = thread.detail.turns.find((t) => t.id === thread.detail.summary.currentTurnId);
     if (!turn) {

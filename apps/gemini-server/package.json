@@ -15,6 +15,7 @@
     "@fastify/cors": "^11.1.0",
     "@fastify/static": "^10.1.2",
     "@fastify/websocket": "^11.2.0",
+    "@nest-apps/kanban": "*",
     "fastify": "^5.6.1",
     "proxy-chain": "3.0.1"
   },

@@ -1,10 +1,15 @@
 import { readFileSync } from "node:fs";
 import type { Plugin } from "vite";
 
-const brands = { chrome: "CodexNest", claude: "ClaudeNest" } as const;
+const brands = {
+  chrome: "CodexNest",
+  claude: "ClaudeNest",
+  gemini: "GeminiNest",
+} as const;
 
 export default ({ mode }: { mode: string }) => {
-  if (!(mode in brands)) throw new Error("Build with --mode chrome or --mode claude");
+  if (!(mode in brands))
+    throw new Error("Build with --mode chrome, --mode claude, or --mode gemini");
   const appName = brands[mode as keyof typeof brands];
   return {
     publicDir: `public/${mode}`,

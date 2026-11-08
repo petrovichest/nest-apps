@@ -10,6 +10,10 @@ const brands = {
     favicon: "../../client/public/claude/favicon.svg",
     output: "../public/claude/icons",
   },
+  gemininest: {
+    favicon: "../../client/public/gemini/favicon.svg",
+    output: "../public/gemini/icons",
+  },
 };
 const selected = process.argv[2] ? [process.argv[2]] : Object.keys(brands);
 for (const name of selected) {

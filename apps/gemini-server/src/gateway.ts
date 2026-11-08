@@ -1,9 +1,19 @@
 import { createServer, request } from "node:http";
 import { connect, type Socket } from "node:net";
+import { isLoopbackAddress } from "./browser-extension";
 
 /** Restarting this public listener never closes the ACP owner or its pending decisions. */
 export function createGateway(socketPath: string) {
   const server = createServer((req, res) => {
+    const path = req.url?.split("?")[0] ?? "";
+    if (
+      path.startsWith("/api/v1/internal/") &&
+      !isLoopbackAddress(req.socket.remoteAddress ?? "")
+    ) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { code: "forbidden", message: "Internal route" } }));
+      return;
+    }
     const upstream = request(
       { socketPath, path: req.url, method: req.method, headers: req.headers },
       (response) => {

@@ -8,10 +8,45 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
-import type { AttentionResponse, QueueMessageRequest, ThreadDraft } from "@codexnest/protocol";
-import { mergeProjectDraft, pastedText, validPastedText } from "@codexnest/protocol";
+import type {
+  AttentionResponse,
+  QueueMessageRequest,
+  ThreadDraft,
+  TranscriptionProvider,
+  UpdateTranscriptionSettingsRequest,
+  UpdateUserInputDraftRequest,
+} from "@codexnest/protocol";
+import {
+  BROWSER_EXTENSION_WEBSOCKET_PATH,
+  GEMINI_BROWSER_EXTENSION_ORIGIN,
+  mergeProjectDraft,
+  pastedText,
+  validPastedText,
+} from "@codexnest/protocol";
+import {
+  AttachmentTooLargeError,
+  AttachmentValidationError,
+} from "../../claude-server/src/attachments";
 import { readGitChanges } from "../../claude-server/src/git-changes";
+import { AppManager } from "./app-management";
+import { isAuthorizedBrainArtifactPath, resolveGeminiSessionArtifacts } from "./artifacts";
+import {
+  BrowserExtensionError,
+  BrowserExtensionServer,
+  isLoopbackAddress,
+  type BrowserExtensionOptions,
+} from "./browser-extension";
 import { type Engine, AppError, blankDraft, object, text } from "./engine";
+import { registerGeminiKanban } from "./kanban";
+import { nativeTranscriptPath, threadMessageMatch, turnOccurrences } from "./search";
+import { listGeminiSkills, resolveGeminiSkillPath, syncNativeSkillsConfig } from "./skills";
+import {
+  GeminiVoiceJobs,
+  GeminiVoiceService,
+  MAX_TRANSCRIPTION_BYTES,
+  VoiceServiceError,
+  type VoiceUploadQuery,
+} from "./voice";
 
 function equalToken(a: unknown, b: string) {
   if (typeof a !== "string") return false;
@@ -37,13 +72,47 @@ function draft(input: any): ThreadDraft {
   };
 }
 
-export async function buildApp(engine: Engine) {
+export interface BuildAppOptions {
+  voice?: GeminiVoiceService;
+  browserTimeouts?: Pick<BrowserExtensionOptions, "disconnectWaitMs" | "toolResponseMs">;
+  appManager?: AppManager;
+}
+
+export async function buildApp(engine: Engine, options: BuildAppOptions = {}) {
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024 * 1024, forceCloseConnections: true });
   const { config } = engine;
+  const appManager = options.appManager ?? new AppManager(config);
+  const voice =
+    options.voice ??
+    new GeminiVoiceService({
+      config,
+      resolveEnv: async () => (engine.account.status().authenticated ? process.env : null),
+      loadSettings: async () => engine.data.voiceSettings,
+      saveSettings: async (settings) => {
+        engine.data.voiceSettings = settings;
+        await engine.save();
+      },
+      loadTimings: (profile) => engine.data.voiceTimings?.[profile],
+      saveTimings: async (profile, samples) => {
+        (engine.data.voiceTimings ??= {})[profile] = samples;
+        await engine.save();
+      },
+    });
+  await voice.readSettings();
+  const voiceJobs = new GeminiVoiceJobs(engine, voice);
+  await voiceJobs.initialize();
+  await syncNativeSkillsConfig(config.nativeDir, engine.data.skillOverrides ?? {}).catch(
+    () => undefined,
+  );
+
   await app.register(cors, {
-    origin: (origin, cb) => cb(null, !origin || config.allowedOrigins.has(origin)),
+    origin: (origin, cb) =>
+      cb(
+        null,
+        !origin || origin === GEMINI_BROWSER_EXTENSION_ORIGIN || config.allowedOrigins.has(origin),
+      ),
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["authorization", "content-type"],
+    allowedHeaders: ["authorization", "content-type", "x-codexnest-audio-duration-ms"],
   });
   await app.register(websocket, {
     options: { maxPayload: 1024 * 1024 },
@@ -52,7 +121,44 @@ export async function buildApp(engine: Engine) {
       this.websocketServer.close(() => done());
     },
   });
+  const browser = new BrowserExtensionServer({
+    app,
+    engine,
+    config,
+    ...options.browserTimeouts,
+  });
+  browser.registerRoutes();
+  await registerGeminiKanban(app, engine, voice);
+
   app.setErrorHandler((error, _req, reply) => {
+    if (error instanceof VoiceServiceError) {
+      return reply.code(error.statusCode).send({
+        error: { code: error.kind, message: error.message },
+      });
+    }
+    if (error instanceof BrowserExtensionError) {
+      const status =
+        error.code === "not_found"
+          ? 404
+          : error.code === "not_writable"
+            ? 400
+            : error.code === "disconnected"
+              ? 503
+              : 409;
+      return reply.code(status).send({
+        error: { code: error.code, message: error.message },
+      });
+    }
+    if (error instanceof AttachmentTooLargeError) {
+      return reply.code(413).send({
+        error: { code: "payload_too_large", message: error.message },
+      });
+    }
+    if (error instanceof AttachmentValidationError) {
+      return reply.code(400).send({
+        error: { code: "invalid_request", message: error.message },
+      });
+    }
     const status =
       (error as { statusCode?: number }).statusCode ??
       ((error as NodeJS.ErrnoException).code === "ENOENT" ? 404 : 500);
@@ -74,16 +180,29 @@ export async function buildApp(engine: Engine) {
     if (req.url.startsWith("/api/")) reply.header("Cache-Control", "no-store");
   });
   app.addHook("onRequest", async (req, reply) => {
-    if (req.headers.origin && !config.allowedOrigins.has(req.headers.origin))
+    if (
+      req.headers.origin &&
+      req.headers.origin !== GEMINI_BROWSER_EXTENSION_ORIGIN &&
+      !config.allowedOrigins.has(req.headers.origin)
+    )
       return reply.code(403).send({ error: { code: "forbidden", message: "Origin not allowed" } });
     if (req.method === "OPTIONS") return;
     const path = req.url.split("?")[0];
     if (
       !path?.startsWith("/api/") ||
       path === "/api/v1/ui/events" ||
+      path === BROWSER_EXTENSION_WEBSOCKET_PATH ||
+      path.startsWith("/api/v1/internal/browser-mcp/") ||
       path.startsWith("/api/v1/downloads/")
     )
       return;
+    if (
+      path.startsWith("/api/v1/internal/") &&
+      req.socket.remoteAddress &&
+      !isLoopbackAddress(req.socket.remoteAddress)
+    ) {
+      return reply.code(403).send({ error: { code: "forbidden", message: "Internal route" } });
+    }
     if (!equalToken(/^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? "")?.[1], config.token))
       return reply
         .code(401)
@@ -93,13 +212,34 @@ export async function buildApp(engine: Engine) {
     status: "ok",
     app: "gemininest",
     provider: "gemini",
-    serverVersion: "0.1.0",
-    recoveryState: "ready",
+    serverVersion: config.version,
+    recoveryState: engine.accepting ? "ready" : "draining",
+    releasePath: config.releasePath,
     restartProtocolVersion: 1,
     transport: "daemon",
     activeTurnCount: engine.activeCount,
     appServer: { state: "ready", installedVersion: engine.account.cliVersion, message: null },
   }));
+  app.get("/api/v1/settings/app", () => appManager.status());
+  app.post("/api/v1/settings/app/check", () => appManager.check());
+  app.post("/api/v1/settings/app/update", () => appManager.update());
+  app.post("/api/v1/settings/app/force-restart", async (_req, reply) =>
+    reply.code(202).send(await appManager.forceRestart()),
+  );
+  app.post("/api/v1/internal/restart/prepare", async (req) => {
+    const body = req.body ? object(req.body) : {};
+    if (
+      body.supportedRunnerProtocols !== undefined &&
+      (!Array.isArray(body.supportedRunnerProtocols) ||
+        !body.supportedRunnerProtocols.every(Number.isInteger))
+    )
+      throw new AppError("invalid_request", "supportedRunnerProtocols must be an integer array");
+    return engine.prepareRestart(body.supportedRunnerProtocols);
+  });
+  app.post("/api/v1/internal/restart/resume", async () => {
+    engine.resumeAccepting();
+    return { resumed: true };
+  });
   app.get("/api/v1/summary", () => ({
     threadCount: Object.keys(engine.data.threads).length,
     projectCount: engine.data.projects.length,
@@ -152,11 +292,23 @@ export async function buildApp(engine: Engine) {
   });
   app.put("/api/v1/settings/task-defaults", async (req) => {
     const body = object(req.body);
-    for (const key of ["model", "reasoningEffort"] as const)
+    for (const key of [
+      "model",
+      "reasoningEffort",
+      "titleModel",
+      "classificationModel",
+      "replyCheckModel",
+    ] as const)
       if (Object.hasOwn(body, key)) {
         if (body[key] === null) delete engine.data.taskDefaults[key];
         else engine.data.taskDefaults[key] = text(body[key], key, 200);
       }
+    if (Object.hasOwn(body, "classifyTasks")) {
+      if (body.classifyTasks === null) delete engine.data.taskDefaults.classifyTasks;
+      else if (typeof body.classifyTasks === "boolean")
+        engine.data.taskDefaults.classifyTasks = body.classifyTasks;
+      else throw new AppError("Invalid classifyTasks");
+    }
     await engine.save();
     engine.publish({ type: "taskDefaults.changed", taskDefaults: engine.data.taskDefaults });
     return engine.data.taskDefaults;
@@ -169,23 +321,115 @@ export async function buildApp(engine: Engine) {
     engine.publish({ type: "uiLanguage.changed", language });
     return { language };
   });
-  app.get("/api/v1/transcriptions/config", () => ({
-    providers: [],
-    provider: null,
-    localUrl: null,
-    openAiApiKeyConfigured: false,
-    openAiModel: "",
-    language: "ru",
-    refineLocal: false,
-    refinementModel: "",
-    maxRecordingSeconds: 300,
-    maxUploadBytes: 24 * 1024 * 1024,
-    timingEstimate: {
-      sampleCount: 0,
-      estimatedFixedProcessingMs: null,
-      estimatedProcessingMsPerAudioSecond: null,
+  for (const mediaType of ["audio/webm", "audio/mp4"] as const) {
+    app.addContentTypeParser(
+      mediaType,
+      { parseAs: "buffer", bodyLimit: MAX_TRANSCRIPTION_BYTES },
+      (_req, body, done) => done(null, body),
+    );
+  }
+  app.get("/api/v1/transcriptions/config", () => voice.configuration());
+  app.put("/api/v1/settings/transcription", (req) =>
+    voice.updateConfiguration(req.body as UpdateTranscriptionSettingsRequest),
+  );
+  app.post<{
+    Querystring: {
+      provider?: string;
+      language?: string;
+      refine?: string;
+      refinementModel?: string;
+    };
+  }>("/api/v1/transcriptions", { bodyLimit: MAX_TRANSCRIPTION_BYTES }, async (req) => {
+    if (!Buffer.isBuffer(req.body))
+      throw new AppError("invalid_request", "Audio recording is required");
+    const durationHeader = req.headers["x-codexnest-audio-duration-ms"];
+    const audioDurationMs =
+      durationHeader !== undefined && durationHeader !== "" ? Number(durationHeader) : undefined;
+    const provider = req.query.provider as TranscriptionProvider | undefined;
+    if (provider !== undefined && provider !== "local" && provider !== "openai")
+      throw new AppError("invalid_request", "Invalid transcription provider");
+    const refineLocal =
+      req.query.refine === "true" ? true : req.query.refine === "false" ? false : undefined;
+    const transcript = await voice.transcribe(
+      req.body,
+      req.headers["content-type"] ?? "",
+      undefined,
+      {
+        audioDurationMs,
+        provider,
+        language: req.query.language,
+        refineLocal,
+        refinementModel: req.query.refinementModel,
+      },
+    );
+    return {
+      text: transcript,
+      timingEstimate: voice.configuration().timingEstimate,
+    };
+  });
+  app.post<{ Params: { id: string }; Querystring: VoiceUploadQuery }>(
+    "/api/v1/threads/:id/voice-transcriptions",
+    { bodyLimit: MAX_TRANSCRIPTION_BYTES },
+    async (req, reply) => {
+      if (!Buffer.isBuffer(req.body))
+        throw new AppError("invalid_request", "Audio recording is required");
+      const audioDurationMs = Number(req.headers["x-codexnest-audio-duration-ms"]);
+      return reply.code(202).send({
+        job: await voiceJobs.create(
+          req.params.id,
+          req.body,
+          req.headers["content-type"] ?? "",
+          req.query,
+          audioDurationMs,
+        ),
+      });
     },
-  }));
+  );
+  app.delete<{ Params: { id: string } }>(
+    "/api/v1/threads/:id/voice-transcriptions",
+    async (req) => {
+      await voiceJobs.cancel(req.params.id);
+      return { cancelled: true };
+    },
+  );
+  app.post<{ Params: { id: string; jobId: string } }>(
+    "/api/v1/threads/:id/voice-transcriptions/:jobId/retry",
+    async (req) => {
+      await voiceJobs.retry(req.params.id, req.params.jobId);
+      return { retried: true };
+    },
+  );
+  app.get<{ Querystring: { cwd?: string; forceReload?: string } }>(
+    "/api/v1/skills",
+    async (req) => {
+      const requestedCwd = req.query.cwd ? text(req.query.cwd, "cwd", 4096) : undefined;
+      const defaultCwd = requestedCwd ?? engine.data.projects[0]?.path ?? config.configDir;
+      return listGeminiSkills({
+        cwd: defaultCwd,
+        configDir: config.configDir,
+        nativeDir: config.nativeDir,
+        overrides: engine.data.skillOverrides,
+      });
+    },
+  );
+  app.put("/api/v1/skills/config", async (req) => {
+    const body = object(req.body);
+    if (typeof body.enabled !== "boolean")
+      throw new AppError("invalid_request", "enabled must be a boolean");
+    const targetPath = await resolveGeminiSkillPath({
+      path: text(body.path, "path", 4096),
+      cwd: body.cwd ? text(body.cwd, "cwd", 4096) : undefined,
+      projectPaths: engine.data.projects.map((p) => p.path),
+      threadCwds: Object.values(engine.data.threads).map((t) => t.detail.summary.cwd),
+      configDir: config.configDir,
+      nativeDir: config.nativeDir,
+    });
+    (engine.data.skillOverrides ??= {})[targetPath] = body.enabled;
+    await syncNativeSkillsConfig(config.nativeDir, engine.data.skillOverrides);
+    await engine.save();
+    engine.publish({ type: "skills.changed" });
+    return { path: targetPath, enabled: body.enabled };
+  });
 
   async function directories(path?: string) {
     const root = homedir();
@@ -281,59 +525,177 @@ export async function buildApp(engine: Engine) {
       return next;
     },
   );
-  app.get<{ Querystring: { q: string; archived?: string } }>("/api/v1/threads/search", (req) => ({
-    data: Object.values(engine.data.threads)
-      .filter(
-        (t) =>
-          t.detail.summary.archived === (req.query.archived === "true") &&
-          t.detail.summary.title
-            .toLocaleLowerCase()
-            .includes(text(req.query.q, "query", 500).toLocaleLowerCase()),
-      )
-      .map((t) => ({ thread: t.detail.summary, snippet: t.detail.summary.preview })),
-    nextCursor: null,
-  }));
+  app.get<{
+    Querystring: { q?: string; archived?: string; scope?: string; cursor?: string };
+  }>("/api/v1/threads/search", async (req) => {
+    const q = text(req.query.q ?? "", "query", 500).trim();
+    if (!q) return { data: [], nextCursor: null };
+    const archived = req.query.archived === "true";
+    const scope = req.query.scope === "messages" ? "messages" : "titles";
+    if (scope !== "messages") {
+      const needle = q.toLocaleLowerCase();
+      return {
+        data: Object.values(engine.data.threads)
+          .filter(
+            (t) =>
+              t.detail.summary.archived === archived &&
+              t.detail.summary.title.toLocaleLowerCase().includes(needle),
+          )
+          .sort((a, b) => b.detail.summary.updatedAt - a.detail.summary.updatedAt)
+          .map((t) => ({
+            thread: engine.summary(t.detail.summary.id),
+            snippet: t.detail.summary.preview,
+          })),
+        nextCursor: null,
+      };
+    }
+    const offset = req.query.cursor ? Number.parseInt(req.query.cursor, 10) : 0;
+    if (!Number.isInteger(offset) || offset < 0)
+      throw new AppError("invalid_request", "Invalid search cursor");
+    const candidates = Object.values(engine.data.threads)
+      .filter((t) => t.detail.summary.archived === archived)
+      .sort((a, b) => b.detail.summary.updatedAt - a.detail.summary.updatedAt);
+    const matches: Array<{
+      thread: ReturnType<Engine["summary"]>;
+      snippet: string;
+      turnId?: string;
+    }> = [];
+    for (const candidate of candidates) {
+      const match = await threadMessageMatch(
+        candidate.detail.turns,
+        config.nativeDir,
+        candidate.nativeId,
+        q,
+      );
+      if (match) {
+        matches.push({
+          thread: engine.summary(candidate.detail.summary.id),
+          snippet: match.snippet,
+          turnId: match.turnId,
+        });
+      }
+    }
+    const pageSize = 50;
+    const slice = matches.slice(offset, offset + pageSize);
+    return {
+      data: slice,
+      nextCursor: offset + pageSize < matches.length ? String(offset + pageSize) : null,
+    };
+  });
+  app.get<{ Params: { id: string }; Querystring: { q?: string; cursor?: string } }>(
+    "/api/v1/threads/:id/search",
+    (req) => {
+      const detail = engine.detail(req.params.id);
+      const q = text(req.query.q ?? "", "query", 500).trim();
+      const offset = req.query.cursor === undefined ? 0 : Number(req.query.cursor);
+      if (!Number.isSafeInteger(offset) || offset < 0)
+        throw new AppError("invalid_request", "Invalid search cursor");
+      const occurrences = q ? turnOccurrences(detail.turns, q) : [];
+      const pageSize = 20;
+      return {
+        data: occurrences.slice(offset, offset + pageSize),
+        nextCursor: offset + pageSize < occurrences.length ? String(offset + pageSize) : null,
+      };
+    },
+  );
+  app.get<{ Params: { id: string; turnId: string } }>(
+    "/api/v1/threads/:id/turns/:turnId",
+    (req) => {
+      const detail = engine.detail(req.params.id);
+      const turn = detail.turns.find((t) => t.id === req.params.turnId);
+      if (!turn) throw new AppError("not_found", "Turn not found", 404);
+      return {
+        instanceId: engine.instanceId,
+        turn,
+      };
+    },
+  );
+  app.get<{ Params: { id: string } }>("/api/v1/threads/:id/history", (req) => {
+    const detail = engine.detail(req.params.id);
+    return {
+      instanceId: engine.instanceId,
+      anchorTurnId: detail.turns[0]?.id ?? "",
+      turns: [],
+      olderTurnsCursor: null,
+    };
+  });
+  app.get<{ Params: { id: string; turnId: string } }>(
+    "/api/v1/threads/:id/turns/:turnId/items",
+    (req) => {
+      const detail = engine.detail(req.params.id);
+      const turn = detail.turns.find((t) => t.id === req.params.turnId);
+      if (!turn) throw new AppError("not_found", "Turn not found", 404);
+      return {
+        threadId: req.params.id,
+        turnId: req.params.turnId,
+        items: turn.items,
+      };
+    },
+  );
+  app.post<{ Params: { id: string } }>("/api/v1/threads/:id/compact", async (req, reply) => {
+    await engine.send(req.params.id, {
+      input: "/compact",
+      clientMessageId: `compact:${randomUUID()}`,
+    });
+    return reply.code(202).send({ compacted: true });
+  });
   app.get<{ Params: { id: string } }>("/api/v1/threads/:id", (req) => engine.detail(req.params.id));
   app.post<{ Params: { id: string } }>("/api/v1/threads/:id/refresh", (req) => ({
     snapshot: engine.snapshot(),
     detail: engine.detail(req.params.id),
   }));
-  app.get<{ Params: { id: string } }>("/api/v1/threads/:id/reference", (req) => ({
-    threadId: engine.thread(req.params.id).nativeId || req.params.id,
-    cwd: engine.thread(req.params.id).detail.summary.cwd,
-    historyPath: null,
-  }));
+  app.get<{ Params: { id: string } }>("/api/v1/threads/:id/reference", async (req) => {
+    const thread = engine.thread(req.params.id);
+    return {
+      threadId: thread.nativeId || req.params.id,
+      cwd: thread.detail.summary.cwd,
+      historyPath: await nativeTranscriptPath(config.nativeDir, thread.nativeId),
+    };
+  });
   app.get<{ Params: { id: string } }>("/api/v1/threads/:id/git-changes", (req) =>
     readGitChanges(engine.thread(req.params.id).detail.summary.cwd),
   );
-  app.get<{ Params: { id: string } }>("/api/v1/threads/:id/artifacts", (req) => {
-    engine.thread(req.params.id);
-    return { capability: "unavailable", artifacts: [] };
+  app.get<{ Params: { id: string } }>("/api/v1/threads/:id/artifacts", async (req) => {
+    const thread = engine.thread(req.params.id);
+    const resolved = await resolveGeminiSessionArtifacts({
+      cwd: thread.detail.summary.cwd,
+      nativeDir: config.nativeDir,
+      nativeId: thread.nativeId,
+      stored: thread.artifacts,
+      latestTurnId: thread.detail.turns.at(-1)?.id ?? null,
+    });
+    return {
+      capability: "explicit" as const,
+      artifacts: resolved.artifacts,
+    };
   });
   app.patch<{ Params: { id: string } }>("/api/v1/threads/:id/settings", (req) =>
     engine.settings(req.params.id, object(req.body)),
   );
   app.patch<{ Params: { id: string } }>("/api/v1/threads/:id", async (req) => {
-    const summary = engine.thread(req.params.id).detail.summary;
     const body = object(req.body);
-    if (body.title !== undefined) summary.title = text(body.title, "title", 200);
-    if (typeof body.pinned === "boolean") summary.pinned = body.pinned;
-    if (body.projectId !== undefined) {
-      if (body.projectId !== null) engine.project(body.projectId);
-      summary.projectId = body.projectId;
+    if (typeof body.browserEnabled === "boolean") {
+      if (body.browserEnabled) await browser.enableThread(req.params.id);
+      else await browser.disableThread(req.params.id);
     }
-    await engine.save();
-    engine.changed(summary.id);
-    return summary;
+    const hasMetaPatch =
+      body.title !== undefined || typeof body.pinned === "boolean" || body.projectId !== undefined;
+    if (hasMetaPatch) {
+      return engine.patchThread(req.params.id, {
+        ...(body.title !== undefined ? { title: body.title } : {}),
+        ...(typeof body.pinned === "boolean" ? { pinned: body.pinned } : {}),
+        ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
+      });
+    }
+    return engine.summary(req.params.id);
   });
+  app.delete<{ Params: { id: string } }>("/api/v1/threads/:id/browser-binding", (req) =>
+    browser.detachThread(req.params.id),
+  );
   for (const action of ["archive", "unarchive"] as const)
-    app.post<{ Params: { id: string } }>(`/api/v1/threads/:id/${action}`, async (req) => {
-      const summary = engine.thread(req.params.id).detail.summary;
-      summary.archived = action === "archive";
-      await engine.save();
-      engine.changed(summary.id);
-      return summary;
-    });
+    app.post<{ Params: { id: string } }>(`/api/v1/threads/:id/${action}`, (req) =>
+      engine.patchThread(req.params.id, { archived: action === "archive" }),
+    );
   for (const action of ["read", "viewed"] as const)
     app.put<{ Params: { id: string } }>(`/api/v1/threads/:id/${action}`, async (req) => {
       const summary = engine.thread(req.params.id).detail.summary;
@@ -422,6 +784,20 @@ export async function buildApp(engine: Engine) {
     engine.respond(req.params.id, object(req.body) as AttentionResponse);
     return { accepted: true };
   });
+  app.put<{ Params: { id: string } }>("/api/v1/attention/:id/draft", async (req) => {
+    const body = object(req.body) as UpdateUserInputDraftRequest;
+    const previous = engine.data.userInputDrafts?.[req.params.id];
+    const saved = {
+      answers: body.answers ?? {},
+      currentQuestionId: body.currentQuestionId ?? null,
+      ...(body.appliedRecordingIds ? { appliedRecordingIds: body.appliedRecordingIds } : {}),
+      revision: (previous?.revision ?? 0) + 1,
+      updatedAt: Date.now(),
+    };
+    (engine.data.userInputDrafts ??= {})[req.params.id] = saved;
+    await engine.save();
+    return saved;
+  });
   app.addContentTypeParser("application/octet-stream", (_req, stream, done) => done(null, stream));
   for (const scope of ["projects", "threads"] as const)
     app.post<{ Params: { id: string }; Querystring: { name: string; mediaType: string } }>(
@@ -451,11 +827,21 @@ export async function buildApp(engine: Engine) {
     },
   );
   app.post<{ Params: { id: string } }>("/api/v1/threads/:id/downloads", async (req) => {
+    const thread = engine.thread(req.params.id);
     const path = await realpath(text(object(req.body).path, "path", 4096));
-    const cwd = await realpath(engine.thread(req.params.id).detail.summary.cwd);
+    const cwd = await realpath(thread.detail.summary.cwd);
     const nested = relative(cwd, path);
     const attachment = await engine.attachments.resolveDownload(req.params.id, path);
-    if (!attachment && (nested === ".." || nested.startsWith(`..${sep}`) || isAbsolute(nested)))
+    const brainArtifact = await isAuthorizedBrainArtifactPath(
+      config.nativeDir,
+      thread.nativeId,
+      path,
+    );
+    if (
+      !attachment &&
+      !brainArtifact &&
+      (nested === ".." || nested.startsWith(`..${sep}`) || isAbsolute(nested))
+    )
       throw new AppError("Файл находится вне каталога задачи.", 403, "forbidden");
     const info = await stat(path);
     if (!info.isFile()) throw new AppError("Выберите файл.");
@@ -531,5 +917,8 @@ export async function buildApp(engine: Engine) {
         : reply.sendFile("index.html"),
     );
   }
+  app.addHook("onClose", async () => {
+    await voiceJobs.close();
+  });
   return app;
 }

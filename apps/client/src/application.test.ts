@@ -20,13 +20,19 @@ describe("application variants", () => {
     const settings = { baseUrl: "https://gemini.home.arpa", token: "gemini-secret" };
     const api = new ApiClient(settings);
     expect(application.name).toBe("GeminiNest");
-    expect(application.supportsKanban).toBe(false);
+    expect(application.supportsKanban).toBe(true);
     expect(application.capabilities).toMatchObject({
+      codexManagement: false,
+      rateLimits: false,
+      plan: false,
       team: false,
       goal: false,
-      appUpdates: false,
-      browserIntegration: false,
-      skills: false,
+      forks: false,
+      appUpdates: true,
+      browserIntegration: true,
+      fullTextSearch: true,
+      skills: true,
+      artifacts: true,
     });
     expect(api.webSocketUrl()).toBe("wss://gemini.home.arpa/api/v1/ui/events");
     await api.health();

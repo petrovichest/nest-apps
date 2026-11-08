@@ -44,6 +44,7 @@ jobs:
           npm run package -w @codexnest/extension
           unzip -t apps/extension/artifacts/codexnest-browser-*.zip
           unzip -t apps/extension/artifacts/claudenest-browser-*.zip
+          unzip -t apps/extension/artifacts/gemininest-browser-*.zip
           test -s apps/client/dist/index.html
           test -s apps/client/dist-claude/index.html
           test -s apps/client/dist-gemini/index.html
@@ -65,6 +66,7 @@ jobs:
             apps/claude-server/dist/
             apps/extension/artifacts/codexnest-browser-*.zip
             apps/extension/artifacts/claudenest-browser-*.zip
+            apps/extension/artifacts/gemininest-browser-*.zip
           if-no-files-found: error
           retention-days: 1
 
@@ -119,7 +121,8 @@ jobs:
           sed -e "s/^claudenest_default_version=.*/claudenest_default_version=\"$version\"/" \
               -e "s/^claudenest_default_ref=.*/claudenest_default_ref=\"$GITHUB_SHA\"/" \
               deploy/claudenest/install.sh > release/install-claudenest.sh
-          sed -e "s/^gemininest_default_ref=.*/gemininest_default_ref=\"$GITHUB_SHA\"/" \
+          sed -e "s/^gemininest_default_version=.*/gemininest_default_version=\"$version\"/" \
+              -e "s/^gemininest_default_ref=.*/gemininest_default_ref=\"$GITHUB_SHA\"/" \
               deploy/gemininest/install.sh > release/install-gemininest.sh
           chmod 0755 release/*.sh
           bash -n release/install.sh release/install-claudenest.sh release/install-gemininest.sh
@@ -136,6 +139,11 @@ jobs:
           cp "${claude_archives[0]}" release/
           cp "${claude_archives[0]}" release/claudenest-browser-latest.zip
           unzip -t release/claudenest-browser-latest.zip
+          gemini_archives=(apps/extension/artifacts/gemininest-browser-[0-9]*.zip)
+          test "${#gemini_archives[@]}" -eq 1
+          cp "${gemini_archives[0]}" release/
+          cp "${gemini_archives[0]}" release/gemininest-browser-latest.zip
+          unzip -t release/gemininest-browser-latest.zip
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
@@ -246,13 +254,13 @@ jobs:
             tag=rolling-latest
             latest=true
           fi
-          release_assets=(release/install.sh release/install-claudenest.sh release/install-gemininest.sh release/codexnest-browser-*.zip release/claudenest-browser-*.zip)
+          release_assets=(release/install.sh release/install-claudenest.sh release/install-gemininest.sh release/codexnest-browser-*.zip release/claudenest-browser-*.zip release/gemininest-browser-*.zip)
           printf 'CodexNest and ClaudeNest from verified commit `%s`.\n\nCodexNest: `curl -fsSL https://github.com/%s/releases/download/%s/install.sh | bash`\n\nClaudeNest: `curl -fsSL https://github.com/%s/releases/download/%s/install-claudenest.sh | bash`\n\nThe installers build the server and web client from this exact commit.\n' \
             "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$tag" "$GITHUB_REPOSITORY" "$tag" > release/notes.md
           printf '\nGeminiNest (Google AI Ultra through Antigravity ACP): `curl -fsSL https://github.com/%s/releases/download/%s/install-gemininest.sh | bash`\n' "$GITHUB_REPOSITORY" "$tag" >> release/notes.md
           if [[ "$GITHUB_REF_TYPE" != tag ]]; then
             release_assets+=(release/CodexNest-latest.apk release/ClaudeNest-latest.apk release/GeminiNest-latest.apk)
-            printf '\nThe signed CodexNest, ClaudeNest and GeminiNest Android APKs and the CodexNest and ClaudeNest Chrome extensions are built from the same verified commit.\n' >> release/notes.md
+            printf '\nThe signed CodexNest, ClaudeNest and GeminiNest Android APKs and the CodexNest, ClaudeNest and GeminiNest Chrome extensions are built from the same verified commit.\n' >> release/notes.md
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${release_assets[@]}" --clobber

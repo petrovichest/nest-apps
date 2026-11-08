@@ -611,7 +611,7 @@ export function Composer({
   useEffect(() => {
     const opened = skillMenuOpen && !skillMenuWasOpen.current;
     skillMenuWasOpen.current = skillMenuOpen;
-    if (opened && application.isClaude && skillCatalog) refreshSkills();
+    if (opened && !application.isCodex && skillCatalog) refreshSkills();
   }, [refreshSkills, skillCatalog, skillMenuOpen]);
   const matchingSkills = useMemo(
     () => filterSkills(skills.catalog?.skills ?? [], activeSkillToken?.query ?? "", language),

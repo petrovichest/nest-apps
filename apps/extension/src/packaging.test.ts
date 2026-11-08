@@ -34,22 +34,47 @@ describe("browser packaging", () => {
   it("declares the Chrome ZIP package names", async () => {
     const script = await readFile(resolve(extensionRoot, "scripts/package.mjs"), "utf8");
     expect(script).toContain("${artifactPrefixes[variant]}-browser-${manifest.version}.zip");
-    expect(script).toContain('chrome: "codexnest", claude: "claudenest"');
+    expect(script).toContain('chrome: "codexnest", claude: "claudenest", gemini: "gemininest"');
   });
 
-  it("gives the ClaudeNest build its own identity and icons", async () => {
-    const [codex, claude] = await Promise.all([
+  it("gives the ClaudeNest and GeminiNest builds their own identities and icons", async () => {
+    const [codex, claude, gemini] = await Promise.all([
       readJson("public/chrome/manifest.json"),
       readJson("public/claude/manifest.json"),
+      readJson("public/gemini/manifest.json"),
     ]);
     expect(claude).toMatchObject({ name: "ClaudeNest Browser", version: codex.version });
+    expect(gemini).toMatchObject({ name: "GeminiNest Browser", version: codex.version });
     expect(claude.key).toMatch(/^MIIB/);
+    expect(gemini.key).toMatch(/^MIIB/);
     expect(claude.key).not.toBe(codex.key);
+    expect(gemini.key).not.toBe(codex.key);
+    expect(gemini.key).not.toBe(claude.key);
     expect(Object.values(claude.icons)).toEqual(
       expect.arrayContaining(["icons/claudenest-16.png", "icons/claudenest-128.png"]),
     );
+    expect(Object.values(gemini.icons)).toEqual(
+      expect.arrayContaining(["icons/gemininest-16.png", "icons/gemininest-128.png"]),
+    );
     expect({
       ...claude,
+      name: "",
+      short_name: "",
+      description: "",
+      key: "",
+      icons: {},
+      action: {},
+    }).toEqual({
+      ...codex,
+      name: "",
+      short_name: "",
+      description: "",
+      key: "",
+      icons: {},
+      action: {},
+    });
+    expect({
+      ...gemini,
       name: "",
       short_name: "",
       description: "",
