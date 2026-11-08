@@ -5,6 +5,8 @@ gemininest_root="${XDG_DATA_HOME:-$HOME/.local/share}/gemininest"
 gemininest_node="${GEMININEST_NODE_BIN:-node}"
 if [[ -x "$gemininest_root/runtime/current/bin/node" ]]; then
   gemininest_node="$gemininest_root/runtime/current/bin/node"
+elif [[ "$gemininest_node" == "node" && -x "$HOME/.local/node-v24/bin/node" ]]; then
+  gemininest_node="$HOME/.local/node-v24/bin/node"
 fi
 case "$gemininest_node" in
   */*) export PATH="$(dirname "$gemininest_node"):$PATH" ;;

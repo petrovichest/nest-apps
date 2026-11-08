@@ -17,6 +17,7 @@ import { basename, delimiter, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
+process.env.PATH = `${resolve(process.execPath, "..")}${delimiter}${process.env.PATH || ""}`;
 const configRoot =
   process.env.GEMININEST_CONFIG_DIR ||
   join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "gemininest");

@@ -5,7 +5,13 @@ gemininest_default_version="__GEMININEST_VERSION__"
 gemininest_default_ref="__GEMININEST_REF__"
 gemininest_ref="${GEMININEST_REF:-$gemininest_default_ref}"
 gemininest_root="${XDG_DATA_HOME:-$HOME/.local/share}/gemininest"
+gemininest_config_root="${GEMININEST_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gemininest}"
 gemininest_repo="${GEMININEST_REPOSITORY_URL:-https://github.com/petrovichest/nest-apps.git}"
+if [[ -x "$gemininest_root/runtime/current/bin/node" ]]; then
+  export PATH="$gemininest_root/runtime/current/bin:$PATH"
+elif [[ -x "$HOME/.local/node-v24/bin/node" ]]; then
+  export PATH="$HOME/.local/node-v24/bin:$PATH"
+fi
 command -v git >/dev/null
 command -v npm >/dev/null
 command -v curl >/dev/null
@@ -41,7 +47,7 @@ if [[ ! -e "$gemininest_release" ]]; then
     printf '%s\n' "$gemininest_commit" > .gemininest-built
   )
 fi
-if [[ -L "$gemininest_root/current" ]]; then
+if [[ -L "$gemininest_root/current" || -f "$gemininest_config_root/server.env" ]]; then
   node "$gemininest_release/apps/gemini-server/scripts/manage.mjs" update --release "$gemininest_release"
 else
   node "$gemininest_release/apps/gemini-server/scripts/manage.mjs" setup --release "$gemininest_release" --start
