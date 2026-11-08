@@ -35,8 +35,8 @@
     "typecheck": "npm run build -w @codexnest/protocol && npm run build -w @nest-apps/kanban && npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "protocol:generate": "npm run protocol:generate -w @codexnest/server",
-    "build:gemini": "npm run build -w @codexnest/protocol && npm run build -w @gemininest/server && npm run build:gemini -w @codexnest/client",
-    "dev:gemini": "npm run build -w @codexnest/protocol && concurrently -k -n gemini-api,gemini-ui \"npm run dev -w @gemininest/server\" \"npm run dev:gemini -w @codexnest/client\""
+    "build:gemini": "npm run build -w @codexnest/protocol && npm run build -w @nest-apps/kanban && npm run build -w @gemininest/server && npm run build:gemini -w @codexnest/client",
+    "dev:gemini": "npm run build -w @codexnest/protocol && npm run build -w @nest-apps/kanban && concurrently -k -n gemini-api,gemini-ui \"npm run dev -w @gemininest/server\" \"npm run dev:gemini -w @codexnest/client\""
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

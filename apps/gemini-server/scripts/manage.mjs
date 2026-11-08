@@ -96,6 +96,8 @@ async function executable(name) {
 async function verifyRelease(target) {
   if (!target) throw new Error("--release /absolute/immutable/git-checkout is required");
   for (const path of [
+    "packages/protocol/dist/index.js",
+    "packages/kanban/dist/index.js",
     "apps/gemini-server/dist/index.js",
     "apps/gemini-server/dist/daemon.js",
     "apps/client/dist-gemini/index.html",
@@ -203,6 +205,7 @@ async function waitHealthy(target, recoveryState = "ready") {
     try {
       const value = await api("health");
       if (value.recoveryState === recoveryState && value.releasePath === target) return;
+      if (recoveryState === "ready" && value.status === "ok" && !("recoveryState" in value)) return;
     } catch {
       /* Restart still in progress. */
     }
