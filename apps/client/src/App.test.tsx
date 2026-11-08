@@ -18,6 +18,7 @@ import type {
 import { mergeProjectDraft } from "@codexnest/protocol";
 
 import { App } from "./App";
+import { ApiClientError } from "./api";
 import { useTheme } from "./useTheme";
 import type { ForkOperationSummary } from "./forks";
 import { I18nProvider } from "./i18n";
@@ -3737,7 +3738,7 @@ describe("App routing and navigation", () => {
     expect(api.createProjectThread).not.toHaveBeenCalled();
   });
 
-  it("does not activate a created thread after navigating away from its preparation", async () => {
+  it("sends the first message after navigating away without activating its thread", async () => {
     const creation = deferred<{ thread: ThreadSummary }>();
     const abandonedProject = testProject("abandoned-project", "Отменяемый");
     const api = mockConnection(snapshot([baseThread], [defaultProject(), abandonedProject]));
@@ -3759,13 +3760,182 @@ describe("App routing and navigation", () => {
     ).toBeInTheDocument();
 
     creation.resolve({ thread: { ...baseThread, id: "abandoned", title: "Оставленная задача" } });
-    await act(async () => Promise.resolve());
+    await waitFor(() =>
+      expect(api.sendReliable).toHaveBeenCalledWith(
+        "abandoned",
+        expect.objectContaining({ input: "Первое сообщение" }),
+      ),
+    );
+    await waitFor(() => expect(newSessionDrafts.has(abandonedProject.id)).toBe(false));
+    expect(api.sendReliable).toHaveBeenCalledOnce();
 
     expect(api.dispatch).not.toHaveBeenCalledWith({
       type: "thread",
       thread: expect.objectContaining({ id: "abandoned" }),
     });
     expect(screen.queryByText("Оставленная задача")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Новая задача в истории" }),
+    ).toBeInTheDocument();
+  });
+
+  it("finishes an in-flight first send before opening another session in the same project", async () => {
+    const creation = deferred<{ thread: ThreadSummary }>();
+    const api = mockConnection(snapshot([baseThread]));
+    api.createProjectThread.mockReturnValue(creation.promise);
+    renderApp("/threads/newer");
+    fireEvent.click(screen.getByRole("button", { name: "Создать новую сессию в проекте Проект" }));
+    const textbox = await screen.findByRole("textbox", { name: "Сообщение для Codex" });
+    fireEvent.change(textbox, { target: { value: "Отправить один раз" } });
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    await waitFor(() => expect(api.createProjectThread).toHaveBeenCalledOnce());
+    const firstMessageId = (newSessionDrafts.get("project") as { submission: { id: string } })
+      .submission.id;
+
+    fireEvent.click(screen.getByRole("button", { name: "Создать новую сессию в проекте Проект" }));
+    await act(async () => Promise.resolve());
+    expect(api.createProjectThread).toHaveBeenCalledOnce();
+    creation.resolve({ thread: { ...baseThread, id: "created" } });
+
+    await waitFor(() => expect(api.sendReliable).toHaveBeenCalledOnce());
+    expect(api.sendReliable).toHaveBeenCalledWith(
+      "created",
+      expect.objectContaining({
+        clientMessageId: firstMessageId,
+        input: "Отправить один раз",
+      }),
+    );
+    expect(await screen.findByRole("textbox", { name: "Сообщение для Codex" })).toHaveValue("");
+    expect(screen.getByRole("heading", { level: 1, name: "Новая задача" })).toBeInTheDocument();
+    expect(api.createProjectThread).toHaveBeenCalledOnce();
+
+    api.createProjectThread.mockResolvedValue({ thread: { ...baseThread, id: "second" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Сообщение для Codex" }), {
+      target: { value: "Следующая задача" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+    await waitFor(() => expect(api.sendReliable).toHaveBeenCalledTimes(2));
+    expect(api.sendReliable).toHaveBeenLastCalledWith(
+      "second",
+      expect.objectContaining({ input: "Следующая задача" }),
+    );
+  });
+
+  it("applies settings and preserves immediate-send intent after leaving a new session", async () => {
+    const settings = deferred<ThreadSummary>();
+    const created = {
+      ...baseThread,
+      id: "created",
+      settings: { collaborationMode: "default" as const },
+    };
+    const appSnapshot = snapshot([baseThread]);
+    appSnapshot.models = [
+      {
+        id: "gpt",
+        displayName: "GPT",
+        description: "",
+        isDefault: true,
+        reasoningEfforts: [],
+        serviceTiers: [],
+        supportsPersonality: false,
+      },
+    ];
+    const api = mockConnection(appSnapshot);
+    api.createProjectThread.mockResolvedValue({ thread: created });
+    api.updateThreadSettings.mockReturnValue(settings.promise);
+    renderApp("/threads/newer");
+    fireEvent.click(screen.getByRole("button", { name: "Создать новую сессию в проекте Проект" }));
+    const textbox = await screen.findByRole("textbox", { name: "Сообщение для Codex" });
+    fireEvent.change(textbox, { target: { value: "Составь план" } });
+    fireEvent.click(screen.getByRole("button", { name: "Включить режим планирования" }));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Сообщение для Codex" }), {
+      key: "Enter",
+      metaKey: true,
+    });
+    await waitFor(() => expect(api.createProjectThread).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(api.updateThreadSettings).toHaveBeenCalledWith("created", {
+        collaborationMode: "plan",
+      }),
+    );
+    fireEvent.click(screen.getByRole("link", { name: "Новая задача в истории" }));
+    expect(api.sendReliable).not.toHaveBeenCalled();
+    settings.resolve({ ...created, settings: { collaborationMode: "plan" } });
+    await waitFor(() => expect(api.sendReliable).toHaveBeenCalledOnce());
+    expect(api.sendQueuedNow).toHaveBeenCalledWith(
+      "created",
+      api.sendReliable.mock.calls[0]?.[1].clientMessageId,
+    );
+    await waitFor(() => expect(newSessionDrafts.has("project")).toBe(false));
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Новая задача в истории" }),
+    ).toBeInTheDocument();
+  });
+
+  it("continues first-send retries after switching to another session", async () => {
+    const creation = deferred<{ thread: ThreadSummary }>();
+    const api = mockConnection(snapshot([baseThread]));
+    api.createProjectThread
+      .mockReturnValueOnce(creation.promise)
+      .mockResolvedValue({ thread: { ...baseThread, id: "created" } });
+    renderApp("/threads/newer");
+    fireEvent.click(screen.getByRole("button", { name: "Создать новую сессию в проекте Проект" }));
+    const textbox = await screen.findByRole("textbox", { name: "Сообщение для Codex" });
+    fireEvent.change(textbox, { target: { value: "Повтори отправку" } });
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    await waitFor(() => expect(api.createProjectThread).toHaveBeenCalledOnce());
+    const creationId = api.createProjectThread.mock.calls[0]?.[1];
+    fireEvent.click(screen.getByRole("link", { name: "Новая задача в истории" }));
+    creation.reject(new ApiClientError("connection_failed", "Нет связи"));
+    await waitFor(() => expect(api.sendReliable).toHaveBeenCalledOnce(), { timeout: 2500 });
+    expect(api.createProjectThread).toHaveBeenCalledTimes(2);
+    expect(api.createProjectThread.mock.calls[1]?.[1]).toBe(creationId);
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Новая задача в истории" }),
+    ).toBeInTheDocument();
+  });
+
+  it("includes a pending image in the first send after leaving its editor", async () => {
+    const imageRead = deferred<string>();
+    class PendingFileReader {
+      result: string | null = null;
+      onload: (() => void) | null = null;
+      readAsDataURL() {
+        void imageRead.promise.then((result) => {
+          this.result = result;
+          this.onload?.();
+        });
+      }
+    }
+    vi.stubGlobal("FileReader", PendingFileReader);
+    const api = mockConnection(snapshot([baseThread]));
+    api.createProjectThread.mockResolvedValue({ thread: { ...baseThread, id: "created" } });
+    const view = renderApp("/threads/newer");
+    fireEvent.click(screen.getByRole("button", { name: "Создать новую сессию в проекте Проект" }));
+    const textbox = await screen.findByRole("textbox", { name: "Сообщение для Codex" });
+    fireEvent.change(textbox, { target: { value: "Посмотри изображение" } });
+    fireEvent.change(view.container.querySelector('input[type="file"]')!, {
+      target: { files: [new File(["image"], "pending.png", { type: "image/png" })] },
+    });
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    fireEvent.click(screen.getByRole("link", { name: "Новая задача в истории" }));
+    await act(async () => Promise.resolve());
+    expect(api.createProjectThread).not.toHaveBeenCalled();
+    imageRead.resolve("data:image/png;base64,aW1hZ2U=");
+    await waitFor(() =>
+      expect(api.sendReliable).toHaveBeenCalledWith(
+        "created",
+        expect.objectContaining({
+          input: "Посмотри изображение",
+          images: ["data:image/png;base64,aW1hZ2U="],
+          projectDraft: { projectId: "project", updatedAt: expect.any(Number) },
+        }),
+      ),
+    );
+    await waitFor(() => expect(newSessionDrafts.has("project")).toBe(false));
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Новая задача в истории" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps each project editor independent while navigating between new sessions", async () => {
@@ -5063,6 +5233,7 @@ function mockConnection(
     updateThread: vi.fn().mockResolvedValue(undefined),
     archive: vi.fn().mockResolvedValue(undefined),
     startTurn: vi.fn().mockResolvedValue({ turnId: "turn" }),
+    sendQueuedNow: vi.fn().mockResolvedValue({ turnId: "turn" }),
     interrupt: vi.fn().mockResolvedValue(undefined),
     readProjectDraft: vi.fn(async (id: string) => sharedProjectDrafts.get(id) ?? null),
     updateProjectDraft: vi.fn(

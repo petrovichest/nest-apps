@@ -167,6 +167,8 @@ type LocalArtifactOpener = (artifact: ArtifactDescriptor, opener: HTMLButtonElem
 const ORCHESTRATION_CHANGED_PATH_LIMIT = 20;
 // A reopened project must await the previous workspace's final draft write.
 const pendingNewSessionDraftSaves = new Map<string, Promise<void>>();
+// A reopened project must not recover a submission still owned by its previous workspace.
+const pendingNewSessionSubmissions = new WeakMap<ApiClient, Map<string, Promise<void>>>();
 function newSessionDraftSaveKey(settings: ApiClient["settings"], projectId: string): string {
   return `${settings.baseUrl}\0${settings.token}\0${projectId}`;
 }
@@ -1317,7 +1319,9 @@ export function ThreadPage({
 
   function preparationGenerationActive(generation: number): boolean {
     return (
-      preparationAliveRef.current &&
+      (preparationAliveRef.current ||
+        preparationOperationRef.current !== null ||
+        preparationVoiceOperationRef.current !== null) &&
       preparationGenerationRef.current === generation &&
       preparationRef.current.active &&
       !preparationDiscardRef.current
@@ -1330,9 +1334,26 @@ export function ThreadPage({
 
   function invalidatePreparation(): void {
     preparationAliveRef.current = false;
+    // Navigation releases the view, not a send the user has already requested.
+    if (preparationOperationRef.current || preparationVoiceOperationRef.current) return;
     preparationGenerationRef.current += 1;
     for (const waiter of attachmentWaitersRef.current) waiter.resolve();
     attachmentWaitersRef.current.clear();
+  }
+
+  function trackPreparationOperation(operation: Promise<void>): void {
+    let submissions = pendingNewSessionSubmissions.get(api);
+    if (!submissions) {
+      submissions = new Map();
+      pendingNewSessionSubmissions.set(api, submissions);
+    }
+    const projectId = preparationRef.current.projectId;
+    submissions.set(projectId, operation);
+    void operation
+      .finally(() => {
+        if (submissions.get(projectId) === operation) submissions.delete(projectId);
+      })
+      .catch(() => undefined);
   }
 
   function enqueuePreparationSave(
@@ -1377,7 +1398,7 @@ export function ThreadPage({
             snapshot.sharedBase = draft;
             dispatch({ type: "projectDraft", projectId: snapshot.projectId, draft });
             if (
-              preparationAliveRef.current &&
+              preparationGenerationActive(preparationGenerationRef.current) &&
               preparationRef.current.projectId === snapshot.projectId
             ) {
               const current = preparationRef.current;
@@ -2030,6 +2051,7 @@ export function ThreadPage({
       }
     })();
     preparationVoiceOperationRef.current = operation;
+    trackPreparationOperation(operation);
     void operation
       .finally(() => {
         if (preparationVoiceOperationRef.current === operation)
@@ -2138,6 +2160,14 @@ export function ThreadPage({
     let active = true;
     const generation = preparationGenerationRef.current;
     const hydration = (async () => {
+      const submission = pendingNewSessionSubmissions.get(api)?.get(newSessionProject.id);
+      if (
+        submission !== preparationOperationRef.current &&
+        submission !== preparationVoiceOperationRef.current
+      ) {
+        await submission?.catch(() => undefined);
+      }
+      if (!active || !preparationGenerationActive(generation)) return;
       await pendingNewSessionDraftSaves.get(
         newSessionDraftSaveKey(api.settings, newSessionProject.id),
       );
@@ -2309,10 +2339,7 @@ export function ThreadPage({
     if (preparationRef.current.submission?.deliveryError?.retryable === false) return;
     setError(null);
     const generation = preparationGenerationRef.current;
-    const operation = submitPreparingSession(
-      newSessionProject,
-      preparationRef.current.submission.intent,
-    )
+    void submitPreparingSession(newSessionProject, preparationRef.current.submission.intent)
       .catch(async (caught: unknown) => {
         if (caught === PREPARATION_SUPERSEDED) return;
         if (
@@ -2339,13 +2366,7 @@ export function ThreadPage({
         }
         throw caught;
       })
-      .finally(() => {
-        if (preparationOperationRef.current === operation) {
-          preparationOperationRef.current = null;
-        }
-      });
-    preparationOperationRef.current = operation;
-    void operation.catch(() => undefined);
+      .catch(() => undefined);
   }, [newSessionAdmitted, newSessionHydrated, newSessionProject, preparationRetry]);
 
   useEffect(() => {
@@ -2355,7 +2376,7 @@ export function ThreadPage({
         void flushComposerDraftEvent().catch(() => undefined);
       }
       invalidatePreparation();
-      if (preparationSendRetryRef.current !== null)
+      if (!preparationOperationRef.current && preparationSendRetryRef.current !== null)
         window.clearTimeout(preparationSendRetryRef.current);
       if (preparationDiscardRef.current && preparationDraftTimerRef.current !== null) {
         window.clearTimeout(preparationDraftTimerRef.current);
@@ -3133,7 +3154,23 @@ export function ThreadPage({
     }
   }
 
-  async function submitPreparingSession(
+  function submitPreparingSession(
+    activeProject: Project,
+    intent: ComposerSubmitIntent,
+  ): Promise<void> {
+    if (preparationOperationRef.current) return preparationOperationRef.current;
+    const operation = performPreparingSessionSubmission(activeProject, intent);
+    preparationOperationRef.current = operation;
+    trackPreparationOperation(operation);
+    void operation
+      .finally(() => {
+        if (preparationOperationRef.current === operation) preparationOperationRef.current = null;
+      })
+      .catch(() => undefined);
+    return operation;
+  }
+
+  async function performPreparingSessionSubmission(
     activeProject: Project,
     intent: ComposerSubmitIntent,
   ): Promise<void> {
@@ -3280,9 +3317,9 @@ export function ThreadPage({
         deliveryCommitted = true;
         if (!preparationGenerationActive(generation)) return;
         // The URL handoff is safe only once either the outbox or the server owns the message.
-        if (!activateCreatedThread(thread, null, generation)) return;
         activatedThreadId = thread.id;
         dispatch({ type: "optimistic.add", message: optimisticMessage });
+        if (!activateCreatedThread(thread, null, generation)) return;
         setPendingOptimisticMessage(null);
         setBusy(false);
         const claimed = earlySubmissionRef.current;
@@ -3329,7 +3366,7 @@ export function ThreadPage({
       preparationSendAttemptsRef.current = 0;
       delete preparationRef.current.submission;
       releaseSubmittedMessageClaim(messageClaimKey);
-      if (!preparationAliveRef.current || preparationGenerationRef.current !== generation) return;
+      if (preparationGenerationRef.current !== generation) return;
       if (intent === "immediate" && delivery === "delivered") {
         try {
           await api.sendQueuedNow(thread.id, clientMessageId);
@@ -3433,12 +3470,16 @@ export function ThreadPage({
         if (retryable && preparationGenerationActive(generation)) {
           const attempt = preparationSendAttemptsRef.current++;
           const delay = Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5));
-          preparationSendRetryRef.current = window.setTimeout(() => {
-            preparationSendRetryRef.current = null;
-            if (preparationGenerationActive(generation)) {
-              setPreparationRetry((value) => value + 1);
-            }
-          }, delay);
+          await new Promise<void>((resolve) => {
+            preparationSendRetryRef.current = window.setTimeout(() => {
+              preparationSendRetryRef.current = null;
+              resolve();
+            }, delay);
+          });
+          if (preparationGenerationActive(generation)) {
+            await performPreparingSessionSubmission(activeProject, intent);
+            return;
+          }
         }
       }
       if (!targetThreadId) creationPromiseRef.current = null;

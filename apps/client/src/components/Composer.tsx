@@ -989,7 +989,8 @@ export function Composer({
       .catch(() => undefined)
       .then(async () => {
         const added = await read;
-        if (!aliveRef.current || latestPropsRef.current.sessionIdentity !== operationIdentity) {
+        // The source workspace may still be sending after its editor unmounts.
+        if (latestPropsRef.current.sessionIdentity !== operationIdentity) {
           return;
         }
         const next = [...(attachmentImagesRef.current.get(scope) ?? []), ...added];
@@ -1014,7 +1015,7 @@ export function Composer({
       } else {
         pendingAttachmentScopesRef.current.delete(scope);
       }
-      if (aliveRef.current && latestPropsRef.current.sessionIdentity === operationIdentity) {
+      if (latestPropsRef.current.sessionIdentity === operationIdentity) {
         latestPropsRef.current.onPendingAttachmentsChange?.(pendingInScope > 0, scope);
       }
     }
@@ -1040,7 +1041,7 @@ export function Composer({
       .catch(() => undefined)
       .then(async () => {
         const added = await read;
-        if (!aliveRef.current || latestPropsRef.current.sessionIdentity !== operationIdentity) {
+        if (latestPropsRef.current.sessionIdentity !== operationIdentity) {
           return;
         }
         const next = [...(attachmentFilesRef.current.get(scope) ?? []), ...added];
@@ -1066,7 +1067,7 @@ export function Composer({
       const pendingInScope = Math.max(0, (pendingAttachmentScopesRef.current.get(scope) ?? 1) - 1);
       if (pendingInScope) pendingAttachmentScopesRef.current.set(scope, pendingInScope);
       else pendingAttachmentScopesRef.current.delete(scope);
-      if (aliveRef.current && latestPropsRef.current.sessionIdentity === operationIdentity) {
+      if (latestPropsRef.current.sessionIdentity === operationIdentity) {
         latestPropsRef.current.onPendingAttachmentsChange?.(pendingInScope > 0, scope);
       }
     }

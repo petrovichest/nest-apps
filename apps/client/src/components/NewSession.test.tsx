@@ -142,6 +142,34 @@ describe("NewSession", () => {
     expect(context.sendReliable).not.toHaveBeenCalled();
   });
 
+  it("hands the first recording to the outbox after its workspace unmounts", async () => {
+    installRecorder();
+    const creation = deferred<{ thread: ThreadSummary }>();
+    const createProjectThread = vi.fn().mockReturnValue(creation.promise);
+    const queueVoiceRecording = vi.fn().mockResolvedValue(undefined);
+    const context = mockConnection({ createProjectThread, queueVoiceRecording });
+    connection.mockReturnValue(context);
+    const view = renderNewSession(voiceConfig);
+    fireEvent.click(await screen.findByRole("button", { name: "Начать запись" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Остановить запись" }));
+    await waitFor(() => expect(createProjectThread).toHaveBeenCalledOnce());
+    const recording = drafts.save.mock.calls.find((call) => call[3]?.voiceSubmission)?.[3]
+      .voiceSubmission.recording;
+    view.unmount();
+    creation.resolve({ thread });
+    await waitFor(() => expect(queueVoiceRecording).toHaveBeenCalledOnce());
+    expect(queueVoiceRecording).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: recording.id,
+        threadId: thread.id,
+        mode: "send",
+        audio: recording.audio,
+      }),
+    );
+    await waitFor(() => expect(drafts.delete).toHaveBeenCalled());
+    expect(context.sendReliable).not.toHaveBeenCalled();
+  });
+
   it.each(["creation", "upload"])(
     "recovers voice after a %s failure and reopening without a new recording",
     async (failure) => {
@@ -537,9 +565,12 @@ describe("NewSession", () => {
     expect(createProjectThread).toHaveBeenCalledTimes(2);
   });
 
-  it("recovers an Enter across a page reload while session creation is still pending", async () => {
+  it("finishes an Enter across a workspace remount without recovering the same send twice", async () => {
     let stored: LocalNewSessionDraft | null = null;
     drafts.load.mockImplementation(async () => stored);
+    drafts.delete.mockImplementation(async () => {
+      stored = null;
+    });
     drafts.save.mockImplementation(async (_settings, projectId, value, preparation) => {
       stored = structuredClone({
         key: "new",
@@ -566,12 +597,15 @@ describe("NewSession", () => {
     const messageId = stored!.submission!.id;
     view.unmount();
     renderNewSession();
+    await act(async () => Promise.resolve());
+    expect(createProjectThread).toHaveBeenCalledOnce();
+    await act(async () => firstCreation.resolve({ thread }));
     await waitFor(() => expect(sendReliable).toHaveBeenCalledOnce());
     expect(sendReliable.mock.calls[0]?.[1]).toMatchObject({
       input: "Пережить перезагрузку",
       clientMessageId: messageId,
     });
-    await act(async () => firstCreation.resolve({ thread }));
+    expect(createProjectThread).toHaveBeenCalledOnce();
     expect(sendReliable).toHaveBeenCalledOnce();
   });
 
@@ -1016,7 +1050,7 @@ describe("NewSession", () => {
     },
   );
 
-  it("restores an abandoned early submission with Fast off on an unsupported model", async () => {
+  it("sends an early submission after leaving with its images and Fast off on an unsupported model", async () => {
     let stored: {
       projectId: string;
       value: ThreadDraft;
@@ -1047,12 +1081,18 @@ describe("NewSession", () => {
       .fn()
       .mockReturnValueOnce(abandonedCreation.promise)
       .mockReturnValue(new Promise(() => undefined));
-    const sendReliable = vi.fn();
+    const sendReliable = vi.fn().mockResolvedValue("delivered");
+    const updateThreadSettings = vi.fn().mockResolvedValue({
+      ...thread,
+      id: "abandoned",
+      settings: { collaborationMode: "plan", personality: "friendly" },
+    });
     connection.mockReturnValue(
       mockConnection({
         createProjectThread,
         models: [model],
         sendReliable,
+        updateThreadSettings,
         taskDefaults: { serviceTier: "fast", personality: "friendly" },
       }),
     );
@@ -1097,37 +1137,50 @@ describe("NewSession", () => {
 
     fireEvent.click(screen.getByRole("link", { name: "Покинуть подготовку" }));
     expect(await screen.findByRole("link", { name: "Открыть проект снова" })).toBeInTheDocument();
-    await waitFor(() => {
-      expect(stored?.value.input).toBe("Сохрани после ухода");
-      expect(stored?.value.images).toEqual([
-        expect.objectContaining({
-          name: "saved.png",
-          url: expect.stringMatching(/^data:image\/png/),
+    await waitFor(() => expect(createProjectThread).toHaveBeenCalledOnce());
+    expect(drafts.save).toHaveBeenCalledWith(
+      connectionSettings,
+      project.id,
+      expect.anything(),
+      expect.objectContaining({
+        submission: expect.objectContaining({
+          draft: expect.objectContaining({
+            input: "Сохрани после ухода",
+            images: [
+              expect.objectContaining({
+                name: "saved.png",
+                url: expect.stringMatching(/^data:image\/png/),
+              }),
+            ],
+          }),
         }),
-      ]);
-      expect(stored?.settings).toEqual({
-        collaborationMode: "plan",
-        personality: "friendly",
-      });
-    });
+        settings: {
+          collaborationMode: "plan",
+          personality: "friendly",
+        },
+      }),
+    );
     await act(async () => {
       abandonedCreation.resolve({
         thread: { ...thread, id: "abandoned", title: "Оставленная задача" },
       });
       await Promise.resolve();
     });
-    expect(sendReliable).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("link", { name: "Открыть проект снова" }));
-
-    expect(await screen.findByText("Сохрани после ухода")).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Сообщение для Codex" })).toHaveValue("");
-    expect(view.container.querySelector('img[src^="data:image/png"]')).not.toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Выключить режим планирования" }),
-    ).toBeInTheDocument();
-    await waitFor(() => expect(createProjectThread).toHaveBeenCalledOnce());
-    expect(sendReliable).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendReliable).toHaveBeenCalledOnce());
+    expect(sendReliable).toHaveBeenCalledWith(
+      "abandoned",
+      expect.objectContaining({
+        input: "Сохрани после ухода",
+        images: [expect.stringMatching(/^data:image\/png/)],
+      }),
+      expect.any(Function),
+      expect.anything(),
+    );
+    expect(updateThreadSettings).toHaveBeenCalledWith("abandoned", {
+      collaborationMode: "plan",
+    });
+    await waitFor(() => expect(drafts.delete).toHaveBeenCalled());
+    expect(screen.getByRole("link", { name: "Открыть проект снова" })).toBeInTheDocument();
   });
 
   it("warns when the preparation cannot be stored locally", async () => {
