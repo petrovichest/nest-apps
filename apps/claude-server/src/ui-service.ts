@@ -1451,8 +1451,31 @@ export class UiService extends EventEmitter {
     return this.store.update((data) => {
       const thread = data.threads[id]!,
         current = thread.draft?.updatedAt ?? null;
-      if (expected !== undefined && (expected === "none" ? null : Number(expected)) !== current)
-        throw new AppError("conflict", "Draft changed on another device", 409);
+      // Voice preparation and autosave can save the same draft from one client.
+      // A no-op must neither reject an older revision nor invalidate an admitted upload.
+      const unchanged = isDeepStrictEqual(
+        {
+          input: value.input,
+          ...pastedText(value),
+          images: value.images,
+          files: value.files ?? [],
+          annotations: value.annotations,
+        },
+        {
+          input: thread.draft?.input ?? "",
+          ...pastedText(thread.draft ?? {}),
+          images: thread.draft?.images ?? [],
+          files: thread.draft?.files ?? [],
+          annotations: thread.draft?.annotations ?? [],
+        },
+      );
+      if (
+        !unchanged &&
+        expected !== undefined &&
+        (expected === "none" ? null : Number(expected)) !== current
+      )
+        throw new AppError("draft_conflict", "The draft changed before voice upload", 409);
+      if (unchanged && thread.draft) return thread.draft;
       thread.draft = {
         ...value,
         goalMode: false,

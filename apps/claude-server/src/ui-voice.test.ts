@@ -11,7 +11,7 @@ import type {
 } from "@codexnest/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { UiService } from "./ui-service";
+import { UiService } from "./ui-service";
 import { UiStore, type UiThread } from "./ui-store";
 import { UiVoiceJobs } from "./ui-voice";
 import { VoiceServiceError } from "./voice";
@@ -140,6 +140,37 @@ function uploadQuery(mode = "draft", clientUploadId = randomUUID()) {
 }
 
 describe("durable Claude UI voice jobs", () => {
+  it("delivers voice once when the same client autosaves between preparation and upload", async () => {
+    const state = await fixture();
+    await state.store.update((data) => {
+      data.threads[state.threadId]!.draft = null;
+    });
+    const value = { input: "", images: [], annotations: [], goalMode: false };
+    const saved = await UiService.prototype.setDraft.call(state.ui, state.threadId, value);
+    // The recording captured "none" before this client's autosave completed.
+    const prepared = await UiService.prototype.setDraft.call(
+      state.ui,
+      state.threadId,
+      value,
+      "none",
+    );
+    await UiService.prototype.setDraft.call(state.ui, state.threadId, value);
+    expect(prepared.updatedAt).toBe(saved.updatedAt);
+    const query = {
+      ...uploadQuery("send"),
+      selectionEnd: "0",
+      draftUpdatedAt: String(prepared.updatedAt),
+    };
+    const audio = Buffer.from("recording");
+    const job = await state.jobs.create(state.threadId, audio, "audio/webm", query, 1000);
+    await vi.waitFor(() => expect(state.store.data.voice[job!.id]!.applied).toBe(true));
+    expect(state.enqueue).toHaveBeenCalledTimes(1);
+    expect(state.store.data.threads[state.threadId]!.queue).toMatchObject([{ text: "voice" }]);
+    expect(state.store.data.threads[state.threadId]!.draft).toBeNull();
+    expect(await state.jobs.create(state.threadId, audio, "audio/webm", query, 1000)).toBeNull();
+    expect(state.enqueue).toHaveBeenCalledTimes(1);
+  });
+
   it("acknowledges private audio before STT and atomically applies its transcript once", async () => {
     const result = deferred<string>();
     const state = await fixture(vi.fn(() => result.promise));

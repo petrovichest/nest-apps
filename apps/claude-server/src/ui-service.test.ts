@@ -1063,6 +1063,69 @@ describe("Claude UI durable session facade", () => {
     expect(manager.creates).toEqual([]);
   });
 
+  it.each(["", "Draft with text"])(
+    "keeps the revision of an unchanged draft during voice preparation: %j",
+    async (input) => {
+      const { start, reserve } = await fixture();
+      const service = await start(),
+        id = await reserve(service);
+      const value = { input, images: [], goalMode: false, annotations: [] };
+      const saved = await service.setDraft(id, value, "none");
+      // Autosave must not invalidate the revision the voice upload is about to use.
+      expect(
+        await service.setDraft(id, { ...value, files: [], pasteBlocks: [], inlinePastes: [] }),
+      ).toEqual(saved);
+      // Voice can still carry the revision from before this client's own autosave.
+      expect(await service.setDraft(id, value, "none")).toEqual(saved);
+      expect(await service.setDraft(id, value, String(saved.updatedAt - 1))).toEqual(saved);
+      expect(service.thread(id).draft).toEqual(saved);
+    },
+  );
+
+  it("accepts an empty voice draft after the previous send consumed its revision", async () => {
+    const { start, reserve } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const value = { input: "", images: [], goalMode: false, annotations: [] };
+    const saved = await service.setDraft(id, value);
+    await service.enqueue(id, { input: "Previous voice message", draftUpdatedAt: saved.updatedAt });
+    expect(service.thread(id).draft).toBeNull();
+    expect(await service.setDraft(id, value, String(saved.updatedAt))).toMatchObject(value);
+  });
+
+  it.each([
+    { input: "Newer text" },
+    { images: [{ id: "image", name: "image.png", url: "data:image/png;base64,AA==" }] },
+    {
+      files: [
+        {
+          id: "file",
+          name: "notes.txt",
+          path: "/saved/notes.txt",
+          mediaType: "text/plain",
+          size: 1,
+        },
+      ],
+    },
+    { pasteBlocks: [{ id: "paste", text: "Pasted context" }] },
+    { annotations: [{ id: "annotation", comment: "Keep this comment" }] },
+  ])("preserves changed draft content on a stale voice save: %j", async (changed) => {
+    const { start, reserve } = await fixture();
+    const service = await start(),
+      id = await reserve(service);
+    const value = { input: "", images: [], goalMode: false, annotations: [] };
+    const saved = await service.setDraft(id, value);
+    await service.store.update((data) => {
+      Object.assign(data.threads[id]!.draft!, changed, { updatedAt: saved.updatedAt + 1 });
+    });
+    const current = structuredClone(service.thread(id).draft);
+    await expect(service.setDraft(id, value, String(saved.updatedAt))).rejects.toMatchObject({
+      code: "draft_conflict",
+      status: 409,
+    });
+    expect(service.thread(id).draft).toEqual(current);
+  });
+
   it.each(["exactContent", "draftUpdatedAt"] as const)(
     "consumes the sent thread draft on durable enqueue using %s",
     async (guard) => {

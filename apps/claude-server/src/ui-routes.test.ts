@@ -907,16 +907,14 @@ process.stdin.on("end", () => {
     });
     expect(draftResponse.statusCode).toBe(200);
     expect(draftResponse.json()).toMatchObject(value);
-    expect(
-      (
-        await app.inject({
-          method: "PUT",
-          url: `/api/v1/threads/${id}/draft?expectedUpdatedAt=none`,
-          headers,
-          payload: { ...value, input: "Stale update" },
-        })
-      ).statusCode,
-    ).toBe(409);
+    const stale = await app.inject({
+      method: "PUT",
+      url: `/api/v1/threads/${id}/draft?expectedUpdatedAt=none`,
+      headers,
+      payload: { ...value, input: "Stale update" },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({ error: { code: "draft_conflict" } });
     const clientMessageId = randomUUID(),
       payload = { input: "Send later", clientMessageId };
     const queued = await app.inject({

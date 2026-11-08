@@ -851,7 +851,7 @@ describe("ConnectionProvider", () => {
     view.unmount();
   });
 
-  it("keeps a recovered recording without endlessly retrying a stale draft conflict", async () => {
+  it.each([false, true])("recovers voice on conflict (prepared=%s)", async (prepared) => {
     listPendingVoiceRecordings.mockResolvedValue([
       {
         id: "conflicted-recording",
@@ -865,7 +865,7 @@ describe("ConnectionProvider", () => {
         draftUpdatedAt: 10,
         draft: { input: "Старый черновик", images: [], goalMode: false, annotations: [] },
         localDraftUpdatedAt: 1,
-        serverDraftUpdatedAt: 11,
+        ...(prepared ? { serverDraftUpdatedAt: 11 } : {}),
         createdAt: 1,
         attempts: 1,
         lastError: "offline",
