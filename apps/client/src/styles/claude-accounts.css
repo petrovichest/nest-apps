@@ -278,7 +278,10 @@
   color: var(--color-ink-strong);
 }
 
-.claude-account-state.authenticated,
+.claude-account-state.authenticated {
+  color: var(--color-ink-strong);
+}
+
 .claude-account-success {
   color: var(--color-success);
 }

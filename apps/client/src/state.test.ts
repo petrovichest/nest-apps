@@ -236,6 +236,33 @@ describe("clientReducer", () => {
       text: "Revised",
     });
   });
+  it("updates Codex accounts across devices and rejects stale account selections", () => {
+    const codexAccounts = { currentAccountId: "first", accounts: [] };
+    let state = clientReducer(initialState, {
+      type: "snapshot",
+      snapshot: { ...snapshot, codexAccounts },
+    });
+    state = clientReducer(state, {
+      type: "event",
+      version: { instanceId: "legacy", sequence: 5 },
+      event: {
+        type: "codexAccounts.changed",
+        codexAccounts: { ...codexAccounts, currentAccountId: "second" },
+      },
+    });
+    expect(state.snapshot?.codexAccounts?.currentAccountId).toBe("second");
+    expect(
+      clientReducer(state, {
+        type: "event",
+        version: { instanceId: "legacy", sequence: 4 },
+        event: { type: "codexAccounts.changed", codexAccounts },
+      }),
+    ).toBe(state);
+    expect(
+      clientReducer(state, { type: "network", network: "offline" }).snapshot?.codexAccounts
+        ?.currentAccountId,
+    ).toBe("second");
+  });
   it("updates Claude accounts from the live projection and rejects stale account changes", () => {
     const claudeAccounts = {
       cliVersion: "2.1.289",

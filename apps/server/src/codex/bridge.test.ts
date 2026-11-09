@@ -3,7 +3,7 @@ import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { CodexBridge } from "./bridge";
+import { AccountLoginRequiredError, AccountSwitchInProgressError, CodexBridge } from "./bridge";
 import type { JsonlProcess } from "./transport";
 
 class HandshakeChild extends EventEmitter {
@@ -29,6 +29,47 @@ class HandshakeChild extends EventEmitter {
 }
 
 describe("CodexBridge", () => {
+  it("guards turn admission during account changes and tracks in-flight starts", async () => {
+    const child = new HandshakeChild();
+    const bridge = new CodexBridge({
+      codexBin: "codex",
+      checkVersion: async () => "0.154.0",
+      spawnProcess: () => child as unknown as JsonlProcess,
+    });
+    await bridge.start();
+    bridge.accountSwitching = true;
+    await expect(bridge.request("turn/start", {})).rejects.toBeInstanceOf(
+      AccountSwitchInProgressError,
+    );
+    expect(bridge.pendingTurnStarts).toBe(0);
+    bridge.accountSwitching = false;
+    bridge.accountLoginRequired = true;
+    await expect(bridge.request("turn/start", {})).rejects.toBeInstanceOf(
+      AccountLoginRequiredError,
+    );
+    bridge.accountLoginRequired = false;
+    const pending = bridge.request("turn/start", { threadId: "thread" });
+    expect(bridge.pendingTurnStarts).toBe(1);
+    const frame = child.frames.at(-1)!;
+    child.stdout.write(
+      `${JSON.stringify({ id: frame.id, result: { turn: { id: "turn", status: "inProgress" } } })}\n`,
+    );
+    await pending;
+    expect(bridge.pendingTurnStarts).toBe(0);
+    expect(bridge.activeNativeTurnCount).toBe(1);
+    child.stdout.write(
+      `${JSON.stringify({ method: "turn/completed", params: { threadId: "thread", turn: { id: "turn" } } })}\n`,
+    );
+    expect(bridge.activeNativeTurnCount).toBe(0);
+    const fast = bridge.request("turn/start", { threadId: "thread" });
+    const fastFrame = child.frames.at(-1)!;
+    child.stdout.write(
+      `${JSON.stringify({ id: fastFrame.id, result: { turn: { id: "fast", status: "inProgress" } } })}\n${JSON.stringify({ method: "turn/completed", params: { threadId: "thread", turn: { id: "fast" } } })}\n`,
+    );
+    await fast;
+    expect(bridge.activeNativeTurnCount).toBe(0);
+    bridge.stop();
+  });
   it("initializes before sending initialized", async () => {
     const child = new HandshakeChild();
     const bridge = new CodexBridge({

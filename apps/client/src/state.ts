@@ -513,6 +513,9 @@ function applyVersionedEvent(
     case "claudeAccounts.changed":
       snapshot.claudeAccounts = event.claudeAccounts;
       break;
+    case "codexAccounts.changed":
+      snapshot.codexAccounts = event.codexAccounts;
+      break;
     case "projectDraft.changed":
       return {
         ...clientReducer(state, {

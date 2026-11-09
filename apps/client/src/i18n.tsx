@@ -170,6 +170,38 @@ const ENGLISH: Record<string, string> = {
   "Следующее вложение": "Next attachment",
   "{{current}} из {{count}}": "{{current}} of {{count}}",
   "Аккаунтов: {{count}}": "Accounts: {{count}}",
+  "Аккаунты Codex": "Codex accounts",
+  "Войти в Codex": "Sign in to Codex",
+  "Добавьте аккаунт Codex": "Add a Codex account",
+  "Не удалось загрузить аккаунты Codex. Повторите обновление.":
+    "Could not load Codex accounts. Try refreshing again.",
+  "Не удалось изменить аккаунты Codex. Повторите попытку.":
+    "Could not update Codex accounts. Try again.",
+  "Сохранённые аккаунты ChatGPT. Переключение сохраняет историю чатов. Для всех аккаунтов используются настройки подключения Codex.":
+    "Saved ChatGPT accounts. Switching keeps your chat history. All accounts use the Codex connection settings.",
+  "Переключить аккаунт можно после завершения активных ответов.":
+    "You can switch accounts after active responses finish.",
+  "Войдите в ChatGPT через браузер, чтобы подключить аккаунт.":
+    "Sign in to ChatGPT in your browser to connect an account.",
+  "Подключите аккаунт ChatGPT, который хотите использовать в Codex.":
+    "Connect the ChatGPT account you want to use in Codex.",
+  "Разрешите вход по коду устройства в настройках безопасности ChatGPT. Затем получите код и откройте страницу входа.":
+    "Enable device code authorization in ChatGPT security settings. Then get a code and open the sign-in page.",
+  "Код для входа в ChatGPT": "ChatGPT sign-in code",
+  "Скопировать код": "Copy code",
+  "Не удалось скопировать код.": "Could not copy the code.",
+  "Введите этот код на странице ChatGPT. После входа вернитесь сюда — аккаунт сохранится автоматически.":
+    "Enter this code on the ChatGPT page. Return here after signing in; the account is saved automatically.",
+  "Не удалось открыть страницу входа. Откройте ссылку в браузере.":
+    "Could not open the sign-in page. Open the link in your browser.",
+  "Ожидаем вход в ChatGPT…": "Waiting for ChatGPT sign-in…",
+  "Получить код входа": "Get sign-in code",
+  "Не удалось начать вход в Codex. Проверьте подключение и повторите попытку.":
+    "Could not start Codex sign-in. Check the connection and try again.",
+  "Не удалось проверить вход. Повторите проверку или начните вход заново.":
+    "Could not check sign-in. Check again or start sign-in again.",
+  "Не удалось войти в Codex. Проверьте разрешение входа по коду устройства в ChatGPT и начните заново.":
+    "Could not sign in to Codex. Check that device code authorization is enabled in ChatGPT, then start again.",
   Автопереключение: "Auto-switch accounts",
   "Сначала тратится аккаунт, у которого 5-часовой лимит сбросится раньше; при лимите или потере авторизации — другой доступный.":
     "Use the account whose 5-hour quota resets first; switch to another available account when limited or signed out.",
@@ -1419,6 +1451,26 @@ export function localizeKnownServerText(
   value: string | null | undefined,
 ): string | null {
   if (!value) return null;
+  const accountErrors: Record<string, string> = {
+    "Wait for active Codex responses before switching accounts":
+      "Переключить аккаунт можно после завершения активных ответов.",
+    "Codex account is switching; retry the message shortly":
+      "Аккаунт Codex переключается. Повторите отправку через несколько секунд.",
+    "Select another Codex account before removing the current account":
+      "Перед удалением текущего аккаунта Codex выберите другой.",
+    "Cancel the Codex login before removing this account":
+      "Отмените вход в Codex перед удалением аккаунта.",
+    "A Codex login is already in progress":
+      "Вход в Codex уже выполняется. Завершите или отмените его.",
+    "Codex account identity changed; sign in again": "Аккаунт Codex изменился. Войдите заново.",
+    "Could not start Codex login; check the connection and retry":
+      "Не удалось начать вход в Codex. Проверьте подключение и повторите попытку.",
+    "Could not open Codex account; check the connection and retry":
+      "Не удалось открыть аккаунт Codex. Проверьте подключение и повторите попытку.",
+    "Codex account needs a ChatGPT login": "Войдите заново в аккаунт ChatGPT для Codex.",
+    "Codex account not found": "Аккаунт Codex не найден. Обновите список.",
+  };
+  if (accountErrors[value]) return language === "ru" ? accountErrors[value]! : value;
   if (value === "Fast mode is not supported by the selected model") {
     return translate(language, "Fast mode недоступен для этой модели.");
   }

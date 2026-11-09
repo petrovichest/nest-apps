@@ -34,6 +34,10 @@ export class CodexBridge extends EventEmitter {
   private _state: AppServerState = "unavailable";
   private _actualVersion?: string;
   private _deliveryVersion?: number;
+  private _pendingTurnStarts = 0;
+  private nativeTurns = new Map<string, { id: string; active: boolean }>();
+  accountSwitching = false;
+  accountLoginRequired = false;
 
   constructor(private readonly options: BridgeOptions) {
     super();
@@ -53,6 +57,14 @@ export class CodexBridge extends EventEmitter {
 
   get ready(): boolean {
     return this._state === "ready" && !!this.transport;
+  }
+
+  get pendingTurnStarts(): number {
+    return this._pendingTurnStarts;
+  }
+
+  get activeNativeTurnCount(): number {
+    return [...this.nativeTurns.values()].filter((turn) => turn.active).length;
   }
 
   async start(): Promise<void> {
@@ -87,7 +99,29 @@ export class CodexBridge extends EventEmitter {
     if (!this.transport || !this.ready) {
       throw new BridgeUnavailableError(this._state);
     }
-    return this.transport.request<T>(method, params, timeoutMs);
+    const startsTurn = ["turn/start", "review/start", "thread/realtime/start"].includes(method);
+    if (startsTurn && this.accountSwitching) throw new AccountSwitchInProgressError();
+    if (startsTurn && this.accountLoginRequired) throw new AccountLoginRequiredError();
+    if (startsTurn) this._pendingTurnStarts++;
+    try {
+      const result = await this.transport.request<T>(method, params, timeoutMs);
+      if (method === "turn/start" || method === "review/start") {
+        const response = result as {
+          turn?: { id: string; status: string };
+          reviewThreadId?: string;
+        };
+        const threadId = response.reviewThreadId ?? (params as { threadId?: string })?.threadId;
+        if (
+          threadId &&
+          response.turn?.status === "inProgress" &&
+          this.nativeTurns.get(threadId)?.id !== response.turn.id
+        )
+          this.nativeTurns.set(threadId, { id: response.turn.id, active: true });
+      }
+      return result;
+    } finally {
+      if (startsTurn) this._pendingTurnStarts--;
+    }
   }
 
   respond(id: number | string, result: unknown): void {
@@ -115,9 +149,15 @@ export class CodexBridge extends EventEmitter {
     child.stderr?.resume();
     const transport = new JsonlTransport(child);
     this.transport = transport;
-    transport.on("notification", (notification: ServerNotification) =>
-      this.emit("notification", notification),
-    );
+    transport.on("notification", (notification: ServerNotification) => {
+      if (notification.method === "turn/started" || notification.method === "turn/completed") {
+        this.nativeTurns.set(notification.params.threadId, {
+          id: notification.params.turn.id,
+          active: notification.method === "turn/started",
+        });
+      }
+      this.emit("notification", notification);
+    });
     transport.on("request", (request: ServerRequest) => this.emit("request", request, transport));
     transport.on("unknownResponse", (id: number) => this.emit("unknownResponse", id));
     transport.on("protocolError", (error: Error) => this.emit("protocolError", error));
@@ -178,8 +218,23 @@ export class CodexBridge extends EventEmitter {
   }
 
   private setState(state: AppServerState, detail?: unknown): void {
+    if (state !== "ready") this.nativeTurns.clear();
     this._state = state;
     this.emit("state", state, detail);
+  }
+}
+
+export class AccountSwitchInProgressError extends Error {
+  constructor() {
+    super("Codex account is switching; retry the message shortly");
+    this.name = "AccountSwitchInProgressError";
+  }
+}
+
+export class AccountLoginRequiredError extends Error {
+  constructor() {
+    super("Codex account needs a ChatGPT login");
+    this.name = "AccountLoginRequiredError";
   }
 }
 

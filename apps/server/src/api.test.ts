@@ -44,6 +44,7 @@ import { RpcError, RpcTimeoutError, type JsonlTransport } from "./codex/transpor
 import type { CodexManager } from "./codex-management";
 import { loadConfig } from "./config";
 import { AppProjection } from "./projection";
+import { CodexAccountError, type CodexAccounts } from "./codex-accounts";
 import { RuntimeLifecycle } from "./runtime-lifecycle";
 import { messageContentHash } from "./message-queue";
 import { StateStore } from "./state/store";
@@ -56,6 +57,103 @@ const directories: string[] = [];
 const execFileAsync = promisify(execFile);
 const TEAM_MARKER_TEXT =
   "Continue CodexNest Team orchestration using the attached managed-task results.";
+
+describe("Codex account endpoints", () => {
+  it("authenticates management, validates input, and surfaces safe switch conflicts", async () => {
+    const status = { currentAccountId: "account", accounts: [] };
+    const accounts = {
+      status: vi.fn(() => status),
+      on: vi.fn(),
+      off: vi.fn(),
+      observeLimits: vi.fn(),
+      refresh: vi.fn(async () => status),
+      startLogin: vi.fn(async () => ({ id: "login", state: "waiting" })),
+      select: vi.fn(async () => {
+        throw new CodexAccountError(
+          "conflict",
+          "Wait for active Codex responses before switching accounts",
+        );
+      }),
+      close: vi.fn(async () => undefined),
+    };
+    const h = await createTeamHarness({ codexAccounts: accounts as unknown as CodexAccounts });
+    try {
+      const prefix = "/api/v1/settings/codex/accounts";
+      expect((await h.app.inject({ method: "GET", url: prefix })).statusCode).toBe(401);
+      expect(
+        (await h.app.inject({ method: "GET", url: prefix, headers: h.headers })).json(),
+      ).toEqual(status);
+      expect(
+        (
+          await h.app.inject({
+            method: "POST",
+            url: `${prefix}/logins`,
+            headers: h.headers,
+            payload: { accountId: 42 },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect(accounts.startLogin).not.toHaveBeenCalled();
+      expect(
+        (
+          await h.app.inject({
+            method: "POST",
+            url: `${prefix}/logins`,
+            headers: h.headers,
+            payload: [],
+          })
+        ).statusCode,
+      ).toBe(400);
+      const response = await h.app.inject({
+        method: "POST",
+        url: `${prefix}/account/select`,
+        headers: h.headers,
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error.code).toBe("conflict");
+      expect(accounts.select).toHaveBeenCalledWith("account");
+    } finally {
+      await h.app.close();
+    }
+    expect(accounts.close).toHaveBeenCalledOnce();
+  });
+
+  it("answers native token refresh without creating an attention request, including during recovery", async () => {
+    const tokens = {
+      accessToken: "private-access-token",
+      chatgptAccountId: "workspace",
+      chatgptPlanType: "plus",
+    };
+    const accounts = {
+      status: () => ({ currentAccountId: "account", accounts: [] }),
+      on: vi.fn(),
+      off: vi.fn(),
+      observeLimits: vi.fn(),
+      refreshTokens: vi.fn(async () => tokens),
+      close: vi.fn(async () => undefined),
+    };
+    const h = await createTeamHarness({
+      lifecycle: true,
+      codexAccounts: accounts as unknown as CodexAccounts,
+    });
+    await h.app.ready();
+    h.lifecycle!.syncing();
+    const transport = { respond: vi.fn(), respondError: vi.fn() };
+    h.bridge.emit(
+      "request",
+      {
+        id: 987,
+        method: "account/chatgptAuthTokens/refresh",
+        params: { reason: "unauthorized", previousAccountId: "workspace" },
+      },
+      transport,
+    );
+    await vi.waitFor(() => expect(transport.respond).toHaveBeenCalledWith(987, tokens));
+    expect(transport.respondError).not.toHaveBeenCalled();
+    expect(h.projection.snapshot().attention).toHaveLength(0);
+    await h.app.close();
+  });
+});
 
 describe("project boards", () => {
   const classifierOutcomes = [
@@ -12462,7 +12560,12 @@ function injectRequests(bridge: SettingsBridge) {
 }
 
 async function createTeamHarness(
-  options: { lifecycle?: boolean; projectPath?: string; includeManagedModel?: boolean } = {},
+  options: {
+    lifecycle?: boolean;
+    projectPath?: string;
+    includeManagedModel?: boolean;
+    codexAccounts?: CodexAccounts;
+  } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "codexnest-team-api-test-"));
   directories.push(directory);
@@ -12518,6 +12621,7 @@ async function createTeamHarness(
     attention,
     projectRoot: directory,
     lifecycle,
+    codexAccounts: options.codexAccounts,
   });
   return {
     app,

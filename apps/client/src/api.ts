@@ -9,6 +9,8 @@ import type {
   UserInputVoiceTarget,
   CodexRateLimitsResponse,
   CodexManagementStatus,
+  CodexAccountsStatus,
+  CodexLoginStatus,
   ClaudeAccountsStatus,
   ClaudeLoginStatus,
   ClaudeProxyInput,
@@ -254,6 +256,49 @@ export class ApiClient {
 
   readClaudeAccounts(): Promise<ClaudeAccountsStatus> {
     return this.request("/api/v1/settings/claude");
+  }
+
+  readCodexAccounts(): Promise<CodexAccountsStatus> {
+    return this.request("/api/v1/settings/codex/accounts");
+  }
+
+  refreshCodexAccounts(accountId?: string): Promise<CodexAccountsStatus> {
+    return this.request("/api/v1/settings/codex/accounts/refresh", {
+      method: "POST",
+      body: accountId ? { accountId } : {},
+      timeoutMs: null,
+    });
+  }
+
+  selectCodexAccount(accountId: string): Promise<CodexAccountsStatus> {
+    return this.request(`/api/v1/settings/codex/accounts/${encodeURIComponent(accountId)}/select`, {
+      method: "POST",
+      timeoutMs: null,
+    });
+  }
+
+  removeCodexAccount(accountId: string): Promise<CodexAccountsStatus> {
+    return this.request(`/api/v1/settings/codex/accounts/${encodeURIComponent(accountId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  startCodexLogin(accountId?: string): Promise<CodexLoginStatus> {
+    return this.request("/api/v1/settings/codex/accounts/logins", {
+      method: "POST",
+      body: accountId ? { accountId } : {},
+      timeoutMs: null,
+    });
+  }
+
+  readCodexLogin(id: string): Promise<CodexLoginStatus> {
+    return this.request(`/api/v1/settings/codex/accounts/logins/${encodeURIComponent(id)}`);
+  }
+
+  cancelCodexLogin(id: string): Promise<CodexLoginStatus> {
+    return this.request(`/api/v1/settings/codex/accounts/logins/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
   }
 
   readGeminiConnection(): Promise<GeminiConnectionStatus> {

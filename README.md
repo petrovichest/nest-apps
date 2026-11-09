@@ -86,6 +86,18 @@ each device can navigate independently. Settings, credentials, drafts and recent
 session data may be stored locally, while the development environment stays on
 the host.
 
+## Codex accounts
+
+Open **Settings → Codex → Accounts** to add ChatGPT accounts and switch between them.
+Your existing Codex login is imported automatically. Enable device code authorization
+in ChatGPT security settings, get a sign-in code in Nest, and enter it on the linked
+ChatGPT page. Then choose **Use account** on the saved account.
+
+The selection is shared across devices and survives reconnects. Chat history stays
+in place, and all accounts use the existing Codex connection settings. Switching
+waits until active responses finish. Select another account before removing the
+current one. OAuth credentials stay in private native Codex storage on the host.
+
 ## Screenshots
 
 The redesigned interface uses floating panels, a compact composer and consistent

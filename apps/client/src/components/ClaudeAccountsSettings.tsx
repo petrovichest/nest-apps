@@ -247,7 +247,7 @@ export function ClaudeAccountsSettings() {
   );
 }
 
-function AccountCard({
+export function AccountCard({
   account,
   current,
   autoSwitch,
@@ -257,25 +257,28 @@ function AccountCard({
   onRefresh,
   onSelect,
   onRemove,
+  provider = "Claude",
+  selectionDisabled = false,
 }: {
-  account: ClaudeAccount;
+  account: Omit<ClaudeAccount, "proxy"> & { proxy?: ClaudeProxyStatus };
   current: boolean;
   autoSwitch: boolean;
   busy: boolean;
-  onConfigure(): void;
+  onConfigure?(): void;
   onLogin(): void;
   onRefresh(): void;
   onSelect(): void;
   onRemove(): void;
+  provider?: "Claude" | "Codex";
+  selectionDisabled?: boolean;
 }) {
   const { language, t } = useI18n();
   const weeklyExhausted = quotaExhausted(account.rateLimits.limits?.secondary);
   const fiveHourExhausted = quotaExhausted(account.rateLimits.limits?.primary);
   const blocked =
     !account.authenticated ||
-    account.connectionError !== null ||
-    weeklyExhausted ||
-    fiveHourExhausted;
+    (provider === "Claude" &&
+      (account.connectionError !== null || weeklyExhausted || fiveHourExhausted));
   const label = !account.authenticated
     ? account.email
       ? t("Нужен вход")
@@ -330,17 +333,32 @@ function AccountCard({
           </summary>
           <div>
             {!autoSwitch && !current && (
-              <button type="button" disabled={busy || blocked} onClick={onSelect}>
+              <button
+                type="button"
+                disabled={busy || blocked || selectionDisabled}
+                onClick={onSelect}
+              >
                 {t("Использовать аккаунт")}
               </button>
             )}
             <button type="button" disabled={busy} onClick={onLogin}>
-              {t(account.authenticated ? "Войти заново" : "Войти в Claude")}
+              {t(
+                account.authenticated
+                  ? "Войти заново"
+                  : provider === "Codex"
+                    ? "Войти в Codex"
+                    : "Войти в Claude",
+              )}
             </button>
             <button type="button" disabled={busy || !account.authenticated} onClick={onRefresh}>
               {t("Обновить лимиты")}
             </button>
-            <button type="button" className="danger" disabled={busy} onClick={onRemove}>
+            <button
+              type="button"
+              className="danger"
+              disabled={busy || (provider === "Codex" && current)}
+              onClick={onRemove}
+            >
               {t("Удалить аккаунт")}
             </button>
           </div>
@@ -398,32 +416,54 @@ function AccountCard({
           </p>
         )
       )}
-      <footer className="claude-account-footer">
-        <p>
-          <BrowserIcon />
-          <span className={account.proxy.enabled ? "claude-account-connection-value" : undefined}>
-            {proxyDescription(account.proxy, t)}
-          </span>
-        </p>
-        {account.proxy.enabled && account.proxy.url && (
-          <ProxyCopyButton value={account.proxy.url} />
-        )}
-        {!account.authenticated && (
-          <button type="button" disabled={busy} onClick={onLogin} aria-label={t("Войти в Claude")}>
-            {t(account.email ? "Войти заново" : "Войти")}
-          </button>
-        )}
-        <button
-          type="button"
-          className="claude-configure-account"
-          disabled={busy}
-          onClick={onConfigure}
-          aria-label={t("Настроить")}
-        >
-          <SlidersIcon />
-          <span>{t("Настроить")}</span>
-        </button>
-      </footer>
+      {(account.proxy || onConfigure || !account.authenticated || !current) && (
+        <footer className="claude-account-footer">
+          {account.proxy && (
+            <p>
+              <BrowserIcon />
+              <span
+                className={account.proxy.enabled ? "claude-account-connection-value" : undefined}
+              >
+                {proxyDescription(account.proxy, t)}
+              </span>
+            </p>
+          )}
+          {account.proxy?.enabled && account.proxy.url && (
+            <ProxyCopyButton value={account.proxy.url} />
+          )}
+          {!account.authenticated && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onLogin}
+              aria-label={t(provider === "Codex" ? "Войти в Codex" : "Войти в Claude")}
+            >
+              {t(account.email ? "Войти заново" : "Войти")}
+            </button>
+          )}
+          {onConfigure && (
+            <button
+              type="button"
+              className="claude-configure-account"
+              disabled={busy}
+              onClick={onConfigure}
+              aria-label={t("Настроить")}
+            >
+              <SlidersIcon />
+              <span>{t("Настроить")}</span>
+            </button>
+          )}
+          {provider === "Codex" && !current && account.authenticated && (
+            <button
+              type="button"
+              disabled={busy || selectionDisabled || blocked}
+              onClick={onSelect}
+            >
+              {t("Использовать аккаунт")}
+            </button>
+          )}
+        </footer>
+      )}
     </article>
   );
 }
@@ -1118,9 +1158,17 @@ function remaining(window?: CodexRateLimitWindow | null): number | null {
 
 function formatPlan(plan: string): string {
   return (
-    ({ pro: "Pro", max: "Max", team: "Team", enterprise: "Enterprise" } as Record<string, string>)[
-      plan.toLowerCase()
-    ] ?? plan
+    (
+      {
+        free: "Free",
+        plus: "Plus",
+        pro: "Pro",
+        max: "Max",
+        team: "Team",
+        business: "Business",
+        enterprise: "Enterprise",
+      } as Record<string, string>
+    )[plan.toLowerCase()] ?? plan
   );
 }
 

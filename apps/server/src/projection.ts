@@ -271,6 +271,14 @@ export class AppProjection extends EventEmitter {
     return this.rateLimits;
   }
 
+  private accounts?: AppSnapshot["codexAccounts"];
+
+  setCodexAccounts(accounts: NonNullable<AppSnapshot["codexAccounts"]>): void {
+    if (isDeepStrictEqual(this.accounts, accounts)) return;
+    this.accounts = accounts;
+    this.publish({ type: "codexAccounts.changed", codexAccounts: accounts });
+  }
+
   setCodexRateLimits(state: CodexRateLimitsState): void {
     if (isDeepStrictEqual(this.rateLimits, state)) return;
     this.rateLimits = state;
@@ -289,6 +297,7 @@ export class AppProjection extends EventEmitter {
       uiLanguage: state.uiLanguage,
       connection: this.connection,
       codexRateLimits: this.rateLimits,
+      ...(this.accounts ? { codexAccounts: this.accounts } : {}),
       projects: cloneView<Project[]>(state.projects),
       threads,
       attention: this.attention

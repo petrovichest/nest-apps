@@ -104,7 +104,13 @@ import {
 import { AppManagementError, type AppManager } from "./app-management";
 import { bearerToken, verifyToken } from "./auth";
 import { BrowserExtensionError, type BrowserExtensionServer } from "./browser-extension";
-import { BridgeUnavailableError, type CodexBridge } from "./codex/bridge";
+import {
+  AccountLoginRequiredError,
+  AccountSwitchInProgressError,
+  BridgeUnavailableError,
+  type CodexBridge,
+} from "./codex/bridge";
+import { CodexAccountError, type CodexAccounts } from "./codex-accounts";
 import type { ServerNotification, ServerRequest } from "./codex/generated/index";
 import type {
   DynamicToolCallResponse,
@@ -522,6 +528,7 @@ export interface ApiServices {
   projection: AppProjection;
   attention: AttentionManager;
   codexManager?: CodexManager;
+  codexAccounts?: CodexAccounts;
   appManager?: AppManager;
   lifecycle?: RuntimeLifecycle;
   threadTitles?: Pick<ThreadTitleGenerator, "generate"> &
@@ -541,6 +548,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     projection,
     attention,
     codexManager,
+    codexAccounts,
     appManager,
     lifecycle,
     threadTitles,
@@ -2838,6 +2846,21 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       });
   };
   const teamRequestHandler = (request: ServerRequest, transport: JsonlTransport) => {
+    if (request.method === "account/chatgptAuthTokens/refresh" && codexAccounts) {
+      void codexAccounts
+        .refreshTokens(request.params.previousAccountId)
+        .then(
+          (tokens) => transport.respond(request.id, tokens),
+          () =>
+            transport.respondError(
+              request.id,
+              -32_603,
+              "Could not refresh Codex account; sign in again or retry",
+            ),
+        )
+        .catch(() => undefined);
+      return;
+    }
     if (
       teamContinuationsPaused ||
       (lifecycle && lifecycle.state !== "ready" && lifecycle.state !== "draining")
@@ -3668,6 +3691,8 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     if (rateLimitsRequest) return rateLimitsRequest;
     if (rateLimitsClosed) return Promise.reject(new BridgeUnavailableError(bridge.state));
     const generation = ++rateLimitsGeneration;
+    const switching = bridge.accountSwitching;
+    const accountId = codexAccounts?.status().currentAccountId;
     projection.setCodexRateLimits({
       ...projection.codexRateLimits,
       refreshing: true,
@@ -3677,13 +3702,19 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       .request<unknown>("account/rateLimits/read", undefined)
       .then(parseAccountRateLimits)
       .then((limits) => {
-        if (generation === rateLimitsGeneration) {
+        if (
+          !switching &&
+          !bridge.accountSwitching &&
+          generation === rateLimitsGeneration &&
+          accountId === codexAccounts?.status().currentAccountId
+        ) {
           projection.setCodexRateLimits({
             limits,
             updatedAt: Date.now(),
             refreshing: false,
             refreshError: false,
           });
+          codexAccounts?.observeLimits(projection.codexRateLimits);
         }
         return limits;
       })
@@ -3703,10 +3734,30 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     return rateLimitsRequest;
   };
   const pollRateLimits = () => {
-    if (rateLimitsClosed || bridge.state !== "ready") return;
+    if (
+      rateLimitsClosed ||
+      bridge.state !== "ready" ||
+      bridge.accountSwitching ||
+      bridge.accountLoginRequired
+    )
+      return;
     void refreshRateLimits().catch((error: unknown) => {
       app.log.warn({ err: safeError(error) }, "Failed to refresh Codex rate limits");
     });
+  };
+  const accountSelectionHandler = () => {
+    rateLimitsGeneration++;
+    rateLimitsRequest = undefined;
+    const status = codexAccounts!.status();
+    projection.setCodexRateLimits(
+      status.accounts.find((account) => account.id === status.currentAccountId)?.rateLimits ?? {
+        limits: null,
+        updatedAt: null,
+        refreshing: false,
+        refreshError: false,
+      },
+    );
+    pollRateLimits();
   };
   const rateLimitsBridgeStateHandler = (state: string) => {
     if (state === "ready") {
@@ -3723,6 +3774,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   };
   app.addHook("onReady", async () => {
     bridge.on("state", rateLimitsBridgeStateHandler);
+    codexAccounts?.on("selected", accountSelectionHandler);
     rateLimitsTimer = setInterval(pollRateLimits, 300_000);
     rateLimitsTimer.unref();
     pollRateLimits();
@@ -3732,8 +3784,39 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     rateLimitsGeneration++;
     clearInterval(rateLimitsTimer);
     bridge.off("state", rateLimitsBridgeStateHandler);
+    codexAccounts?.off("selected", accountSelectionHandler);
   });
   app.get("/api/v1/codex/rate-limits", refreshRateLimits);
+
+  if (codexAccounts) {
+    const prefix = "/api/v1/settings/codex/accounts";
+    app.get(prefix, () => codexAccounts.status());
+    app.post(`${prefix}/refresh`, async (request) => {
+      const body = requireRecord<{ accountId?: unknown }>(request.body ?? {});
+      if (body?.accountId !== undefined && typeof body.accountId !== "string")
+        throw new CodexAccountError("validation", "accountId must be text");
+      return codexAccounts.refresh(body?.accountId as string | undefined);
+    });
+    app.post<{ Params: { id: string } }>(`${prefix}/:id/select`, async (request) => {
+      return codexAccounts.select(request.params.id);
+    });
+    app.delete<{ Params: { id: string } }>(`${prefix}/:id`, (request) =>
+      codexAccounts.remove(request.params.id),
+    );
+    app.post(`${prefix}/logins`, (request) => {
+      const body = requireRecord<{ accountId?: unknown }>(request.body ?? {});
+      if (body?.accountId !== undefined && typeof body.accountId !== "string")
+        throw new CodexAccountError("validation", "accountId must be text");
+      return codexAccounts.startLogin(body?.accountId as string | undefined);
+    });
+    app.get<{ Params: { id: string } }>(`${prefix}/logins/:id`, (request) =>
+      codexAccounts.login(request.params.id),
+    );
+    app.delete<{ Params: { id: string } }>(`${prefix}/logins/:id`, (request) =>
+      codexAccounts.cancelLogin(request.params.id),
+    );
+    app.addHook("onClose", () => codexAccounts.close());
+  }
 
   app.get("/api/v1/settings/permissions", async () => readPermissionSettings(bridge));
 
@@ -5735,6 +5818,16 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       error instanceof VoiceTranscriptionConflictError ||
       error instanceof VoiceTranscriptionQueueFullError
     ) {
+      return apiError(reply, 409, "conflict", error.message);
+    }
+    if (error instanceof AccountSwitchInProgressError || error instanceof AccountLoginRequiredError)
+      return apiError(reply, 409, "conflict", error.message);
+    if (error instanceof CodexAccountError) {
+      if (error.kind === "validation")
+        return apiError(reply, 400, "validation_failed", error.message);
+      if (error.kind === "not_found") return apiError(reply, 404, "not_found", error.message);
+      if (error.kind === "failed")
+        return apiError(reply, 503, "app_server_unavailable", error.message);
       return apiError(reply, 409, "conflict", error.message);
     }
     if (error instanceof CodexManagementError) {

@@ -9,6 +9,7 @@ import { AppManager } from "./app-management";
 import { CodexBridge } from "./codex/bridge";
 import { connectUnixWebSocket, type JsonlProcess } from "./codex/transport";
 import { CodexManager } from "./codex-management";
+import { CodexAccounts } from "./codex-accounts";
 import { childProcessEnvironment, loadConfig, SERVER_VERSION } from "./config";
 import { safeError } from "./logging";
 import { AppProjection } from "./projection";
@@ -48,6 +49,17 @@ const bridge = new CodexBridge({
         }) as unknown as JsonlProcess),
 });
 const projection = new AppProjection(bridge, store, attention, config.sessionLimit);
+const codexAccounts = new CodexAccounts(bridge, {
+  stateDir: dirname(config.statePath),
+  codexHome: resolve(process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex")),
+  codexBin: config.codexBin,
+  proxyEnvFile: config.codexProxyEnvFile,
+  activeTurnCount: () =>
+    projection.snapshot().threads.filter((thread) => thread.currentTurnId !== null).length,
+});
+await codexAccounts.initialize();
+projection.setCodexAccounts(codexAccounts.status());
+codexAccounts.on("changed", (status) => projection.setCodexAccounts(status));
 const lifecycle = new RuntimeLifecycle({
   transport: config.codexTransport,
   tokenPath: config.restartTokenPath,
@@ -111,8 +123,12 @@ bridge.on("protocolError", (error: Error) => {
 bridge.on("state", (state, detail: unknown) => {
   if (state === "ready") {
     lifecycle.syncing();
-    void projection
-      .sync()
+    void codexAccounts
+      .restore()
+      .catch((error: Error) => {
+        process.stderr.write(`CodexNest account needs attention (${error.name})\n`);
+      })
+      .then(() => projection.sync())
       .then(() => lifecycle.ready())
       .catch((error: Error) => {
         lifecycle.failed();
@@ -135,6 +151,7 @@ const app = await buildApp(config, {
   projection,
   attention,
   codexManager,
+  codexAccounts,
   appManager,
   lifecycle,
   threadTitles,
@@ -157,6 +174,7 @@ function shutdown(): Promise<void> {
       await store.flushed().catch(() => undefined);
     }
     bridge.stop();
+    await codexAccounts.close();
     await lifecycle.close();
   })();
   return shutdownPromise;

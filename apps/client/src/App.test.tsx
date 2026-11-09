@@ -5281,6 +5281,7 @@ function mockConnection(
     readAppSettings: vi.fn().mockResolvedValue(appUpdateStatus()),
     checkAppUpdate: vi.fn().mockResolvedValue(appUpdateStatus()),
     updateApp: vi.fn().mockResolvedValue(appUpdateStatus()),
+    readCodexAccounts: vi.fn().mockResolvedValue({ currentAccountId: null, accounts: [] }),
     readCodexSettings: vi.fn().mockResolvedValue({
       supported: true,
       unavailableReason: null,

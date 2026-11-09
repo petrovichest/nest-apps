@@ -1,5 +1,6 @@
 import { pastedText, type PastedText } from "./pasted-text.js";
 import type { ClaudeAccountsStatus } from "./claude-accounts.js";
+import type { CodexAccountsStatus } from "./codex-accounts.js";
 export * from "./pasted-text.js";
 
 export type AppProvider = "codex" | "claude" | "gemini";
@@ -1080,6 +1081,7 @@ export type AppSnapshot = {
   connection: ConnectionView;
   codexRateLimits?: CodexRateLimitsState;
   claudeAccounts?: ClaudeAccountsStatus;
+  codexAccounts?: CodexAccountsStatus;
   projects: Project[];
   threads: ThreadSummary[];
   attention: AttentionRequest[];
@@ -1094,6 +1096,7 @@ export type ServerEvent =
   | { type: "connection.changed"; connection: ConnectionView }
   | { type: "codexRateLimits.changed"; codexRateLimits: CodexRateLimitsState }
   | { type: "claudeAccounts.changed"; claudeAccounts: ClaudeAccountsStatus }
+  | { type: "codexAccounts.changed"; codexAccounts: CodexAccountsStatus }
   | { type: "project.upserted"; project: Project }
   | { type: "projects.reordered"; projects: Project[] }
   | { type: "project.removed"; projectId: string }
@@ -1960,5 +1963,6 @@ export function mergeProjectDraft(
   };
 }
 export * from "./claude-accounts.js";
+export * from "./codex-accounts.js";
 export * from "./claude-proxy.js";
 export * from "./kanban.js";

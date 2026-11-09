@@ -48,6 +48,7 @@ import {
 import { ApplicationSettingsCard } from "./ApplicationSettingsCard";
 import { CodexSettingsCard, CodexSettingsProvider, ProxySettingsCard } from "./CodexSettingsCard";
 import { ClaudeAccountsSettings } from "./ClaudeAccountsSettings";
+import { CodexAccountsSettings } from "./CodexAccountsSettings";
 import { GeminiConnectionSettings } from "./GeminiConnectionSettings";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { RecoverySettingsCard } from "./RecoverySettingsCard";
@@ -628,6 +629,7 @@ export function SettingsPage({
             role="tabpanel"
           >
             {application.isClaude && activeSection === "codex" && <ClaudeAccountsSettings />}
+            {application.isCodex && activeSection === "codex" && <CodexAccountsSettings />}
             {application.isGemini && activeSection === "codex" && <GeminiConnectionSettings />}
             <SettingsGroup
               as="form"

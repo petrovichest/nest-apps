@@ -670,6 +670,8 @@ async function mockHttpRoute(
     return json(appStatus);
   }
   if (path === "/api/v1/settings/codex") return json(codexStatus);
+  if (path === "/api/v1/settings/codex/accounts")
+    return json({ currentAccountId: null, accounts: [] });
   if (path === "/api/v1/settings/permissions") {
     return json({ preset: "auto", version: "visual-v1", overridden: false, message: null });
   }

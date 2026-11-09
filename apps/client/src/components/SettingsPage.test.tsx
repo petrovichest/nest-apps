@@ -12,6 +12,9 @@ import { SettingsPage } from "./SettingsPage";
 const connection = vi.hoisted(() => vi.fn());
 
 vi.mock("../connection", () => ({ useConnection: connection }));
+vi.mock("./CodexAccountsSettings", () => ({
+  CodexAccountsSettings: () => <section>Аккаунты Codex</section>,
+}));
 vi.mock("./CodexSettingsCard", () => ({
   CodexSettingsProvider: ({ children }: { children: ReactNode }) => children,
   CodexSettingsCard: () => (
