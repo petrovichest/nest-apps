@@ -2778,6 +2778,8 @@ export class AppProjection extends EventEmitter {
     const threads: Thread[] = [];
     let cursor: string | null = null;
     do {
+      // With ~1400 sessions a single page can take over 30 s right after a restart; one
+      // timeout fails the whole startup sync and keeps the server out of "ready".
       const page = parseThreadList(
         await this.bridge.request<unknown>(
           "thread/list",
@@ -2789,7 +2791,7 @@ export class AppProjection extends EventEmitter {
             archived,
             sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown", "subAgentThreadSpawn"],
           },
-          30_000,
+          120_000,
         ),
       );
       threads.push(
