@@ -289,10 +289,27 @@ const ENGLISH: Record<string, string> = {
   "Подключение недоступно. Проверьте адрес, порт, логин и пароль прокси.":
     "Connection unavailable. Check the proxy address, port, username, and password.",
   "Не удалось проверить подключение через прокси.": "Could not test the proxy connection.",
+  "Запросы Codex для этого аккаунта будут идти через выбранный прокси. При ошибке прокси прямого подключения не будет.":
+    "Codex requests for this account will use the selected proxy. A proxy error will stop the request without a direct connection.",
+  "Запросы Codex для этого аккаунта будут идти без прокси.":
+    "Codex requests for this account will use a direct connection.",
+  "Откройте страницу ChatGPT и введите код ниже. Завершите вход в нужный аккаунт.":
+    "Open the ChatGPT page and enter the code below. Finish signing in to the account you want.",
+  "Сначала настройте подключение. Почта аккаунта появится после входа в ChatGPT.":
+    "Set up the connection first. The account email will appear after signing in to ChatGPT.",
+  "Выбор аккаунта действует для новых сессий. Запущенные задачи сохраняют свой аккаунт и подключение.":
+    "The selected account is used for new sessions. Running tasks keep their account and connection.",
+  "Вход Codex не завершён. Проверьте прокси и разрешите вход по коду устройства в настройках безопасности ChatGPT.":
+    "Codex sign-in did not finish. Check the proxy and enable device code sign-in in ChatGPT security settings.",
+  "Продолжаем задачу с доступным аккаунтом.": "Continuing the task with an available account.",
+  "Ждём доступный аккаунт Codex. История и очередь сохранены.":
+    "Waiting for an available Codex account. History and queued messages are saved.",
   "Запросы Claude Code для этого аккаунта будут идти через выбранный прокси.":
     "Claude Code requests for this account will use the selected proxy.",
   "Запросы Claude Code для этого аккаунта будут идти без прокси.":
     "Claude Code requests for this account will use a direct connection.",
+  "Подключение общего Codex. Для сохранённых аккаунтов прокси настраивается в разделе аккаунтов.":
+    "Connection for the shared Codex instance. Configure saved account proxies in the accounts section.",
   "Сохранить подключение": "Save connection",
   "Перейти к входу": "Continue to sign in",
   "Подключаем…": "Connecting…",
@@ -1452,6 +1469,22 @@ export function localizeKnownServerText(
 ): string | null {
   if (!value) return null;
   const accountErrors: Record<string, string> = {
+    "Codex sign-in expired; start again": "Время входа в Codex истекло. Начните вход заново.",
+    "Choose a connection before signing in": "Сначала выберите подключение аккаунта.",
+    "Configure this account's connection before using it":
+      "Настройте подключение аккаунта перед использованием.",
+    "Wait for this account's active responses before changing its connection":
+      "Дождитесь завершения ответов этого аккаунта, затем измените подключение.",
+    "Wait for the active response before changing its account":
+      "Дождитесь завершения текущего ответа перед сменой аккаунта.",
+    "Could not refresh Codex account; sign in again or retry":
+      "Не удалось обновить аккаунт Codex. Проверьте прокси или войдите заново.",
+    "Could not connect to the account runtime; check its proxy and retry":
+      "Нет подключения к аккаунту Codex. Проверьте его прокси и повторите попытку.",
+    "Could not launch the account runtime service":
+      "Не удалось запустить аккаунт Codex. Повторите попытку и проверьте журнал сервиса.",
+    "Proxy address is invalid or ambiguous; choose a parsed address":
+      "Проверьте строку прокси и выберите правильный разбор адреса.",
     "Wait for active Codex responses before switching accounts":
       "Переключить аккаунт можно после завершения активных ответов.",
     "Codex account is switching; retry the message shortly":

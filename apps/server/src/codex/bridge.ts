@@ -36,6 +36,8 @@ export class CodexBridge extends EventEmitter {
   private _deliveryVersion?: number;
   private _pendingTurnStarts = 0;
   private nativeTurns = new Map<string, { id: string; active: boolean }>();
+  private requestRouter?: (method: string, params: unknown, timeoutMs: number) => Promise<unknown>;
+  private nativeNotificationFilter?: (notification: ServerNotification) => boolean;
   accountSwitching = false;
   accountLoginRequired = false;
 
@@ -65,6 +67,29 @@ export class CodexBridge extends EventEmitter {
 
   get activeNativeTurnCount(): number {
     return [...this.nativeTurns.values()].filter((turn) => turn.active).length;
+  }
+
+  setRequestRouter(
+    router?: (method: string, params: unknown, timeoutMs: number) => Promise<unknown>,
+  ): void {
+    this.requestRouter = router;
+  }
+  setNativeNotificationFilter(filter?: (notification: ServerNotification) => boolean): void {
+    this.nativeNotificationFilter = filter;
+  }
+
+  threadActive(id: string): boolean {
+    return this.nativeTurns.get(id)?.active === true;
+  }
+
+  acceptNotification(notification: ServerNotification): void {
+    if (notification.method === "turn/started" || notification.method === "turn/completed") {
+      this.nativeTurns.set(notification.params.threadId, {
+        id: notification.params.turn.id,
+        active: notification.method === "turn/started",
+      });
+    }
+    this.emit("notification", notification);
   }
 
   async start(): Promise<void> {
@@ -101,10 +126,13 @@ export class CodexBridge extends EventEmitter {
     }
     const startsTurn = ["turn/start", "review/start", "thread/realtime/start"].includes(method);
     if (startsTurn && this.accountSwitching) throw new AccountSwitchInProgressError();
-    if (startsTurn && this.accountLoginRequired) throw new AccountLoginRequiredError();
+    if (startsTurn && this.accountLoginRequired && !this.requestRouter)
+      throw new AccountLoginRequiredError();
     if (startsTurn) this._pendingTurnStarts++;
     try {
-      const result = await this.transport.request<T>(method, params, timeoutMs);
+      const result = this.requestRouter
+        ? ((await this.requestRouter(method, params, timeoutMs)) as T)
+        : await this.requestNative<T>(method, params, timeoutMs);
       if (method === "turn/start" || method === "review/start") {
         const response = result as {
           turn?: { id: string; status: string };
@@ -118,10 +146,38 @@ export class CodexBridge extends EventEmitter {
         )
           this.nativeTurns.set(threadId, { id: response.turn.id, active: true });
       }
+      if (["thread/read", "thread/resume"].includes(method)) {
+        const { thread } = result as {
+          thread?: {
+            id: string;
+            status?: { type: string };
+            turns?: Array<{ id: string; status: string }>;
+          };
+        };
+        if (thread?.status?.type === "active") {
+          const turn = thread.turns
+            ?.slice()
+            .reverse()
+            .find((turn) => turn.status === "inProgress");
+          this.nativeTurns.set(thread.id, {
+            id: turn?.id ?? this.nativeTurns.get(thread.id)?.id ?? "unknown",
+            active: true,
+          });
+        } else if (thread?.id && this.nativeTurns.has(thread.id)) {
+          const previous = this.nativeTurns.get(thread.id)!;
+          this.nativeTurns.set(thread.id, { ...previous, active: false });
+        }
+      }
       return result;
     } finally {
       if (startsTurn) this._pendingTurnStarts--;
     }
+  }
+
+  /** The original daemon connection. Account routing uses this only for history/global settings. */
+  async requestNative<T>(method: string, params: unknown, timeoutMs = 15_000): Promise<T> {
+    if (!this.transport || !this.ready) throw new BridgeUnavailableError(this._state);
+    return this.transport.request<T>(method, params, timeoutMs);
   }
 
   respond(id: number | string, result: unknown): void {
@@ -150,13 +206,9 @@ export class CodexBridge extends EventEmitter {
     const transport = new JsonlTransport(child);
     this.transport = transport;
     transport.on("notification", (notification: ServerNotification) => {
-      if (notification.method === "turn/started" || notification.method === "turn/completed") {
-        this.nativeTurns.set(notification.params.threadId, {
-          id: notification.params.turn.id,
-          active: notification.method === "turn/started",
-        });
-      }
-      this.emit("notification", notification);
+      this.emit("nativeNotification", notification);
+      if (this.nativeNotificationFilter?.(notification) !== false)
+        this.acceptNotification(notification);
     });
     transport.on("request", (request: ServerRequest) => this.emit("request", request, transport));
     transport.on("unknownResponse", (id: number) => this.emit("unknownResponse", id));

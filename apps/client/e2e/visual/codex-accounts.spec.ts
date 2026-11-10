@@ -12,6 +12,14 @@ for (const theme of ["light", "dark"] as const) {
         email,
         plan: "plus",
         authenticated: true,
+        proxy: {
+          enabled: false,
+          protocol: "http",
+          host: null,
+          port: null,
+          username: null,
+          hasPassword: false,
+        },
         connectionError: null,
         rateLimits: {
           limits: {
@@ -24,6 +32,9 @@ for (const theme of ["light", "dark"] as const) {
         },
       });
       let status: CodexAccountsStatus = {
+        cliVersion: "0.167.0",
+        autoSwitch: false,
+        warmLimits: false,
         currentAccountId: "first",
         accounts: [
           account("first", "primary@example.com"),
@@ -45,9 +56,11 @@ for (const theme of ["light", "dark"] as const) {
         const headers = {
           "access-control-allow-origin": "*",
           "access-control-allow-headers": "authorization,content-type",
-          "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
+          "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
         };
         if (method === "OPTIONS") return route.fulfill({ status: 204, headers });
+        if (url.pathname.endsWith("/proxy/test"))
+          return route.fulfill({ headers, json: { ok: true, latencyMs: 25, error: null } });
         if (url.pathname.endsWith("/select")) {
           status = { ...status, currentAccountId: "second" };
           return route.fulfill({ json: status, headers });
@@ -70,7 +83,7 @@ for (const theme of ["light", "dark"] as const) {
       });
       await page.goto("/settings?section=codex");
       await waitForVisualReady(page);
-      const accounts = page.getByRole("region", { name: "Аккаунты Codex" });
+      const accounts = page.getByRole("region", { name: "Codex CLI" });
       const second = accounts.getByRole("article", {
         name: "another.long.account.address@example.com",
       });
@@ -86,8 +99,21 @@ for (const theme of ["light", "dark"] as const) {
       ).toEqual([]);
       await page.screenshot({ path: testInfo.outputPath("accounts.png") });
       await accounts.getByRole("button", { name: "Добавить аккаунт" }).click();
-      const dialog = page.getByRole("dialog", { name: "Войти в Codex" });
-      await dialog.getByRole("button", { name: "Получить код входа" }).click();
+      const dialog = page.getByRole("dialog");
+      await dialog
+        .getByLabel("Прокси", { exact: true })
+        .fill("socks5://account-user:account-password@proxy.example.test:1080");
+      await expect(dialog.getByText("Прокси распознан")).toBeVisible();
+      await dialog.getByRole("button", { name: "Проверить прокси", exact: true }).click();
+      await expect(dialog.getByText("Подключение доступно · 25 мс")).toBeVisible();
+      expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+        true,
+      );
+      expect(
+        (await new AxeBuilder({ page }).include(".claude-account-dialog").analyze()).violations,
+      ).toEqual([]);
+      await page.screenshot({ path: testInfo.outputPath("connection.png") });
+      await dialog.getByRole("button", { name: "Перейти к входу" }).click();
       await expect(dialog.getByRole("textbox", { name: "Код для входа в ChatGPT" })).toHaveValue(
         "ABCD-EFGH",
       );

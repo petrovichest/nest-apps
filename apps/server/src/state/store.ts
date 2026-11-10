@@ -232,6 +232,7 @@ export interface UserInputDraftState extends UserInputDraft {
 }
 
 export interface CapacityRetryState {
+  reason?: "account";
   failedTurnId: string;
   nextAttemptAt: number;
   dispatching?: true;
@@ -1321,6 +1322,7 @@ function isCapacityRetry(value: unknown): value is CapacityRetryState {
     isRecord(value) &&
     isBoundedString(value.failedTurnId, 500) &&
     isNonNegativeFiniteNumber(value.nextAttemptAt) &&
+    (value.reason === undefined || value.reason === "account") &&
     (value.dispatching === undefined || value.dispatching === true) &&
     (value.goal === undefined ||
       (isRecord(value.goal) &&

@@ -54,12 +54,20 @@ const codexAccounts = new CodexAccounts(bridge, {
   codexHome: resolve(process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex")),
   codexBin: config.codexBin,
   proxyEnvFile: config.codexProxyEnvFile,
+  serverEnvFile: config.serverEnvFile,
+  managedInstall: config.managedInstall,
   activeTurnCount: () =>
     projection.snapshot().threads.filter((thread) => thread.currentTurnId !== null).length,
 });
 await codexAccounts.initialize();
 projection.setCodexAccounts(codexAccounts.status());
-codexAccounts.on("changed", (status) => projection.setCodexAccounts(status));
+codexAccounts.on("changed", (status) => {
+  projection.setCodexAccounts(status);
+  const selected = status.accounts.find(
+    (account: { id: string }) => account.id === status.currentAccountId,
+  );
+  if (selected) projection.setCodexRateLimits(selected.rateLimits);
+});
 const lifecycle = new RuntimeLifecycle({
   transport: config.codexTransport,
   tokenPath: config.restartTokenPath,

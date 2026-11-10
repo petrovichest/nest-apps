@@ -6,6 +6,7 @@ import {
   type ClaudeAccount,
   type ClaudeAccountsStatus,
   type ClaudeLoginStatus,
+  type CodexLoginStatus,
   type ClaudeProxyInput,
   type ClaudeProxyProtocol,
   type ClaudeProxyStatus,
@@ -32,10 +33,11 @@ import {
 
 type AccountDialog = { mode: "add" } | { mode: "proxy" | "login"; account: ClaudeAccount };
 
-export function ClaudeAccountsSettings() {
+export function ClaudeAccountsSettings({ provider = "Claude" }: { provider?: "Claude" | "Codex" }) {
   const { api, state } = useConnection();
   const { language, t } = useI18n();
-  const snapshotStatus = state?.snapshot?.claudeAccounts;
+  const snapshotStatus =
+    provider === "Codex" ? state?.snapshot?.codexAccounts : state?.snapshot?.claudeAccounts;
   const [status, setStatus] = useState<ClaudeAccountsStatus | null>(snapshotStatus ?? null);
   const [loading, setLoading] = useState(!snapshotStatus);
   const [busy, setBusy] = useState(false);
@@ -47,7 +49,7 @@ export function ClaudeAccountsSettings() {
 
   useEffect(() => {
     let cancelled = false;
-    void api.readClaudeAccounts().then(
+    void (provider === "Codex" ? api.readCodexAccounts() : api.readClaudeAccounts()).then(
       (next) => {
         if (!cancelled) {
           setStatus(next);
@@ -58,7 +60,9 @@ export function ClaudeAccountsSettings() {
         if (!cancelled) {
           setError(
             localizationRef.current.t(
-              "Не удалось загрузить аккаунты Claude. Повторите обновление.",
+              provider === "Codex"
+                ? "Не удалось загрузить аккаунты Codex. Повторите обновление."
+                : "Не удалось загрузить аккаунты Claude. Повторите обновление.",
             ),
           );
           setLoading(false);
@@ -68,7 +72,7 @@ export function ClaudeAccountsSettings() {
     return () => {
       cancelled = true;
     };
-  }, [api]);
+  }, [api, provider]);
 
   useEffect(() => {
     if (snapshotStatus) setStatus(snapshotStatus);
@@ -80,7 +84,17 @@ export function ClaudeAccountsSettings() {
     try {
       setStatus(await task());
     } catch (caught) {
-      setError(knownError(caught, t("Не удалось изменить настройки аккаунтов Claude."), language));
+      setError(
+        knownError(
+          caught,
+          t(
+            provider === "Codex"
+              ? "Не удалось изменить аккаунты Codex. Повторите попытку."
+              : "Не удалось изменить настройки аккаунтов Claude.",
+          ),
+          language,
+        ),
+      );
     } finally {
       setBusy(false);
     }
@@ -96,7 +110,7 @@ export function ClaudeAccountsSettings() {
     <section className="claude-accounts" aria-labelledby={headingId} aria-busy={loading || busy}>
       <header className="claude-accounts-heading">
         <div>
-          <h2 id={headingId}>Claude Code CLI</h2>
+          <h2 id={headingId}>{provider === "Codex" ? "Codex CLI" : "Claude Code CLI"}</h2>
           <p className="claude-account-meta">
             {status?.cliVersion ?? t("Версия CLI недоступна")}
             {status && (
@@ -116,7 +130,11 @@ export function ClaudeAccountsSettings() {
             className="icon-button"
             aria-label={t("Обновить лимиты аккаунтов")}
             disabled={loading || busy}
-            onClick={() => void perform(() => api.refreshClaudeAccounts())}
+            onClick={() =>
+              void perform(() =>
+                provider === "Codex" ? api.refreshCodexAccounts() : api.refreshClaudeAccounts(),
+              )
+            }
           >
             <RefreshIcon />
           </button>
@@ -133,6 +151,13 @@ export function ClaudeAccountsSettings() {
         </div>
       </header>
 
+      {provider === "Codex" && (
+        <p className="claude-account-hint">
+          {t(
+            "Выбор аккаунта действует для новых сессий. Запущенные задачи сохраняют свой аккаунт и подключение.",
+          )}
+        </p>
+      )}
       {error && (
         <p className="settings-notice danger" role="alert">
           {error}
@@ -161,7 +186,11 @@ export function ClaudeAccountsSettings() {
             checked={status.autoSwitch}
             disabled={busy}
             onChange={(event) =>
-              void perform(() => api.updateClaudeAutoSwitch(event.target.checked))
+              void perform(() =>
+                provider === "Codex"
+                  ? api.updateCodexAutoSwitch(event.target.checked)
+                  : api.updateClaudeAutoSwitch(event.target.checked),
+              )
             }
           />
         </div>
@@ -182,14 +211,18 @@ export function ClaudeAccountsSettings() {
             checked={status.warmLimits}
             disabled={busy}
             onChange={(event) =>
-              void perform(() => api.updateClaudeWarmLimits(event.target.checked))
+              void perform(() =>
+                provider === "Codex"
+                  ? api.updateCodexWarmLimits(event.target.checked)
+                  : api.updateClaudeWarmLimits(event.target.checked),
+              )
             }
           />
         </div>
       )}
       {!loading && status && accounts.length === 0 && (
         <div className="claude-account-surface claude-account-empty">
-          <h3>{t("Добавьте аккаунт Claude")}</h3>
+          <h3>{t(provider === "Codex" ? "Добавьте аккаунт Codex" : "Добавьте аккаунт Claude")}</h3>
           <p>{t("Войдите через приложение и настройте подключение для аккаунта.")}</p>
           <button
             type="button"
@@ -206,13 +239,26 @@ export function ClaudeAccountsSettings() {
         <AccountCard
           key={account.id}
           account={account}
+          provider={provider}
           current={account.id === status?.currentAccountId}
           autoSwitch={status?.autoSwitch ?? true}
           busy={busy}
           onConfigure={() => setDialog({ mode: "proxy", account })}
           onLogin={() => setDialog({ mode: "login", account })}
-          onRefresh={() => void perform(() => api.refreshClaudeAccounts(account.id))}
-          onSelect={() => void perform(() => api.selectClaudeAccount(account.id))}
+          onRefresh={() =>
+            void perform(() =>
+              provider === "Codex"
+                ? api.refreshCodexAccounts(account.id)
+                : api.refreshClaudeAccounts(account.id),
+            )
+          }
+          onSelect={() =>
+            void perform(() =>
+              provider === "Codex"
+                ? api.selectCodexAccount(account.id)
+                : api.selectClaudeAccount(account.id),
+            )
+          }
           onRemove={() => {
             if (
               window.confirm(
@@ -221,7 +267,11 @@ export function ClaudeAccountsSettings() {
                 }),
               )
             ) {
-              void perform(() => api.removeClaudeAccount(account.id));
+              void perform(() =>
+                provider === "Codex"
+                  ? api.removeCodexAccount(account.id)
+                  : api.removeClaudeAccount(account.id),
+              );
             }
           }}
         />
@@ -236,6 +286,7 @@ export function ClaudeAccountsSettings() {
         <AccountWizard
           api={api}
           dialog={dialog}
+          provider={provider}
           onClose={() => setDialog(null)}
           onSaved={(next) => {
             setStatus(next);
@@ -277,8 +328,9 @@ export function AccountCard({
   const fiveHourExhausted = quotaExhausted(account.rateLimits.limits?.primary);
   const blocked =
     !account.authenticated ||
-    (provider === "Claude" &&
-      (account.connectionError !== null || weeklyExhausted || fiveHourExhausted));
+    account.connectionError !== null ||
+    weeklyExhausted ||
+    fiveHourExhausted;
   const label = !account.authenticated
     ? account.email
       ? t("Нужен вход")
@@ -353,12 +405,7 @@ export function AccountCard({
             <button type="button" disabled={busy || !account.authenticated} onClick={onRefresh}>
               {t("Обновить лимиты")}
             </button>
-            <button
-              type="button"
-              className="danger"
-              disabled={busy || (provider === "Codex" && current)}
-              onClick={onRemove}
-            >
+            <button type="button" className="danger" disabled={busy} onClick={onRemove}>
               {t("Удалить аккаунт")}
             </button>
           </div>
@@ -453,7 +500,7 @@ export function AccountCard({
               <span>{t("Настроить")}</span>
             </button>
           )}
-          {provider === "Codex" && !current && account.authenticated && (
+          {provider === "Codex" && !autoSwitch && !current && account.authenticated && (
             <button
               type="button"
               disabled={busy || selectionDisabled || blocked}
@@ -470,8 +517,11 @@ export function AccountCard({
 
 function ProxyCopyButton({ value, disabled = false }: { value: string; disabled?: boolean }) {
   const { t } = useI18n();
-  const [result, setResult] = useState<"idle" | "copied" | "failed">("idle");
-  useEffect(() => setResult("idle"), [value]);
+  const [feedback, setFeedback] = useState<{ value: string; state: "idle" | "copied" | "failed" }>({
+    value,
+    state: "idle",
+  });
+  const result = feedback.value === value ? feedback.state : "idle";
   const label = t(
     result === "copied"
       ? "Скопировано"
@@ -488,8 +538,8 @@ function ProxyCopyButton({ value, disabled = false }: { value: string; disabled?
       disabled={disabled || !value.trim()}
       onClick={() =>
         void copyText(value).then(
-          () => setResult("copied"),
-          () => setResult("failed"),
+          () => setFeedback({ value, state: "copied" }),
+          () => setFeedback({ value, state: "failed" }),
         )
       }
     >
@@ -554,6 +604,7 @@ function Quota({
 }
 
 function AccountWizard({
+  provider,
   api,
   dialog,
   onClose,
@@ -561,6 +612,7 @@ function AccountWizard({
 }: {
   api: ApiClient;
   dialog: AccountDialog;
+  provider: "Claude" | "Codex";
   onClose(): void;
   onSaved(status: ClaudeAccountsStatus): void;
 }) {
@@ -577,13 +629,13 @@ function AccountWizard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [test, setTest] = useState<{ ok: boolean; latencyMs: number | null } | null>(null);
-  const [login, setLogin] = useState<ClaudeLoginStatus | null>(null);
+  const [login, setLogin] = useState<ClaudeLoginStatus | CodexLoginStatus | null>(null);
   const [code, setCode] = useState("");
   const [copied, setCopied] = useState(false);
   const headingId = useId();
   const aliveRef = useRef(true);
   const generationRef = useRef(0);
-  const loginRef = useRef<ClaudeLoginStatus | null>(null);
+  const loginRef = useRef<ClaudeLoginStatus | CodexLoginStatus | null>(null);
   const completionRef = useRef<string | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   loginRef.current = login;
@@ -613,8 +665,10 @@ function AccountWizard({
     const active = loginRef.current;
     loginRef.current = null;
     if (active && !terminalLogin(active))
-      void api.cancelClaudeLogin(active.id).catch(() => undefined);
-  }, [api]);
+      void (
+        provider === "Codex" ? api.cancelCodexLogin(active.id) : api.cancelClaudeLogin(active.id)
+      ).catch(() => undefined);
+  }, [api, provider]);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -632,13 +686,18 @@ function AccountWizard({
     setCode("");
     setCopied(false);
     try {
-      const next = await api.startClaudeLogin(
+      const next = await (
+        provider === "Codex" ? api.startCodexLogin.bind(api) : api.startClaudeLogin.bind(api)
+      )(
         account && !changed
           ? { accountId: account.id }
           : { proxy, ...(account ? { accountId: account.id } : {}) },
       );
       if (!aliveRef.current || generation !== generationRef.current) {
-        if (!terminalLogin(next)) void api.cancelClaudeLogin(next.id).catch(() => undefined);
+        if (!terminalLogin(next))
+          void (
+            provider === "Codex" ? api.cancelCodexLogin(next.id) : api.cancelClaudeLogin(next.id)
+          ).catch(() => undefined);
         return;
       }
       loginRef.current = next;
@@ -669,10 +728,14 @@ function AccountWizard({
     let cancelled = false;
     const generation = generationRef.current;
     const timer = window.setTimeout(() => {
-      void api.readClaudeLogin(login.id).then(
+      void (
+        provider === "Codex" ? api.readCodexLogin(login.id) : api.readClaudeLogin(login.id)
+      ).then(
         (next) => {
-          if (!cancelled && aliveRef.current && generation === generationRef.current)
+          if (!cancelled && aliveRef.current && generation === generationRef.current) {
+            setError(null);
             setLogin(next);
+          }
         },
         () => {
           if (!cancelled && aliveRef.current && generation === generationRef.current) {
@@ -691,7 +754,7 @@ function AccountWizard({
   useEffect(() => {
     if (login?.state !== "completed" || completionRef.current === login.id) return;
     completionRef.current = login.id;
-    void api.readClaudeAccounts().then(
+    void (provider === "Codex" ? api.readCodexAccounts() : api.readClaudeAccounts()).then(
       (next) => {
         if (aliveRef.current) onSaved(next);
       },
@@ -723,7 +786,9 @@ function AccountWizard({
     setError(null);
     setTest(null);
     try {
-      const result = await api.testClaudeProxy(proxy);
+      const result = await (provider === "Codex"
+        ? api.testCodexProxy(proxy)
+        : api.testClaudeProxy(proxy));
       if (aliveRef.current) {
         setTest(result);
         if (!result.ok)
@@ -743,7 +808,9 @@ function AccountWizard({
     setBusy(true);
     setError(null);
     try {
-      const next = await api.updateClaudeAccountProxy(account.id, proxy);
+      const next = await (provider === "Codex"
+        ? api.updateCodexAccountProxy(account.id, proxy)
+        : api.updateClaudeAccountProxy(account.id, proxy));
       if (aliveRef.current) onSaved(next);
     } catch (caught) {
       if (aliveRef.current)
@@ -787,7 +854,7 @@ function AccountWizard({
         : t("Без прокси");
   const title =
     step === "login"
-      ? t("Войти в Claude")
+      ? t(provider === "Codex" ? "Войти в Codex" : "Войти в Claude")
       : dialog.mode === "proxy"
         ? t("Подключение аккаунта")
         : t("Добавить аккаунт");
@@ -806,10 +873,16 @@ function AccountWizard({
           <p>
             {step === "login"
               ? t(
-                  "Откройте страницу Claude и войдите в нужный аккаунт. Вернитесь сюда, чтобы завершить подключение.",
+                  provider === "Codex"
+                    ? "Откройте страницу ChatGPT и введите код ниже. Завершите вход в нужный аккаунт."
+                    : "Откройте страницу Claude и войдите в нужный аккаунт. Вернитесь сюда, чтобы завершить подключение.",
                 )
               : (account?.email ??
-                t("Сначала настройте подключение. Почта аккаунта появится после входа в Claude."))}
+                t(
+                  provider === "Codex"
+                    ? "Сначала настройте подключение. Почта аккаунта появится после входа в ChatGPT."
+                    : "Сначала настройте подключение. Почта аккаунта появится после входа в Claude.",
+                ))}
           </p>
         </div>
         <button type="button" className="icon-button" aria-label={t("Закрыть")} onClick={close}>
@@ -991,8 +1064,12 @@ function AccountWizard({
           <p className="claude-account-hint">
             {t(
               enabled
-                ? "Запросы Claude Code для этого аккаунта будут идти через выбранный прокси."
-                : "Запросы Claude Code для этого аккаунта будут идти без прокси.",
+                ? provider === "Codex"
+                  ? "Запросы Codex для этого аккаунта будут идти через выбранный прокси. При ошибке прокси прямого подключения не будет."
+                  : "Запросы Claude Code для этого аккаунта будут идти через выбранный прокси."
+                : provider === "Codex"
+                  ? "Запросы Codex для этого аккаунта будут идти без прокси."
+                  : "Запросы Claude Code для этого аккаунта будут идти без прокси.",
             )}
           </p>
           <div className="claude-dialog-actions">
@@ -1064,26 +1141,64 @@ function AccountWizard({
             <span
               className={
                 login?.state === "checking" ||
-                !["waitingCode", "completed", "failed", "cancelled"].includes(login?.state ?? "")
+                !["waitingCode", "waiting", "completed", "failed", "cancelled"].includes(
+                  login?.state ?? "",
+                )
                   ? "working-text"
                   : undefined
               }
             >
               {t(
-                login?.state === "waitingCode"
-                  ? "Ожидаем код авторизации…"
-                  : login?.state === "checking"
-                    ? "Проверяем авторизацию…"
-                    : login?.state === "completed"
-                      ? "Вход выполнен"
-                      : login?.state === "failed"
-                        ? "Вход не завершён. Начните заново."
-                        : login?.state === "cancelled"
-                          ? "Вход отменён"
-                          : "Готовим страницу входа…",
+                login?.state === "waiting"
+                  ? "Ожидаем вход в ChatGPT…"
+                  : login?.state === "waitingCode"
+                    ? "Ожидаем код авторизации…"
+                    : login?.state === "checking"
+                      ? "Проверяем авторизацию…"
+                      : login?.state === "completed"
+                        ? "Вход выполнен"
+                        : login?.state === "failed"
+                          ? "Вход не завершён. Начните заново."
+                          : login?.state === "cancelled"
+                            ? "Вход отменён"
+                            : "Готовим страницу входа…",
               )}
             </span>
           </p>
+          {login && "userCode" in login && login.userCode && (
+            <div className="claude-login-code">
+              <label htmlFor={`${headingId}-device-code`}>{t("Код для входа в ChatGPT")}</label>
+              <input
+                id={`${headingId}-device-code`}
+                value={login.userCode}
+                readOnly
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  void copyText(login.userCode!).then(
+                    () => setCopied(true),
+                    () => setError(t("Не удалось скопировать код.")),
+                  )
+                }
+              >
+                <CopyIcon />
+                {t("Скопировать код")}
+              </button>
+            </div>
+          )}
+          {provider === "Codex" && login?.state === "failed" && (
+            <p className="settings-notice danger" role="alert">
+              {knownError(
+                new Error(login.error ?? ""),
+                t(
+                  "Вход Codex не завершён. Проверьте прокси и разрешите вход по коду устройства в настройках безопасности ChatGPT.",
+                ),
+                language,
+              )}
+            </p>
+          )}
           {login?.state === "waitingCode" && (
             <form className="claude-login-code" onSubmit={submitCode}>
               <p className="claude-account-hint">
@@ -1187,7 +1302,7 @@ function proxyDescription(proxy: ClaudeProxyStatus, t: Translate): string {
     : t("Без прокси");
 }
 
-function terminalLogin(login: ClaudeLoginStatus): boolean {
+function terminalLogin(login: ClaudeLoginStatus | CodexLoginStatus): boolean {
   return login.state === "completed" || login.state === "failed" || login.state === "cancelled";
 }
 
@@ -1202,6 +1317,11 @@ function knownError(caught: unknown, fallback: string, language: "ru" | "en"): s
   // Unknown backend output can contain native CLI arguments or provider credentials.
   if (!(caught instanceof Error)) return fallback;
   const translated = localizeKnownServerText("en", caught.message);
-  if (!translated || translated === caught.message) return fallback;
+  if (
+    !translated ||
+    (translated === caught.message &&
+      localizeKnownServerText("ru", caught.message) === caught.message)
+  )
+    return fallback;
   return localizeKnownServerText(language, caught.message) ?? fallback;
 }

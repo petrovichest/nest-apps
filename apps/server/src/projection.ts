@@ -1,3 +1,4 @@
+import { isAccountFailure } from "./codex-accounts";
 import {
   appendUserInputRecordings,
   asyncQuestionReplyMessageId,
@@ -1659,7 +1660,7 @@ export class AppProjection extends EventEmitter {
     const cached = this.threads.get(threadId);
     if (
       !cached ||
-      !isCapacityFailure(turn) ||
+      !this.canAutomaticallyRetry(turn) ||
       (cached.currentTurnId && cached.currentTurnId !== turn.id)
     )
       return;
@@ -3017,13 +3018,19 @@ export class AppProjection extends EventEmitter {
     }
   }
 
+  canAutomaticallyRetry(turn: Pick<Turn, "status" | "error">): boolean {
+    return (
+      isCapacityFailure(turn) || (this.accounts?.autoSwitch === true && isAccountFailure(turn))
+    );
+  }
+
   private updateCapacityRetry(
     meta: ThreadMetaState,
     cached: CachedThread,
     turn: Turn,
     recovered: boolean,
   ): void {
-    if (!isCapacityFailure(turn)) {
+    if (!this.canAutomaticallyRetry(turn)) {
       if (meta.capacityRetry && turn.id !== meta.capacityRetry.failedTurnId) {
         delete meta.capacityRetry;
       }
@@ -3047,9 +3054,10 @@ export class AppProjection extends EventEmitter {
     }
     meta.capacityRetry = {
       failedTurnId: turn.id,
+      ...(isAccountFailure(turn) ? { reason: "account" as const } : {}),
       nextAttemptAt:
         (turn.completedAt === null ? Date.now() : turn.completedAt * 1_000) +
-        CAPACITY_RETRY_INTERVAL_MS,
+        (isAccountFailure(turn) ? 0 : CAPACITY_RETRY_INTERVAL_MS),
       ...(goal
         ? {
             goal: {
@@ -3101,7 +3109,7 @@ export class AppProjection extends EventEmitter {
     }
     // Park automatic input before clearing the current turn or publishing idle state.
     if (
-      isCapacityFailure(turn) &&
+      this.canAutomaticallyRetry(turn) &&
       (!recovered || wasCurrentTurn || this.store.view().threadMeta[threadId]?.capacityRetry)
     ) {
       await this.prepareCapacityRetry(threadId, turn);
@@ -3850,6 +3858,17 @@ export class AppProjection extends EventEmitter {
             capacityRetry: {
               failedTurnId: meta.capacityRetry.failedTurnId,
               nextAttemptAt: meta.capacityRetry.nextAttemptAt,
+              ...(meta.capacityRetry.reason ? { reason: meta.capacityRetry.reason } : {}),
+            },
+          }
+        : {}),
+      ...(meta.capacityRetry?.reason === "account"
+        ? {
+            quotaRecovery: {
+              state: meta.capacityRetry.dispatching ? ("resuming" as const) : ("waiting" as const),
+              message: meta.capacityRetry.dispatching
+                ? "Продолжаем задачу с доступным аккаунтом."
+                : "Ждём доступный аккаунт Codex. История и очередь сохранены.",
             },
           }
         : {}),
@@ -3962,7 +3981,7 @@ export class AppProjection extends EventEmitter {
     return (
       cached.currentTurnId !== null &&
       (cached.thread.turns.some(
-        (turn) => turn.id === cached.currentTurnId && isCapacityFailure(turn),
+        (turn) => turn.id === cached.currentTurnId && this.canAutomaticallyRetry(turn),
       ) ||
         (this.turnStates
           .get(turnKey(cached.thread.id, cached.currentTurnId))

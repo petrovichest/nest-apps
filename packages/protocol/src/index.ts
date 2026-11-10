@@ -318,7 +318,7 @@ export type ThreadSummary = {
   updatedAt: number;
   currentTurnId: string | null;
   /** The server will continue this thread after temporary model overload. */
-  capacityRetry?: { failedTurnId: string; nextAttemptAt: number };
+  capacityRetry?: { failedTurnId: string; nextAttemptAt: number; reason?: "account" };
   /** Claude account recovery after an exhausted subscription quota. */
   quotaRecovery?: { state: "waiting" | "resuming" | "failed"; message: string };
   /** A completed plan still needs a user response, even if its mode was changed. */

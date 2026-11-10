@@ -39,12 +39,16 @@ import { hashToken } from "./auth";
 import { CodexBridge } from "./codex/bridge";
 import type { ServerNotification, ServerRequest } from "./codex/generated/index";
 import type { Thread, ThreadGoal, ThreadItem, Turn } from "./codex/generated/v2/index";
-import { CAPACITY_RETRY_INTERVAL_MS, CAPACITY_RETRY_MESSAGE_PREFIX } from "./capacity-retry";
+import {
+  ACCOUNT_RETRY_MESSAGE,
+  CAPACITY_RETRY_INTERVAL_MS,
+  CAPACITY_RETRY_MESSAGE_PREFIX,
+} from "./capacity-retry";
 import { RpcError, RpcTimeoutError, type JsonlTransport } from "./codex/transport";
 import type { CodexManager } from "./codex-management";
 import { loadConfig } from "./config";
 import { AppProjection } from "./projection";
-import { CodexAccountError, type CodexAccounts } from "./codex-accounts";
+import { CodexAccountError, isAccountFailure, type CodexAccounts } from "./codex-accounts";
 import { RuntimeLifecycle } from "./runtime-lifecycle";
 import { messageContentHash } from "./message-queue";
 import { StateStore } from "./state/store";
@@ -621,8 +625,27 @@ describe("local session references", () => {
 describe("model capacity recovery", () => {
   afterEach(() => vi.useRealTimers());
 
-  async function harness(mode: "default" | "plan" | "team" = "default") {
-    const context = await createTeamHarness();
+  async function harness(mode: "default" | "plan" | "team" = "default", accountRecovery = false) {
+    const accountStatus = {
+      cliVersion: null,
+      autoSwitch: accountRecovery,
+      warmLimits: false,
+      currentAccountId: null,
+      accounts: [],
+    };
+    const accounts = {
+      status: () => accountStatus,
+      on: vi.fn(),
+      off: vi.fn(),
+      observeLimits: vi.fn(),
+      close: vi.fn(),
+      canRecover: (turn: Turn) => accountStatus.autoSwitch && isAccountFailure(turn),
+      recover: vi.fn(async () => true),
+    };
+    const context = await createTeamHarness(
+      accountRecovery ? { codexAccounts: accounts as unknown as CodexAccounts } : {},
+    );
+    if (accountRecovery) context.projection.setCodexAccounts(accountStatus);
     await context.projection.setSettings("thread", {
       collaborationMode: mode,
       model: "gpt-a",
@@ -631,7 +654,7 @@ describe("model capacity recovery", () => {
     await context.app.ready();
     await nextImmediate();
     vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date"] });
-    return context;
+    return { ...context, recoveryAccounts: accounts, accountStatus };
   }
 
   async function fail(
@@ -639,6 +662,7 @@ describe("model capacity recovery", () => {
     id = "capacity-0",
     threadId = "thread",
     notifyError = false,
+    code: NonNullable<Turn["error"]>["codexErrorInfo"] = "serverOverloaded",
   ) {
     const previous = context.bridge.threadTurns.get(threadId) ?? [];
     const turn: Turn = {
@@ -646,7 +670,7 @@ describe("model capacity recovery", () => {
       itemsView: "full",
       error: {
         message: "Selected model is at capacity. Please try a different model.",
-        codexErrorInfo: "serverOverloaded",
+        codexErrorInfo: code,
         additionalDetails: null,
         misalignment: null,
       },
@@ -688,6 +712,56 @@ describe("model capacity recovery", () => {
     );
     return context.projection.summary(threadId)!.currentTurnId!;
   }
+
+  it.each(["default", "plan", "team"] as const)(
+    "continues after account exhaustion with a receipt marker and unchanged %s mode",
+    async (mode) => {
+      const context = await harness(mode, true);
+      try {
+        const failed = await fail(
+          context,
+          "account-failure",
+          "thread",
+          false,
+          "usageLimitExceeded",
+        );
+        expect(context.projection.summary("thread")?.capacityRetry?.reason).toBe("account");
+        await retry(context);
+        expect(context.recoveryAccounts.recover).toHaveBeenCalledWith("thread", failed, "gpt-a");
+        const commands = context.bridge.request.mock.calls.filter(
+          ([method, params]) => method === "turn/start" && (params as any).threadId === "thread",
+        );
+        expect(commands).toHaveLength(1);
+        expect(commands[0]?.[1]).toMatchObject({
+          clientUserMessageId: `${CAPACITY_RETRY_MESSAGE_PREFIX}account-failure`,
+          input: [{ type: "text", text: ACCOUNT_RETRY_MESSAGE }],
+        });
+        expect(context.projection.summary("thread")?.settings).toMatchObject({
+          model: "gpt-a",
+          reasoningEffort: "high",
+          collaborationMode: mode,
+        });
+      } finally {
+        await context.app.close();
+      }
+    },
+  );
+
+  it("cancels account continuation when automatic switching is disabled before dispatch", async () => {
+    const context = await harness("default", true);
+    try {
+      await fail(context, "account-failure", "thread", false, "unauthorized");
+      context.accountStatus.autoSwitch = false;
+      context.projection.setCodexAccounts({ ...context.accountStatus });
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.waitFor(() =>
+        expect(context.store.view().threadMeta.thread?.capacityRetry).toBeUndefined(),
+      );
+      expect(context.recoveryAccounts.recover).not.toHaveBeenCalled();
+    } finally {
+      await context.app.close();
+    }
+  });
 
   it("never publishes a failed state for a live overload and keeps its history classified", async () => {
     const context = await harness();
