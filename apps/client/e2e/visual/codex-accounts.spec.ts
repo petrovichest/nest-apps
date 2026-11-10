@@ -13,12 +13,13 @@ for (const theme of ["light", "dark"] as const) {
         plan: "plus",
         authenticated: true,
         proxy: {
-          enabled: false,
-          protocol: "http",
-          host: null,
-          port: null,
-          username: null,
-          hasPassword: false,
+          enabled: true,
+          protocol: id === "first" ? "http" : "socks5",
+          host: `${id}.proxy.example.test`,
+          port: id === "first" ? 3128 : 1080,
+          username: "demo-user",
+          hasPassword: true,
+          url: `${id === "first" ? "http" : "socks5h"}://demo-user:demo-password@${id}.proxy.example.test:${id === "first" ? 3128 : 1080}`,
         },
         connectionError: null,
         rateLimits: {
@@ -50,6 +51,7 @@ for (const theme of ["light", "dark"] as const) {
         },
       });
       let cancelled = false;
+      let failProxyTest = false;
       await page.route("**/api/v1/settings/codex/accounts**", async (route) => {
         const url = new URL(route.request().url());
         const method = route.request().method();
@@ -60,7 +62,14 @@ for (const theme of ["light", "dark"] as const) {
         };
         if (method === "OPTIONS") return route.fulfill({ status: 204, headers });
         if (url.pathname.endsWith("/proxy/test"))
-          return route.fulfill({ headers, json: { ok: true, latencyMs: 25, error: null } });
+          return route.fulfill({
+            headers,
+            json: {
+              ok: !failProxyTest,
+              latencyMs: failProxyTest ? null : 25,
+              error: failProxyTest ? "proxy_unavailable" : null,
+            },
+          });
         if (url.pathname.endsWith("/select")) {
           status = { ...status, currentAccountId: "second" };
           return route.fulfill({ json: status, headers });
@@ -87,7 +96,14 @@ for (const theme of ["light", "dark"] as const) {
       const second = accounts.getByRole("article", {
         name: "another.long.account.address@example.com",
       });
-      await second.getByRole("button", { name: "Использовать аккаунт" }).last().click();
+      await expect(accounts.getByRole("switch")).toHaveCount(2);
+      await expect(accounts.locator(".claude-account-connection-value")).toHaveText([
+        "http://demo-user:demo-password@first.proxy.example.test:3128",
+        "socks5h://demo-user:demo-password@second.proxy.example.test:1080",
+      ]);
+      await second.locator("summary").click();
+      await expect(second.getByRole("button", { name: "Использовать аккаунт" })).toHaveCount(1);
+      await second.getByRole("button", { name: "Использовать аккаунт" }).click();
       await expect(second.getByText("Используется")).toBeVisible();
       expect(
         await page
@@ -104,8 +120,17 @@ for (const theme of ["light", "dark"] as const) {
         .getByLabel("Прокси", { exact: true })
         .fill("socks5://account-user:account-password@proxy.example.test:1080");
       await expect(dialog.getByText("Прокси распознан")).toBeVisible();
+      await dialog
+        .getByRole("button", { name: "Проверить прокси", exact: true })
+        .scrollIntoViewIfNeeded();
+      const beforeTest = await dialog.boundingBox();
+      const actionsBeforeTest = await dialog.locator(".claude-dialog-actions").boundingBox();
       await dialog.getByRole("button", { name: "Проверить прокси", exact: true }).click();
       await expect(dialog.getByText("Подключение доступно · 25 мс")).toBeVisible();
+      expect(await dialog.boundingBox()).toEqual(beforeTest);
+      expect(await dialog.locator(".claude-dialog-actions").boundingBox()).toEqual(
+        actionsBeforeTest,
+      );
       expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
         true,
       );
@@ -113,6 +138,22 @@ for (const theme of ["light", "dark"] as const) {
         (await new AxeBuilder({ page }).include(".claude-account-dialog").analyze()).violations,
       ).toEqual([]);
       await page.screenshot({ path: testInfo.outputPath("connection.png") });
+      failProxyTest = true;
+      await dialog.getByRole("button", { name: "Проверить прокси", exact: true }).click();
+      await expect(dialog.getByRole("alert")).toHaveText(
+        "Подключение недоступно. Проверьте адрес, порт, логин и пароль прокси.",
+      );
+      await expect(dialog.getByLabel("Прокси", { exact: true })).toHaveValue(
+        "socks5://account-user:account-password@proxy.example.test:1080",
+      );
+      expect(await dialog.boundingBox()).toEqual(beforeTest);
+      expect(await dialog.locator(".claude-dialog-actions").boundingBox()).toEqual(
+        actionsBeforeTest,
+      );
+      expect(
+        (await new AxeBuilder({ page }).include(".claude-account-dialog").analyze()).violations,
+      ).toEqual([]);
+      await page.screenshot({ path: testInfo.outputPath("connection-error.png") });
       await dialog.getByRole("button", { name: "Перейти к входу" }).click();
       await expect(dialog.getByRole("textbox", { name: "Код для входа в ChatGPT" })).toHaveValue(
         "ABCD-EFGH",

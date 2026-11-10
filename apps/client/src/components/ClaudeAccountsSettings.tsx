@@ -500,15 +500,6 @@ export function AccountCard({
               <span>{t("Настроить")}</span>
             </button>
           )}
-          {provider === "Codex" && !autoSwitch && !current && account.authenticated && (
-            <button
-              type="button"
-              disabled={busy || selectionDisabled || blocked}
-              onClick={onSelect}
-            >
-              {t("Использовать аккаунт")}
-            </button>
-          )}
         </footer>
       )}
     </article>
@@ -1047,20 +1038,29 @@ function AccountWizard({
                 pending={busy}
               />
             </button>
-            {test?.ok && (
-              <p className="claude-account-success" role="status">
-                <CheckIcon />
-                {test.latencyMs === null
-                  ? t("Подключение доступно")
-                  : t("Подключение доступно · {{latency}} мс", { latency: test.latencyMs })}
+            <div className="claude-proxy-feedback">
+              <p
+                className="settings-notice danger claude-proxy-feedback-reserve"
+                aria-hidden="true"
+              >
+                {t("Подключение недоступно. Проверьте адрес, порт, логин и пароль прокси.")}
               </p>
-            )}
+              <div className="claude-proxy-feedback-content">
+                {error ? (
+                  <p className="settings-notice danger" role="alert">
+                    {error}
+                  </p>
+                ) : test?.ok ? (
+                  <p className="claude-account-success" role="status">
+                    <CheckIcon />
+                    {test.latencyMs === null
+                      ? t("Подключение доступно")
+                      : t("Подключение доступно · {{latency}} мс", { latency: test.latencyMs })}
+                  </p>
+                ) : null}
+              </div>
+            </div>
           </div>
-          {error && (
-            <p className="settings-notice danger" role="alert">
-              {error}
-            </p>
-          )}
           <p className="claude-account-hint">
             {t(
               enabled

@@ -21,7 +21,8 @@ describe("CodexAccountsSettings", () => {
     const { api } = mock();
     render(<CodexAccountsSettings />);
     const card = await screen.findByRole("article", { name: "second@example.test" });
-    fireEvent.click(within(card).getAllByRole("button", { name: "Использовать аккаунт" }).at(-1)!);
+    fireEvent.click(within(card).getByLabelText("Действия аккаунта second@example.test"));
+    fireEvent.click(within(card).getByRole("button", { name: "Использовать аккаунт" }));
     await waitFor(() => expect(api.selectCodexAccount).toHaveBeenCalledExactlyOnceWith("second"));
     expect(within(card).getByText("Используется")).toBeInTheDocument();
     expect(api.refreshCodexAccounts).not.toHaveBeenCalled();
@@ -32,11 +33,8 @@ describe("CodexAccountsSettings", () => {
     const h = mock(true);
     const view = render(<CodexAccountsSettings />);
     const card = await screen.findByRole("article", { name: "second@example.test" });
-    expect(
-      within(card)
-        .getAllByRole("button", { name: "Использовать аккаунт" })
-        .every((button) => button.hasAttribute("disabled")),
-    ).toBe(false);
+    fireEvent.click(within(card).getByLabelText("Действия аккаунта second@example.test"));
+    expect(within(card).getByRole("button", { name: "Использовать аккаунт" })).toBeEnabled();
     h.state.snapshot.threads = [];
     h.state.snapshot.codexAccounts = { ...h.initial, currentAccountId: "second" };
     view.rerender(<CodexAccountsSettings />);
@@ -194,7 +192,8 @@ describe("CodexAccountsSettings", () => {
       </I18nProvider>,
     );
     const card = await screen.findByRole("article", { name: "second@example.test" });
-    fireEvent.click(within(card).getAllByRole("button", { name: "Use account" }).at(-1)!);
+    fireEvent.click(within(card).getByLabelText("Actions for second@example.test"));
+    fireEvent.click(within(card).getByRole("button", { name: "Use account" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Wait for active Codex responses");
     expect(
       within(screen.getByRole("article", { name: "first@example.test" })).getByText("In use"),

@@ -662,6 +662,31 @@
   gap: var(--space-2);
 }
 
+.claude-proxy-feedback {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.claude-proxy-feedback > .claude-proxy-feedback-reserve {
+  visibility: hidden;
+  pointer-events: none;
+  margin: 0;
+}
+
+.claude-proxy-feedback-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  overflow: auto;
+}
+
+.claude-proxy-feedback-content > .settings-notice {
+  width: 100%;
+  margin: 0;
+}
+
 .claude-account-success {
   margin: 0;
   font-size: var(--text-small);
