@@ -575,11 +575,7 @@ it.skipIf(!binary)(
       let killTimer: NodeJS.Timeout | undefined;
       if (controller?.pid) {
         const pid = controller.pid;
-        try {
-          process.kill(-pid, "SIGTERM");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        }
+        terminateFixtureGroup(pid);
         killTimer = setTimeout(() => {
           try {
             process.kill(-pid, "SIGKILL");
@@ -605,6 +601,13 @@ it.skipIf(!binary)(
 );
 function jwt(name: string): string {
   return `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ sub: `user-${name}`, email: `${name}@example.test`, exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: `workspace-${name}`, chatgpt_user_id: `user-${name}`, chatgpt_plan_type: "plus" } })).toString("base64url")}.signature`;
+}
+function terminateFixtureGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
 }
 async function listen(server: Server, host = "127.0.0.1") {
   server.listen(0, host);
