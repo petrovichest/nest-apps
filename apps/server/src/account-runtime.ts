@@ -364,7 +364,7 @@ export class DetachedAccountRuntimeLauncher implements AccountRuntimeLauncher {
         const command = await readFile(`/proc/${recorded.pid}/cmdline`, "utf8");
         if (command.split("\0").includes(path)) return;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if (!["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
       }
     }
     await rm(join(descriptor.directory, "runtime.json"), { force: true });
@@ -417,16 +417,26 @@ export class DetachedAccountRuntimeLauncher implements AccountRuntimeLauncher {
           const status = await readFile(`/proc/${state.pid}/stat`, "utf8");
           return Number(status.slice(status.lastIndexOf(")") + 2).split(" ")[2]) === state.pid;
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+          if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? ""))
+            return false;
           throw error;
         }
       };
       if (!(await owns())) return;
-      process.kill(-state.pid, "SIGTERM");
+      try {
+        process.kill(-state.pid, "SIGTERM");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+        throw error;
+      }
       const deadline = Date.now() + 3_000;
       while (await owns()) {
         if (Date.now() >= deadline) {
-          process.kill(-state.pid, "SIGKILL");
+          try {
+            process.kill(-state.pid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          }
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 25));
