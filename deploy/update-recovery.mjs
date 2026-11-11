@@ -1,19 +1,8 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { request } from "node:http";
-import {
-  chmod,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  readlink,
-  realpath,
-  rename,
-  symlink,
-} from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, realpath, rename, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -32,12 +21,10 @@ const serviceDir = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"
 const stateDir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local/state"), "codexnest");
 const cli = join(homedir(), ".local/bin/codexnest");
 const mode = process.argv[2];
-const sha = (value) => createHash("sha256").update(value).digest("hex");
 const ctl = async (...args) =>
   (
     await exec("systemctl", ["--user", ...args], {
       timeout: 80_000,
-      env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
     })
   ).stdout.trim();
 
@@ -154,251 +141,31 @@ async function token() {
   return value;
 }
 
-async function applicationIdentity(commit) {
-  const pid = Number(await ctl("show", "codexnest.service", "-p", "MainPID", "--value"));
-  if (pid <= 1) return null;
-  assert.equal((await lstat(`/proc/${pid}`)).uid, process.getuid());
-  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
-  const fields = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
-  if (fields[0] === "Z") return null;
-  return { commit, pid, startTime: fields[19] };
+function sameRelease(health, info) {
+  return (
+    health?.serverVersion === info.version &&
+    (info.admissionProtocolVersion === 1
+      ? health.buildCommit === info.commit
+      : !health.buildCommit || health.buildCommit === info.commit)
+  );
 }
 
-async function runningAt(info, proof) {
-  const identity = await applicationIdentity(info.commit).catch((error) => {
-    if (["ENOENT", "ESRCH"].includes(error.code)) return null;
-    throw error;
-  });
-  if (!identity) return false;
-  const { pid } = identity;
-  let cwdErrorCode;
-  const cwd = await realpath(`/proc/${pid}/cwd`).catch((error) => {
-    cwdErrorCode = error.code;
-    return null;
-  });
-  if (cwd === info.path) return true;
-  if (cwdErrorCode === "EACCES") {
-    // Linux may deny cross-service cwd access even for the same uid. Prove the
-    // actual Node command instead, and bind its start to the release pointer.
-    // A previously proved PID/start-time remains valid if rollback recreates
-    // current while that original process survives.
-    const argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0");
-    const node = join(root, "runtime/current/bin/node");
-    const exactCommand =
-      argv.filter(Boolean).length === 2 &&
-      argv[1] === join(root, "current/apps/server/dist/index.js") &&
-      (await realpath(argv[0])) === (await realpath(node));
-    const known =
-      proof?.commit === info.commit && proof.pid === pid && proof.startTime === identity.startTime;
-    let activatedBeforeStart = false;
-    if (!known && exactCommand) {
-      const [timestamp, configuredCwd, pointer] = await Promise.all([
-        ctl(
-          "--timestamp=us",
-          "show",
-          "codexnest.service",
-          "-p",
-          "ExecMainStartTimestamp",
-          "--value",
-        ),
-        ctl("show", "codexnest.service", "-p", "WorkingDirectory", "--value"),
-        lstat(join(root, "current"), { bigint: true }),
-      ]);
-      const milliseconds = Date.parse(timestamp);
-      const fraction = timestamp.match(/\.(\d{6}) /)?.[1];
-      if (
-        Number.isFinite(milliseconds) &&
-        fraction &&
-        pointer.isSymbolicLink() &&
-        pointer.uid === BigInt(process.getuid())
-      ) {
-        const startedNs = BigInt(milliseconds) * 1_000_000n + BigInt(fraction.slice(3)) * 1000n;
-        activatedBeforeStart =
-          pointer.ctimeNs <= startedNs && (await realpath(configuredCwd)) === info.path;
-      }
-    }
-    if (exactCommand && (known || activatedBeforeStart)) return true;
-  }
-  if (["before-update", "install-from-build"].includes(mode)) {
-    process.stderr.write(
-      `${JSON.stringify({ recoveryPhase: "baseline-process", pid, expectedRelease: info.version, cwd, cwdErrorCode, uid: process.getuid(), processUid: (await lstat(`/proc/${pid}`).catch(() => null))?.uid, configuredCwd: await ctl("show", "codexnest.service", "-p", "WorkingDirectory", "--value").catch(() => null) })}\n`,
-    );
-  }
-  return cwd === info.path;
-}
-
-async function healthy(info, timeout = 3000, applicationProof) {
-  let apiError;
-  const health = await localApi("/health", undefined, timeout).catch((error) => {
-    apiError = { code: error.code, name: error.name };
-    return null;
-  });
-  const ready =
-    health?.status === "ok" &&
-    health.serverVersion === info.version &&
+async function healthy(info, timeout = 3000) {
+  const health = await localApi("/health", undefined, timeout).catch(() => null);
+  return (
+    sameRelease(health, info) &&
+    health.status === "ok" &&
     health.recoveryState === "ready" &&
     health.transport === "daemon" &&
     health.appServer?.state === "ready" &&
-    health.restartProtocolVersion === info.protocol &&
-    (info.admissionProtocolVersion === 1
-      ? health.buildCommit === info.commit
-      : health.buildCommit
-        ? health.buildCommit === info.commit
-        : await runningAt(info, applicationProof));
-  if (!ready && ["before-update", "install-from-build"].includes(mode)) {
-    process.stderr.write(
-      `${JSON.stringify({ recoveryPhase: "baseline-readiness", expectedVersion: info.version, expectedProtocol: info.protocol, status: health?.status, version: health?.serverVersion, protocol: health?.restartProtocolVersion, recovery: health?.recoveryState, transport: health?.transport, nativeState: health?.appServer?.state, buildCommit: health?.buildCommit ?? null, apiError })}\n`,
-    );
-  }
-  return ready;
+    health.restartProtocolVersion === info.protocol
+  );
 }
 
-async function nativeIdentity() {
-  const nativeHome = process.env.CODEX_HOME || join(homedir(), ".codex");
-  const pidPath = join(nativeHome, "app-server-daemon/app-server.pid");
-  const pidMetadata = await lstat(pidPath);
-  assert.ok(pidMetadata.isFile() && !pidMetadata.isSymbolicLink());
-  assert.equal(pidMetadata.uid, process.getuid());
-  const daemon = JSON.parse(await readFile(pidPath, "utf8"));
-  assert.ok(Number.isInteger(daemon.pid) && daemon.pid > 1);
-  const start = (
-    await exec("ps", ["-p", String(daemon.pid), "-o", "lstart="], { timeout: 3000 })
-  ).stdout.trim();
-  assert.equal(
-    start,
-    daemon.processStartTime,
-    "Native PID record no longer identifies its original process",
-  );
-  const paths = new Set([join(nativeHome, "app-server-control/app-server-control.sock")]);
-  const accounts = JSON.parse(
-    await readFile(join(stateDir, "codex-accounts.json"), "utf8").catch((error) => {
-      if (error.code === "ENOENT") return "{}";
-      throw error;
-    }),
-  );
-  const supervisors = new Map();
-  for (const runtime of accounts.runtimes ?? []) {
-    paths.add(runtime.socketPath);
-    assert.equal(runtime.directory, join(stateDir, "account-runtimes", runtime.id));
-    const worker = JSON.parse(
-      await readFile(join(runtime.directory, "runtime.json"), "utf8").catch((error) => {
-        if (error.code === "ENOENT") return "null";
-        throw error;
-      }),
-    );
-    if (worker?.state !== "ready") continue;
-    assert.equal(worker.id, runtime.id);
-    assert.equal(worker.fingerprint, runtime.fingerprint);
-    const command = (await readFile(`/proc/${worker.pid}/cmdline`, "utf8").catch(() => "")).split(
-      "\0",
-    );
-    if (command.includes(join(runtime.directory, "descriptor.json")))
-      supervisors.set(runtime.socketPath, worker.pid);
-  }
-  const boundPaths = new Set();
-  const sockets = new Map(
-    (await readFile("/proc/net/unix", "utf8")).split("\n").flatMap((line) => {
-      const fields = line.trim().split(/\s+/);
-      if (paths.has(fields[7])) boundPaths.add(fields[7]);
-      return paths.has(fields[7]) ? [[`socket:[${fields[6]}]`, fields[7]]] : [];
-    }),
-  );
-  const identity = [];
-  for (const pid of await readdir("/proc")) {
-    if (!/^\d+$/.test(pid)) continue;
-    const directory = join("/proc", pid);
-    const metadata = await lstat(directory).catch(() => null);
-    if (metadata?.uid !== process.getuid()) continue;
-    const command = (await readFile(join(directory, "cmdline"), "utf8").catch(() => "")).split(
-      "\0",
-    );
-    if (!command.includes("app-server") || command.includes("pid-update-loop")) continue;
-    const executable = await readlink(join(directory, "exe")).catch((error) => {
-      if (error.code === "EACCES") return null;
-      return "";
-    });
-    if (executable !== null && basename(executable) !== "codex") continue;
-    if (executable === null) {
-      const physical = await realpath(command[0]).catch(() => null);
-      const file = physical ? await lstat(physical).catch(() => null) : null;
-      if (basename(command[0]) !== "codex" || !file?.isFile() || !(file.mode & 0o111)) continue;
-    }
-    const descriptors = await readdir(join(directory, "fd")).catch(() => []);
-    const owns = await Promise.all(
-      descriptors.map((fd) => readlink(join(directory, "fd", fd)).catch(() => null)),
-    );
-    const stat = await readFile(join(directory, "stat"), "utf8");
-    const fields = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
-    if (fields[0] === "Z") continue;
-    const ownedSocket = owns.find((fd) => sockets.has(fd));
-    let socketPath = sockets.get(ownedSocket);
-    let identified = Boolean(ownedSocket);
-    if (
-      !identified &&
-      Number(pid) === daemon.pid &&
-      command.some(
-        (argument) =>
-          argument === "unix://" ||
-          argument === `unix://${join(nativeHome, "app-server-control/app-server-control.sock")}`,
-      )
-    )
-      identified = true;
-    if (!identified) {
-      const listen = command.find((argument) => argument.startsWith("unix://"));
-      const socket = listen?.slice("unix://".length);
-      const supervisor = supervisors.get(socket);
-      if (supervisor && boundPaths.has(socket)) {
-        let ancestor = Number(fields[1]);
-        for (let depth = 0; depth < 8 && ancestor > 1; depth++) {
-          if (ancestor === supervisor) {
-            identified = true;
-            socketPath = socket;
-            break;
-          }
-          const parent = await readFile(`/proc/${ancestor}/stat`, "utf8").catch(() => "");
-          if (!parent) break;
-          ancestor = Number(parent.slice(parent.lastIndexOf(") ") + 2).split(" ")[1]);
-        }
-      }
-    }
-    if (!identified) continue;
-    identity.push({
-      pid: Number(pid),
-      startTime: fields[19],
-      ...(socketPath ? { socketPath } : {}),
-    });
-  }
-  assert.ok(
-    identity.some((entry) => entry.pid === daemon.pid),
-    "Original native daemon identity is unavailable",
-  );
-  for (const socket of supervisors.keys())
-    assert.ok(
-      identity.some((entry) => entry.socketPath === socket),
-      "A ready account runtime has no proved native process",
-    );
-  return identity;
-}
-
-async function surviving(value) {
-  assert.ok(value.native?.length, "Native recovery identity is missing");
-  for (const prior of value.native) {
-    const stat = await readFile(`/proc/${prior.pid}/stat`, "utf8");
-    const fields = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
-    assert.notEqual(fields[0], "Z", "Original native daemon exited");
-    assert.equal(fields[19], prior.startTime, "Original native daemon was replaced");
-  }
-}
-
-async function waitHealthy(info, deadline, value) {
+async function waitHealthy(info, deadline) {
   while (Date.now() < deadline) {
-    const ready = await healthy(
-      info,
-      Math.min(3000, Math.max(1, deadline - Date.now())),
-      value.application,
-    );
+    const ready = await healthy(info, Math.min(3000, Math.max(1, deadline - Date.now())));
     if (ready) {
-      if (value.native) await surviving(value);
       assert.ok(Date.now() <= deadline, "Recovery readiness exceeded its deadline");
       return;
     }
@@ -421,7 +188,7 @@ async function begin(target = null) {
   const baseline = await release(join(root, "current"));
   const prior = await journal();
   assert.equal(await version(), baseline.version);
-  if (!(await healthy(baseline, 3000, prior?.application)))
+  if (!(await healthy(baseline)))
     throw new Error("Restart preflight failed: the current application is unavailable");
   assert.notEqual(prior?.phase, "clean", "Initial installation is not confirmed yet");
   if (prior && ["pending", "restoring"].includes(prior.phase)) {
@@ -435,18 +202,13 @@ async function begin(target = null) {
     }
     return;
   }
-  const application = await applicationIdentity(baseline.commit);
-  assert.ok(application, "The healthy baseline exited before preparing rollback");
   await save({
     schemaVersion: 1,
     phase: "pending",
     preparedAt: Date.now(),
     activatedAt: null,
     baseline,
-    baselineCliSha256: sha(await readFile(cli)),
     target,
-    native: await nativeIdentity(),
-    application,
   });
 }
 
@@ -506,12 +268,6 @@ async function install(fromBuild) {
 async function restoreFiles(value) {
   const baseline = await release(value.baseline.path);
   assert.equal(baseline.commit, value.baseline.commit);
-  const current = await realpath(join(root, "current"));
-  const modified =
-    current !== baseline.path ||
-    (await version()) !== baseline.version ||
-    sha(await readFile(cli)) !== value.baselineCliSha256;
-  if (!modified) return;
   const link = join(root, `.current.recovery-${randomUUID()}`);
   await symlink(baseline.path, link);
   await rename(link, join(root, "current"));
@@ -571,7 +327,6 @@ async function afterUpdate() {
     (await version()) === current.version &&
     (await healthy(current))
   ) {
-    await surviving(value);
     value.phase = "committed";
     value.confirmedAt = Date.now();
     await save(value);
@@ -599,7 +354,10 @@ async function afterUpdate() {
     }
   }
   await restoreFiles(value);
-  if (await runningAt(value.baseline, value.application)) {
+  // A may still be running after an interruption before the API restart.
+  // Resume it directly; otherwise start the restored release with its existing unit.
+  const active = await localApi("/health").catch(() => null);
+  if (sameRelease(active, value.baseline)) {
     await token()
       .then((secret) => localApi("/internal/restart/resume", secret, 10_000))
       .catch(() => undefined);
@@ -611,7 +369,7 @@ async function afterUpdate() {
       timeout: deadline - Date.now(),
     });
   }
-  await waitHealthy(value.baseline, deadline, value);
+  await waitHealthy(value.baseline, deadline);
   value.phase = "aborted";
   value.recoveredAt = Date.now();
   await save(value);
@@ -624,17 +382,16 @@ async function confirmStart() {
   const current = await release(join(root, "current"));
   if (value.phase === "clean") {
     assert.equal(current.commit, value.target.commit);
-    await waitHealthy(current, Date.now() + 60_000, value);
+    await waitHealthy(current, Date.now() + 60_000);
     value.phase = "committed";
     value.confirmedAt = Date.now();
     value.baseline = current;
-    value.baselineCliSha256 = sha(await readFile(cli));
     await save(value);
     return;
   }
   assert.equal(current.commit, value.baseline.commit);
   const deadline = Math.min(Date.now() + 60_000, value.activatedAt + 420_000);
-  await waitHealthy(current, deadline, value);
+  await waitHealthy(current, deadline);
   value.phase = "aborted";
   value.recoveredAt = Date.now();
   await save(value);

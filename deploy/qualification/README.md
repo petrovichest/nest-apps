@@ -76,10 +76,12 @@ It does not qualify the separate large-history, upgrade or failed-candidate matr
 The candidate installs its persistent recovery guard from `postbuild` only while
 building a managed release inside the real updater service. Ordinary checkout
 builds have no installation side effects. This lets the unchanged previous
-updater prepare recovery before switching its pointer. The guard retains only
-release/version/CLI identity and Native process identities; authentication and
-native history are never reverted. New candidate work remains blocked until the
-exact update is confirmed. These mechanisms still require the native diagnostics;
+updater prepare recovery before switching its pointer. The guard records the
+healthy release and candidate, restores the previous release on failure, and
+checks actual API/Native readiness. The isolated diagnostics check surviving
+Native PIDs and operation counters; the updater does not inspect process identity.
+Authentication and native history are never reverted. New candidate work remains
+blocked until the exact update is confirmed. These mechanisms still require the native diagnostics;
 their presence alone is not evidence that interrupted recovery works.
 
 These are **diagnostics, not complete release qualification**. `lifecycle.json`
