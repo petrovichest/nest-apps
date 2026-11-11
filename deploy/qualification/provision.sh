@@ -65,6 +65,8 @@ approval_policy = "on-request"
 sandbox_mode = "workspace-write"
 [features]
 respect_system_proxy = true
+code_mode_host = true
+code_mode = true
 [analytics]
 enabled = false
 [model_providers.fixture]

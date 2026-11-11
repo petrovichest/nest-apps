@@ -16,7 +16,11 @@ if [[ "$NATIVE_VERSION" == 0.154.0 ]]; then
   # require the complete package instead; retain their unmodified NPM launcher.
   native_version_home="$HOME/.codex/packages/standalone/releases/$NATIVE_VERSION"
   mkdir -p "$native_version_home/bin" "$HOME/.local/bin"
-  install -m 0755 "${native_binaries[0]}" "$native_version_home/codex"
+  # Preserve the package's real sidecar executables as well as the CLI. The
+  # minimum runtime uses the flat standalone path, including its code-mode host.
+  cp -a "$(dirname "${native_binaries[0]}")/." "$native_version_home/"
+  test -x "$native_version_home/codex"
+  test -x "$native_version_home/codex-code-mode-host"
   ln -s ../codex "$native_version_home/bin/codex"
   ln -s "$native_version_home" "$HOME/.codex/packages/standalone/current"
   qualification_native_cli="$HOME/.codex/packages/standalone/current/codex"

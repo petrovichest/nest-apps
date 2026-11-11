@@ -41,7 +41,7 @@ def functions(tools, namespace=None):
     for tool in tools:
         if tool.get('type') == 'namespace':
             yield from functions(tool.get('tools', []), tool.get('name'))
-        elif tool.get('type') == 'function':
+        elif tool.get('type') in ('function', 'custom'):
             yield namespace, tool
 
 
@@ -191,7 +191,7 @@ class Model(Handler):
         elif team:
             marker = f'team-{team[1].lower()}-{team[2]}'
         call_id = f'qualification-call-{marker}'
-        has_tool_result = any(value.get('type') == 'function_call_output' and value.get('call_id') == call_id
+        has_tool_result = any(value.get('type') in ('function_call_output', 'custom_tool_call_output') and value.get('call_id') == call_id
                               for value in payload.get('input', []) if isinstance(value, dict))
         held = not auxiliary and (bool(match and match[1] == 'HOLD') or
                                    bool(team and team[1] == 'CHILD' and not has_tool_result))
@@ -246,16 +246,40 @@ class Model(Handler):
             tool_name = 'spawn_task' if team[1] == 'PARENT' else 'submit_result'
             candidates = [(namespace, tool) for namespace, tool in functions(payload.get('tools', []))
                           if namespace == 'codexnest' and tool.get('name') == tool_name]
-            if len(candidates) != 1:
-                raise ValueError(f'Native request did not advertise the managed {tool_name} tool')
-            namespace, tool = candidates[0]
             args = ({'title': 'Synthetic background result',
                      'prompt': f'QUALIFICATION_TEAM_CHILD:{team[2]}',
                      'access': {'mode': 'readOnly', 'network': False}} if team[1] == 'PARENT' else
                     {'outcome': 'success', 'summary': f'QUALIFICATION_BACKGROUND_RESULT:{team[2]}',
                      'checks': [], 'risks': [], 'artifacts': []})
-            item = {'id': str(uuid.uuid4()), 'type': 'function_call', 'call_id': call_id,
-                    'namespace': namespace, 'name': tool['name'], 'arguments': json.dumps(args)}
+            if len(candidates) == 1:
+                namespace, tool = candidates[0]
+                item = {'id': str(uuid.uuid4()), 'type': 'function_call', 'call_id': call_id,
+                        'namespace': namespace, 'name': tool['name'], 'arguments': json.dumps(args)}
+            else:
+                # The actual managed-child model uses Native's code-mode-only
+                # tool surface. Invoke its real namespaced dynamic tool through
+                # the advertised exec host, rather than assuming direct tools.
+                code_tools = [(namespace, tool) for namespace, tool in functions(payload.get('tools', []))
+                              if tool.get('type') == 'custom' and tool.get('name') == 'exec']
+                if len(code_tools) > 1:
+                    raise ValueError('Ambiguous code-mode exec surface')
+                # Some native model transports omit wire tool metadata. As a
+                # controlled model endpoint, send the same real exec call;
+                # Native must validate and execute it and deliver the actual
+                # dynamic-tool request before the lifecycle case can pass.
+                namespace, tool = code_tools[0] if code_tools else (None, {'name': 'exec'})
+                code_name = f'codexnest__{tool_name}'
+                code = (f'const tool = ALL_TOOLS.find(({{ name }}) => name === {json.dumps(code_name)});'
+                        'if (!tool) throw new Error("Managed task tool unavailable");'
+                        f'text(await tools[tool.name]({json.dumps(args)}));')
+                item = {'id': str(uuid.uuid4()), 'type': 'custom_tool_call', 'call_id': call_id,
+                        'name': tool['name'], 'input': code}
+                if namespace:
+                    item['namespace'] = namespace
+        if item['type'] == 'custom_tool_call':
+            event('response.output_item.done', output_index=0, item=item)
+            event('response.completed', response={'id': response_id, 'status': 'completed', 'output': [item]})
+            return
         if item['type'] == 'function_call':
             event('response.output_item.added', output_index=0, item={**item, 'arguments': ''})
             event('response.function_call_arguments.delta', item_id=item['id'], output_index=0,

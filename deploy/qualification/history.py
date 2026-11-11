@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import uuid
@@ -56,6 +57,10 @@ def create(seed_id):
     expected_bytes = 3 * 1024 ** 3
     manifests = []
     parent_id = str(uuid.uuid4())
+    uuid_pattern = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+    seed_turns = {row['payload']['turn_id'] for row in turn_rows
+                  if row.get('payload', {}).get('type') in ('task_started', 'turn_started')}
+    assert len(seed_turns) == 1, 'Expected one completed canonical seed turn'
     for index in range(sum(profiles.values())):
         kind = 'live' if index < 2000 else 'archived' if index < 2040 else 'nested'
         identity = parent_id if index == 0 else str(uuid.uuid4())
@@ -84,15 +89,15 @@ def create(seed_id):
             stream.write(json.dumps(meta) + '\n')
             for turn in range(turns):
                 turn_id = str(uuid.uuid4())
+                identities = {seed_id: identity, next(iter(seed_turns)): turn_id}
+                def replace_id(match):
+                    value = match[0]
+                    if value not in identities:
+                        identities[value] = str(uuid.uuid4())
+                    return identities[value]
                 for original in turn_rows:
                     row = copy.deepcopy(original)
                     payload = row.get('payload', {})
-                    if 'turn_id' in payload:
-                        payload['turn_id'] = turn_id
-                    if 'turnId' in payload:
-                        payload['turnId'] = turn_id
-                    if payload.get('type') == 'turn_context':
-                        payload['turn_id'] = turn_id
                     role = payload.get('role')
                     if row['type'] == 'response_item' and role in ('user', 'assistant'):
                         payload['content'] = [{'type': 'output_text' if role == 'assistant'
@@ -100,8 +105,17 @@ def create(seed_id):
                                                'text': conversation(index, turn, role == 'assistant')}]
                     if row['type'] == 'event_msg' and payload.get('type') in ('user_message', 'agent_message'):
                         payload['message'] = conversation(index, turn, payload['type'] == 'agent_message')
+                    if row['type'] == 'event_msg' and payload.get('type') == 'item_completed':
+                        item = payload.get('item', {})
+                        if item.get('type') == 'UserMessage':
+                            item['content'] = [{'type': 'text', 'text': conversation(index, turn, False)}]
+                        elif item.get('type') == 'AgentMessage':
+                            item['content'] = [{'type': 'Text', 'text': conversation(index, turn, True)}]
                     row['timestamp'] = (timestamp + datetime.timedelta(seconds=turn)).isoformat()
-                    stream.write(json.dumps(row).replace(seed_id, identity) + '\n')
+                    # Turn attribution, passthrough metadata and completed-item
+                    # events also contain IDs. Keep every cross-reference aligned
+                    # while giving each cloned turn/item/client receipt a fresh ID.
+                    stream.write(uuid_pattern.sub(replace_id, json.dumps(row)) + '\n')
         manifests.append({'id': identity, 'kind': kind, 'path': str(path),
                           'bytes': path.stat().st_size, 'sha256': digest(path), 'turns': turns})
     total = sum(row['bytes'] for row in manifests)
