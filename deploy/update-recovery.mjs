@@ -254,23 +254,53 @@ async function healthy(info, timeout = 3000, applicationProof) {
 }
 
 async function nativeIdentity() {
-  const paths = new Set([
-    join(
-      process.env.CODEX_HOME || join(homedir(), ".codex"),
-      "app-server-control/app-server-control.sock",
-    ),
-  ]);
+  const nativeHome = process.env.CODEX_HOME || join(homedir(), ".codex");
+  const pidPath = join(nativeHome, "app-server-daemon/app-server.pid");
+  const pidMetadata = await lstat(pidPath);
+  assert.ok(pidMetadata.isFile() && !pidMetadata.isSymbolicLink());
+  assert.equal(pidMetadata.uid, process.getuid());
+  const daemon = JSON.parse(await readFile(pidPath, "utf8"));
+  assert.ok(Number.isInteger(daemon.pid) && daemon.pid > 1);
+  const start = (
+    await exec("ps", ["-p", String(daemon.pid), "-o", "lstart="], { timeout: 3000 })
+  ).stdout.trim();
+  assert.equal(
+    start,
+    daemon.processStartTime,
+    "Native PID record no longer identifies its original process",
+  );
+  const paths = new Set([join(nativeHome, "app-server-control/app-server-control.sock")]);
   const accounts = JSON.parse(
     await readFile(join(stateDir, "codex-accounts.json"), "utf8").catch((error) => {
       if (error.code === "ENOENT") return "{}";
       throw error;
     }),
   );
-  for (const runtime of accounts.runtimes ?? []) paths.add(runtime.socketPath);
-  const sockets = new Set(
+  const supervisors = new Map();
+  for (const runtime of accounts.runtimes ?? []) {
+    paths.add(runtime.socketPath);
+    assert.equal(runtime.directory, join(stateDir, "account-runtimes", runtime.id));
+    const worker = JSON.parse(
+      await readFile(join(runtime.directory, "runtime.json"), "utf8").catch((error) => {
+        if (error.code === "ENOENT") return "null";
+        throw error;
+      }),
+    );
+    if (worker?.state !== "ready") continue;
+    assert.equal(worker.id, runtime.id);
+    assert.equal(worker.fingerprint, runtime.fingerprint);
+    const command = (await readFile(`/proc/${worker.pid}/cmdline`, "utf8").catch(() => "")).split(
+      "\0",
+    );
+    if (command.includes(join(runtime.directory, "descriptor.json")))
+      supervisors.set(runtime.socketPath, worker.pid);
+  }
+  const boundPaths = new Set();
+  const sockets = new Map(
     (await readFile("/proc/net/unix", "utf8")).split("\n").flatMap((line) => {
       const fields = line.trim().split(/\s+/);
-      return paths.has(fields[7]) ? [`socket:[${fields[6]}]`] : [];
+      if (paths.has(fields[7])) boundPaths.add(fields[7]);
+      return paths.has(fields[7]) ? [[`socket:[${fields[6]}]`, fields[7]]] : [];
     }),
   );
   const identity = [];
@@ -283,19 +313,70 @@ async function nativeIdentity() {
       "\0",
     );
     if (!command.includes("app-server") || command.includes("pid-update-loop")) continue;
-    if (basename(await readlink(join(directory, "exe")).catch(() => "")) !== "codex") continue;
+    const executable = await readlink(join(directory, "exe")).catch((error) => {
+      if (error.code === "EACCES") return null;
+      return "";
+    });
+    if (executable !== null && basename(executable) !== "codex") continue;
+    if (executable === null) {
+      const physical = await realpath(command[0]).catch(() => null);
+      const file = physical ? await lstat(physical).catch(() => null) : null;
+      if (basename(command[0]) !== "codex" || !file?.isFile() || !(file.mode & 0o111)) continue;
+    }
     const descriptors = await readdir(join(directory, "fd")).catch(() => []);
     const owns = await Promise.all(
       descriptors.map((fd) => readlink(join(directory, "fd", fd)).catch(() => null)),
     );
-    if (!owns.some((fd) => sockets.has(fd))) continue;
     const stat = await readFile(join(directory, "stat"), "utf8");
+    const fields = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
+    if (fields[0] === "Z") continue;
+    const ownedSocket = owns.find((fd) => sockets.has(fd));
+    let socketPath = sockets.get(ownedSocket);
+    let identified = Boolean(ownedSocket);
+    if (
+      !identified &&
+      Number(pid) === daemon.pid &&
+      command.some(
+        (argument) =>
+          argument === "unix://" ||
+          argument === `unix://${join(nativeHome, "app-server-control/app-server-control.sock")}`,
+      )
+    )
+      identified = true;
+    if (!identified) {
+      const listen = command.find((argument) => argument.startsWith("unix://"));
+      const socket = listen?.slice("unix://".length);
+      const supervisor = supervisors.get(socket);
+      if (supervisor && boundPaths.has(socket)) {
+        let ancestor = Number(fields[1]);
+        for (let depth = 0; depth < 8 && ancestor > 1; depth++) {
+          if (ancestor === supervisor) {
+            identified = true;
+            socketPath = socket;
+            break;
+          }
+          const parent = await readFile(`/proc/${ancestor}/stat`, "utf8").catch(() => "");
+          if (!parent) break;
+          ancestor = Number(parent.slice(parent.lastIndexOf(") ") + 2).split(" ")[1]);
+        }
+      }
+    }
+    if (!identified) continue;
     identity.push({
       pid: Number(pid),
-      startTime: stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19],
+      startTime: fields[19],
+      ...(socketPath ? { socketPath } : {}),
     });
   }
-  assert.ok(identity.length, "Original native daemon identity is unavailable");
+  assert.ok(
+    identity.some((entry) => entry.pid === daemon.pid),
+    "Original native daemon identity is unavailable",
+  );
+  for (const socket of supervisors.keys())
+    assert.ok(
+      identity.some((entry) => entry.socketPath === socket),
+      "A ready account runtime has no proved native process",
+    );
   return identity;
 }
 
