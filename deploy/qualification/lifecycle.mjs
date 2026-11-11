@@ -31,12 +31,18 @@ const report = {
   baseline,
   native: process.env.NATIVE_VERSION,
   resources: { cpus: 4, memoryGiB: 10 },
-  budgetsMs: { ready: 60_000, updaterHealth: 120_000, rollback: 420_000, build: 600_000 },
+  budgetsMs: {
+    ready: 60_000,
+    updaterHealth: 120_000,
+    rollback: 420_000,
+    build: 600_000,
+    nativeStop: 10_000,
+  },
   cases: [],
   originalDaemonRpc: {},
   releaseQualified: false,
   pending: [
-    "pending native approvals and managed background task results",
+    "managed background task results",
     "permanent native daemon absence",
     "expired and failed authorization during startup/recovery",
     "updater interruption at each switch/checkpoint/confirmation boundary",
@@ -46,6 +52,7 @@ const report = {
 };
 let ownerToken;
 let savedThread;
+let projectId;
 let failureNumber = 0;
 let relay;
 
@@ -375,11 +382,47 @@ async function holdWork(name) {
     input: `QUALIFICATION_REQUEST:${queued}`,
     clientMessageId: randomUUID(),
   });
-  return { held, queued, identity: await pidIdentity() };
+  const approvalMarker = `approval-${name}-${randomUUID()}`;
+  const approvalThread = (
+    await api(`/projects/${projectId}/threads`, {
+      clientCreationId: randomUUID(),
+    })
+  ).thread.id;
+  await api(`/threads/${approvalThread}/turns`, {
+    input: `QUALIFICATION_APPROVAL:${approvalMarker}`,
+    clientMessageId: randomUUID(),
+  });
+  await until("Actual native approval is pending", async () =>
+    (await snapshot()).attention.some(
+      (request) => request.threadId === approvalThread && request.kind === "approval",
+    ),
+  );
+  assert.equal(
+    await readFile(join(home, "qualification-approvals", approvalMarker), "utf8").catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }),
+    null,
+    "Command executed before approval",
+  );
+  return { held, queued, approvalMarker, approvalThread, identity: await pidIdentity() };
 }
 
 async function finishWork(work) {
   const identity = await assertSurviving(work.identity);
+  const approval = (await snapshot()).attention.find(
+    (request) => request.threadId === work.approvalThread && request.kind === "approval",
+  );
+  assert.ok(approval, "Pending native approval lost during application replacement");
+  await api(`/attention/${approval.id}/respond`, { kind: "approval", decision: "accept" });
+  await completed(work.approvalThread, work.approvalMarker);
+  assert.deepEqual(
+    (await readFile(join(home, "qualification-approvals", work.approvalMarker), "utf8"))
+      .trim()
+      .split("\n"),
+    ["approved"],
+    "Approved side effect replayed",
+  );
   const detail = await api(`/threads/${savedThread}`);
   assert.ok(detail.summary.currentTurnId, "Active native turn lost during restart");
   assert.equal(detail.queuedMessages.length, 1, "Queued message lost or dispatched early");
@@ -389,7 +432,18 @@ async function finishWork(work) {
   const final = await control();
   assert.equal(final.requests[work.held], 1, "Active request replayed");
   assert.equal(final.requests[work.queued], 1, "Queued request replayed");
-  return { ...identity, activeRequestCount: 1, queuedRequestCount: 1 };
+  assert.equal(
+    final.requests[work.approvalMarker],
+    2,
+    "Native tool request or continuation replayed",
+  );
+  return {
+    ...identity,
+    activeRequestCount: 1,
+    queuedRequestCount: 1,
+    restoredApproval: true,
+    approvedSideEffects: 1,
+  };
 }
 
 async function update(expectedResult, afterRestart) {
@@ -481,10 +535,10 @@ async function stopNative() {
     .filter((unit) => /^codexnest-account-[0-9a-f-]+\.service$/.test(unit));
   if (units.length) await systemctl("stop", ...units);
   await run("codex", ["app-server", "daemon", "stop"]);
-  assert.equal(
-    (await pidIdentity(true)).length,
-    0,
-    "Native still running during cold fixture setup",
+  await until(
+    "Requested native stop completed",
+    async () => (await pidIdentity(true)).length === 0,
+    report.budgetsMs.nativeStop,
   );
 }
 
@@ -532,6 +586,7 @@ try {
     await writeFile(join(privateRoot, "owner-token"), ownerToken, { mode: 0o600 });
     await mkdir(join(home, "qualification-project"));
     const project = await api("/projects", { path: join(home, "qualification-project") });
+    projectId = project.id;
     const created = await api(`/projects/${project.id}/threads`, {
       clientCreationId: randomUUID(),
     });

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import select
+import shlex
 import socket
 import ssl
 import threading
@@ -16,6 +17,7 @@ import uuid
 
 ROOT = Path('/qualification-input')
 PRIVATE = Path('/qualification-private')
+APPROVAL_DIRECTORY = Path('/home/nest-qualification/qualification-approvals')
 STATE = {'manifest': json.loads((ROOT / 'baseline.json').read_text()),
          'requests': {}, 'auxiliaryRequests': {}, 'released': [], 'oauthGeneration': 0, 'authFailure': False,
          'proxyConnections': 0, 'deniedConnections': 0, 'directModelRequests': 0,
@@ -166,7 +168,7 @@ class Model(Handler):
                  if isinstance(item, dict) and item.get('role') == 'user']
         text = '\n'.join(part.get('text', '') for part in users[-1].get('content', [])
                          if isinstance(part, dict)) if users else ''
-        match = re.fullmatch(r'QUALIFICATION_(REQUEST|HOLD):([a-zA-Z0-9_-]+)', text.strip())
+        match = re.fullmatch(r'QUALIFICATION_(REQUEST|HOLD|APPROVAL):([a-zA-Z0-9_-]+)', text.strip())
         marker = match[2] if match else 'unmarked'
         held = bool(match and match[1] == 'HOLD' and not auxiliary)
         with LOCK:
@@ -202,6 +204,35 @@ class Model(Handler):
                 'status': 'completed', 'content': [{'type': 'output_text',
                                                    'text': answer,
                                                    'annotations': []}]}
+        call_id = f'qualification-call-{marker}'
+        has_tool_result = any(value.get('type') == 'function_call_output' and value.get('call_id') == call_id
+                              for value in payload.get('input', []) if isinstance(value, dict))
+        if match and match[1] == 'APPROVAL' and not auxiliary and not has_tool_result:
+            def functions(tools, namespace=None):
+                for tool in tools:
+                    if tool.get('type') == 'namespace':
+                        yield from functions(tool.get('tools', []), tool.get('name'))
+                    elif tool.get('type') == 'function':
+                        yield namespace, tool
+            candidates = [(namespace, tool) for namespace, tool in functions(payload.get('tools', []))
+                          if tool.get('name') in ('exec_command', 'shell_command')]
+            if not candidates:
+                raise ValueError('Native request did not advertise a command execution tool')
+            namespace, tool = candidates[0]
+            command = f"printf '%s\\n' approved >> {shlex.quote(str(APPROVAL_DIRECTORY / marker))}"
+            args = {'cmd' if tool['name'] == 'exec_command' else 'command': command,
+                    'sandbox_permissions': 'require_escalated',
+                    'justification': 'Append once to the disposable qualification counter.'}
+            item = {'id': str(uuid.uuid4()), 'type': 'function_call', 'call_id': call_id,
+                    'name': tool['name'], 'arguments': json.dumps(args)}
+            if namespace:
+                item['namespace'] = namespace
+            event('response.output_item.added', output_index=0, item={**item, 'arguments': ''})
+            event('response.function_call_arguments.delta', item_id=item['id'], output_index=0,
+                  delta=item['arguments'])
+            event('response.output_item.done', output_index=0, item=item)
+            event('response.completed', response={'id': response_id, 'status': 'completed', 'output': [item]})
+            return
         event('response.output_item.added', output_index=0, item={**item, 'content': []})
         event('response.output_text.delta', item_id=item['id'], output_index=0,
               content_index=0, delta=item['content'][0]['text'])

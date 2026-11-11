@@ -61,8 +61,8 @@ native.mkdir(mode=0o700)
 config='''model = "gpt-5.4"
 model_provider = "fixture"
 chatgpt_base_url = "https://127.0.0.2:9000/backend-api"
-approval_policy = "never"
-sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
 [features]
 respect_system_proxy = true
 [analytics]
@@ -90,4 +90,7 @@ for directory in (native,home/'.config',proxy):
 for file in (native/'config.toml',native/'auth.json',proxy/'app-server.env'):
     file.chmod(0o600)
     os.chown(file,17001,17001)
+approvals=home/'qualification-approvals'
+approvals.mkdir(mode=0o700)
+os.chown(approvals,17001,17001)
 PY
