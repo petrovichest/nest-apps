@@ -9,6 +9,8 @@ set -euo pipefail
 case "${NATIVE_VERSION:-}" in 0.154.0|0.167.0|0.167.1) ;; *) exit 2 ;; esac
 qualification_mode="${QUALIFICATION_MODE:-environment}"
 case "$qualification_mode" in environment|lifecycle) ;; *) exit 2 ;; esac
+qualification_scope="${QUALIFICATION_SCOPE:-all}"
+case "$qualification_scope" in all|interruption) ;; *) exit 2 ;; esac
 [[ -n "${RUNNER_TEMP:-}" && -n "${GITHUB_RUN_ID:-}" ]]
 qualification_root="$(git rev-parse --show-toplevel)"
 qualification_sha="$(git rev-parse HEAD)"
@@ -122,6 +124,7 @@ sudo systemd-run --unit=nest-qualification-driver --wait --pipe \
   --setenv=XDG_RUNTIME_DIR=/run/user/17001 \
   --setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/17001/bus \
   --setenv="NATIVE_VERSION=$NATIVE_VERSION" --setenv="QUALIFICATION_MODE=$qualification_mode" \
+  --setenv="QUALIFICATION_SCOPE=$qualification_scope" \
   --setenv="QUALIFICATION_CGROUP_PATH=/sys/fs/cgroup$qualification_cgroup" \
   /bin/bash /qualification-input/guest.sh
 sudo python3 - "$qualification_output" "$qualification_sha" "$NATIVE_VERSION" <<'PY'

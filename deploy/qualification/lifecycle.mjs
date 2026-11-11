@@ -37,10 +37,13 @@ const candidate = (await readFile(join(input, "candidate-sha"), "utf8")).trim();
 assert.match(candidate, /^[0-9a-f]{40}$/);
 const baseline = JSON.parse(await readFile(join(input, "baseline.json"), "utf8"));
 const candidateVersion = `0.1.9-${candidate.slice(0, 7)}`;
+const scope = process.env.QUALIFICATION_SCOPE ?? "all";
+assert.ok(["all", "interruption"].includes(scope));
 const report = {
   candidate,
   baseline,
   native: process.env.NATIVE_VERSION,
+  scope,
   resources: { cpus: 4, memoryGiB: 10 },
   budgetsMs: {
     ready: 60_000,
@@ -58,6 +61,8 @@ const report = {
     "candidate clean installer and other packaged applications",
   ],
 };
+if (scope !== "all")
+  report.pending.push("full large-history lifecycle matrix not run in this scope");
 let ownerToken;
 let savedThread;
 let projectId;
@@ -755,7 +760,7 @@ async function bootstrapColdNative(started) {
   return { bootstrapProbeTimedOut };
 }
 
-try {
+async function qualify() {
   await saveReport();
   const memoryMax = Number((await readFile(join(cgroupPath, "memory.max"), "utf8")).trim());
   const cpuMax = (await readFile(join(cgroupPath, "cpu.max"), "utf8"))
@@ -818,6 +823,98 @@ try {
     relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
     return { ...evidence, ...requestEvidence };
   });
+  if (scope === "interruption") {
+    await stage("old-updater-interrupted-between-pointer-and-version-write", async () => {
+      const work = await holdWork("interrupted-switch");
+      const oldTarget = await readlink(join(root, "current"));
+      const originalCli = await readFile(cli);
+      assert.equal(
+        originalCli.toString(),
+        await run("git", [
+          "-C",
+          join(root, "source"),
+          "show",
+          `${baseline.commit}:deploy/codexnest`,
+        ]),
+      );
+      await control({
+        manifest: { schemaVersion: 1, version: candidateVersion, commit: candidate },
+      });
+      await systemctl("start", "--no-block", "codexnest-update.service");
+      const updaterPid = await until("Actual updater process started", async () => {
+        const pid = Number(
+          (await systemctl("show", "codexnest-update.service", "-p", "MainPID", "--value")).trim(),
+        );
+        return pid > 1 ? pid : null;
+      });
+      // A real FIFO blocks the unchanged script's shell redirection at its
+      // existing server.env.$$ write. No updater, RPC or systemctl is mocked.
+      const fifo = join(home, `.config/codexnest/server.env.${updaterPid}`);
+      await run("mkfifo", ["--mode=600", fifo]);
+      let interruptedAt;
+      try {
+        await until(
+          "Old updater switched the real current pointer",
+          async () => {
+            const current = await readlink(join(root, "current"));
+            const raw = await readFile(statusPath, "utf8");
+            const status = JSON.parse(raw);
+            if (status.result === "failed")
+              throw new Error(`Update failed before injection: ${status.message}`);
+            return current.endsWith(`/v${candidateVersion}`);
+          },
+          report.budgetsMs.build,
+        );
+        assert.ok((await stat(fifo)).isFIFO());
+        const config = await readFile(join(home, ".config/codexnest/server.env"), "utf8");
+        assert.equal(config.match(/^CODEXNEST_VERSION=(.*)$/m)?.[1], baseline.version);
+        interruptedAt = Date.now();
+        report.interruption = {
+          point: "current switched; existing version write blocked before mutation",
+          originalUpdaterSha256: createHash("sha256").update(originalCli).digest("hex"),
+          updaterPid,
+          observations: [],
+        };
+        await systemctl("kill", "--kill-whom=all", "--signal=SIGKILL", "codexnest-update.service");
+      } finally {
+        await unlink(fifo);
+      }
+      await until(
+        "Interrupted updater automatically restored A",
+        async () => {
+          const current = await readlink(join(root, "current"));
+          const state = JSON.parse(await readFile(statusPath, "utf8"));
+          const value = await health();
+          const observation = {
+            afterMs: Date.now() - interruptedAt,
+            pointer: current === oldTarget ? "baseline" : "candidate",
+            healthVersion: value?.serverVersion ?? null,
+            recovery: value?.recoveryState ?? "unavailable",
+            updaterOperation: state.operation,
+            updaterResult: state.result,
+          };
+          const signature = JSON.stringify({ ...observation, afterMs: 0 });
+          if (report.interruption.observations.at(-1)?.signature !== signature) {
+            report.interruption.observations.push({ ...observation, signature });
+            await saveReport();
+          }
+          return (
+            current === oldTarget &&
+            value?.serverVersion === baseline.version &&
+            value.recoveryState === "ready" &&
+            state.operation === "idle" &&
+            ["failed", "rolled_back"].includes(state.result)
+          );
+        },
+        Math.max(1, report.budgetsMs.rollback - (Date.now() - interruptedAt)),
+      );
+      const recovered = { ...(await ready(baseline.version)), ...(await finishWork(work)) };
+      const fullRecoveryMs = Date.now() - interruptedAt;
+      assert.ok(fullRecoveryMs <= report.budgetsMs.rollback);
+      return { ...recovered, fullRecoveryMs };
+    });
+    return;
+  }
   await stage("representative-history-and-native-index-rebuild", async () => {
     await stopNative();
     await run("python3", [join(input, "history.py"), "create", savedThread], { timeout: 180_000 });
@@ -1125,6 +1222,10 @@ try {
   process.stdout.write(
     `Lifecycle diagnostics complete; releaseQualified=false; pending=${report.pending.length}\n`,
   );
+}
+
+try {
+  await qualify();
 } catch (error) {
   process.stderr.write(`Qualification stopped: ${error.message}\n`);
   process.exitCode = 1;

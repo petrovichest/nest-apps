@@ -162,6 +162,29 @@ jobs:
           path: ${{ runner.temp }}/qualification-lifecycle-${{ matrix.codex }}/
           if-no-files-found: error
 
+  release-interruption-diagnostics:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Stop the actual old updater between switching and writing its version
+        env:
+          NATIVE_VERSION: "0.167.1"
+          QUALIFICATION_MODE: lifecycle
+          QUALIFICATION_SCOPE: interruption
+        run: bash deploy/qualification/environment.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: interruption-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/qualification-lifecycle-0.167.1/
+          if-no-files-found: error
+
   # A green build is not qualification. Keep publication closed until the native
   # old-updater upgrade/failed-candidate rollback/large-history matrix exists.
   release-qualification:
