@@ -71,8 +71,11 @@ def create(seed_id):
         meta['payload']['id'] = identity
         meta['payload']['timestamp'] = timestamp.isoformat()
         if kind == 'nested':
-            meta['payload']['source'] = {'subAgent': {'thread_spawn': {
-                'parent_thread_id': parent_id, 'depth': 1, 'agent_path': 'qualification',
+            # Rollout serde uses lowercase "subagent"; the app-server JSON API
+            # uses a different camelCase source representation.
+            meta['payload']['source'] = {'subagent': {'thread_spawn': {
+                'parent_thread_id': parent_id, 'depth': 1,
+                'agent_path': f'/root/qualification_{index}',
                 'agent_nickname': 'Qualification', 'agent_role': 'worker'}}}
         # Genuine user/assistant records, derived from the running binary's schema.
         # Several sessions are deliberately much longer than the common profile.
