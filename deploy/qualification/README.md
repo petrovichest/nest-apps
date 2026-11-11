@@ -20,7 +20,8 @@ disposable test VM; the mapping is removed during cleanup.
 The lifecycle diagnostic exercises installation, real saved-chat requests,
 rebuilding the native index from at least 2000 nonarchived synthetic sessions and
 3 GiB of valid history, three cold and warm runs, A → B, active requests/queues,
-and automatic A → B → A after a wrong health version or failure to start HTTP.
+pending command approvals and managed background results, and automatic A → B → A
+after a wrong health version or failure to start HTTP.
 It records original native PID/start-time identity and operation counters to
 detect a daemon restart or request replay. Cold tests evict only their own
 history files using `posix_fadvise`, without changing host-wide kernel settings.
@@ -28,6 +29,10 @@ The native PID update-loop helper is recorded separately from the app-server;
 cold setup also verifies that no fixture process retains history or SQLite
 descriptors. Complete fixture ID membership is checked in both native pages and
 the Nest projection, including archived and nested history.
+On cold bootstrap, the CLI's internal short probe may time out while its spawned
+server continues initializing. The diagnostic then observes that same process
+without another bootstrap; native readiness and Nest recovery must still finish
+within the original 60-second total budget. Other bootstrap errors remain fatal.
 
 Budgets are declared before execution: normal startup/recovery ≤60 seconds,
 updater health budget 120 seconds, failed-candidate rollback ≤420 seconds from

@@ -37,6 +37,14 @@ def jwt(generation=0):
     return f'{part({"alg": "none"})}.{part(claims)}.fixture'
 
 
+def functions(tools, namespace=None):
+    for tool in tools:
+        if tool.get('type') == 'namespace':
+            yield from functions(tool.get('tools', []), tool.get('name'))
+        elif tool.get('type') == 'function':
+            yield namespace, tool
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
@@ -168,9 +176,25 @@ class Model(Handler):
                  if isinstance(item, dict) and item.get('role') == 'user']
         text = '\n'.join(part.get('text', '') for part in users[-1].get('content', [])
                          if isinstance(part, dict)) if users else ''
+        contexts = [part.get('text', '') for value in payload.get('input', [])
+                    if isinstance(value, dict) and value.get('role') in ('developer', 'user')
+                    for part in value.get('content', []) if isinstance(part, dict)]
+        latest_result = next((value for value in reversed(contexts)
+                              if '<codexnest.team.results>' in value), '')
         match = re.fullmatch(r'QUALIFICATION_(REQUEST|HOLD|APPROVAL):([a-zA-Z0-9_-]+)', text.strip())
+        team = re.search(r'QUALIFICATION_TEAM_(PARENT|CHILD):([a-zA-Z0-9_-]+)', text)
+        delivery = re.search(r'QUALIFICATION_BACKGROUND_RESULT:([a-zA-Z0-9_-]+)', latest_result)
         marker = match[2] if match else 'unmarked'
-        held = bool(match and match[1] == 'HOLD' and not auxiliary)
+        if delivery:
+            marker = f'team-delivery-{delivery[1]}'
+            team = None
+        elif team:
+            marker = f'team-{team[1].lower()}-{team[2]}'
+        call_id = f'qualification-call-{marker}'
+        has_tool_result = any(value.get('type') == 'function_call_output' and value.get('call_id') == call_id
+                              for value in payload.get('input', []) if isinstance(value, dict))
+        held = not auxiliary and (bool(match and match[1] == 'HOLD') or
+                                   bool(team and team[1] == 'CHILD' and not has_tool_result))
         with LOCK:
             counter, key = ('auxiliaryRequests', auxiliary) if auxiliary else ('requests', marker)
             STATE[counter][key] = STATE[counter].get(key, 0) + 1
@@ -204,16 +228,7 @@ class Model(Handler):
                 'status': 'completed', 'content': [{'type': 'output_text',
                                                    'text': answer,
                                                    'annotations': []}]}
-        call_id = f'qualification-call-{marker}'
-        has_tool_result = any(value.get('type') == 'function_call_output' and value.get('call_id') == call_id
-                              for value in payload.get('input', []) if isinstance(value, dict))
         if match and match[1] == 'APPROVAL' and not auxiliary and not has_tool_result:
-            def functions(tools, namespace=None):
-                for tool in tools:
-                    if tool.get('type') == 'namespace':
-                        yield from functions(tool.get('tools', []), tool.get('name'))
-                    elif tool.get('type') == 'function':
-                        yield namespace, tool
             candidates = [(namespace, tool) for namespace, tool in functions(payload.get('tools', []))
                           if tool.get('name') in ('exec_command', 'shell_command')]
             if not candidates:
@@ -227,6 +242,21 @@ class Model(Handler):
                     'name': tool['name'], 'arguments': json.dumps(args)}
             if namespace:
                 item['namespace'] = namespace
+        elif team and not auxiliary and not has_tool_result:
+            tool_name = 'spawn_task' if team[1] == 'PARENT' else 'submit_result'
+            candidates = [(namespace, tool) for namespace, tool in functions(payload.get('tools', []))
+                          if namespace == 'codexnest' and tool.get('name') == tool_name]
+            if len(candidates) != 1:
+                raise ValueError(f'Native request did not advertise the managed {tool_name} tool')
+            namespace, tool = candidates[0]
+            args = ({'title': 'Synthetic background result',
+                     'prompt': f'QUALIFICATION_TEAM_CHILD:{team[2]}',
+                     'access': {'mode': 'readOnly', 'network': False}} if team[1] == 'PARENT' else
+                    {'outcome': 'success', 'summary': f'QUALIFICATION_BACKGROUND_RESULT:{team[2]}',
+                     'checks': [], 'risks': [], 'artifacts': []})
+            item = {'id': str(uuid.uuid4()), 'type': 'function_call', 'call_id': call_id,
+                    'namespace': namespace, 'name': tool['name'], 'arguments': json.dumps(args)}
+        if item['type'] == 'function_call':
             event('response.output_item.added', output_index=0, item={**item, 'arguments': ''})
             event('response.function_call_arguments.delta', item_id=item['id'], output_index=0,
                   delta=item['arguments'])

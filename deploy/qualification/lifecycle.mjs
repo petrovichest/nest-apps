@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { NativeRelay } from "./native-relay.mjs";
 
@@ -42,7 +43,6 @@ const report = {
   originalDaemonRpc: {},
   releaseQualified: false,
   pending: [
-    "managed background task results",
     "permanent native daemon absence",
     "expired and failed authorization during startup/recovery",
     "updater interruption at each switch/checkpoint/confirmation boundary",
@@ -242,9 +242,9 @@ print(json.dumps(result))
   );
 }
 
-async function assertSurviving(previous) {
+async function assertSurviving(previous, all = false) {
   assert.ok(previous.length, "Original native PID identity missing");
-  const current = await pidIdentity();
+  const current = await pidIdentity(all);
   for (const process of previous)
     assert.ok(
       current.some((entry) => entry.pid === process.pid && entry.startTime === process.startTime),
@@ -382,6 +382,20 @@ async function verifyIndex() {
   });
 }
 
+function managedTasks(parent) {
+  const database = new DatabaseSync(join(home, ".local/state/codexnest/state.sqlite"), {
+    readOnly: true,
+  });
+  try {
+    const row = database
+      .prepare("SELECT json FROM state_entries WHERE namespace='threadMeta' AND entry_key=?")
+      .get(parent);
+    return Object.values(JSON.parse(row?.json ?? "{}").teamOrchestration?.tasks ?? {});
+  } finally {
+    database.close();
+  }
+}
+
 async function holdWork(name) {
   const held = `held-${name}-${randomUUID()}`,
     queued = `queued-${name}-${randomUUID()}`;
@@ -417,11 +431,37 @@ async function holdWork(name) {
     null,
     "Command executed before approval",
   );
-  return { held, queued, approvalMarker, approvalThread, identity: await pidIdentity() };
+  const backgroundMarker = `background-${name}-${randomUUID()}`;
+  const backgroundParent = (
+    await api(`/projects/${projectId}/threads`, { clientCreationId: randomUUID() })
+  ).thread.id;
+  await api(`/threads/${backgroundParent}/settings`, { collaborationMode: "team" }, "PATCH");
+  await api(`/threads/${backgroundParent}/turns`, {
+    input: `QUALIFICATION_TEAM_PARENT:${backgroundMarker}`,
+    clientMessageId: randomUUID(),
+  });
+  await until("Managed child accepted a real model request", async () => {
+    const tasks = managedTasks(backgroundParent);
+    assert.ok(tasks.length <= 1, "Managed child creation replayed");
+    return (
+      tasks.length === 1 &&
+      tasks[0].status === "running" &&
+      (await control()).requests[`team-child-${backgroundMarker}`] === 1
+    );
+  });
+  return {
+    held,
+    queued,
+    approvalMarker,
+    approvalThread,
+    backgroundMarker,
+    backgroundParent,
+    identity: await pidIdentity(true),
+  };
 }
 
 async function finishWork(work) {
-  const identity = await assertSurviving(work.identity);
+  const identity = await assertSurviving(work.identity, true);
   const approval = (await snapshot()).attention.find(
     (request) => request.threadId === work.approvalThread && request.kind === "approval",
   );
@@ -439,7 +479,9 @@ async function finishWork(work) {
   assert.ok(detail.summary.currentTurnId, "Active native turn lost during restart");
   assert.equal(detail.queuedMessages.length, 1, "Queued message lost or dispatched early");
   const state = await control();
-  await control({ released: [...state.released, work.held] });
+  await control({
+    released: [...state.released, work.held, `team-child-${work.backgroundMarker}`],
+  });
   const finished = await completed(savedThread, work.queued);
   assert.ok(
     JSON.stringify(finished.turns).includes(`QUALIFICATION_OK:${work.held}`),
@@ -453,12 +495,29 @@ async function finishWork(work) {
     2,
     "Native tool request or continuation replayed",
   );
+  await completed(work.backgroundParent, `team-delivery-${work.backgroundMarker}`);
+  const tasks = managedTasks(work.backgroundParent);
+  assert.equal(tasks.length, 1, "Managed task creation replayed during recovery");
+  assert.equal(tasks[0].status, "completed");
+  assert.equal(tasks[0].result?.source, "submitted");
+  assert.equal(tasks[0].result?.outcome, "success");
+  assert.equal(
+    tasks[0].result?.summary,
+    `QUALIFICATION_BACKGROUND_RESULT:${work.backgroundMarker}`,
+  );
+  assert.equal(tasks[0].delivery?.status, "delivered");
+  const background = await control();
+  assert.equal(background.requests[`team-parent-${work.backgroundMarker}`], 2);
+  assert.equal(background.requests[`team-child-${work.backgroundMarker}`], 2);
+  assert.equal(background.requests[`team-delivery-${work.backgroundMarker}`], 1);
   return {
     ...identity,
     activeRequestCount: 1,
     queuedRequestCount: 1,
     restoredApproval: true,
     approvedSideEffects: 1,
+    managedBackgroundResults: 1,
+    managedBackgroundDeliveries: 1,
   };
 }
 
@@ -591,6 +650,34 @@ print(json.dumps({'nativeUpdateLoopPids':helpers,'openHistoryDescriptors':histor
   assert.deepEqual(stopped.openHistoryDescriptors, [], "History still open after native stop");
 }
 
+async function bootstrapColdNative(started) {
+  const log = join(privateRoot, `cold-bootstrap-${failureNumber++}.log`);
+  let bootstrapProbeTimedOut = false;
+  try {
+    await run("codex", ["app-server", "daemon", "bootstrap"], {
+      timeout: report.budgetsMs.ready,
+      log,
+    });
+  } catch (error) {
+    // The published installer also allows the CLI's short readiness probe to
+    // time out while its newly spawned real server continues initialization.
+    // Never restart that server or extend the declared end-to-end cold budget.
+    const diagnostic = await readFile(log, "utf8");
+    if (
+      !diagnostic.includes("app server did not become ready") ||
+      !(await pidIdentity(true)).length
+    )
+      throw error;
+    bootstrapProbeTimedOut = true;
+  }
+  await until(
+    "Cold native listener created",
+    async () => (await stat(nativeSocket).catch(() => null))?.isSocket(),
+    Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
+  );
+  return { bootstrapProbeTimedOut };
+}
+
 try {
   await saveReport();
   const memoryMax = Number((await readFile(join(cgroupPath, "memory.max"), "utf8")).trim());
@@ -657,7 +744,7 @@ try {
     await stage(`cold-A-${index}`, async () => {
       await run("python3", [join(input, "history.py"), "evict"]);
       const started = Date.now();
-      await run("codex", ["app-server", "daemon", "bootstrap"]);
+      const bootstrap = await bootstrapColdNative(started);
       relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
       await systemctl("start", "codexnest.service");
       const evidence = await ready(
@@ -670,7 +757,7 @@ try {
       if (index < 3) {
         await stopNative();
       }
-      return { ...evidence, ...indexEvidence, ...requestEvidence };
+      return { ...bootstrap, ...evidence, ...indexEvidence, ...requestEvidence };
     });
   }
   for (let index = 1; index <= 3; index++) {
@@ -699,7 +786,7 @@ try {
       await stopNative();
       await run("python3", [join(input, "history.py"), "evict"]);
       const started = Date.now();
-      await run("codex", ["app-server", "daemon", "bootstrap"]);
+      const bootstrap = await bootstrapColdNative(started);
       relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
       await systemctl("start", "codexnest.service");
       const evidence = await ready(
@@ -708,6 +795,7 @@ try {
       );
       evidence.totalRecoveryMs = Date.now() - started;
       return {
+        ...bootstrap,
         ...evidence,
         ...(await verifyIndex()),
         ...(await request(savedThread, `cold-B-${index}`)),
@@ -793,69 +881,74 @@ try {
       const work = await holdWork(mode);
       const delayedBefore = relay.delayedResponseCount("thread/list");
       if (mode === "slow-rpc") relay.hold("thread/list", 145_000, true);
-      return {
-        ...(await update(
-          "rolled_back",
-          ["no-token", "rotated-auth"].includes(mode)
-            ? async () => {
-                await until("Candidate reached real recovery state", async () => {
-                  const value = await health();
-                  return (
-                    value?.serverVersion === "0.0.0-qualification" &&
-                    value.recoveryState === "ready"
-                  );
+      const updateEvidence = await update(
+        "rolled_back",
+        ["no-token", "rotated-auth"].includes(mode)
+          ? async () => {
+              await until("Candidate reached real recovery state", async () => {
+                const value = await health();
+                return (
+                  value?.serverVersion === "0.0.0-qualification" && value.recoveryState === "ready"
+                );
+              });
+              if (mode === "no-token") {
+                await unlink(join(home, ".local/state/codexnest/restart-token"));
+              } else {
+                const registryPath = join(home, ".local/state/codexnest/codex-accounts.json");
+                let accounts = JSON.parse(await readFile(registryPath, "utf8"));
+                await api("/settings/codex/accounts/refresh", {
+                  accountId: accounts.currentAccountId,
                 });
-                if (mode === "no-token") {
-                  await unlink(join(home, ".local/state/codexnest/restart-token"));
-                } else {
-                  const registryPath = join(home, ".local/state/codexnest/codex-accounts.json");
-                  let accounts = JSON.parse(await readFile(registryPath, "utf8"));
-                  await api("/settings/codex/accounts/refresh", {
-                    accountId: accounts.currentAccountId,
-                  });
-                  accounts = JSON.parse(await readFile(registryPath, "utf8"));
-                  const worker = accounts.runtimes.findLast(
-                    (runtime) =>
-                      !runtime.retired && runtime.accountId === accounts.currentAccountId,
-                  );
-                  assert.ok(worker, "Candidate did not start a real account worker");
-                  const before = (await control()).oauthGeneration;
-                  await nativeRpc(
-                    (rpc) => rpc("getAuthStatus", { includeToken: true, refreshToken: true }),
-                    worker.socketPath,
-                  );
-                  const after = await control();
-                  assert.ok(
-                    after.oauthGeneration > before,
-                    "Real native OAuth rotation was not exercised",
-                  );
-                  assert.equal(after.directOAuthRequests, 0, "OAuth bypassed the account proxy");
-                }
+                accounts = JSON.parse(await readFile(registryPath, "utf8"));
+                const worker = accounts.runtimes.findLast(
+                  (runtime) => !runtime.retired && runtime.accountId === accounts.currentAccountId,
+                );
+                assert.ok(worker, "Candidate did not start a real account worker");
+                const before = (await control()).oauthGeneration;
+                await nativeRpc(
+                  (rpc) => rpc("getAuthStatus", { includeToken: true, refreshToken: true }),
+                  worker.socketPath,
+                );
+                const after = await control();
+                assert.ok(
+                  after.oauthGeneration > before,
+                  "Real native OAuth rotation was not exercised",
+                );
+                assert.equal(after.directOAuthRequests, 0, "OAuth bypassed the account proxy");
               }
-            : mode === "slow-rpc"
-              ? async () => {
-                  await until(
-                    "Candidate sync response delayed",
-                    async () => relay.delayedResponseCount("thread/list") > delayedBefore,
-                  );
-                  await until(
-                    "Rollback started while native RPC was still delayed",
-                    async () => {
-                      assert.ok(relay.holding(), "Native delay ended before rollback began");
-                      const value = await health();
-                      if (value?.serverVersion !== baseline.version) return false;
-                      assert.notEqual(value.recoveryState, "ready");
-                      return true;
-                    },
-                    180_000,
-                  );
-                }
-              : undefined,
-        )),
+            }
+          : mode === "slow-rpc"
+            ? async () => {
+                await until(
+                  "Candidate sync response delayed",
+                  async () => relay.delayedResponseCount("thread/list") > delayedBefore,
+                );
+                await until(
+                  "Rollback started while native RPC was still delayed",
+                  async () => {
+                    assert.ok(relay.holding(), "Native delay ended before rollback began");
+                    const value = await health();
+                    if (value?.serverVersion !== baseline.version) return false;
+                    assert.notEqual(value.recoveryState, "ready");
+                    return true;
+                  },
+                  180_000,
+                );
+              }
+            : undefined,
+      );
+      const confirmedAt = Date.now();
+      const recovered = {
         ...(await ready(baseline.version)),
         ...(await finishWork(work)),
         ...(await request(savedThread, `rolled-back-${mode}`)),
       };
+      const fullRecoveryMs = updateEvidence.recoveryMs + Date.now() - confirmedAt;
+      assert.ok(
+        fullRecoveryMs <= report.budgetsMs.rollback,
+        "Recovered work exceeded rollback budget",
+      );
+      return { ...updateEvidence, ...recovered, fullRecoveryMs };
     });
   }
   await stage("repeat-upgrade-after-failed-candidates", async () => {
@@ -889,5 +982,21 @@ try {
   report.memoryPeakBytes = Number(
     (await readFile(join(cgroupPath, "memory.peak"), "utf8").catch(() => "NaN")).trim(),
   );
+  await run("python3", [
+    "-c",
+    `
+from pathlib import Path
+import re
+root=Path('${home}/.codex')
+logs=list(root.glob('app-server*/**/*stderr.log'))
+lines=[]
+for path in logs:
+    lines.append('Native diagnostic '+path.name)
+    for line in path.read_text(errors='replace').splitlines()[-50:]:
+        if re.search(r'bearer|authorization|access.token|refresh.token|id.token',line,re.I): continue
+        lines.append(re.sub(r'eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]+','[redacted]',line))
+Path('${output}/native-errors.log').write_text('\\n'.join(lines)+'\\n')
+`,
+  ]).catch(() => undefined);
   await saveReport();
 }
