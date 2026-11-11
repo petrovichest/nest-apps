@@ -34,7 +34,12 @@ const cli = join(homedir(), ".local/bin/codexnest");
 const mode = process.argv[2];
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 const ctl = async (...args) =>
-  (await exec("systemctl", ["--user", ...args], { timeout: 80_000 })).stdout.trim();
+  (
+    await exec("systemctl", ["--user", ...args], {
+      timeout: 80_000,
+      env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+    })
+  ).stdout.trim();
 
 async function atomic(path, value, permissions = 0o600) {
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -149,15 +154,72 @@ async function token() {
   return value;
 }
 
-async function runningAt(info) {
+async function applicationIdentity(commit) {
   const pid = Number(await ctl("show", "codexnest.service", "-p", "MainPID", "--value"));
-  if (pid <= 1) return false;
+  if (pid <= 1) return null;
+  assert.equal((await lstat(`/proc/${pid}`)).uid, process.getuid());
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  const fields = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
+  if (fields[0] === "Z") return null;
+  return { commit, pid, startTime: fields[19] };
+}
+
+async function runningAt(info, proof) {
+  const identity = await applicationIdentity(info.commit).catch((error) => {
+    if (["ENOENT", "ESRCH"].includes(error.code)) return null;
+    throw error;
+  });
+  if (!identity) return false;
+  const { pid } = identity;
   let cwdErrorCode;
   const cwd = await realpath(`/proc/${pid}/cwd`).catch((error) => {
     cwdErrorCode = error.code;
     return null;
   });
-  if (cwd !== info.path && ["before-update", "install-from-build"].includes(mode)) {
+  if (cwd === info.path) return true;
+  if (cwdErrorCode === "EACCES") {
+    // Linux may deny cross-service cwd access even for the same uid. Prove the
+    // actual Node command instead, and bind its start to the release pointer.
+    // A previously proved PID/start-time remains valid if rollback recreates
+    // current while that original process survives.
+    const argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0");
+    const node = join(root, "runtime/current/bin/node");
+    const exactCommand =
+      argv.filter(Boolean).length === 2 &&
+      argv[1] === join(root, "current/apps/server/dist/index.js") &&
+      (await realpath(argv[0])) === (await realpath(node));
+    const known =
+      proof?.commit === info.commit && proof.pid === pid && proof.startTime === identity.startTime;
+    let activatedBeforeStart = false;
+    if (!known && exactCommand) {
+      const [timestamp, configuredCwd, pointer] = await Promise.all([
+        ctl(
+          "--timestamp=us",
+          "show",
+          "codexnest.service",
+          "-p",
+          "ExecMainStartTimestamp",
+          "--value",
+        ),
+        ctl("show", "codexnest.service", "-p", "WorkingDirectory", "--value"),
+        lstat(join(root, "current"), { bigint: true }),
+      ]);
+      const milliseconds = Date.parse(timestamp);
+      const fraction = timestamp.match(/\.(\d{6}) /)?.[1];
+      if (
+        Number.isFinite(milliseconds) &&
+        fraction &&
+        pointer.isSymbolicLink() &&
+        pointer.uid === BigInt(process.getuid())
+      ) {
+        const startedNs = BigInt(milliseconds) * 1_000_000n + BigInt(fraction.slice(3)) * 1000n;
+        activatedBeforeStart =
+          pointer.ctimeNs <= startedNs && (await realpath(configuredCwd)) === info.path;
+      }
+    }
+    if (exactCommand && (known || activatedBeforeStart)) return true;
+  }
+  if (["before-update", "install-from-build"].includes(mode)) {
     process.stderr.write(
       `${JSON.stringify({ recoveryPhase: "baseline-process", pid, expectedRelease: info.version, cwd, cwdErrorCode, uid: process.getuid(), processUid: (await lstat(`/proc/${pid}`).catch(() => null))?.uid, configuredCwd: await ctl("show", "codexnest.service", "-p", "WorkingDirectory", "--value").catch(() => null) })}\n`,
     );
@@ -165,7 +227,7 @@ async function runningAt(info) {
   return cwd === info.path;
 }
 
-async function healthy(info, timeout = 3000) {
+async function healthy(info, timeout = 3000, applicationProof) {
   let apiError;
   const health = await localApi("/health", undefined, timeout).catch((error) => {
     apiError = { code: error.code, name: error.name };
@@ -182,7 +244,7 @@ async function healthy(info, timeout = 3000) {
       ? health.buildCommit === info.commit
       : health.buildCommit
         ? health.buildCommit === info.commit
-        : await runningAt(info));
+        : await runningAt(info, applicationProof));
   if (!ready && ["before-update", "install-from-build"].includes(mode)) {
     process.stderr.write(
       `${JSON.stringify({ recoveryPhase: "baseline-readiness", expectedVersion: info.version, expectedProtocol: info.protocol, status: health?.status, version: health?.serverVersion, protocol: health?.restartProtocolVersion, recovery: health?.recoveryState, transport: health?.transport, nativeState: health?.appServer?.state, buildCommit: health?.buildCommit ?? null, apiError })}\n`,
@@ -249,7 +311,11 @@ async function surviving(value) {
 
 async function waitHealthy(info, deadline, value) {
   while (Date.now() < deadline) {
-    const ready = await healthy(info, Math.min(3000, Math.max(1, deadline - Date.now())));
+    const ready = await healthy(
+      info,
+      Math.min(3000, Math.max(1, deadline - Date.now())),
+      value.application,
+    );
     if (ready) {
       if (value.native) await surviving(value);
       assert.ok(Date.now() <= deadline, "Recovery readiness exceeded its deadline");
@@ -272,10 +338,10 @@ async function statusFailed(message) {
 
 async function begin(target = null) {
   const baseline = await release(join(root, "current"));
-  assert.equal(await version(), baseline.version);
-  if (!(await healthy(baseline)))
-    throw new Error("Restart preflight failed: the current application is unavailable");
   const prior = await journal();
+  assert.equal(await version(), baseline.version);
+  if (!(await healthy(baseline, 3000, prior?.application)))
+    throw new Error("Restart preflight failed: the current application is unavailable");
   assert.notEqual(prior?.phase, "clean", "Initial installation is not confirmed yet");
   if (prior && ["pending", "restoring"].includes(prior.phase)) {
     assert.equal(prior.baseline.commit, baseline.commit, "Unfinished recovery must complete first");
@@ -288,6 +354,8 @@ async function begin(target = null) {
     }
     return;
   }
+  const application = await applicationIdentity(baseline.commit);
+  assert.ok(application, "The healthy baseline exited before preparing rollback");
   await save({
     schemaVersion: 1,
     phase: "pending",
@@ -297,6 +365,7 @@ async function begin(target = null) {
     baselineCliSha256: sha(await readFile(cli)),
     target,
     native: await nativeIdentity(),
+    application,
   });
 }
 
@@ -449,7 +518,7 @@ async function afterUpdate() {
     }
   }
   await restoreFiles(value);
-  if (await runningAt(value.baseline)) {
+  if (await runningAt(value.baseline, value.application)) {
     await token()
       .then((secret) => localApi("/internal/restart/resume", secret, 10_000))
       .catch(() => undefined);
