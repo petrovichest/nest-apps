@@ -156,10 +156,23 @@ async function health() {
 
 async function ready(version, timeout = report.budgetsMs.ready, observe) {
   const started = Date.now();
+  const states = [];
   const result = await until(
     `Ready ${version}`,
     async () => {
       const value = await health();
+      const state = value
+        ? {
+            status: value.status,
+            version: value.serverVersion,
+            recovery: value.recoveryState,
+            native: value.appServer?.state,
+            cli: value.appServer?.installedVersion,
+          }
+        : { status: "http-unavailable" };
+      const serialized = JSON.stringify(state);
+      if (states.at(-1)?.serialized !== serialized)
+        states.push({ afterMs: Date.now() - started, serialized });
       observe?.(value);
       return value?.status === "ok" &&
         value.serverVersion === version &&
@@ -172,7 +185,10 @@ async function ready(version, timeout = report.budgetsMs.ready, observe) {
         : null;
     },
     timeout,
-  );
+  ).catch((error) => {
+    report.lastReadinessFailure = { expected: version, states: states.slice(-12) };
+    throw error;
+  });
   return { readyMs: Date.now() - started, health: result };
 }
 
@@ -482,7 +498,6 @@ try {
   assert.equal(memoryMax, 10 * 1024 ** 3, "Fixture memory limit not enforced");
   assert.equal(cpuMax[0] / cpuMax[1], 4, "Fixture CPU limit not enforced");
   report.enforcedResources = { memoryMaxBytes: memoryMax, cpuQuota: cpuMax };
-  relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
   await stage("published-installer-A", async () => {
     const log = join(privateRoot, "install-A.log");
     let installationError;
@@ -521,7 +536,13 @@ try {
       clientCreationId: randomUUID(),
     });
     savedThread = created.thread.id;
-    return { ...evidence, ...(await request(savedThread, "initial")) };
+    const requestEvidence = await request(savedThread, "initial");
+    const version = JSON.parse(await run("codex", ["app-server", "daemon", "version"]));
+    assert.equal(version.appServerVersion, process.env.NATIVE_VERSION);
+    // The native bootstrap command owns its control socket. Attach the fault
+    // transport only after the real installer has finished bootstrapping it.
+    relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
+    return { ...evidence, ...requestEvidence };
   });
   await stage("representative-history-and-native-index-rebuild", async () => {
     await stopNative();
@@ -732,6 +753,7 @@ try {
   process.stderr.write(`Qualification stopped: ${error.message}\n`);
   process.exitCode = 1;
 } finally {
+  report.fixtureCounters = await control().catch(() => null);
   await relay?.close().catch((error) => {
     report.relayCleanupError = error.code ?? error.name;
     process.exitCode = 1;

@@ -30,6 +30,9 @@ printf '{"candidate":"%s","native":"%s","phase":"preparing","releaseQualified":f
   "$qualification_sha" "$NATIVE_VERSION" | sudo tee /qualification-output/environment.json >/dev/null
 
 cleanup() {
+  sudo journalctl _UID=17001 _SYSTEMD_USER_UNIT=codexnest.service --no-pager -o cat -n 100 \
+    | python3 -c 'import re,sys; text=sys.stdin.read(); print("\n".join(re.sub(r"eyJ[\w-]+\.[\w-]+\.[\w-]+", "[redacted]", line) for line in text.splitlines() if not re.search(r"bearer|authorization|access.token|refresh.token|id.token",line,re.I)))' \
+    > "$qualification_output/application-errors.log" || true
   sudo systemctl show nest-qualification-driver.service \
     -p Result -p ExecMainCode -p ExecMainStatus -p MemoryPeak \
     > "$qualification_output/driver-service.txt" || true
