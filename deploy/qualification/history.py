@@ -135,8 +135,12 @@ def check():
 
 def evict():
     manifests = json.loads((PRIVATE / 'history-manifest.json').read_text())
-    for row in manifests:
-        with open(row['path'], 'rb') as stream:
+    paths = [Path(row['path']) for row in manifests] + list(NATIVE.glob('*.sqlite*'))
+    for path in paths:
+        if not path.is_file():
+            continue
+        with path.open('rb') as stream:
+            os.fsync(stream.fileno())
             os.posix_fadvise(stream.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
 
 

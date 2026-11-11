@@ -11,14 +11,15 @@ import ssl
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 import uuid
 
 ROOT = Path('/qualification-input')
 PRIVATE = Path('/qualification-private')
 STATE = {'manifest': json.loads((ROOT / 'baseline.json').read_text()),
          'requests': {}, 'released': [], 'oauthGeneration': 0, 'authFailure': False,
-         'proxyConnections': 0, 'deniedConnections': 0, 'directModelRequests': 0}
+         'proxyConnections': 0, 'deniedConnections': 0, 'directModelRequests': 0,
+         'directOAuthRequests': 0, 'rejectedAccessTokens': 0}
 LOCK = threading.Lock()
 PROXY_PORTS = set()
 
@@ -90,7 +91,24 @@ class Control(Handler):
 
 
 class Model(Handler):
+    def authorized(self):
+        try:
+            encoded = self.headers.get('Authorization', '').split('.')[1]
+            claims = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
+            with LOCK:
+                valid = claims.get('generation') == STATE['oauthGeneration'] and claims['exp'] > time.time()
+                if not valid:
+                    STATE['rejectedAccessTokens'] += 1
+            if valid:
+                return True
+        except (KeyError, IndexError, ValueError):
+            pass
+        self.send(401, {'error': {'type': 'invalid_token'}})
+        return False
+
     def do_GET(self):
+        if not self.authorized():
+            return
         if '/usage' in self.path:
             window = {'used_percent': 1, 'limit_window_seconds': 18000,
                       'reset_after_seconds': 3600, 'reset_at': int(time.time()) + 3600}
@@ -113,10 +131,17 @@ class Model(Handler):
     def do_POST(self):
         body = self.body()
         if self.path == '/oauth/token':
+            refresh = (json.loads(body).get('refresh_token')
+                       if self.headers.get('Content-Type', '').startswith('application/json')
+                       else parse_qs(body.decode()).get('refresh_token', [None])[0])
             with LOCK:
-                STATE['oauthGeneration'] += 1
+                if self.client_address[1] not in PROXY_PORTS:
+                    STATE['directOAuthRequests'] += 1
+                failed = (STATE['authFailure'] or
+                          refresh != f'qualification-refresh-{STATE["oauthGeneration"]}')
+                if not failed:
+                    STATE['oauthGeneration'] += 1
                 generation = STATE['oauthGeneration']
-                failed = STATE['authFailure']
             self.send(401 if failed else 200,
                       {'error': 'invalid_grant'} if failed else
                       {'id_token': jwt(generation), 'access_token': jwt(generation),
@@ -125,6 +150,8 @@ class Model(Handler):
             return
         if not self.path.endswith('/responses'):
             self.send(404, {})
+            return
+        if not self.authorized():
             return
         # Only record opaque operation identifiers, never request bodies or credentials.
         payload = json.loads(body)

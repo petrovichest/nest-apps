@@ -38,7 +38,7 @@ const report = {
   pending: [
     "pending native approvals and managed background task results",
     "permanent native daemon absence",
-    "OAuth expiry and rotation through the surviving native daemon",
+    "expired and failed authorization during startup/recovery",
     "updater interruption at each switch/checkpoint/confirmation boundary",
     "protocol, artifact download/build and persistent state failure matrix",
     "candidate clean installer and other packaged applications",
@@ -89,6 +89,8 @@ async function run(command, args, { timeout = 120_000, log } = {}) {
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
+      child.stdout.destroy();
+      child.stderr.destroy();
       reject(new Error(`Command exceeded budget: ${command}`));
     }, timeout);
     child.once("error", (error) => {
@@ -184,7 +186,7 @@ async function control(body) {
   return response.json();
 }
 
-async function pidIdentity() {
+async function pidIdentity(all = false) {
   return JSON.parse(
     await run("python3", [
       "-c",
@@ -192,13 +194,18 @@ async function pidIdentity() {
 import json,os
 from pathlib import Path
 result=[]
+bound=set()
+for line in Path('/proc/net/unix').read_text().splitlines()[1:]:
+    fields=line.split()
+    if len(fields)>7 and fields[7]=='${nativeSocket}':
+        bound.add('socket:['+fields[6]+']')
 for proc in Path('/proc').iterdir():
     if not proc.name.isdigit(): continue
     try:
         if proc.stat().st_uid != 17001: continue
         exe=os.readlink(proc/'exe')
         command=(proc/'cmdline').read_bytes().split(b'\\0')
-        if Path(exe).name == 'codex' and b'app-server' in command:
+        if Path(exe).name == 'codex' and b'app-server' in command and (${all ? "True" : "False"} or any(os.readlink(fd) in bound for fd in (proc/'fd').iterdir())):
             result.append({'pid':int(proc.name),'startTime':(proc/'stat').read_text().split(') ',1)[1].split()[19]})
     except (OSError,ValueError): pass
 print(json.dumps(result))
@@ -263,8 +270,8 @@ async function request(thread, name) {
   return { savedChatRequest: "completed", acceptedRequests: state.requests[marker] };
 }
 
-async function nativeRpc(action) {
-  const socket = new WebSocket(`ws+unix://${nativeSocket}:/`, { perMessageDeflate: false });
+async function nativeRpc(action, socketPath = nativeSocket) {
+  const socket = new WebSocket(`ws+unix://${socketPath}:/`, { perMessageDeflate: false });
   let sequence = 0;
   const pending = new Map();
   const rpc = (method, params) =>
@@ -432,7 +439,7 @@ async function fault(mode) {
     `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$(cat '${root}/current/.codexnest-built')" == '${candidate}' ]]; then
-  ${mode === "no-http" ? "export CODEXNEST_PORT=0" : ["wrong-version", "no-token"].includes(mode) ? "export CODEXNEST_VERSION=0.0.0-qualification" : ":"}
+  ${mode === "no-http" ? "export CODEXNEST_PORT=0" : ["wrong-version", "no-token", "rotated-auth"].includes(mode) ? "export CODEXNEST_VERSION=0.0.0-qualification" : ":"}
 fi
 exec '${root}/runtime/current/bin/node' '${root}/current/apps/server/dist/index.js'
 `,
@@ -458,7 +465,11 @@ async function stopNative() {
     .filter((unit) => /^codexnest-account-[0-9a-f-]+\.service$/.test(unit));
   if (units.length) await systemctl("stop", ...units);
   await run("codex", ["app-server", "daemon", "stop"]);
-  assert.equal((await pidIdentity()).length, 0, "Native still running during cold fixture setup");
+  assert.equal(
+    (await pidIdentity(true)).length,
+    0,
+    "Native still running during cold fixture setup",
+  );
 }
 
 try {
@@ -646,7 +657,7 @@ try {
       ...(await request(savedThread, "restored")),
     };
   });
-  for (const mode of ["wrong-version", "no-http", "no-token", "slow-rpc"]) {
+  for (const mode of ["wrong-version", "no-http", "no-token", "slow-rpc", "rotated-auth"]) {
     await stage(`failed-B-automatic-A-${mode}`, async () => {
       await fault(mode);
       const work = await holdWork(mode);
@@ -654,7 +665,7 @@ try {
       return {
         ...(await update(
           "rolled_back",
-          mode === "no-token"
+          ["no-token", "rotated-auth"].includes(mode)
             ? async () => {
                 await until("Candidate reached real recovery state", async () => {
                   const value = await health();
@@ -663,7 +674,32 @@ try {
                     value.recoveryState === "ready"
                   );
                 });
-                await unlink(join(home, ".local/state/codexnest/restart-token"));
+                if (mode === "no-token") {
+                  await unlink(join(home, ".local/state/codexnest/restart-token"));
+                } else {
+                  const registryPath = join(home, ".local/state/codexnest/codex-accounts.json");
+                  let accounts = JSON.parse(await readFile(registryPath, "utf8"));
+                  await api("/settings/codex/accounts/refresh", {
+                    accountId: accounts.currentAccountId,
+                  });
+                  accounts = JSON.parse(await readFile(registryPath, "utf8"));
+                  const worker = accounts.runtimes.findLast(
+                    (runtime) =>
+                      !runtime.retired && runtime.accountId === accounts.currentAccountId,
+                  );
+                  assert.ok(worker, "Candidate did not start a real account worker");
+                  const before = (await control()).oauthGeneration;
+                  await nativeRpc(
+                    (rpc) => rpc("getAuthStatus", { includeToken: true, refreshToken: true }),
+                    worker.socketPath,
+                  );
+                  const after = await control();
+                  assert.ok(
+                    after.oauthGeneration > before,
+                    "Real native OAuth rotation was not exercised",
+                  );
+                  assert.equal(after.directOAuthRequests, 0, "OAuth bypassed the account proxy");
+                }
               }
             : undefined,
         )),
@@ -696,6 +732,10 @@ try {
   process.stderr.write(`Qualification stopped: ${error.message}\n`);
   process.exitCode = 1;
 } finally {
+  await relay?.close().catch((error) => {
+    report.relayCleanupError = error.code ?? error.name;
+    process.exitCode = 1;
+  });
   report.memoryPeakBytes = Number(
     (await readFile(join(cgroupPath, "memory.peak"), "utf8").catch(() => "NaN")).trim(),
   );

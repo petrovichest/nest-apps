@@ -11,7 +11,7 @@ an additional OS image or APT packages.
 The default mode checks the exact pinned native package and actual daemon.
 `QUALIFICATION_MODE=lifecycle` additionally runs `lifecycle.mjs`. It uses the
 published `0.1.9-fe3c5c8` installer and its installed updater, with the exact
-candidate Git commit served by a container-only HTTPS artifact registry. The
+candidate Git commit served by a VM-local HTTPS artifact registry. The
 registry changes download inputs, not installer/updater code. The model and OAuth
 services are local fixtures; native RPC, health, systemctl and service units are
 real. The private fixture CA and GitHub hostname mapping exist only in the

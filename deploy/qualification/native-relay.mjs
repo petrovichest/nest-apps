@@ -14,6 +14,7 @@ export class NativeRelay {
     this.upstream = `${socketPath}.qualification-native`;
     this.metrics = metrics;
     this.sockets = new Set();
+    this.httpSockets = new Set();
     this.delayed = new Set();
     this.unavailableUntil = 0;
     this.holdUntil = 0;
@@ -37,6 +38,10 @@ export class NativeRelay {
       incoming.pipe(upstream);
     });
     this.websocket = new WebSocket.WebSocketServer({ noServer: true, perMessageDeflate: false });
+    this.server.on("connection", (socket) => {
+      this.httpSockets.add(socket);
+      socket.once("close", () => this.httpSockets.delete(socket));
+    });
     this.server.on("upgrade", (incoming, socket, head) => {
       if (Date.now() < this.unavailableUntil) {
         socket.end("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
@@ -164,6 +169,7 @@ export class NativeRelay {
   async close() {
     this.release();
     for (const socket of this.sockets) socket.terminate();
+    for (const socket of this.httpSockets) socket.destroy();
     await new Promise((resolve) => this.server.close(resolve));
     await unlink(this.path).catch((error) => {
       if (error.code !== "ENOENT") throw error;
