@@ -26,6 +26,7 @@ type Options = {
   userWork(): void;
   account(id: string): RoutedAccount | null;
   beforeStart(id: string): void;
+  workAllowed?(): boolean;
 };
 const LEGACY = "native";
 
@@ -218,6 +219,10 @@ export class CodexAccountRouter {
       "thread/goal/set",
       "thread/queue/start",
     ].includes(method);
+    const workAllowed = this.options.workAllowed?.() !== false;
+    if (!workAllowed && (startsWork || method === "thread/start" || method === "thread/fork")) {
+      throw new AccountRuntimeError("CodexNest is finalizing the update; retry after confirmation");
+    }
     let client: CodexBridge | undefined;
     let descriptor: AccountRuntimeDescriptor | undefined;
     if (threadId) {
@@ -235,7 +240,7 @@ export class CodexAccountRouter {
           client = await this.migrate(threadId, account);
           descriptor = this.pool.descriptor(this.options.state.threadOwners[threadId]!);
         }
-      } else if (method === "thread/resume" && !owner) {
+      } else if (method === "thread/resume" && !owner && workAllowed) {
         const selected = await this.selected();
         if (selected) {
           client = selected.bridge;

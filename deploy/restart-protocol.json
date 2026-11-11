@@ -2,5 +2,6 @@
   "schemaVersion": 1,
   "recoveryProtocolVersion": 1,
   "runtimeRecoveryProtocolVersion": 2,
+  "updateAdmissionProtocolVersion": 1,
   "supportedTeamToolsVersions": [2]
 }

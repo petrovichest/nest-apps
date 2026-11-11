@@ -1557,7 +1557,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     get requiresDurableReceipt() {
       return bridge.deliveryVersion === 1;
     },
-    paused: () => codexManager?.maintenanceActive ?? false,
+    paused: () => Boolean(codexManager?.maintenanceActive || lifecycle?.updatePending),
     acceptsInput: (threadId) =>
       projection.summary(threadId)?.canAcceptDirectInput !== false &&
       !store.view().threadMeta[threadId]?.capacityRetry,
@@ -2361,7 +2361,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     }
   };
   const scheduleForkOperation = (operationId: string): void => {
-    if (forkOperationsClosed || bridge.state !== "ready") return;
+    if (forkOperationsClosed || bridge.state !== "ready" || lifecycle?.updatePending) return;
     const pending = withKeyLock(forkOperationLocks, operationId, () =>
       runForkOperation(operationId),
     );
@@ -2399,7 +2399,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   let teamNotificationQueue = Promise.resolve();
   let recoveryPromise: Promise<void> | undefined;
   let teamContinuationsClosed = false;
-  let teamContinuationsPaused = false;
+  let teamContinuationsPaused = lifecycle?.updatePending ?? false;
   const trackTeamBackground = <T>(promise: Promise<T>): Promise<T> => {
     teamBackgroundRuns.add(promise);
     const cleanup = () => teamBackgroundRuns.delete(promise);
@@ -3057,6 +3057,13 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       return recoveryPromise;
     }
     const pending = (async () => {
+      // Recovery can replay a prepared durable receipt or launch Team work.
+      // Keep those operations dormant while the old updater can still roll
+      // this build back. Native projection sync remains read-only and ready.
+      if (lifecycle?.updatePending) {
+        lifecycle.ready();
+        return;
+      }
       do {
         recoveryAgain = false;
         if (lifecycle && lifecycle.state !== "ready" && lifecycle.state !== "draining") {
@@ -3092,10 +3099,11 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         }
       } while (recoveryAgain && !teamContinuationsClosed);
       if (bridge.state === "ready" && lifecycle?.state !== "draining" && !teamContinuationsClosed) {
+        lifecycle?.ready();
+        if (lifecycle?.updatePending) return;
         teamContinuationsPaused = false;
         await queue.resume();
         resumeTeamContinuations();
-        lifecycle?.ready();
         const deferred = [...deferredServerRequests.values()];
         deferredServerRequests.clear();
         for (const [request, transport] of deferred) teamRequestHandler(request, transport);
@@ -3132,7 +3140,9 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     },
     resume: async () => {
       if (teamContinuationsClosed) return;
-      await runRecovery().catch(() => undefined);
+      await runRecovery();
+      if (lifecycle?.updatePending) return;
+      recoverForkOperations();
       teamContinuationsPaused = false;
       await queue.resume();
       wakeKanban();
@@ -3204,7 +3214,9 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         reply,
         503,
         "app_server_unavailable",
-        `CodexNest is ${lifecycle.state}; retry after recovery`,
+        lifecycle.updatePending
+          ? "CodexNest is finalizing the update; retry after confirmation"
+          : `CodexNest is ${lifecycle.state}; retry after recovery`,
       );
     }
   });
@@ -3234,6 +3246,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     status:
       bridge.state === "ready" && (!lifecycle || lifecycle.state === "ready") ? "ok" : "degraded",
     serverVersion: SERVER_VERSION,
+    ...(lifecycle?.buildCommit ? { buildCommit: lifecycle.buildCommit } : {}),
     recoveryState:
       lifecycle?.state ??
       (bridge.state === "ready" ? ("ready" as const) : ("unavailable" as const)),

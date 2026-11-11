@@ -105,6 +105,7 @@ export type CodexAccountsOptions = {
   runtime?: Partial<AccountRuntimeOptions>;
   poll?: boolean;
   managedInstall?: boolean;
+  workAllowed?(): boolean;
 };
 
 export class CodexAccountError extends Error {
@@ -224,6 +225,7 @@ export class CodexAccounts extends EventEmitter {
     this.router = new CodexAccountRouter(this.bridge, pool, {
       state: this.registry,
       selected: () => this.launchAccount(),
+      workAllowed: this.options.workAllowed,
       save: () => this.save(),
       observe: (descriptor, notice) => this.observeRuntime(descriptor, notice),
       userWork: () => {

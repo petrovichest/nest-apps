@@ -51,7 +51,7 @@ const report = {
     rollback: 420_000,
     build: 600_000,
     nativeStop: 10_000,
-    fixtureImport: 600_000,
+    fixtureImport: 1_380_000,
   },
   cases: [],
   originalDaemonRpc: {},
@@ -614,7 +614,11 @@ async function update(expectedResult, afterRestart) {
       const value = JSON.parse(await readFile(statusPath, "utf8"));
       if (value.operation === "idle" && value.result === "failed")
         throw new Error(`Automatic recovery failed: ${value.message}`);
-      return value.operation === "idle" && value.result === expectedResult ? value : null;
+      if (value.operation !== "idle" || value.result !== expectedResult) return null;
+      const active = (
+        await systemctl("show", "codexnest-update.service", "-p", "ActiveState", "--value")
+      ).trim();
+      return ["inactive", "failed"].includes(active) ? value : null;
     },
     remaining,
   );
@@ -969,6 +973,10 @@ async function qualify() {
     await writeFile(join(privateRoot, "history-manifest.json"), JSON.stringify(history));
     await stopNative();
     await run("python3", [join(input, "history.py"), "freeze"], { timeout: 180_000 });
+    assert.ok(
+      Date.now() - started <= report.budgetsMs.fixtureImport,
+      "Native fixture construction budget exceeded",
+    );
     return {
       importedNativeHistories: history.length,
       fixtureImportMs: Date.now() - started,
@@ -1118,7 +1126,7 @@ async function qualify() {
       if (mode === "slow-rpc") relay.hold("thread/list", 145_000, true);
       const updateEvidence = await update(
         "rolled_back",
-        ["no-token", "rotated-auth"].includes(mode)
+        ["wrong-version", "no-token", "rotated-auth"].includes(mode)
           ? async () => {
               await until("Candidate reached real recovery state", async () => {
                 const value = await health();
@@ -1126,23 +1134,29 @@ async function qualify() {
                   value?.serverVersion === "0.0.0-qualification" && value.recoveryState === "ready"
                 );
               });
+              await assert.rejects(
+                api(`/projects/${projectId}/threads`, { clientCreationId: randomUUID() }),
+                (error) => error.status === 503,
+                "Unconfirmed candidate accepted new native work",
+              );
+              const approval = (await snapshot()).attention.find(
+                (request) =>
+                  request.threadId === work.approvalThread && request.kind === "commandApproval",
+              );
+              assert.ok(approval);
+              await assert.rejects(
+                api(`/attention/${approval.id}/respond`, { kind: "approval", decision: "accept" }),
+                (error) => error.status === 503,
+                "Unconfirmed candidate accepted an approval",
+              );
               if (mode === "no-token") {
                 await unlink(join(home, ".local/state/codexnest/restart-token"));
-              } else {
-                const registryPath = join(home, ".local/state/codexnest/codex-accounts.json");
-                let accounts = JSON.parse(await readFile(registryPath, "utf8"));
-                await api("/settings/codex/accounts/refresh", {
-                  accountId: accounts.currentAccountId,
-                });
-                accounts = JSON.parse(await readFile(registryPath, "utf8"));
-                const worker = accounts.runtimes.findLast(
-                  (runtime) => !runtime.retired && runtime.accountId === accounts.currentAccountId,
-                );
-                assert.ok(worker, "Candidate did not start a real account worker");
+              } else if (mode === "rotated-auth") {
+                // Rotate through the same surviving real daemon while B is
+                // running. Foreground candidate work remains admission-blocked.
                 const before = (await control()).oauthGeneration;
-                await nativeRpc(
-                  (rpc) => rpc("getAuthStatus", { includeToken: true, refreshToken: true }),
-                  worker.socketPath,
+                await nativeRpc((rpc) =>
+                  rpc("getAuthStatus", { includeToken: true, refreshToken: true }),
                 );
                 const after = await control();
                 assert.ok(

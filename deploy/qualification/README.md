@@ -38,8 +38,18 @@ writer and unloads it with archive/unarchive. It then preserves the real paginat
 history SQLite view and rebuilds only the metadata session index. Deleting all
 native databases is a different recovery fault: current Native does not rebuild
 an already paginated turns view merely by listing or reading its JSONL file.
-That full database-loss fault is not claimed as passing here. Fixture import has
-a separate 600-second construction budget; measured cold/warm budgets stay at 60.
+That full database-loss fault is not claimed as passing here. The nested file
+profile uses independently resumable Native V1 children; it does not impersonate
+V2 parent ownership. Actual application-managed Team execution is tested separately.
+Fixture import has a separate 1380-second construction budget, including stopping
+the writer and freezing its consistent index; measured cold/warm budgets stay at 60.
+This preparation limit replaces the initial 600-second estimate based on measured
+run `43078675692` at `b4be4410b3cc46d43340ffbf880d1808bf0c8981`:
+Native 0.154.0 imports 100 chats per 56–57 seconds, reaching 1000 at the old limit.
+The full 2048-chat workload therefore needs approximately 1160–1230 seconds before
+freezing. The volume, CPU/RAM limits and startup/RPC/health/rollback budgets are
+unchanged; the entire affected runtime matrix must run again with the declared
+construction limit. A fixture preparation pass is never a startup performance pass.
 On cold bootstrap, the CLI's internal short probe may time out while its spawned
 server continues initializing. The diagnostic then observes that same process
 without another bootstrap; native readiness and Nest recovery must still finish

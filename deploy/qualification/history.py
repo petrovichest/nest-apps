@@ -91,6 +91,10 @@ def create(seed_id):
             meta['payload']['parent_thread_id'] = parent_id
             meta['payload']['agent_path'] = f'/root/qualification_{index}'
             meta['payload']['thread_source'] = 'subagent'
+            # A V1 child is independently resumable. Copying the seed's V2
+            # marker would invent parent-owned agents without their real parent
+            # ownership. Application-managed Team work is exercised separately.
+            meta['payload']['multi_agent_version'] = 'v1'
         # Genuine user/assistant records, derived from the running binary's schema.
         # Several sessions are deliberately much longer than the common profile.
         turns = 200 if index < 8 else 28
@@ -151,6 +155,7 @@ def create(seed_id):
         'nonArchivedSessions': profiles['live'] + profiles['nested'],
         'archivedSessions': profiles['archived'], 'nestedSessions': profiles['nested'],
         'longSessions': 8, 'bytes': total, 'sparseFiles': False,
+        'nestedHistoryProtocol': 'native v1 independently resumable children',
         'seed': 'real native thread/start and turn/start persisted rollout',
         'nativeImport': 'pending real Native writer materialization',
         'indexRebuild': 'pending metadata-index reconstruction',

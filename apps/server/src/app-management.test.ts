@@ -7,6 +7,46 @@ import { describe, expect, it, vi } from "vitest";
 import { AppManager } from "./app-management";
 
 describe("AppManager", () => {
+  it("does not announce success before the running build is admitted", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codexnest-update-confirm-"));
+    try {
+      const statusPath = join(directory, "update.json");
+      await writeFile(
+        statusPath,
+        JSON.stringify({
+          operation: "idle",
+          result: "updated",
+          message: "Updated",
+          updatedAt: new Date().toISOString(),
+        }),
+      );
+      let pending = true;
+      const runCommand = vi.fn();
+      const manager = new AppManager({
+        currentVersion: "0.1.9-1111111",
+        managedInstall: true,
+        transport: "daemon",
+        statusPath,
+        managementCli: "/missing/codexnest",
+        activeTurnCount: () => 0,
+        updatePending: () => pending,
+        runCommand,
+      });
+      await expect(manager.status()).resolves.toMatchObject({
+        operation: "restarting",
+        result: "none",
+      });
+      pending = false;
+      await expect(manager.status()).resolves.toMatchObject({
+        operation: "idle",
+        result: "updated",
+      });
+      expect(runCommand).not.toHaveBeenCalled();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("keeps status local until an explicit update check", async () => {
     const runCommand = vi.fn(async () => ({
       stdout: JSON.stringify({

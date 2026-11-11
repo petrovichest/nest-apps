@@ -22,6 +22,7 @@ export type AppManagerOptions = {
   systemctlBin?: string;
   setEmergencyShutdown?(requested: boolean): void;
   runCommand?: RunCommand;
+  updatePending?(): boolean;
 };
 
 export class AppManagementError extends Error {
@@ -50,6 +51,14 @@ export class AppManager {
       this.options.managedInstall,
       this.options.transport === "daemon",
     );
+    if (status.result === "updated" && this.options.updatePending?.()) {
+      return {
+        ...status,
+        operation: "restarting",
+        result: "none",
+        message: "CodexNest is confirming the update",
+      };
+    }
     if (!status.supported || status.operation === "idle") return status;
     try {
       const { stdout } = await this.runCommand(

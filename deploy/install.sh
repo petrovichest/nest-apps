@@ -79,6 +79,9 @@ codexnest_state="$codexnest_state_root/state.json"
 codexnest_database="$codexnest_state_root/state.sqlite"
 codexnest_service_root="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
+[[ ! -e "$codexnest_root/current" ]] || \
+  codexnest_die "CodexNest is already installed; use its Update action or codexnest update"
+
 mkdir -p "$codexnest_root" "$codexnest_releases" "$codexnest_runtime" \
   "$codexnest_config_root" "$codexnest_state_root" "$codexnest_service_root" "$HOME/.local/bin"
 chmod 700 "$codexnest_config_root" "$codexnest_state_root"
@@ -232,6 +235,10 @@ install -m 0644 "$codexnest_release/deploy/systemd/codexnest-managed.service" \
   "$codexnest_service_root/codexnest.service"
 install -m 0644 "$codexnest_release/deploy/systemd/codexnest-update.service" \
   "$codexnest_service_root/codexnest-update.service"
+(
+  cd "$codexnest_release"
+  "$codexnest_runtime/current/bin/node" deploy/update-recovery.mjs install-clean
+)
 
 codexnest_token=""
 if [[ ! -f "$codexnest_state" ]] || ! grep -q '"tokenSha256"' "$codexnest_state"; then
