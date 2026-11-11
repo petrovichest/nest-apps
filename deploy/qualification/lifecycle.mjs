@@ -57,7 +57,7 @@ const report = {
   originalDaemonRpc: {},
   releaseQualified: false,
   pending: [
-    "expired and failed authorization during startup/recovery",
+    "failed authorization during startup/recovery",
     "updater interruption at each switch/checkpoint/confirmation boundary",
     "candidate clean installer and other packaged applications",
   ],
@@ -1034,12 +1034,24 @@ async function qualify() {
         Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
       );
       evidence.totalRecoveryMs = Date.now() - started;
-      const indexEvidence = await verifyIndex();
       const requestEvidence = await request(savedThread, `cold-A-${index}`);
+      const savedWorkRecoveryMs = Date.now() - started;
+      assert.ok(
+        savedWorkRecoveryMs <= report.budgetsMs.ready,
+        "Cold saved-chat recovery exceeded startup budget",
+      );
+      // Complete the user's operation before the test-only full-index audit.
+      const indexEvidence = await verifyIndex();
       if (index < 3) {
         await stopNative();
       }
-      return { ...bootstrap, ...evidence, ...indexEvidence, ...requestEvidence };
+      return {
+        ...bootstrap,
+        ...evidence,
+        ...indexEvidence,
+        ...requestEvidence,
+        savedWorkRecoveryMs,
+      };
     });
   }
   for (let index = 1; index <= 3; index++) {
@@ -1051,7 +1063,13 @@ async function qualify() {
         Date.now() - started <= report.budgetsMs.ready,
         "Warm restart exceeded startup budget",
       );
-      return { ...(await ready(baseline.version)), ...(await finishWork(work)) };
+      const recovered = { ...(await ready(baseline.version)), ...(await finishWork(work)) };
+      const savedWorkRecoveryMs = Date.now() - started;
+      assert.ok(
+        savedWorkRecoveryMs <= report.budgetsMs.ready,
+        "Warm saved-work recovery exceeded startup budget",
+      );
+      return { ...recovered, savedWorkRecoveryMs };
     });
   }
   await stage("installed-old-updater-A-to-B", async () => {
@@ -1076,14 +1094,66 @@ async function qualify() {
         Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
       );
       evidence.totalRecoveryMs = Date.now() - started;
+      const requestEvidence = await request(savedThread, `cold-B-${index}`);
+      const savedWorkRecoveryMs = Date.now() - started;
+      assert.ok(
+        savedWorkRecoveryMs <= report.budgetsMs.ready,
+        "Cold saved-chat recovery exceeded startup budget",
+      );
       return {
         ...bootstrap,
         ...evidence,
         ...(await verifyIndex()),
-        ...(await request(savedThread, `cold-B-${index}`)),
+        ...requestEvidence,
+        savedWorkRecoveryMs,
       };
     });
   }
+  await stage("expired-credentials-on-native-startup", async () => {
+    await stopNative();
+    const path = join(home, ".codex/auth.json");
+    const auth = JSON.parse(await readFile(path, "utf8"));
+    const parts = auth.tokens.access_token.split(".");
+    const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+    assert.equal(
+      claims.sub,
+      "qualification-user",
+      "Only synthetic fixture credentials may be expired",
+    );
+    claims.exp = Math.floor(Date.now() / 1000) - 3600;
+    parts[1] = Buffer.from(JSON.stringify(claims)).toString("base64url");
+    auth.tokens.access_token = parts.join(".");
+    auth.last_refresh = "2020-01-01T00:00:00Z";
+    await writeFile(path, JSON.stringify(auth), { mode: 0o600 });
+    const before = (await control()).oauthGeneration;
+    const started = Date.now();
+    const bootstrap = await bootstrapColdNative(started);
+    relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
+    await systemctl("start", "codexnest.service");
+    const evidence = await ready(
+      candidateVersion,
+      Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
+    );
+    const requestEvidence = await request(savedThread, "expired-auth-startup");
+    const savedWorkRecoveryMs = Date.now() - started;
+    assert.ok(
+      savedWorkRecoveryMs <= report.budgetsMs.ready,
+      "Expired credential recovery exceeded startup budget",
+    );
+    const refreshed = await control();
+    assert.ok(
+      refreshed.oauthGeneration > before,
+      "Native did not refresh the expired fixture credential",
+    );
+    assert.equal(refreshed.directOAuthRequests, 0, "Expired token refresh bypassed its proxy");
+    return {
+      ...bootstrap,
+      ...evidence,
+      ...requestEvidence,
+      savedWorkRecoveryMs,
+      nativeOAuthRefreshed: true,
+    };
+  });
   await stage("transient-native-timeout-recovers-readiness", async () => {
     const work = await holdWork("transient-native-timeout");
     const delayedBefore = relay.delayedResponseCount("thread/list");
@@ -1111,12 +1181,17 @@ async function qualify() {
       serverPid,
       "Recovery required another application restart",
     );
-    return {
+    const recovered = {
       ...evidence,
       observedFailed,
       totalRecoveryMs: Date.now() - started,
       ...(await finishWork(work)),
     };
+    assert.ok(
+      Date.now() - started <= report.budgetsMs.ready,
+      "Transient RPC failure did not resume work within budget",
+    );
+    return recovered;
   });
   await stage("temporary-native-transport-unavailable", async () => {
     const work = await holdWork("temporary-native-unavailable");
@@ -1127,7 +1202,7 @@ async function qualify() {
       async () => (await health())?.appServer?.state !== "ready",
       10_000,
     );
-    return {
+    const recovered = {
       ...(await ready(
         candidateVersion,
         Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
@@ -1135,6 +1210,11 @@ async function qualify() {
       ...(await finishWork(work)),
       totalRecoveryMs: Date.now() - started,
     };
+    assert.ok(
+      Date.now() - started <= report.budgetsMs.ready,
+      "Temporary native outage did not resume work within budget",
+    );
+    return recovered;
   });
   for (let index = 1; index <= 3; index++) {
     await stage(`warm-B-${index}`, async () => {
@@ -1145,7 +1225,13 @@ async function qualify() {
         Date.now() - started <= report.budgetsMs.ready,
         "Warm restart exceeded startup budget",
       );
-      return { ...(await ready(candidateVersion)), ...(await finishWork(work)) };
+      const recovered = { ...(await ready(candidateVersion)), ...(await finishWork(work)) };
+      const savedWorkRecoveryMs = Date.now() - started;
+      assert.ok(
+        savedWorkRecoveryMs <= report.budgetsMs.ready,
+        "Warm saved-work recovery exceeded startup budget",
+      );
+      return { ...recovered, savedWorkRecoveryMs };
     });
   }
   await stage("restore-A-before-failed-upgrade", async () => {

@@ -154,6 +154,9 @@ export class CodexAccountRouter {
     if (notice.method === "thread/started" && notice.params.thread.ephemeral)
       this.ephemeral.add(notice.params.thread.id);
     if (typeof id === "string" && this.ephemeral.has(id)) {
+      // Internal title/refinement callers still need their completion events.
+      // Projection already hides ephemeral threads from the client interface.
+      this.bridge.acceptNotification(notice);
       if (notice.method === "thread/closed" || notice.method === "thread/deleted")
         this.ephemeral.delete(id);
       return;

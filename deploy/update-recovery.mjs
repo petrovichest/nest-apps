@@ -152,12 +152,18 @@ async function token() {
 async function runningAt(info) {
   const pid = Number(await ctl("show", "codexnest.service", "-p", "MainPID", "--value"));
   if (pid <= 1) return false;
-  return (await realpath(`/proc/${pid}/cwd`).catch(() => null)) === info.path;
+  const cwd = await realpath(`/proc/${pid}/cwd`).catch(() => null);
+  if (cwd !== info.path && ["before-update", "install-from-build"].includes(mode)) {
+    process.stderr.write(
+      `${JSON.stringify({ recoveryPhase: "baseline-process", pid, expectedRelease: info.version, cwd: cwd?.startsWith(`${homedir()}/`) ? cwd : null })}\n`,
+    );
+  }
+  return cwd === info.path;
 }
 
 async function healthy(info, timeout = 3000) {
   const health = await localApi("/health", undefined, timeout).catch(() => null);
-  return (
+  const ready =
     health?.status === "ok" &&
     health.serverVersion === info.version &&
     health.recoveryState === "ready" &&
@@ -168,8 +174,13 @@ async function healthy(info, timeout = 3000) {
       ? health.buildCommit === info.commit
       : health.buildCommit
         ? health.buildCommit === info.commit
-        : await runningAt(info))
-  );
+        : await runningAt(info));
+  if (!ready && ["before-update", "install-from-build"].includes(mode)) {
+    process.stderr.write(
+      `${JSON.stringify({ recoveryPhase: "baseline-readiness", expectedVersion: info.version, expectedProtocol: info.protocol, status: health?.status, version: health?.serverVersion, protocol: health?.restartProtocolVersion, recovery: health?.recoveryState, transport: health?.transport, nativeState: health?.appServer?.state, buildCommit: health?.buildCommit ?? null })}\n`,
+    );
+  }
+  return ready;
 }
 
 async function nativeIdentity() {
