@@ -74,6 +74,7 @@ def create(seed_id):
         meta = copy.deepcopy(header)
         meta['timestamp'] = timestamp.isoformat()
         meta['payload']['id'] = identity
+        meta['payload']['session_id'] = parent_id if kind == 'nested' else identity
         meta['payload']['timestamp'] = timestamp.isoformat()
         if kind == 'nested':
             # Rollout serde uses lowercase "subagent"; the app-server JSON API
@@ -82,40 +83,60 @@ def create(seed_id):
                 'parent_thread_id': parent_id, 'depth': 1,
                 'agent_path': f'/root/qualification_{index}',
                 'agent_nickname': 'Qualification', 'agent_role': 'worker'}}}
+            meta['payload']['parent_thread_id'] = parent_id
+            meta['payload']['agent_path'] = f'/root/qualification_{index}'
+            meta['payload']['thread_source'] = 'subagent'
         # Genuine user/assistant records, derived from the running binary's schema.
         # Several sessions are deliberately much longer than the common profile.
         turns = 200 if index < 8 else 28
         with path.open('w') as stream:
             stream.write(json.dumps(meta) + '\n')
+            ordinal = min((row['ordinal'] for row in turn_rows
+                           if isinstance(row.get('ordinal'), int)), default=0)
             for turn in range(turns):
                 turn_id = str(uuid.uuid4())
                 identities = {seed_id: identity, next(iter(seed_turns)): turn_id}
+                user_text, assistant_text = conversation(index, turn, False), conversation(index, turn, True)
                 def replace_id(match):
                     value = match[0]
                     if value not in identities:
                         identities[value] = str(uuid.uuid4())
                     return identities[value]
+                def remap(value, key=''):
+                    if isinstance(value, dict):
+                        return {name: remap(child, name) for name, child in value.items()}
+                    if isinstance(value, list):
+                        return [remap(child, key) for child in value]
+                    if isinstance(value, str):
+                        if key == 'session_id' and value == seed_id:
+                            return meta['payload']['session_id']
+                        if key == 'id' or key.endswith(('_id', 'Id')):
+                            return uuid_pattern.sub(replace_id, value)
+                    return value
                 for original in turn_rows:
-                    row = copy.deepcopy(original)
+                    row = remap(original)
                     payload = row.get('payload', {})
                     role = payload.get('role')
                     if row['type'] == 'response_item' and role in ('user', 'assistant'):
                         payload['content'] = [{'type': 'output_text' if role == 'assistant'
                                                else 'input_text',
-                                               'text': conversation(index, turn, role == 'assistant')}]
+                                               'text': assistant_text if role == 'assistant' else user_text}]
                     if row['type'] == 'event_msg' and payload.get('type') in ('user_message', 'agent_message'):
-                        payload['message'] = conversation(index, turn, payload['type'] == 'agent_message')
+                        payload['message'] = assistant_text if payload['type'] == 'agent_message' else user_text
                     if row['type'] == 'event_msg' and payload.get('type') == 'item_completed':
                         item = payload.get('item', {})
                         if item.get('type') == 'UserMessage':
-                            item['content'] = [{'type': 'text', 'text': conversation(index, turn, False)}]
+                            item['content'] = [{'type': 'text', 'text': user_text}]
                         elif item.get('type') == 'AgentMessage':
-                            item['content'] = [{'type': 'Text', 'text': conversation(index, turn, True)}]
+                            item['content'] = [{'type': 'Text', 'text': assistant_text}]
                     row['timestamp'] = (timestamp + datetime.timedelta(seconds=turn)).isoformat()
+                    if 'ordinal' in row:
+                        row['ordinal'] = ordinal
+                        ordinal += 1
                     # Turn attribution, passthrough metadata and completed-item
                     # events also contain IDs. Keep every cross-reference aligned
                     # while giving each cloned turn/item/client receipt a fresh ID.
-                    stream.write(uuid_pattern.sub(replace_id, json.dumps(row)) + '\n')
+                    stream.write(json.dumps(row) + '\n')
         manifests.append({'id': identity, 'kind': kind, 'path': str(path),
                           'bytes': path.stat().st_size, 'sha256': digest(path), 'turns': turns})
     total = sum(row['bytes'] for row in manifests)

@@ -388,13 +388,34 @@ async function verifyIndex() {
       counts[archived ? "archived" : "nonArchived"] = { threads: found.size, pages };
     }
     const long = await rpc("thread/read", { threadId: history[0].id, includeTurns: true });
-    assert.ok(long.thread.turns.length >= history[0].turns, "Long history lost turns");
+    assert.ok(
+      long.thread.turns.length >= history[0].turns,
+      `Long history lost turns: expected ${history[0].turns}, found ${long.thread.turns.length}`,
+    );
+    const turnIds = new Set();
+    let turnCursor = null;
+    let turnPages = 0;
+    do {
+      const page = await rpc("thread/turns/list", {
+        threadId: history[0].id,
+        cursor: turnCursor,
+        limit: 50,
+        sortDirection: "asc",
+      });
+      for (const turn of page.data) {
+        assert.ok(!turnIds.has(turn.id), "Turn pagination repeated an entry");
+        turnIds.add(turn.id);
+      }
+      turnCursor = page.nextCursor ?? null;
+      assert.ok(++turnPages < 100, "Turn cursor did not terminate");
+    } while (turnCursor);
+    assert.equal(turnIds.size, long.thread.turns.length, "Turn pages disagree with native read");
     const nestThreads = new Map((await snapshot()).threads.map((thread) => [thread.id, thread]));
     for (const row of history) {
       assert.ok(nestThreads.has(row.id), `Nest omitted ${row.kind} history`);
       assert.equal(nestThreads.get(row.id).archived, row.kind === "archived");
     }
-    return { index: counts, longThreadTurns: long.thread.turns.length };
+    return { index: counts, longThreadTurns: long.thread.turns.length, turnPages };
   });
 }
 
