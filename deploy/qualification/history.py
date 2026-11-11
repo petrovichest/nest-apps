@@ -76,6 +76,11 @@ def create(seed_id):
         meta['payload']['id'] = identity
         meta['payload']['session_id'] = parent_id if kind == 'nested' else identity
         meta['payload']['timestamp'] = timestamp.isoformat()
+        thread_identities = {seed_id: identity}
+        if meta['payload'].get('context_window', {}).get('window_id'):
+            previous_window = meta['payload']['context_window']['window_id']
+            thread_identities[previous_window] = str(uuid.uuid4())
+            meta['payload']['context_window']['window_id'] = thread_identities[previous_window]
         if kind == 'nested':
             # Rollout serde uses lowercase "subagent"; the app-server JSON API
             # uses a different camelCase source representation.
@@ -95,7 +100,7 @@ def create(seed_id):
                            if isinstance(row.get('ordinal'), int)), default=0)
             for turn in range(turns):
                 turn_id = str(uuid.uuid4())
-                identities = {seed_id: identity, next(iter(seed_turns)): turn_id}
+                identities = {**thread_identities, next(iter(seed_turns)): turn_id}
                 user_text, assistant_text = conversation(index, turn, False), conversation(index, turn, True)
                 def replace_id(match):
                     value = match[0]
@@ -142,24 +147,50 @@ def create(seed_id):
     total = sum(row['bytes'] for row in manifests)
     assert total >= expected_bytes, f'Meaningful history too small: {total}'
     (PRIVATE / 'history-manifest.json').write_text(json.dumps(manifests))
-    # All native processes have been stopped by the driver. Preserve a consistent
-    # previous index and force real native index reconstruction from these files.
-    backup = PRIVATE / 'index-before-rebuild'
-    backup.mkdir()
-    for database in NATIVE.glob('*.sqlite'):
-        with sqlite3.connect(database) as connection:
-            assert connection.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
-        for source in (database, Path(str(database) + '-wal'), Path(str(database) + '-shm')):
-            if source.exists():
-                source.rename(backup / source.name)
     (OUTPUT / 'history-profile.json').write_text(json.dumps({
         'nonArchivedSessions': profiles['live'] + profiles['nested'],
         'archivedSessions': profiles['archived'], 'nestedSessions': profiles['nested'],
         'longSessions': 8, 'bytes': total, 'sparseFiles': False,
         'seed': 'real native thread/start and turn/start persisted rollout',
-        'indexRebuild': 'previous consistent native SQLite files moved while daemon stopped',
+        'nativeImport': 'pending real Native writer materialization',
+        'indexRebuild': 'pending metadata-index reconstruction',
         'manifestSha256': digest(PRIVATE / 'history-manifest.json')}, indent=2) + '\n')
     print(json.dumps({'historyFiles': len(manifests), 'bytes': total}))
+
+
+def freeze():
+    """Freeze actual Native-canonicalized files and remove only its metadata index."""
+    manifest_path = PRIVATE / 'history-manifest.json'
+    manifests = json.loads(manifest_path.read_text())
+    for row in manifests:
+        path = Path(row['path'])
+        assert path.is_file(), 'Native-imported canonical history missing'
+        row['bytes'], row['sha256'] = path.stat().st_size, digest(path)
+    total = sum(row['bytes'] for row in manifests)
+    assert total >= 3 * 1024 ** 3, 'Native-canonicalized workload below mandatory 3 GiB'
+    assert (NATIVE / 'thread_history_1.sqlite').is_file(), 'Native history projection missing'
+    # The driver stopped every real app-server after materialization. Keep the
+    # paginated history view and goals/queues; they are not the session index.
+    for database in NATIVE.glob('*.sqlite'):
+        with sqlite3.connect(database) as connection:
+            assert connection.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
+            assert connection.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
+    backup = PRIVATE / 'metadata-index-before-rebuild'
+    backup.mkdir()
+    indexes = list(NATIVE.glob('state_*.sqlite'))
+    assert indexes, 'Expected a real Native metadata index'
+    for database in indexes:
+        for source in (database, Path(str(database) + '-wal'), Path(str(database) + '-shm')):
+            if source.exists():
+                source.rename(backup / source.name)
+    manifest_path.write_text(json.dumps(manifests))
+    profile_path = OUTPUT / 'history-profile.json'
+    profile = json.loads(profile_path.read_text())
+    profile.update(bytes=total, nativeImport='real thread/resume writer, archive/unarchive and read',
+                   indexRebuild='only consistent state_*.sqlite moved with native stopped',
+                   historyProjection='real Native thread_history_1.sqlite retained and quick_check passed',
+                   manifestSha256=digest(manifest_path))
+    profile_path.write_text(json.dumps(profile, indent=2)+'\n')
 
 
 def check():
@@ -190,5 +221,7 @@ if __name__ == '__main__':
         check()
     elif sys.argv[1] == 'evict':
         evict()
+    elif sys.argv[1] == 'freeze':
+        freeze()
     else:
         raise ValueError('Unknown history operation')

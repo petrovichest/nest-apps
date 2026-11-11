@@ -51,6 +51,7 @@ const report = {
     rollback: 420_000,
     build: 600_000,
     nativeStop: 10_000,
+    fixtureImport: 600_000,
   },
   cases: [],
   originalDaemonRpc: {},
@@ -462,7 +463,7 @@ async function holdWork(name) {
   });
   await until("Actual native approval is pending", async () =>
     (await snapshot()).attention.some(
-      (request) => request.threadId === approvalThread && request.kind === "approval",
+      (request) => request.threadId === approvalThread && request.kind === "commandApproval",
     ),
   );
   assert.equal(
@@ -505,7 +506,7 @@ async function holdWork(name) {
 async function finishWork(work) {
   const identity = await assertSurviving(work.identity, true);
   const approval = (await snapshot()).attention.find(
-    (request) => request.threadId === work.approvalThread && request.kind === "approval",
+    (request) => request.threadId === work.approvalThread && request.kind === "commandApproval",
   );
   assert.ok(approval, "Pending native approval lost during application replacement");
   await api(`/attention/${approval.id}/respond`, { kind: "approval", decision: "accept" });
@@ -915,10 +916,55 @@ async function qualify() {
     });
     return;
   }
-  await stage("representative-history-and-native-index-rebuild", async () => {
+  await stage("representative-synthetic-history-files", async () => {
     await stopNative();
     await run("python3", [join(input, "history.py"), "create", savedThread], { timeout: 180_000 });
     return JSON.parse(await readFile(join(output, "history-profile.json"), "utf8"));
+  });
+  await stage("actual-native-import-and-metadata-index-rebuild", async () => {
+    const started = Date.now();
+    // This constructs valid current-format data before measured cold starts.
+    // A paginated JSONL file alone has no SQLite turns view. Native's own writer
+    // builds that view; never synthesize its SQL or call an empty view success.
+    await run("codex", ["app-server", "daemon", "bootstrap"]);
+    const history = JSON.parse(await readFile(join(privateRoot, "history-manifest.json"), "utf8"));
+    let next = 0;
+    await nativeRpc(async (rpc) => {
+      await Promise.all(
+        Array.from({ length: 4 }, async () => {
+          while (next < history.length) {
+            assert.ok(
+              Date.now() - started < report.budgetsMs.fixtureImport,
+              "Native fixture import budget exceeded",
+            );
+            const row = history[next++];
+            if (row.kind === "archived") await rpc("thread/unarchive", { threadId: row.id });
+            await rpc("thread/resume", {
+              threadId: row.id,
+              cwd: join(home, "qualification-project"),
+              excludeTurns: true,
+            });
+            // Archiving flushes the real writer and unloads its in-memory
+            // conversation, keeping construction within the fixture RAM limit.
+            await rpc("thread/archive", { threadId: row.id });
+            if (row.kind !== "archived") await rpc("thread/unarchive", { threadId: row.id });
+            const { thread } = await rpc("thread/read", { threadId: row.id, includeTurns: false });
+            assert.ok(thread.path?.startsWith(`${home}/.codex/`));
+            row.path = thread.path;
+            if (next % 100 === 0)
+              process.stdout.write(`Native fixture import: ${next}/${history.length}\n`);
+          }
+        }),
+      );
+    });
+    await writeFile(join(privateRoot, "history-manifest.json"), JSON.stringify(history));
+    await stopNative();
+    await run("python3", [join(input, "history.py"), "freeze"], { timeout: 180_000 });
+    return {
+      importedNativeHistories: history.length,
+      fixtureImportMs: Date.now() - started,
+      ...JSON.parse(await readFile(join(output, "history-profile.json"), "utf8")),
+    };
   });
   for (let index = 1; index <= 3; index++) {
     await stage(`cold-A-${index}`, async () => {

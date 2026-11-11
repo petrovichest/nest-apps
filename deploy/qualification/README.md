@@ -33,6 +33,13 @@ The native PID update-loop helper is recorded separately from the app-server;
 cold setup also verifies that no fixture process retains history or SQLite
 descriptors. Complete fixture ID membership is checked in both native pages and
 the Nest projection, including archived and nested history.
+The fixture first materializes every generated chat through the actual native
+writer and unloads it with archive/unarchive. It then preserves the real paginated
+history SQLite view and rebuilds only the metadata session index. Deleting all
+native databases is a different recovery fault: current Native does not rebuild
+an already paginated turns view merely by listing or reading its JSONL file.
+That full database-loss fault is not claimed as passing here. Fixture import has
+a separate 600-second construction budget; measured cold/warm budgets stay at 60.
 On cold bootstrap, the CLI's internal short probe may time out while its spawned
 server continues initializing. The diagnostic then observes that same process
 without another bootstrap; native readiness and Nest recovery must still finish
@@ -44,6 +51,11 @@ the restart phase. The latter accommodates the existing health wait, restart
 preflight, graceful shutdown and restored-version health wait. Exceeding any
 budget fails the scenario; the harness does not rerun a failed scenario or
 increase timeouts.
+
+`QUALIFICATION_SCOPE=interruption` is a separate diagnostic on the actual old
+updater. A FIFO pauses its existing version-file write after switching `current`;
+the test kills only the fixture updater service and requires automatic recovery.
+This scope does not run or qualify the large-history matrix.
 
 These are **diagnostics, not complete release qualification**. `lifecycle.json`
 always has `releaseQualified: false` and explicitly lists unfinished mandatory

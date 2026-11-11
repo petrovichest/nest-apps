@@ -12,16 +12,16 @@ mapfile -t native_binaries < <(find /opt/native/node_modules -type f -name codex
 sha256sum "${native_binaries[0]}" > /qualification-output/native-binary-sha256.txt
 qualification_native_cli=/opt/native/node_modules/.bin/codex
 if [[ "$NATIVE_VERSION" == 0.154.0 ]]; then
-  # The older daemon requires a flat managed standalone install. Newer versions
-  # require the complete package instead; retain their unmodified NPM launcher.
+  # The older daemon requires a legacy entry point in a managed standalone
+  # release. Preserve the complete pinned package, including helper/resources.
   native_version_home="$HOME/.codex/packages/standalone/releases/$NATIVE_VERSION"
   mkdir -p "$native_version_home/bin" "$HOME/.local/bin"
-  # Preserve the package's real sidecar executables as well as the CLI. The
-  # minimum runtime uses the flat standalone path, including its code-mode host.
-  cp -a "$(dirname "${native_binaries[0]}")/." "$native_version_home/"
-  test -x "$native_version_home/codex"
-  test -x "$native_version_home/codex-code-mode-host"
-  ln -s ../codex "$native_version_home/bin/codex"
+  native_payload="$(dirname "$(dirname "${native_binaries[0]}")")"
+  test -f "$native_payload/codex-package.json"
+  cp -a "$native_payload/." "$native_version_home/"
+  test -x "$native_version_home/bin/codex-code-mode-host"
+  test -x "$native_version_home/codex-resources/bwrap"
+  ln -s bin/codex "$native_version_home/codex"
   ln -s "$native_version_home" "$HOME/.codex/packages/standalone/current"
   qualification_native_cli="$HOME/.codex/packages/standalone/current/codex"
 fi
