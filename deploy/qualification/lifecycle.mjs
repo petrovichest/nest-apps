@@ -991,16 +991,21 @@ async function qualify() {
               "Native fixture import budget exceeded",
             );
             const row = history[next++];
-            await rpc("thread/resume", {
+            const resumed = await rpc("thread/resume", {
               threadId: row.id,
+              path: row.path,
               cwd: join(home, "qualification-project"),
               excludeTurns: true,
             });
+            assert.equal(resumed.thread.id, row.id);
             // Archiving flushes the real writer and unloads its in-memory
             // conversation, keeping construction within the fixture RAM limit.
             await rpc("thread/archive", { threadId: row.id });
-            if (row.kind !== "archived") await rpc("thread/unarchive", { threadId: row.id });
-            const { thread } = await rpc("thread/read", { threadId: row.id, includeTurns: false });
+            const { thread } =
+              row.kind !== "archived"
+                ? await rpc("thread/unarchive", { threadId: row.id })
+                : await rpc("thread/read", { threadId: row.id, includeTurns: false });
+            assert.equal(thread.id, row.id);
             assert.ok(thread.path?.startsWith(`${home}/.codex/`));
             row.path = thread.path;
             if (next % 100 === 0)

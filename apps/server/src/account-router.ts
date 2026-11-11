@@ -156,12 +156,9 @@ export class CodexAccountRouter {
     if (typeof id === "string" && this.ephemeral.has(id)) {
       // Internal title/refinement callers still need their completion events.
       // Projection already hides ephemeral threads from the client interface.
-      this.bridge.acceptNotification(notice);
       if (notice.method === "thread/closed" || notice.method === "thread/deleted")
         this.ephemeral.delete(id);
-      return;
-    }
-    if (typeof id === "string") {
+    } else if (typeof id === "string") {
       const owner = this.options.state.threadOwners[id];
       if (owner && owner !== descriptor.id) return; // Late events from a released owner cannot change the new owner.
       if (!owner) {
@@ -209,7 +206,6 @@ export class CodexAccountRouter {
     this.bridge.emit("request", { ...request, id }, responseTransport);
   };
   private async request(method: string, raw: unknown, timeout: number): Promise<unknown> {
-    if (method === "turn/start") this.options.userWork();
     const params = raw as Record<string, unknown> | undefined;
     if (method === "thread/loaded/list") return this.loaded(params, timeout);
     const threadId = typeof params?.threadId === "string" ? params.threadId : undefined;
@@ -226,6 +222,7 @@ export class CodexAccountRouter {
     if (!workAllowed && (startsWork || method === "thread/start" || method === "thread/fork")) {
       throw new AccountRuntimeError("CodexNest is finalizing the update; retry after confirmation");
     }
+    if (method === "turn/start" && !this.ephemeral.has(threadId ?? "")) this.options.userWork();
     let client: CodexBridge | undefined;
     let descriptor: AccountRuntimeDescriptor | undefined;
     if (threadId) {

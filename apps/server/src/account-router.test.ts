@@ -124,5 +124,23 @@ it("isolates identical native approval IDs and their resolution across account c
     0,
     expect.objectContaining({ decision: "accept" }),
   );
+  bridge.emit("request", request("legacy-thread"), transportA);
+  pool.emit(
+    "notification",
+    { id: "runtime-A" },
+    {
+      method: "thread/started",
+      params: { thread: { id: "helper", ephemeral: true } },
+    },
+  );
+  pool.emit(
+    "notification",
+    { id: "runtime-A" },
+    {
+      method: "serverRequest/resolved",
+      params: { threadId: "helper", requestId: 0 },
+    },
+  );
+  expect(attention.list().map((request) => request.threadId)).toEqual(["legacy-thread"]);
   await router.close();
 });
