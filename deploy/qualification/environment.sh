@@ -6,7 +6,10 @@ set -euo pipefail
   printf '%s\n' 'Run only in an isolated GitHub-hosted CI job, never on an installed Nest instance.' >&2
   exit 2
 }
-[[ "${NATIVE_VERSION:-}" == 0.154.0 || "${NATIVE_VERSION:-}" == 0.167.0 ]] || exit 2
+case "${NATIVE_VERSION:-}" in
+  0.154.0|0.167.0|0.167.1) ;;
+  *) exit 2 ;;
+esac
 [[ -n "${RUNNER_TEMP:-}" && -n "${GITHUB_RUN_ID:-}" && -n "${GITHUB_RUN_ATTEMPT:-}" ]] || exit 2
 
 qualification_root="$(git rev-parse --show-toplevel)"
@@ -63,18 +66,19 @@ systemctl --user is-active --quiet default.target
 mkdir -p "$HOME/.codex"
 chmod 0700 "$HOME/.codex"
 printf '[features]\nrespect_system_proxy = true\n[analytics]\nenabled = false\n' > "$HOME/.codex/config.toml"
-# 0.154.0's daemon command requires the managed standalone layout. Populate it
-# with the exact, unmodified ELF already supplied by the pinned native package.
 mapfile -t native_binaries < <(find /opt/native/node_modules -type f -name codex -executable)
 (( ${#native_binaries[@]} == 1 ))
-native_version_home="$HOME/.codex/packages/standalone/releases/$NATIVE_VERSION"
-mkdir -p "$native_version_home/bin" "$HOME/.local/bin"
-install -m 0755 "${native_binaries[0]}" "$native_version_home/codex"
-ln -s ../codex "$native_version_home/bin/codex"
-ln -s "$native_version_home" "$HOME/.codex/packages/standalone/current"
-ln -s "$HOME/.codex/packages/standalone/current/codex" "$HOME/.local/bin/codex"
-export PATH="$HOME/.local/bin:$PATH"
-sha256sum "$native_version_home/codex" > /qualification-output/native-binary-sha256.txt
+sha256sum "${native_binaries[0]}" > /qualification-output/native-binary-sha256.txt
+if [[ "$NATIVE_VERSION" == 0.154.0 ]]; then
+  # The older daemon requires a flat managed standalone install. Newer versions
+  # require the complete package instead; retain their unmodified NPM launcher.
+  native_version_home="$HOME/.codex/packages/standalone/releases/$NATIVE_VERSION"
+  mkdir -p "$native_version_home" "$HOME/.local/bin"
+  install -m 0755 "${native_binaries[0]}" "$native_version_home/codex"
+  ln -s "$native_version_home" "$HOME/.codex/packages/standalone/current"
+  ln -s "$HOME/.codex/packages/standalone/current/codex" "$HOME/.local/bin/codex"
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 # No real auth is present. Even unauthenticated background discovery must not
 # leave this disposable fixture through a direct provider connection.
 systemctl --user set-environment \
