@@ -6,10 +6,24 @@ test -f /qualification-input/baseline.json
 install -d -m 0700 -o 17001 -g 17001 /qualification-private
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
   -subj '/CN=Nest disposable qualification CA' \
-  -keyout /qualification-private/fixture-key.pem -out /qualification-private/fixture.pem \
-  -addext 'subjectAltName=DNS:github.com,IP:127.0.0.2' \
+  -keyout /qualification-private/ca-key.pem -out /qualification-private/ca.pem \
   > /qualification-private/certificate.log 2>&1
-install -m 0644 /qualification-private/fixture.pem /usr/local/share/ca-certificates/nest-qualification.crt
+openssl req -newkey rsa:2048 -nodes -subj '/CN=127.0.0.2' \
+  -keyout /qualification-private/fixture-key.pem -out /qualification-private/fixture.csr \
+  >> /qualification-private/certificate.log 2>&1
+cat > /qualification-private/certificate-extensions <<'CERT'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:github.com,IP:127.0.0.2
+CERT
+openssl x509 -req -in /qualification-private/fixture.csr \
+  -CA /qualification-private/ca.pem -CAkey /qualification-private/ca-key.pem -CAcreateserial \
+  -out /qualification-private/fixture.pem -days 2 -extfile /qualification-private/certificate-extensions \
+  >> /qualification-private/certificate.log 2>&1
+openssl verify -CAfile /qualification-private/ca.pem -purpose sslserver \
+  /qualification-private/fixture.pem >> /qualification-private/certificate.log
+install -m 0644 /qualification-private/ca.pem /usr/local/share/ca-certificates/nest-qualification.crt
 update-ca-certificates >/dev/null
 printf '\n127.0.0.2 github.com # nest-qualification\n' >> /etc/hosts
 cat > /etc/systemd/system/nest-qualification-fixture.service <<'UNIT'
@@ -22,6 +36,18 @@ Restart=no
 UNIT
 systemctl daemon-reload
 systemctl start nest-qualification-fixture.service
+fixture_tls_ready=false
+for ((attempt=1; attempt<=20; attempt+=1)); do
+  if curl --fail --silent --show-error --connect-timeout 1 --max-time 3 \
+    --cacert /usr/local/share/ca-certificates/nest-qualification.crt \
+    --proxy http://127.0.0.1:9001 --noproxy '' \
+    https://127.0.0.2:9000/fixture/health > /qualification-output/model-tls.json 2>/qualification-private/tls-check.log; then
+    fixture_tls_ready=true
+    break
+  fi
+  sleep 0.2
+done
+$fixture_tls_ready || { printf '%s\n' 'Fixture TLS through its real proxy did not become ready.' >&2; exit 1; }
 python3 - <<'PY'
 import datetime,importlib.util,json,os
 from pathlib import Path

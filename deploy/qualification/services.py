@@ -107,6 +107,9 @@ class Model(Handler):
         return False
 
     def do_GET(self):
+        if self.path == '/fixture/health':
+            self.send(200, {'fixture': 'model', 'tls': True})
+            return
         if not self.authorized():
             return
         if '/usage' in self.path:
