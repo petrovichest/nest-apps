@@ -6,6 +6,7 @@ test -f /qualification-input/baseline.json
 install -d -m 0700 -o 17001 -g 17001 /qualification-private
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
   -subj '/CN=Nest disposable qualification CA' \
+  -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign' \
   -keyout /qualification-private/ca-key.pem -out /qualification-private/ca.pem \
   > /qualification-private/certificate.log 2>&1
 openssl req -newkey rsa:2048 -nodes -subj '/CN=127.0.0.2' \

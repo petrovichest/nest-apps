@@ -212,20 +212,27 @@ class Proxy(Handler):
             self.send(403, {})
             return
         with socket.create_connection(('127.0.0.2', 9000), timeout=5) as upstream:
+            proxy_port = upstream.getsockname()[1]
             with LOCK:
                 STATE['proxyConnections'] += 1
-                PROXY_PORTS.add(upstream.getsockname()[1])
-            self.send_response(200, 'Connection established')
-            self.end_headers()
-            self.close_connection = True
-            sockets = (self.connection, upstream)
-            while True:
-                readable, _, _ = select.select(sockets, [], [], 30)
-                for source in readable:
-                    data = source.recv(65536)
-                    if not data:
-                        return
-                    (upstream if source is self.connection else self.connection).sendall(data)
+                PROXY_PORTS.add(proxy_port)
+            try:
+                self.send_response(200, 'Connection established')
+                self.end_headers()
+                self.close_connection = True
+                sockets = (self.connection, upstream)
+                while True:
+                    readable, _, _ = select.select(sockets, [], [], 30)
+                    for source in readable:
+                        data = source.recv(65536)
+                        if not data:
+                            return
+                        (upstream if source is self.connection else self.connection).sendall(data)
+            except (ConnectionError, TimeoutError):
+                pass
+            finally:
+                with LOCK:
+                    PROXY_PORTS.discard(proxy_port)
 
     def do_GET(self):
         self.send(403, {})
