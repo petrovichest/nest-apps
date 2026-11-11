@@ -6,7 +6,8 @@ ENV PATH=/opt/node/bin:/opt/native/node_modules/.bin:/usr/local/sbin:/usr/local/
 
 COPY resolv.conf /opt/qualification-resolv.conf
 RUN cat /opt/qualification-resolv.conf > /etc/resolv.conf \
-    && apt-get update --error-on=any && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    && apt-get -o Acquire::ForceIPv4=true update --error-on=any \
+    && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
     ca-certificates curl dbus-user-session git openssl procps python3 sqlite3 sudo \
     systemd systemd-sysv xz-utils \
     && apt-get clean

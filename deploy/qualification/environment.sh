@@ -40,10 +40,16 @@ for source in ('/run/systemd/resolve/resolv.conf','/etc/resolv.conf'):
     if servers: break
 assert servers, 'No routable CI resolver; a loopback DNS stub cannot be used in the private container.'
 resolved={}
-for host in ('archive.ubuntu.com','security.ubuntu.com','nodejs.org','registry.npmjs.org'):
-    resolved[host]=sorted({entry[4][0] for entry in socket.getaddrinfo(host,443)})
 Path(sys.argv[1]).write_text(''.join(f'nameserver {server}\n' for server in servers)+'options timeout:2 attempts:2\n')
-Path(sys.argv[2]).write_text(json.dumps({'resolvers':servers,'hostResolution':resolved},indent=2)+'\n')
+Path(sys.argv[2]).write_text(json.dumps({'resolvers':servers,'hostResolutionIPv4':resolved},indent=2)+'\n')
+for host in ('archive.ubuntu.com','security.ubuntu.com','nodejs.org','registry.npmjs.org'):
+    try:
+        resolved[host]=sorted({entry[4][0] for entry in socket.getaddrinfo(host,443,socket.AF_INET)})
+    except OSError as error:
+        resolved[host]={'error':str(error)}
+        raise
+    finally:
+        Path(sys.argv[2]).write_text(json.dumps({'resolvers':servers,'hostResolutionIPv4':resolved},indent=2)+'\n')
 PY
 qualification_dns=()
 while read -r kind address _rest; do
