@@ -531,6 +531,13 @@ try {
   }
 } catch (error) {
   process.stderr.write(`CodexNest recovery guard failed (${mode}: ${error.code || error.name})\n`);
+  // Stack frames identify the failed phase without printing exception messages,
+  // which may embed a rejected token or an authentication-file value.
+  for (const frame of String(error.stack ?? "")
+    .split("\n")
+    .slice(1, 4)) {
+    if (frame.trim().startsWith("at ")) process.stderr.write(`${frame}\n`);
+  }
   if (["before-update", "after-update"].includes(mode))
     await statusFailed(
       "CodexNest recovery/preflight failed; the recorded healthy release is retained",
