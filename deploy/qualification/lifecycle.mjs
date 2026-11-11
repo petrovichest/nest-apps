@@ -864,7 +864,11 @@ async function qualify() {
           "Old updater switched the real current pointer",
           async () => {
             const current = await readlink(join(root, "current"));
-            const raw = await readFile(statusPath, "utf8");
+            const raw = await readFile(statusPath, "utf8").catch((error) => {
+              if (error.code === "ENOENT") return null;
+              throw error;
+            });
+            if (!raw) return false;
             const status = JSON.parse(raw);
             if (status.result === "failed")
               throw new Error(`Update failed before injection: ${status.message}`);
