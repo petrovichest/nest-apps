@@ -531,6 +531,12 @@ try {
   }
 } catch (error) {
   process.stderr.write(`CodexNest recovery guard failed (${mode}: ${error.code || error.name})\n`);
+  if (typeof error.path === "string") {
+    const path = error.path.startsWith(`${homedir()}/`)
+      ? error.path
+      : "[outside installation HOME]";
+    process.stderr.write(`Recovery filesystem ${error.syscall || "operation"}: ${path}\n`);
+  }
   // Stack frames identify the failed phase without printing exception messages,
   // which may embed a rejected token or an authentication-file value.
   for (const frame of String(error.stack ?? "")

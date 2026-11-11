@@ -41,8 +41,12 @@ fi
 # reach their artifact registry. Preserve account-runtime private proxy files.
 mkdir -p "$HOME/.local/bin" "$HOME/.config/codex"
 if [[ ! -f "$HOME/.config/codex/app-server.env" ]]; then
-  printf 'HTTP_PROXY=%s\nHTTPS_PROXY=%s\nALL_PROXY=%s\nNO_PROXY=localhost,127.0.0.1,::1\n' \
-    "$qualification_proxy" "$qualification_proxy" "$qualification_proxy" > "$HOME/.config/codex/app-server.env"
+  {
+    for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+      printf '%s=%s\n' "$name" "$qualification_proxy"
+    done
+    printf 'NO_PROXY=localhost,127.0.0.1,::1\nno_proxy=localhost,127.0.0.1,::1\n'
+  } > "$HOME/.config/codex/app-server.env"
   chmod 0600 "$HOME/.config/codex/app-server.env"
 fi
 [[ ! -e "$HOME/.local/bin/codex" && ! -L "$HOME/.local/bin/codex" ]]

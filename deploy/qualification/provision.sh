@@ -86,7 +86,9 @@ auth={'auth_mode':'chatgpt','OPENAI_API_KEY':None,
 (native/'auth.json').write_text(json.dumps(auth))
 proxy=home/'.config/codex'
 proxy.mkdir(parents=True)
-(proxy/'app-server.env').write_text('HTTP_PROXY=http://127.0.0.1:9001\nHTTPS_PROXY=http://127.0.0.1:9001\nALL_PROXY=http://127.0.0.1:9001\nNO_PROXY=localhost,127.0.0.1,::1\n')
+(proxy/'app-server.env').write_text(''.join(f'{name}=http://127.0.0.1:9001\n' for name in
+    ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy')) +
+    'NO_PROXY=localhost,127.0.0.1,::1\nno_proxy=localhost,127.0.0.1,::1\n')
 for directory in (native,home/'.config',proxy):
     os.chown(directory,17001,17001)
 for file in (native/'config.toml',native/'auth.json',proxy/'app-server.env'):
