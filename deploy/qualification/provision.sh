@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$(id -u)" == 0 && "$(cat /proc/1/comm)" == systemd ]]
-[[ "${NEST_QUALIFICATION_CONTAINER:-}" == 1 ]]
+[[ "${NEST_QUALIFICATION_VM:-}" == 1 ]]
 test -f /qualification-input/baseline.json
 install -d -m 0700 -o 17001 -g 17001 /qualification-private
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
@@ -11,11 +11,12 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
   > /qualification-private/certificate.log 2>&1
 install -m 0644 /qualification-private/fixture.pem /usr/local/share/ca-certificates/nest-qualification.crt
 update-ca-certificates >/dev/null
-printf '\n127.0.0.2 github.com\n' >> /etc/hosts
+printf '\n127.0.0.2 github.com # nest-qualification\n' >> /etc/hosts
 cat > /etc/systemd/system/nest-qualification-fixture.service <<'UNIT'
 [Unit]
 Description=Disposable Nest artifact/model/OAuth fixtures
 [Service]
+Slice=user-17001.slice
 ExecStart=/usr/bin/python3 /qualification-input/services.py
 Restart=no
 UNIT

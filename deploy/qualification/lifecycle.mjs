@@ -2,16 +2,19 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { NativeRelay } from "./native-relay.mjs";
 
 const require = createRequire("/opt/qualification/package.json");
 const WebSocket = require("ws");
 const home = "/home/nest-qualification";
 assert.equal(process.getuid(), 17001);
 assert.equal(process.env.HOME, home);
+const cgroupPath = process.env.QUALIFICATION_CGROUP_PATH;
+assert.equal(cgroupPath, "/sys/fs/cgroup/user.slice/user-17001.slice");
 const input = "/qualification-input";
 const output = "/qualification-output";
 const privateRoot = "/qualification-private";
@@ -30,10 +33,11 @@ const report = {
   resources: { cpus: 4, memoryGiB: 10 },
   budgetsMs: { ready: 60_000, updaterHealth: 120_000, rollback: 420_000, build: 600_000 },
   cases: [],
+  originalDaemonRpc: {},
   releaseQualified: false,
   pending: [
     "pending native approvals and managed background task results",
-    "slow native RPC, unavailable daemon and transient recovery",
+    "permanent native daemon absence",
     "OAuth expiry and rotation through the surviving native daemon",
     "updater interruption at each switch/checkpoint/confirmation boundary",
     "protocol, artifact download/build and persistent state failure matrix",
@@ -43,6 +47,7 @@ const report = {
 let ownerToken;
 let savedThread;
 let failureNumber = 0;
+let relay;
 
 async function saveReport() {
   await writeFile(join(output, "lifecycle.json"), `${JSON.stringify(report, null, 2)}\n`);
@@ -147,12 +152,13 @@ async function health() {
   }
 }
 
-async function ready(version, timeout = report.budgetsMs.ready) {
+async function ready(version, timeout = report.budgetsMs.ready, observe) {
   const started = Date.now();
   const result = await until(
     `Ready ${version}`,
     async () => {
       const value = await health();
+      observe?.(value);
       return value?.status === "ok" &&
         value.serverVersion === version &&
         value.recoveryState === "ready" &&
@@ -363,7 +369,7 @@ async function finishWork(work) {
   return { ...identity, activeRequestCount: 1, queuedRequestCount: 1 };
 }
 
-async function update(expectedResult) {
+async function update(expectedResult, afterRestart) {
   // Invoke the actual installed A unit/script, never source the new updater.
   const before = await readFile(cli);
   const baselineScript = await run("git", [
@@ -399,6 +405,7 @@ async function update(expectedResult) {
     report.budgetsMs.build,
   );
   const switching = Date.now();
+  if (afterRestart) await afterRestart();
   const state = await until(
     `Updater ${expectedResult}`,
     async () => {
@@ -425,7 +432,7 @@ async function fault(mode) {
     `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$(cat '${root}/current/.codexnest-built')" == '${candidate}' ]]; then
-  ${mode === "no-http" ? "export CODEXNEST_PORT=0" : "export CODEXNEST_VERSION=0.0.0-qualification"}
+  ${mode === "no-http" ? "export CODEXNEST_PORT=0" : ["wrong-version", "no-token"].includes(mode) ? "export CODEXNEST_VERSION=0.0.0-qualification" : ":"}
 fi
 exec '${root}/runtime/current/bin/node' '${root}/current/apps/server/dist/index.js'
 `,
@@ -441,6 +448,8 @@ exec '${root}/runtime/current/bin/node' '${root}/current/apps/server/dist/index.
 
 async function stopNative() {
   await systemctl("stop", "codexnest.service");
+  await relay?.close();
+  relay = undefined;
   const units = (
     await systemctl("list-units", "--all", "--plain", "--no-legend", "codexnest-account-*.service")
   )
@@ -454,6 +463,15 @@ async function stopNative() {
 
 try {
   await saveReport();
+  const memoryMax = Number((await readFile(join(cgroupPath, "memory.max"), "utf8")).trim());
+  const cpuMax = (await readFile(join(cgroupPath, "cpu.max"), "utf8"))
+    .trim()
+    .split(/\s+/)
+    .map(Number);
+  assert.equal(memoryMax, 10 * 1024 ** 3, "Fixture memory limit not enforced");
+  assert.equal(cpuMax[0] / cpuMax[1], 4, "Fixture CPU limit not enforced");
+  report.enforcedResources = { memoryMaxBytes: memoryMax, cpuQuota: cpuMax };
+  relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
   await stage("published-installer-A", async () => {
     const log = join(privateRoot, "install-A.log");
     let installationError;
@@ -504,6 +522,7 @@ try {
       await run("python3", [join(input, "history.py"), "evict"]);
       const started = Date.now();
       await run("codex", ["app-server", "daemon", "bootstrap"]);
+      relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
       await systemctl("start", "codexnest.service");
       const evidence = await ready(
         baseline.version,
@@ -545,6 +564,7 @@ try {
       await run("python3", [join(input, "history.py"), "evict"]);
       const started = Date.now();
       await run("codex", ["app-server", "daemon", "bootstrap"]);
+      relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
       await systemctl("start", "codexnest.service");
       const evidence = await ready(
         candidateVersion,
@@ -558,6 +578,53 @@ try {
       };
     });
   }
+  await stage("transient-native-timeout-recovers-readiness", async () => {
+    const work = await holdWork("transient-native-timeout");
+    relay.hold("model/list", 35_000, true);
+    const started = Date.now();
+    await systemctl("restart", "codexnest.service");
+    const serverPid = (
+      await systemctl("show", "codexnest.service", "-p", "MainPID", "--value")
+    ).trim();
+    let observedFailed = false;
+    const evidence = await ready(
+      candidateVersion,
+      Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
+      (health) => {
+        if (health?.recoveryState === "failed") observedFailed = true;
+      },
+    );
+    assert.ok(observedFailed, "The injected response did not exercise the real RPC timeout");
+    assert.equal(
+      (await systemctl("show", "codexnest.service", "-p", "MainPID", "--value")).trim(),
+      serverPid,
+      "Recovery required another application restart",
+    );
+    return {
+      ...evidence,
+      observedFailed,
+      totalRecoveryMs: Date.now() - started,
+      ...(await finishWork(work)),
+    };
+  });
+  await stage("temporary-native-transport-unavailable", async () => {
+    const work = await holdWork("temporary-native-unavailable");
+    const started = Date.now();
+    relay.disconnect(15_000);
+    await until(
+      "Bridge observed loss",
+      async () => (await health())?.appServer?.state !== "ready",
+      10_000,
+    );
+    return {
+      ...(await ready(
+        candidateVersion,
+        Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
+      )),
+      ...(await finishWork(work)),
+      totalRecoveryMs: Date.now() - started,
+    };
+  });
   for (let index = 1; index <= 3; index++) {
     await stage(`warm-B-${index}`, async () => {
       const work = await holdWork(`warm-B-${index}`);
@@ -579,18 +646,43 @@ try {
       ...(await request(savedThread, "restored")),
     };
   });
-  for (const mode of ["wrong-version", "no-http"]) {
+  for (const mode of ["wrong-version", "no-http", "no-token", "slow-rpc"]) {
     await stage(`failed-B-automatic-A-${mode}`, async () => {
       await fault(mode);
       const work = await holdWork(mode);
+      if (mode === "slow-rpc") relay.hold("model/list", 145_000, true);
       return {
-        ...(await update("rolled_back")),
+        ...(await update(
+          "rolled_back",
+          mode === "no-token"
+            ? async () => {
+                await until("Candidate reached real recovery state", async () => {
+                  const value = await health();
+                  return (
+                    value?.serverVersion === "0.0.0-qualification" &&
+                    value.recoveryState === "ready"
+                  );
+                });
+                await unlink(join(home, ".local/state/codexnest/restart-token"));
+              }
+            : undefined,
+        )),
         ...(await ready(baseline.version)),
         ...(await finishWork(work)),
         ...(await request(savedThread, `rolled-back-${mode}`)),
       };
     });
   }
+  await stage("repeat-upgrade-after-failed-candidates", async () => {
+    await fault("none");
+    const work = await holdWork("repeat-upgrade");
+    return {
+      ...(await update("updated")),
+      ...(await ready(candidateVersion)),
+      ...(await finishWork(work)),
+      ...(await request(savedThread, "repeated-upgrade")),
+    };
+  });
   await stage("history-integrity-after-rollback", async () => {
     await run("python3", [join(input, "history.py"), "check"], { timeout: 120_000 });
     return verifyIndex();
@@ -604,5 +696,8 @@ try {
   process.stderr.write(`Qualification stopped: ${error.message}\n`);
   process.exitCode = 1;
 } finally {
+  report.memoryPeakBytes = Number(
+    (await readFile(join(cgroupPath, "memory.peak"), "utf8").catch(() => "NaN")).trim(),
+  );
   await saveReport();
 }
