@@ -65,11 +65,12 @@ chmod 0700 "$HOME/.local/bin/codex"
 export PATH="$HOME/.local/bin:/opt/node/bin:/opt/native/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
 systemctl --user unset-environment HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy
 systemctl --user set-environment "PATH=$PATH"
-codex --enable respect_system_proxy app-server daemon bootstrap > /qualification-output/bootstrap.log 2>&1
-codex app-server daemon version > /qualification-output/native-version.json
-test -S "$HOME/.codex/app-server-control/app-server-control.sock"
-systemctl --user list-units --type=service --all --plain --no-legend > /qualification-output/user-services.txt
-python3 - <<'PY'
+if [[ "$QUALIFICATION_MODE" == environment ]]; then
+  codex --enable respect_system_proxy app-server daemon bootstrap > /qualification-output/bootstrap.log 2>&1
+  codex app-server daemon version > /qualification-output/native-version.json
+  test -S "$HOME/.codex/app-server-control/app-server-control.sock"
+  systemctl --user list-units --type=service --all --plain --no-legend > /qualification-output/user-services.txt
+  python3 - <<'PY'
 import json,os
 from pathlib import Path
 root=Path('/qualification-output')
@@ -78,7 +79,10 @@ assert version['cliVersion']==os.environ['NATIVE_VERSION'], version
 assert version['appServerVersion']==os.environ['NATIVE_VERSION'], version
 assert version['status'] in ('running','ready'), version
 PY
+fi
 if [[ "$QUALIFICATION_MODE" == lifecycle ]]; then
+  # The unchanged published installer owns initial bootstrap in this mode.
+  # Do not prestart another daemon for it to replace during installation.
   export PATH="$HOME/.local/bin:$PATH"
   node /qualification-input/lifecycle.mjs
 fi

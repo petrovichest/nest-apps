@@ -149,7 +149,10 @@ async function api(path, body, method = body === undefined ? "GET" : "POST") {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(15_000),
   });
-  assert.ok(response.ok, `API ${method} ${path}: HTTP ${response.status}`);
+  if (!response.ok)
+    throw Object.assign(new Error(`API ${method} ${path}: HTTP ${response.status}`), {
+      status: response.status,
+    });
   return response.status === 204 ? null : response.json();
 }
 
@@ -277,7 +280,12 @@ async function snapshot() {
 
 async function completed(thread, marker) {
   return until(`Saved response ${marker}`, async () => {
-    const detail = await api(`/threads/${thread}`);
+    const detail = await api(`/threads/${thread}`).catch((error) => {
+      if (error.status !== 503) throw error;
+      report.transientDetailReadFailures = (report.transientDetailReadFailures ?? 0) + 1;
+      return null;
+    });
+    if (!detail) return null;
     return JSON.stringify(detail.turns).includes(`QUALIFICATION_OK:${marker}`) &&
       !detail.summary.currentTurnId
       ? detail
@@ -714,6 +722,7 @@ try {
       },
       report.budgetsMs.build,
     );
+    const started = Date.now();
     const evidence = await ready(baseline.version);
     await installation;
     if (installationError) throw installationError;
@@ -728,8 +737,13 @@ try {
     });
     savedThread = created.thread.id;
     const requestEvidence = await request(savedThread, "initial");
+    assert.ok(
+      Date.now() - started <= report.budgetsMs.ready,
+      "Initial ready and saved-chat response exceeded the startup budget",
+    );
     const version = JSON.parse(await run("codex", ["app-server", "daemon", "version"]));
     assert.equal(version.appServerVersion, process.env.NATIVE_VERSION);
+    await writeFile(join(output, "native-version.json"), `${JSON.stringify(version, null, 2)}\n`);
     // The native bootstrap command owns its control socket. Attach the fault
     // transport only after the real installer has finished bootstrapping it.
     relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
