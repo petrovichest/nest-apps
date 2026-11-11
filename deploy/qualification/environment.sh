@@ -63,6 +63,18 @@ systemctl --user is-active --quiet default.target
 mkdir -p "$HOME/.codex"
 chmod 0700 "$HOME/.codex"
 printf '[features]\nrespect_system_proxy = true\n[analytics]\nenabled = false\n' > "$HOME/.codex/config.toml"
+# 0.154.0's daemon command requires the managed standalone layout. Populate it
+# with the exact, unmodified ELF already supplied by the pinned native package.
+mapfile -t native_binaries < <(find /opt/native/node_modules -type f -name codex -executable)
+(( ${#native_binaries[@]} == 1 ))
+native_version_home="$HOME/.codex/packages/standalone/releases/$NATIVE_VERSION"
+mkdir -p "$native_version_home/bin" "$HOME/.local/bin"
+install -m 0755 "${native_binaries[0]}" "$native_version_home/codex"
+ln -s ../codex "$native_version_home/bin/codex"
+ln -s "$native_version_home" "$HOME/.codex/packages/standalone/current"
+ln -s "$HOME/.codex/packages/standalone/current/codex" "$HOME/.local/bin/codex"
+export PATH="$HOME/.local/bin:$PATH"
+sha256sum "$native_version_home/codex" > /qualification-output/native-binary-sha256.txt
 # No real auth is present. Even unauthenticated background discovery must not
 # leave this disposable fixture through a direct provider connection.
 systemctl --user set-environment \
