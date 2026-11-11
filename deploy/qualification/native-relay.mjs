@@ -152,6 +152,16 @@ export class NativeRelay {
     }
   }
 
+  delayedResponseCount(method) {
+    return Object.entries(this.metrics)
+      .filter(([key]) => key.endsWith(`:${method}`))
+      .reduce((total, [, metric]) => total + metric.delayedResponses, 0);
+  }
+
+  holding() {
+    return Date.now() < this.holdUntil;
+  }
+
   release() {
     clearTimeout(this.holdTimer);
     this.holdUntil = 0;

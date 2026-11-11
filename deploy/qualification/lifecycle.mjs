@@ -228,7 +228,12 @@ for proc in Path('/proc').iterdir():
         if proc.stat().st_uid != 17001: continue
         exe=os.readlink(proc/'exe')
         command=(proc/'cmdline').read_bytes().split(b'\\0')
-        if Path(exe).name == 'codex' and b'app-server' in command and (${all ? "True" : "False"} or any(os.readlink(fd) in bound for fd in (proc/'fd').iterdir())):
+        if command[1:4] == [b'app-server',b'daemon',b'pid-update-loop']: continue
+        sockets=set()
+        for fd in (proc/'fd').iterdir():
+            try: sockets.add(os.readlink(fd))
+            except OSError: pass
+        if Path(exe).name == 'codex' and b'app-server' in command and (${all ? "True" : "False"} or sockets.intersection(bound)):
             result.append({'pid':int(proc.name),'startTime':(proc/'stat').read_text().split(') ',1)[1].split()[19]})
     except (OSError,ValueError): pass
 print(json.dumps(result))
@@ -336,6 +341,9 @@ async function nativeRpc(action, socketPath = nativeSocket) {
 
 async function verifyIndex() {
   const history = JSON.parse(await readFile(join(privateRoot, "history-manifest.json"), "utf8"));
+  const version = JSON.parse(await run("codex", ["app-server", "daemon", "version"]));
+  assert.equal(version.appServerVersion, process.env.NATIVE_VERSION);
+  assert.equal(version.cliVersion, process.env.NATIVE_VERSION);
   return nativeRpc(async (rpc) => {
     const counts = {};
     for (const archived of [false, true]) {
@@ -365,7 +373,11 @@ async function verifyIndex() {
     }
     const long = await rpc("thread/read", { threadId: history[0].id, includeTurns: true });
     assert.ok(long.thread.turns.length >= history[0].turns, "Long history lost turns");
-    assert.ok((await snapshot()).threads.length >= 2000, "Nest omitted large history");
+    const nestThreads = new Map((await snapshot()).threads.map((thread) => [thread.id, thread]));
+    for (const row of history) {
+      assert.ok(nestThreads.has(row.id), `Nest omitted ${row.kind} history`);
+      assert.equal(nestThreads.get(row.id).archived, row.kind === "archived");
+    }
     return { index: counts, longThreadTurns: long.thread.turns.length };
   });
 }
@@ -428,7 +440,11 @@ async function finishWork(work) {
   assert.equal(detail.queuedMessages.length, 1, "Queued message lost or dispatched early");
   const state = await control();
   await control({ released: [...state.released, work.held] });
-  await completed(savedThread, work.queued);
+  const finished = await completed(savedThread, work.queued);
+  assert.ok(
+    JSON.stringify(finished.turns).includes(`QUALIFICATION_OK:${work.held}`),
+    "Active request's final response was lost",
+  );
   const final = await control();
   assert.equal(final.requests[work.held], 1, "Active request replayed");
   assert.equal(final.requests[work.queued], 1, "Queued request replayed");
@@ -482,7 +498,10 @@ async function update(expectedResult, afterRestart) {
     report.budgetsMs.build,
   );
   const switching = Date.now();
+  const budget = expectedResult === "updated" ? report.budgetsMs.ready : report.budgetsMs.rollback;
   if (afterRestart) await afterRestart();
+  const remaining = budget - (Date.now() - switching);
+  assert.ok(remaining > 0, "Update fault injection exceeded the recovery budget");
   const state = await until(
     `Updater ${expectedResult}`,
     async () => {
@@ -491,7 +510,7 @@ async function update(expectedResult, afterRestart) {
         throw new Error(`Automatic recovery failed: ${value.message}`);
       return value.operation === "idle" && value.result === expectedResult ? value : null;
     },
-    expectedResult === "updated" ? report.budgetsMs.ready : report.budgetsMs.rollback,
+    remaining,
   );
   return {
     updaterSha256: createHash("sha256").update(before).digest("hex"),
@@ -540,6 +559,36 @@ async function stopNative() {
     async () => (await pidIdentity(true)).length === 0,
     report.budgetsMs.nativeStop,
   );
+  // Native's stop command deliberately leaves its PID update-loop helper alive.
+  // It is not the app-server. Still reject any process retaining history/index
+  // descriptors before moving SQLite files or evicting cold fixture history.
+  const stopped = JSON.parse(
+    await run("python3", [
+      "-c",
+      `
+import json,os
+from pathlib import Path
+helpers=[]
+history_fds=[]
+for proc in Path('/proc').iterdir():
+    if not proc.name.isdigit(): continue
+    try:
+        if proc.stat().st_uid != 17001: continue
+        command=(proc/'cmdline').read_bytes().split(b'\\0')
+        if command[1:4] == [b'app-server',b'daemon',b'pid-update-loop']:
+            helpers.append(int(proc.name))
+        for fd in (proc/'fd').iterdir():
+            try: target=os.readlink(fd)
+            except OSError: continue
+            if target.startswith('${home}/.codex/') and ('.sqlite' in target or '/sessions/' in target or '/archived_sessions/' in target):
+                history_fds.append({'pid':int(proc.name),'file':Path(target).name})
+    except (OSError,ValueError): pass
+print(json.dumps({'nativeUpdateLoopPids':helpers,'openHistoryDescriptors':history_fds}))
+`,
+    ]),
+  );
+  report.lastNativeStop = stopped;
+  assert.deepEqual(stopped.openHistoryDescriptors, [], "History still open after native stop");
 }
 
 try {
@@ -667,7 +716,8 @@ try {
   }
   await stage("transient-native-timeout-recovers-readiness", async () => {
     const work = await holdWork("transient-native-timeout");
-    relay.hold("model/list", 35_000, true);
+    const delayedBefore = relay.delayedResponseCount("thread/list");
+    relay.hold("thread/list", 35_000, true);
     const started = Date.now();
     await systemctl("restart", "codexnest.service");
     const serverPid = (
@@ -682,6 +732,10 @@ try {
       },
     );
     assert.ok(observedFailed, "The injected response did not exercise the real RPC timeout");
+    assert.ok(
+      relay.delayedResponseCount("thread/list") > delayedBefore,
+      "Startup did not traverse the injected native transport",
+    );
     assert.equal(
       (await systemctl("show", "codexnest.service", "-p", "MainPID", "--value")).trim(),
       serverPid,
@@ -737,7 +791,8 @@ try {
     await stage(`failed-B-automatic-A-${mode}`, async () => {
       await fault(mode);
       const work = await holdWork(mode);
-      if (mode === "slow-rpc") relay.hold("model/list", 145_000, true);
+      const delayedBefore = relay.delayedResponseCount("thread/list");
+      if (mode === "slow-rpc") relay.hold("thread/list", 145_000, true);
       return {
         ...(await update(
           "rolled_back",
@@ -777,7 +832,25 @@ try {
                   assert.equal(after.directOAuthRequests, 0, "OAuth bypassed the account proxy");
                 }
               }
-            : undefined,
+            : mode === "slow-rpc"
+              ? async () => {
+                  await until(
+                    "Candidate sync response delayed",
+                    async () => relay.delayedResponseCount("thread/list") > delayedBefore,
+                  );
+                  await until(
+                    "Rollback started while native RPC was still delayed",
+                    async () => {
+                      assert.ok(relay.holding(), "Native delay ended before rollback began");
+                      const value = await health();
+                      if (value?.serverVersion !== baseline.version) return false;
+                      assert.notEqual(value.recoveryState, "ready");
+                      return true;
+                    },
+                    180_000,
+                  );
+                }
+              : undefined,
         )),
         ...(await ready(baseline.version)),
         ...(await finishWork(work)),

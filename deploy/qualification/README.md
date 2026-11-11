@@ -24,6 +24,10 @@ and automatic A → B → A after a wrong health version or failure to start HTT
 It records original native PID/start-time identity and operation counters to
 detect a daemon restart or request replay. Cold tests evict only their own
 history files using `posix_fadvise`, without changing host-wide kernel settings.
+The native PID update-loop helper is recorded separately from the app-server;
+cold setup also verifies that no fixture process retains history or SQLite
+descriptors. Complete fixture ID membership is checked in both native pages and
+the Nest projection, including archived and nested history.
 
 Budgets are declared before execution: normal startup/recovery ≤60 seconds,
 updater health budget 120 seconds, failed-candidate rollback ≤420 seconds from
