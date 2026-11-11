@@ -64,7 +64,9 @@ WRAPPER
 chmod 0700 "$HOME/.local/bin/codex"
 export PATH="$HOME/.local/bin:/opt/node/bin:/opt/native/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
 systemctl --user unset-environment HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy
-systemctl --user set-environment "PATH=$PATH"
+systemctl --user set-environment "PATH=$PATH" \
+  "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" \
+  "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
 if [[ "$QUALIFICATION_MODE" == environment ]]; then
   codex --enable respect_system_proxy app-server daemon bootstrap > /qualification-output/bootstrap.log 2>&1
   codex app-server daemon version > /qualification-output/native-version.json
