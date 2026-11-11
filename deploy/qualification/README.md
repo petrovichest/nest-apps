@@ -67,6 +67,21 @@ updater. A FIFO pauses its existing version-file write after switching `current`
 the test kills only the fixture updater service and requires automatic recovery.
 This scope does not run or qualify the large-history matrix.
 
+`QUALIFICATION_SCOPE=clean` installs the exact candidate using the same version/SHA
+substitution as publication. It verifies its committed build identity and the
+effective 420-second systemd recovery stop limit, then resumes actual private
+account requests, a queue, an approval and a managed result after an API restart.
+It does not qualify the separate large-history, upgrade or failed-candidate matrix.
+
+The candidate installs its persistent recovery guard from `postbuild` only while
+building a managed release inside the real updater service. Ordinary checkout
+builds have no installation side effects. This lets the unchanged previous
+updater prepare recovery before switching its pointer. The guard retains only
+release/version/CLI identity and Native process identities; authentication and
+native history are never reverted. New candidate work remains blocked until the
+exact update is confirmed. These mechanisms still require the native diagnostics;
+their presence alone is not evidence that interrupted recovery works.
+
 These are **diagnostics, not complete release qualification**. `lifecycle.json`
 always has `releaseQualified: false` and explicitly lists unfinished mandatory
 cases. The publication gate stays closed until all requirements in

@@ -38,7 +38,7 @@ assert.match(candidate, /^[0-9a-f]{40}$/);
 const baseline = JSON.parse(await readFile(join(input, "baseline.json"), "utf8"));
 const candidateVersion = `0.1.9-${candidate.slice(0, 7)}`;
 const scope = process.env.QUALIFICATION_SCOPE ?? "all";
-assert.ok(["all", "interruption"].includes(scope));
+assert.ok(["all", "interruption", "clean"].includes(scope));
 const report = {
   candidate,
   baseline,
@@ -779,61 +779,100 @@ async function qualify() {
   assert.equal(memoryMax, 10 * 1024 ** 3, "Fixture memory limit not enforced");
   assert.equal(cpuMax[0] / cpuMax[1], 4, "Fixture CPU limit not enforced");
   report.enforcedResources = { memoryMaxBytes: memoryMax, cpuQuota: cpuMax };
-  await stage("published-installer-A", async () => {
-    const log = join(privateRoot, "install-A.log");
-    let installationError;
-    const installation = run("bash", [join(input, "install-A.sh")], {
-      timeout: report.budgetsMs.build,
-      log,
-    }).catch((error) => {
-      installationError = error;
+  const initialVersion = scope === "clean" ? candidateVersion : baseline.version;
+  const initialInstaller = scope === "clean" ? "B" : "A";
+  await stage(
+    scope === "clean" ? "candidate-clean-installer-B" : "published-installer-A",
+    async () => {
+      const log = join(privateRoot, `install-${initialInstaller}.log`);
+      let installationError;
+      const installation = run("bash", [join(input, `install-${initialInstaller}.sh`)], {
+        timeout: report.budgetsMs.build,
+        log,
+      }).catch((error) => {
+        installationError = error;
+      });
+      // Building/downloads have their own budget. Startup starts at the first real PID.
+      await until(
+        "Installer created real service",
+        async () => {
+          if (installationError) throw installationError;
+          try {
+            return (
+              Number(
+                (await systemctl("show", "codexnest.service", "-p", "MainPID", "--value")).trim(),
+              ) > 0
+            );
+          } catch {
+            return false;
+          }
+        },
+        report.budgetsMs.build,
+      );
+      const started = Date.now();
+      const evidence = await ready(initialVersion);
+      await installation;
+      if (installationError) throw installationError;
+      ownerToken = (await readFile(log, "utf8")).match(
+        /Bearer token \(shown once\): ([^\s]+)/,
+      )?.[1];
+      assert.ok(ownerToken, "Real installer did not generate an owner token");
+      await writeFile(join(privateRoot, "owner-token"), ownerToken, { mode: 0o600 });
+      const permissions = await api("/settings/permissions", { preset: "ask" }, "PUT");
+      assert.equal(permissions.preset, "ask");
+      await mkdir(join(home, "qualification-project"));
+      const project = await api("/projects", { path: join(home, "qualification-project") });
+      projectId = project.id;
+      const created = await api(`/projects/${project.id}/threads`, {
+        clientCreationId: randomUUID(),
+      });
+      savedThread = created.thread.id;
+      const requestEvidence = await request(savedThread, "initial");
+      assert.ok(
+        Date.now() - started <= report.budgetsMs.ready,
+        "Initial ready and saved-chat response exceeded the startup budget",
+      );
+      const version = JSON.parse(await run("codex", ["app-server", "daemon", "version"]));
+      assert.equal(version.appServerVersion, process.env.NATIVE_VERSION);
+      await writeFile(join(output, "native-version.json"), `${JSON.stringify(version, null, 2)}\n`);
+      // The native bootstrap command owns its control socket. Attach the fault
+      // transport only after the real installer has finished bootstrapping it.
+      relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
+      return { ...evidence, ...requestEvidence };
+    },
+  );
+  if (scope === "clean") {
+    await stage("clean-install-confirmation-and-surviving-private-work", async () => {
+      const health = (await ready(candidateVersion)).health;
+      assert.equal(health.buildCommit, candidate);
+      const journal = JSON.parse(await readFile(join(root, "recovery/journal.json"), "utf8"));
+      assert.equal(journal.phase, "committed");
+      assert.equal(journal.target.commit, candidate);
+      assert.equal(
+        (
+          await systemctl("show", "codexnest-update.service", "-p", "TimeoutStopUSec", "--value")
+        ).trim(),
+        "7min",
+        "Systemd would kill recovery before its declared deadline",
+      );
+      const work = await holdWork("clean-candidate-warm");
+      const started = Date.now();
+      await run(cli, ["restart"]);
+      const recovered = { ...(await ready(candidateVersion)), ...(await finishWork(work)) };
+      const recoveryMs = Date.now() - started;
+      assert.ok(
+        recoveryMs <= report.budgetsMs.ready,
+        "Clean installed warm recovery exceeded its budget",
+      );
+      return {
+        ...recovered,
+        recoveryMs,
+        confirmedBuild: candidate,
+        systemdRecoveryStopSeconds: 420,
+      };
     });
-    // Building/downloads have their own budget. Startup starts at the first real PID.
-    await until(
-      "Installer created real service",
-      async () => {
-        if (installationError) throw installationError;
-        try {
-          return (
-            Number(
-              (await systemctl("show", "codexnest.service", "-p", "MainPID", "--value")).trim(),
-            ) > 0
-          );
-        } catch {
-          return false;
-        }
-      },
-      report.budgetsMs.build,
-    );
-    const started = Date.now();
-    const evidence = await ready(baseline.version);
-    await installation;
-    if (installationError) throw installationError;
-    ownerToken = (await readFile(log, "utf8")).match(/Bearer token \(shown once\): ([^\s]+)/)?.[1];
-    assert.ok(ownerToken, "Real installer did not generate an owner token");
-    await writeFile(join(privateRoot, "owner-token"), ownerToken, { mode: 0o600 });
-    const permissions = await api("/settings/permissions", { preset: "ask" }, "PUT");
-    assert.equal(permissions.preset, "ask");
-    await mkdir(join(home, "qualification-project"));
-    const project = await api("/projects", { path: join(home, "qualification-project") });
-    projectId = project.id;
-    const created = await api(`/projects/${project.id}/threads`, {
-      clientCreationId: randomUUID(),
-    });
-    savedThread = created.thread.id;
-    const requestEvidence = await request(savedThread, "initial");
-    assert.ok(
-      Date.now() - started <= report.budgetsMs.ready,
-      "Initial ready and saved-chat response exceeded the startup budget",
-    );
-    const version = JSON.parse(await run("codex", ["app-server", "daemon", "version"]));
-    assert.equal(version.appServerVersion, process.env.NATIVE_VERSION);
-    await writeFile(join(output, "native-version.json"), `${JSON.stringify(version, null, 2)}\n`);
-    // The native bootstrap command owns its control socket. Attach the fault
-    // transport only after the real installer has finished bootstrapping it.
-    relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
-    return { ...evidence, ...requestEvidence };
-  });
+    return;
+  }
   if (scope === "interruption") {
     await stage("old-updater-interrupted-between-pointer-and-version-write", async () => {
       const work = await holdWork("interrupted-switch");

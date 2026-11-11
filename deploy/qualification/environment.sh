@@ -10,7 +10,7 @@ case "${NATIVE_VERSION:-}" in 0.154.0|0.167.0|0.167.1) ;; *) exit 2 ;; esac
 qualification_mode="${QUALIFICATION_MODE:-environment}"
 case "$qualification_mode" in environment|lifecycle) ;; *) exit 2 ;; esac
 qualification_scope="${QUALIFICATION_SCOPE:-all}"
-case "$qualification_scope" in all|interruption) ;; *) exit 2 ;; esac
+case "$qualification_scope" in all|interruption|clean) ;; *) exit 2 ;; esac
 [[ -n "${RUNNER_TEMP:-}" && -n "${GITHUB_RUN_ID:-}" ]]
 qualification_root="$(git rev-parse --show-toplevel)"
 qualification_sha="$(git rev-parse HEAD)"
@@ -97,6 +97,12 @@ assert f'codexnest_default_version="{baseline["version"]}"' in installer
 PY
   sudo install -m 0644 "$RUNNER_TEMP/qualification-baseline.json" /qualification-input/baseline.json
   sudo install -m 0644 "$RUNNER_TEMP/qualification-install-A.sh" /qualification-input/install-A.sh
+  sed -e "s/^codexnest_default_version=.*/codexnest_default_version=\"0.1.9-${qualification_sha:0:7}\"/" \
+      -e "s/^codexnest_default_ref=.*/codexnest_default_ref=\"$qualification_sha\"/" \
+      "$qualification_root/deploy/install.sh" > "$RUNNER_TEMP/qualification-install-B.sh"
+  bash -n "$RUNNER_TEMP/qualification-install-B.sh"
+  sudo install -m 0644 "$RUNNER_TEMP/qualification-install-B.sh" /qualification-input/install-B.sh
+  sha256sum "$RUNNER_TEMP/qualification-install-B.sh" > "$qualification_output/candidate-installer-sha256.txt"
   git clone --bare --no-hardlinks "$qualification_root" "$RUNNER_TEMP/qualification-source.git"
   git -C "$RUNNER_TEMP/qualification-source.git" update-ref refs/heads/qualification "$qualification_sha"
   git -C "$RUNNER_TEMP/qualification-source.git" update-ref refs/heads/main fe3c5c858344b5f03c2619250b01d351930c891b

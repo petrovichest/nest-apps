@@ -79,7 +79,7 @@ codexnest_state="$codexnest_state_root/state.json"
 codexnest_database="$codexnest_state_root/state.sqlite"
 codexnest_service_root="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
-[[ ! -e "$codexnest_root/current" ]] || \
+[[ ! -e "$codexnest_root/current" && ! -L "$codexnest_root/current" ]] || \
   codexnest_die "CodexNest is already installed; use its Update action or codexnest update"
 
 mkdir -p "$codexnest_root" "$codexnest_releases" "$codexnest_runtime" \
