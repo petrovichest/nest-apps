@@ -18,6 +18,7 @@ RUN mkdir -p /opt/node /opt/native /opt/qualification \
     && ln -s /opt/node/bin/node /usr/local/bin/node \
     && ln -s /opt/node/bin/npm /usr/local/bin/npm \
     && npm install --prefix /opt/native --ignore-scripts --no-audit --no-fund "@openai/codex@${CODEX_VERSION}" \
+    && npm install --prefix /opt/qualification --ignore-scripts --no-audit --no-fund ws@8.21.1 \
     && ln -s /opt/native/node_modules/.bin/codex /usr/local/bin/codex \
     && codex --version | grep -Fx "codex-cli ${CODEX_VERSION}" \
     && dpkg-query -W > /opt/qualification/packages.txt

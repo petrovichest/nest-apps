@@ -136,6 +136,32 @@ jobs:
           path: ${{ runner.temp }}/qualification-environment-${{ matrix.codex }}/
           if-no-files-found: error
 
+  release-lifecycle-diagnostics:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        codex: ["0.154.0", "0.167.0", "0.167.1"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exercise the real installer, installed updater and automatic rollback
+        env:
+          NATIVE_VERSION: ${{ matrix.codex }}
+          QUALIFICATION_MODE: lifecycle
+        run: bash deploy/qualification/environment.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: lifecycle-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}-${{ matrix.codex }}
+          path: ${{ runner.temp }}/qualification-lifecycle-${{ matrix.codex }}/
+          if-no-files-found: error
+
   # A green build is not qualification. Keep publication closed until the native
   # old-updater upgrade/failed-candidate rollback/large-history matrix exists.
   release-qualification:
