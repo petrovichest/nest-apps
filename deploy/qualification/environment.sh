@@ -25,6 +25,30 @@ chmod 0777 "$qualification_output"
 cp "$qualification_root/deploy/qualification/Dockerfile" "$qualification_context/Dockerfile"
 printf '{"candidate":"%s","native":"%s","phase":"preparing","releaseQualified":false}\n' \
   "$qualification_sha" "$NATIVE_VERSION" > "$qualification_output/environment.json"
+python3 - "$qualification_context/resolv.conf" "$qualification_output/network.json" <<'PY'
+import ipaddress,json,socket,sys
+from pathlib import Path
+servers=[]
+for source in ('/run/systemd/resolve/resolv.conf','/etc/resolv.conf'):
+    if not Path(source).exists(): continue
+    for line in Path(source).read_text().splitlines():
+        parts=line.split()
+        if len(parts)<2 or parts[0]!='nameserver': continue
+        address=ipaddress.ip_address(parts[1])
+        if not address.is_loopback and not address.is_unspecified and str(address) not in servers:
+            servers.append(str(address))
+    if servers: break
+assert servers, 'No routable CI resolver; a loopback DNS stub cannot be used in the private container.'
+resolved={}
+for host in ('archive.ubuntu.com','security.ubuntu.com','nodejs.org','registry.npmjs.org'):
+    resolved[host]=sorted({entry[4][0] for entry in socket.getaddrinfo(host,443)})
+Path(sys.argv[1]).write_text(''.join(f'nameserver {server}\n' for server in servers)+'options timeout:2 attempts:2\n')
+Path(sys.argv[2]).write_text(json.dumps({'resolvers':servers,'hostResolution':resolved},indent=2)+'\n')
+PY
+qualification_dns=()
+while read -r kind address _rest; do
+  [[ "$kind" != nameserver ]] || qualification_dns+=(--dns "$address")
+done < "$qualification_context/resolv.conf"
 qualification_input="$(mktemp -d "$RUNNER_TEMP/nest-qualification-input.XXXXXX")"
 if [[ "$qualification_mode" == lifecycle ]]; then
   cp "$qualification_root"/deploy/qualification/{services.py,provision.sh,lifecycle.mjs,history.py} "$qualification_input/"
@@ -67,6 +91,7 @@ trap cleanup EXIT
 # still has a private network namespace, with no published host ports.
 docker build --network=host --build-arg "CODEX_VERSION=$NATIVE_VERSION" -t "$qualification_image" "$qualification_context"
 docker run --detach --privileged --cgroupns=private \
+  "${qualification_dns[@]}" \
   --memory=10g --cpus=4 \
   --tmpfs /run --tmpfs /run/lock \
   --name "$qualification_container" \

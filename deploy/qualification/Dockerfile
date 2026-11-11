@@ -4,12 +4,15 @@ ARG CODEX_VERSION
 ENV container=docker
 ENV PATH=/opt/node/bin:/opt/native/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+COPY resolv.conf /opt/qualification-resolv.conf
+RUN cat /opt/qualification-resolv.conf > /etc/resolv.conf \
+    && apt-get update --error-on=any && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates curl dbus-user-session git openssl procps python3 sqlite3 sudo \
     systemd systemd-sysv xz-utils \
     && apt-get clean
 
 RUN mkdir -p /opt/node /opt/native /opt/qualification \
+    && cat /opt/qualification-resolv.conf > /etc/resolv.conf \
     && curl -fsSL https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.xz -o /opt/node.tar.xz \
     && curl -fsSL https://nodejs.org/dist/v24.18.0/SHASUMS256.txt -o /opt/node-shasums.txt \
     && cd /opt \
