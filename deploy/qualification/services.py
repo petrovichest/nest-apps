@@ -237,17 +237,25 @@ class Model(Handler):
         if match and match[1] == 'APPROVAL' and not auxiliary and not has_tool_result:
             candidates = [(namespace, tool) for namespace, tool in functions(payload.get('tools', []))
                           if tool.get('name') in ('exec_command', 'shell_command')]
-            if not candidates:
-                raise ValueError('Native request did not advertise a command execution tool')
-            namespace, tool = candidates[0]
             command = f"printf '%s\\n' approved >> {shlex.quote(str(APPROVAL_DIRECTORY / marker))}"
+            namespace, tool = candidates[0] if candidates else (None, {'name': 'exec_command'})
             args = {'cmd' if tool['name'] == 'exec_command' else 'command': command,
                     'sandbox_permissions': 'require_escalated',
                     'justification': 'Append once to the disposable qualification counter.'}
-            item = {'id': str(uuid.uuid4()), 'type': 'function_call', 'call_id': call_id,
-                    'name': tool['name'], 'arguments': json.dumps(args)}
-            if namespace:
-                item['namespace'] = namespace
+            if candidates:
+                item = {'id': str(uuid.uuid4()), 'type': 'function_call', 'call_id': call_id,
+                        'name': tool['name'], 'arguments': json.dumps(args)}
+                if namespace:
+                    item['namespace'] = namespace
+            else:
+                # Keep the actual code-mode cell waiting for the real human
+                # approval, matching the deliberately held model stream's
+                # 15-minute fixture lifetime. Startup/RPC/rollback budgets are
+                # separate and unchanged. No model turn is completed early.
+                code = ('// @exec: {"yield_time_ms": 900000}\n'
+                        f'text(await tools.exec_command({json.dumps(args)}));')
+                item = {'id': str(uuid.uuid4()), 'type': 'custom_tool_call',
+                        'call_id': call_id, 'name': 'exec', 'input': code}
         elif team and not auxiliary and not has_tool_result:
             tool_name = 'spawn_task' if team[1] == 'PARENT' else 'submit_result'
             candidates = [(namespace, tool) for namespace, tool in functions(payload.get('tools', []))

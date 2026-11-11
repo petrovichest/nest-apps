@@ -331,7 +331,7 @@ async function nativeRpc(action, socketPath = nativeSocket) {
         pending.delete(id);
         reject(new Error(`Native RPC budget exceeded: ${method}`));
       }, 30_000);
-      pending.set(id, { resolve, reject, timer });
+      pending.set(id, { resolve, reject, timer, method });
       socket.send(JSON.stringify({ id, method, params }));
     });
   socket.on("message", (raw) => {
@@ -340,9 +340,13 @@ async function nativeRpc(action, socketPath = nativeSocket) {
     const entry = pending.get(message.id);
     pending.delete(message.id);
     clearTimeout(entry.timer);
-    if (message.error)
-      entry.reject(new Error(`Native RPC returned error code ${message.error.code}`));
-    else entry.resolve(message.result);
+    if (message.error) {
+      const detail = String(message.error.message ?? "");
+      const safe = /bearer|authorization|access.token|refresh.token|id.token/i.test(detail)
+        ? "credential error (details omitted)"
+        : detail.replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[redacted]").slice(0, 500);
+      entry.reject(new Error(`Native RPC ${entry.method} (${message.error.code}): ${safe}`));
+    } else entry.resolve(message.result);
   });
   try {
     await new Promise((resolve, reject) => {
@@ -804,6 +808,8 @@ async function qualify() {
     ownerToken = (await readFile(log, "utf8")).match(/Bearer token \(shown once\): ([^\s]+)/)?.[1];
     assert.ok(ownerToken, "Real installer did not generate an owner token");
     await writeFile(join(privateRoot, "owner-token"), ownerToken, { mode: 0o600 });
+    const permissions = await api("/settings/permissions", { preset: "ask" }, "PUT");
+    assert.equal(permissions.preset, "ask");
     await mkdir(join(home, "qualification-project"));
     const project = await api("/projects", { path: join(home, "qualification-project") });
     projectId = project.id;
@@ -938,7 +944,6 @@ async function qualify() {
               "Native fixture import budget exceeded",
             );
             const row = history[next++];
-            if (row.kind === "archived") await rpc("thread/unarchive", { threadId: row.id });
             await rpc("thread/resume", {
               threadId: row.id,
               cwd: join(home, "qualification-project"),

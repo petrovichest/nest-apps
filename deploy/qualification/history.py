@@ -66,9 +66,9 @@ def create(seed_id):
         identity = parent_id if index == 0 else str(uuid.uuid4())
         timestamp = (datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
                      + datetime.timedelta(minutes=index))
-        folder = NATIVE / ('archived_sessions' if kind == 'archived' else 'sessions')
-        if kind != 'archived':
-            folder = folder / timestamp.strftime('%Y/%m/%d')
+        # Native's archive operation creates the matching metadata. Construct
+        # files as live input; the actual import will archive the requested 40.
+        folder = NATIVE / 'sessions' / timestamp.strftime('%Y/%m/%d')
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f'rollout-{timestamp.strftime("%Y-%m-%dT%H-%M-%S")}-{identity}.jsonl'
         meta = copy.deepcopy(header)
