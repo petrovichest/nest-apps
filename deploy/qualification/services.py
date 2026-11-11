@@ -17,7 +17,7 @@ import uuid
 ROOT = Path('/qualification-input')
 PRIVATE = Path('/qualification-private')
 STATE = {'manifest': json.loads((ROOT / 'baseline.json').read_text()),
-         'requests': {}, 'released': [], 'oauthGeneration': 0, 'authFailure': False,
+         'requests': {}, 'auxiliaryRequests': {}, 'released': [], 'oauthGeneration': 0, 'authFailure': False,
          'proxyConnections': 0, 'deniedConnections': 0, 'directModelRequests': 0,
          'directOAuthRequests': 0, 'rejectedAccessTokens': 0}
 LOCK = threading.Lock()
@@ -158,15 +158,20 @@ class Model(Handler):
             return
         # Only record opaque operation identifiers, never request bodies or credentials.
         payload = json.loads(body)
+        schema = payload.get('text', {}).get('format', {}).get('schema', {})
+        properties = schema.get('properties', {})
+        auxiliary = ('title' if 'title' in properties else 'reply-verdict'
+                     if {'waiting', 'reason', 'published'} <= properties.keys() else None)
         users = [item for item in payload.get('input', [])
                  if isinstance(item, dict) and item.get('role') == 'user']
         text = '\n'.join(part.get('text', '') for part in users[-1].get('content', [])
                          if isinstance(part, dict)) if users else ''
         match = re.fullmatch(r'QUALIFICATION_(REQUEST|HOLD):([a-zA-Z0-9_-]+)', text.strip())
         marker = match[2] if match else 'unmarked'
-        held = bool(match and match[1] == 'HOLD')
+        held = bool(match and match[1] == 'HOLD' and not auxiliary)
         with LOCK:
-            STATE['requests'][marker] = STATE['requests'].get(marker, 0) + 1
+            counter, key = ('auxiliaryRequests', auxiliary) if auxiliary else ('requests', marker)
+            STATE[counter][key] = STATE[counter].get(key, 0) + 1
             if self.client_address[1] not in PROXY_PORTS:
                 STATE['directModelRequests'] += 1
         self.send_response(200)
@@ -190,9 +195,12 @@ class Model(Handler):
                 self.wfile.write(b': qualification keepalive\n\n')
                 self.wfile.flush()
                 time.sleep(1)
+        answer = (json.dumps({'title': 'Qualification request'}) if auxiliary == 'title' else
+                  json.dumps({'waiting': False, 'reason': '', 'published': False})
+                  if auxiliary == 'reply-verdict' else f'QUALIFICATION_OK:{marker}')
         item = {'id': str(uuid.uuid4()), 'type': 'message', 'role': 'assistant',
                 'status': 'completed', 'content': [{'type': 'output_text',
-                                                   'text': f'QUALIFICATION_OK:{marker}',
+                                                   'text': answer,
                                                    'annotations': []}]}
         event('response.output_item.added', output_index=0, item={**item, 'content': []})
         event('response.output_text.delta', item_id=item['id'], output_index=0,
