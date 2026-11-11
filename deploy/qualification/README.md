@@ -87,6 +87,9 @@ always has `releaseQualified: false` and explicitly lists unfinished mandatory
 cases. The publication gate stays closed until all requirements in
 `docs/release-safety.md` are implemented and demonstrated for the exact candidate.
 An environment-only pass or diagnostic pass must never authorize publication.
+The large-history jobs start after clean installation and interrupted-update
+diagnostics pass. An early failure therefore avoids building several large native
+fixtures for an already rejected candidate; skipped matrix jobs remain unqualified.
 
 Raw installer output and synthetic credentials stay in a private VM
 directory. Reports contain phase/results/timings/versions/checksums/counters;
