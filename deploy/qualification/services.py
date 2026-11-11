@@ -20,6 +20,7 @@ PRIVATE = Path('/qualification-private')
 APPROVAL_DIRECTORY = Path('/home/nest-qualification/qualification-approvals')
 STATE = {'manifest': json.loads((ROOT / 'baseline.json').read_text()),
          'requests': {}, 'auxiliaryRequests': {}, 'released': [], 'oauthGeneration': 0, 'authFailure': False,
+         'registryUnavailable': False,
          'proxyConnections': 0, 'deniedConnections': 0, 'directModelRequests': 0,
          'directOAuthRequests': 0, 'rejectedAccessTokens': 0}
 LOCK = threading.Lock()
@@ -74,6 +75,11 @@ class Registry(Handler):
                 self.send(200, STATE['manifest'])
             return
         prefix = '/petrovichest/nest-apps.git/'
+        with LOCK:
+            unavailable = STATE['registryUnavailable']
+        if unavailable and path.startswith(prefix):
+            self.send(503, {})
+            return
         if not path.startswith(prefix):
             self.send(404, {})
             return
@@ -94,7 +100,7 @@ class Control(Handler):
 
     def do_POST(self):
         changes = json.loads(self.body())
-        assert set(changes) <= {'manifest', 'released', 'authFailure'}
+        assert set(changes) <= {'manifest', 'released', 'authFailure', 'registryUnavailable'}
         with LOCK:
             STATE.update(changes)
             self.send(200, STATE)

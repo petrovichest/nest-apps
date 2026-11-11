@@ -2,7 +2,17 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { chmod, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  readlink,
+  rename,
+  rmdir,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -43,10 +53,8 @@ const report = {
   originalDaemonRpc: {},
   releaseQualified: false,
   pending: [
-    "permanent native daemon absence",
     "expired and failed authorization during startup/recovery",
     "updater interruption at each switch/checkpoint/confirmation boundary",
-    "protocol, artifact download/build and persistent state failure matrix",
     "candidate clean installer and other packaged applications",
   ],
 };
@@ -609,6 +617,46 @@ exec '${root}/runtime/current/bin/node' '${root}/current/apps/server/dist/index.
   await systemctl("daemon-reload");
 }
 
+async function rejectUpdate(expectedMessage) {
+  const active = await readlink(join(root, "current"));
+  const previous = await readlink(join(root, "previous"));
+  const script = await readFile(cli);
+  assert.equal(
+    script.toString(),
+    await run("git", ["-C", join(root, "source"), "show", `${baseline.commit}:deploy/codexnest`]),
+    "Refusal case did not use the installed A updater",
+  );
+  await control({ manifest: { schemaVersion: 1, version: candidateVersion, commit: candidate } });
+  await until("Previous updater exited", async () =>
+    ["inactive", "failed"].includes(
+      (await systemctl("show", "codexnest-update.service", "-p", "ActiveState", "--value")).trim(),
+    ),
+  );
+  const before = await readFile(statusPath, "utf8");
+  await systemctl("reset-failed", "codexnest-update.service");
+  await systemctl("start", "--no-block", "codexnest-update.service");
+  const rejected = await until(
+    "Old updater rejected an unsafe candidate",
+    async () => {
+      const raw = await readFile(statusPath, "utf8");
+      if (raw === before) return null;
+      const value = JSON.parse(raw);
+      if (value.operation !== "idle") return null;
+      assert.equal(value.result, "failed", "Faulted update unexpectedly accepted");
+      assert.match(value.message, expectedMessage);
+      return value;
+    },
+    report.budgetsMs.build,
+  );
+  assert.equal(await readlink(join(root, "current")), active, "Rejected update changed current");
+  assert.equal(
+    await readlink(join(root, "previous")),
+    previous,
+    "Rejected update replaced rollback",
+  );
+  return { updateStatus: rejected.result, activeAndRollbackTargetsPreserved: true };
+}
+
 async function stopNative() {
   await systemctl("stop", "codexnest.service");
   await relay?.close();
@@ -965,6 +1013,78 @@ try {
       return { ...updateEvidence, ...recovered, fullRecoveryMs };
     });
   }
+  await fault("none");
+  await stage("unavailable-native-refuses-update-with-active-work", async () => {
+    const work = await holdWork("permanent-native-unavailable");
+    relay.disconnect(Infinity);
+    let rejected;
+    try {
+      await until(
+        "Native is persistently unavailable",
+        async () => (await health())?.appServer?.state === "unavailable",
+      );
+      rejected = await rejectUpdate(/preflight|cannot recover|cannot safely recover/i);
+      assert.notEqual((await health())?.appServer?.state, "ready");
+    } finally {
+      relay.reconnect();
+    }
+    return { ...rejected, ...(await ready(baseline.version)), ...(await finishWork(work)) };
+  });
+  await stage("artifact-download-failure-keeps-A", async () => {
+    const work = await holdWork("artifact-download");
+    await control({ registryUnavailable: true });
+    let rejected;
+    try {
+      rejected = await rejectUpdate(/Failed to build/);
+    } finally {
+      await control({ registryUnavailable: false });
+    }
+    return { ...rejected, ...(await ready(baseline.version)), ...(await finishWork(work)) };
+  });
+  await stage("incompatible-artifact-protocol-keeps-A", async () => {
+    const work = await holdWork("incompatible-protocol");
+    const path = join(root, "releases", `v${candidateVersion}`, "deploy/restart-protocol.json");
+    const original = await readFile(path);
+    const incompatible = JSON.parse(original);
+    incompatible.runtimeRecoveryProtocolVersion = 3;
+    await writeFile(path, JSON.stringify(incompatible));
+    let rejected;
+    try {
+      rejected = await rejectUpdate(/preflight|cannot recover|cannot safely recover/i);
+    } finally {
+      await writeFile(path, original);
+    }
+    return { ...rejected, ...(await ready(baseline.version)), ...(await finishWork(work)) };
+  });
+  await stage("failed-state-checkpoint-keeps-A", async () => {
+    const work = await holdWork("state-checkpoint");
+    const path = join(home, ".local/state/codexnest/state.json");
+    const backup = join(privateRoot, "legacy-state-before-checkpoint-fault.json");
+    await rename(path, backup);
+    await mkdir(path);
+    let rejected;
+    try {
+      rejected = await rejectUpdate(/preflight|internal server error|EISDIR|directory/i);
+    } finally {
+      await rmdir(path);
+      await rename(backup, path);
+    }
+    return { ...rejected, ...(await ready(baseline.version)), ...(await finishWork(work)) };
+  });
+  await stage("missing-build-dependency-keeps-A", async () => {
+    const work = await holdWork("build-dependency");
+    const npm = join(root, "runtime/current/bin/npm");
+    const backup = join(root, "runtime/current/bin/npm.qualification-unavailable");
+    await unlink(join(root, "releases", `v${candidateVersion}`, ".codexnest-built"));
+    await rename(npm, backup);
+    let rejected;
+    try {
+      rejected = await rejectUpdate(/Failed to build/);
+    } finally {
+      await rename(backup, npm);
+    }
+    return { ...rejected, ...(await ready(baseline.version)), ...(await finishWork(work)) };
+  });
   await stage("repeat-upgrade-after-failed-candidates", async () => {
     await fault("none");
     const work = await holdWork("repeat-upgrade");

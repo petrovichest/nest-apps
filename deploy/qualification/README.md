@@ -22,6 +22,10 @@ rebuilding the native index from at least 2000 nonarchived synthetic sessions an
 3 GiB of valid history, three cold and warm runs, A → B, active requests/queues,
 pending command approvals and managed background results, and automatic A → B → A
 after a wrong health version or failure to start HTTP.
+Separate real refusal cases cover an unavailable native connection, failed Git
+artifact download, incompatible recovery metadata, a filesystem checkpoint
+failure and a missing build executable. They require A and the rollback target
+to remain unchanged and the same native work to finish after clearing the fault.
 It records original native PID/start-time identity and operation counters to
 detect a daemon restart or request replay. Cold tests evict only their own
 history files using `posix_fadvise`, without changing host-wide kernel settings.

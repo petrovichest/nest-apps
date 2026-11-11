@@ -171,9 +171,13 @@ export class NativeRelay {
   }
 
   disconnect(durationMs) {
-    assert.ok(durationMs > 0 && durationMs <= 30_000);
+    assert.ok(durationMs === Infinity || (durationMs > 0 && durationMs <= 30_000));
     this.unavailableUntil = Date.now() + durationMs;
     for (const socket of this.sockets) socket.terminate();
+  }
+
+  reconnect() {
+    this.unavailableUntil = 0;
   }
 
   async close() {
