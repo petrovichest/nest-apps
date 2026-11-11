@@ -65,6 +65,8 @@ chmod 0700 "$HOME/.local/bin/codex"
 export PATH="$HOME/.local/bin:/opt/node/bin:/opt/native/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
 systemctl --user unset-environment HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy
 systemctl --user set-environment "PATH=$PATH" \
+  "HOME=$HOME" "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" \
+  "XDG_STATE_HOME=$XDG_STATE_HOME" "XDG_CACHE_HOME=$XDG_CACHE_HOME" \
   "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" \
   "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
 if [[ "$QUALIFICATION_MODE" == environment ]]; then

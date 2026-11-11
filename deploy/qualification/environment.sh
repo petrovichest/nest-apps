@@ -129,6 +129,9 @@ fi
 sudo systemd-run --unit=nest-qualification-driver --wait --pipe \
   --uid=17001 --gid=17001 --property=Slice=user-17001.slice --property=UMask=0077 \
   --setenv=HOME=/home/nest-qualification \
+  --setenv=XDG_CONFIG_HOME=/home/nest-qualification/.config \
+  --setenv=XDG_STATE_HOME=/home/nest-qualification/.local/state \
+  --setenv=XDG_CACHE_HOME=/home/nest-qualification/.cache \
   --setenv=PATH=/home/nest-qualification/.local/bin:/opt/node/bin:/opt/native/node_modules/.bin:/usr/local/bin:/usr/bin:/bin \
   --setenv=XDG_RUNTIME_DIR=/run/user/17001 \
   --setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/17001/bus \
