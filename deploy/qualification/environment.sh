@@ -41,6 +41,17 @@ cleanup() {
   sudo systemctl show nest-qualification-driver.service \
     -p Result -p ExecMainCode -p ExecMainStatus -p MemoryPeak \
     > "$qualification_output/driver-service.txt" || true
+  sudo python3 - > "$qualification_output/packaged-smoke-errors.log" <<'PY' || true
+from pathlib import Path
+import re
+for name in ('claudenest', 'gemininest', 'gemininest-daemon'):
+    path=Path('/qualification-private')/(name+'-smoke.log')
+    if not path.exists(): continue
+    print('Startup diagnostic:', name)
+    for line in path.read_text(errors='replace').splitlines()[-60:]:
+        if re.search(r'bearer|authorization|access.token|refresh.token|id.token',line,re.I): continue
+        print(re.sub(r'eyJ[\w-]+\.[\w-]+\.[\w-]+', '[redacted]', line))
+PY
   if [[ -n "${qualification_cgroup:-}" ]]; then
     sudo python3 - "$qualification_cgroup" > "$qualification_output/resources.json" <<'PY' || true
 import json,sys
@@ -91,6 +102,10 @@ if [[ "$qualification_mode" == lifecycle && "$qualification_scope" == clean ]]; 
 fi
 sudo env PATH=/opt/node/bin:/usr/bin:/bin /opt/node/bin/npm install \
   --prefix /opt/qualification --ignore-scripts --no-audit --no-fund "${qualification_packages[@]}"
+if [[ "$qualification_mode" == lifecycle && "$qualification_scope" == clean ]]; then
+  # Only the pinned Claude package's installer: link its native optional binary.
+  sudo /opt/node/bin/node /opt/qualification/node_modules/@anthropic-ai/claude-code/install.cjs
+fi
 sudo install -m 0644 "$qualification_root/deploy/qualification/guest.sh" /qualification-input/guest.sh
 if [[ "$qualification_mode" == lifecycle ]]; then
   for file in services.py provision.sh lifecycle.mjs native-relay.mjs history.py packaged-smoke.mjs; do

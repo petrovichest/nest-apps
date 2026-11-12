@@ -907,7 +907,12 @@ async function qualify() {
         );
         const previousStatus = await readFile(statusPath, "utf8").catch(() => "");
         if (point.startsWith("candidate-")) relay.hold("thread/list", 10_000, true);
-        await systemctl("reset-failed", "codexnest-update.service");
+        if (
+          (
+            await systemctl("show", "codexnest-update.service", "-p", "ActiveState", "--value")
+          ).trim() === "failed"
+        )
+          await systemctl("reset-failed", "codexnest-update.service");
         await systemctl("start", "--no-block", "codexnest-update.service");
         const updaterPid = await until("Actual updater process started", async () => {
           const pid = Number(
@@ -984,7 +989,11 @@ async function qualify() {
                     throw new Error(`Update failed before injection: ${value.message}`);
                 }
                 const value = await health();
-                return value?.serverVersion === candidateVersion && value.recoveryState !== "ready";
+                return (
+                  value?.serverVersion === candidateVersion &&
+                  value.recoveryState !== "ready" &&
+                  relay.holding()
+                );
               },
               report.budgetsMs.build,
             );
