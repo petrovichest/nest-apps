@@ -23,6 +23,7 @@
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present && npm run build:claude -w @codexnest/client && npm run build:gemini -w @codexnest/client",
+    "postbuild": "node deploy/update-recovery.mjs install-from-build",
     "dev": "npm run build -w @codexnest/protocol && npm run build -w @nest-apps/kanban && concurrently -k -n server,client -c blue,green \"npm run dev -w @codexnest/server\" \"npm run dev -w @codexnest/client\"",
     "dev:codex": "npm run dev",
     "dev:claude": "npm run build -w @codexnest/protocol && npm run build -w @nest-apps/kanban && concurrently -k -n claude-api,claude-ui \"npm run dev -w @claudenest/server\" \"npm run dev:claude -w @codexnest/client\"",

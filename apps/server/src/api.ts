@@ -111,6 +111,9 @@ import {
   type CodexBridge,
 } from "./codex/bridge";
 import { CodexAccountError, type CodexAccounts } from "./codex-accounts";
+import { AccountProxyError, testAccountProxy } from "./account-proxy";
+import { AccountRuntimeError } from "./account-runtime";
+import type { ClaudeProxyInput } from "@codexnest/protocol";
 import type { ServerNotification, ServerRequest } from "./codex/generated/index";
 import type {
   DynamicToolCallResponse,
@@ -141,7 +144,7 @@ import {
   CAPACITY_RETRY_INTERVAL_MS,
   CAPACITY_RETRY_MESSAGE,
   capacityRetryMessageId,
-  isCapacityFailure,
+  ACCOUNT_RETRY_MESSAGE,
   isTemporaryCapacityRpcError,
 } from "./capacity-retry";
 import { readGitChanges } from "./git-changes";
@@ -1554,7 +1557,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     get requiresDurableReceipt() {
       return bridge.deliveryVersion === 1;
     },
-    paused: () => codexManager?.maintenanceActive ?? false,
+    paused: () => Boolean(codexManager?.maintenanceActive || lifecycle?.updatePending),
     acceptsInput: (threadId) =>
       projection.summary(threadId)?.canAcceptDirectInput !== false &&
       !store.view().threadMeta[threadId]?.capacityRetry,
@@ -2358,7 +2361,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     }
   };
   const scheduleForkOperation = (operationId: string): void => {
-    if (forkOperationsClosed || bridge.state !== "ready") return;
+    if (forkOperationsClosed || bridge.state !== "ready" || lifecycle?.updatePending) return;
     const pending = withKeyLock(forkOperationLocks, operationId, () =>
       runForkOperation(operationId),
     );
@@ -2396,7 +2399,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   let teamNotificationQueue = Promise.resolve();
   let recoveryPromise: Promise<void> | undefined;
   let teamContinuationsClosed = false;
-  let teamContinuationsPaused = false;
+  let teamContinuationsPaused = lifecycle?.updatePending ?? false;
   const trackTeamBackground = <T>(promise: Promise<T>): Promise<T> => {
     teamBackgroundRuns.add(promise);
     const cleanup = () => teamBackgroundRuns.delete(promise);
@@ -2458,7 +2461,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           });
         }
         await projection.restoreDeliveredTurn(threadId, latest);
-        if (isCapacityFailure(latest) && retry.dispatching) {
+        if (projection.canAutomaticallyRetry(latest) && retry.dispatching) {
           const goal = retry.goal ? await readThreadGoal(bridge, threadId) : null;
           const sameGoal =
             goal &&
@@ -2494,11 +2497,26 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         }
         return;
       }
-      if (!latest || !isCapacityFailure(latest)) {
+      if (!latest || !projection.canAutomaticallyRetry(latest)) {
         await projection.cancelCapacityRetry(threadId, retry.failedTurnId);
         return;
       }
       if (summary.currentTurnId && summary.currentTurnId !== retry.failedTurnId) return;
+      if (retry.reason === "account") {
+        if (!codexAccounts?.canRecover(latest)) {
+          await projection.cancelCapacityRetry(threadId, retry.failedTurnId);
+          return;
+        }
+        if (!(await codexAccounts.recover(threadId, latest, summary.settings.model))) {
+          await store.update((state) => {
+            const current = state.threadMeta[threadId]?.capacityRetry;
+            if (current?.failedTurnId === retry.failedTurnId)
+              current.nextAttemptAt = Date.now() + CAPACITY_RETRY_INTERVAL_MS;
+          });
+          projection.publishThreadState(threadId);
+          return;
+        }
+      }
       const parent = managed ? projection.summary(managed.parentThreadId) : summary;
       if (!parent) return;
       await store.update((state) => {
@@ -2556,14 +2574,22 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       const params = {
         threadId,
         clientUserMessageId: markerId,
-        input: messageInput(CAPACITY_RETRY_MESSAGE, []),
+        input: messageInput(
+          retry.reason === "account" ? ACCOUNT_RETRY_MESSAGE : CAPACITY_RETRY_MESSAGE,
+          [],
+        ),
         ...settings,
       };
       const send = () =>
         durableDelivery.send(
           threadId,
           markerId,
-          messageContentHash(CAPACITY_RETRY_MESSAGE, [], [], false),
+          messageContentHash(
+            retry.reason === "account" ? ACCOUNT_RETRY_MESSAGE : CAPACITY_RETRY_MESSAGE,
+            [],
+            [],
+            false,
+          ),
           "turn/start",
           params,
         );
@@ -3031,6 +3057,13 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       return recoveryPromise;
     }
     const pending = (async () => {
+      // Recovery can replay a prepared durable receipt or launch Team work.
+      // Keep those operations dormant while the old updater can still roll
+      // this build back. Native projection sync remains read-only and ready.
+      if (lifecycle?.updatePending) {
+        lifecycle.ready();
+        return;
+      }
       do {
         recoveryAgain = false;
         if (lifecycle && lifecycle.state !== "ready" && lifecycle.state !== "draining") {
@@ -3066,10 +3099,11 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         }
       } while (recoveryAgain && !teamContinuationsClosed);
       if (bridge.state === "ready" && lifecycle?.state !== "draining" && !teamContinuationsClosed) {
+        lifecycle?.ready();
+        if (lifecycle?.updatePending) return;
         teamContinuationsPaused = false;
         await queue.resume();
         resumeTeamContinuations();
-        lifecycle?.ready();
         const deferred = [...deferredServerRequests.values()];
         deferredServerRequests.clear();
         for (const [request, transport] of deferred) teamRequestHandler(request, transport);
@@ -3106,7 +3140,9 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     },
     resume: async () => {
       if (teamContinuationsClosed) return;
-      await runRecovery().catch(() => undefined);
+      await runRecovery();
+      if (lifecycle?.updatePending) return;
+      recoverForkOperations();
       teamContinuationsPaused = false;
       await queue.resume();
       wakeKanban();
@@ -3178,7 +3214,9 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         reply,
         503,
         "app_server_unavailable",
-        `CodexNest is ${lifecycle.state}; retry after recovery`,
+        lifecycle.updatePending
+          ? "CodexNest is finalizing the update; retry after confirmation"
+          : `CodexNest is ${lifecycle.state}; retry after recovery`,
       );
     }
   });
@@ -3208,6 +3246,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     status:
       bridge.state === "ready" && (!lifecycle || lifecycle.state === "ready") ? "ok" : "degraded",
     serverVersion: SERVER_VERSION,
+    ...(lifecycle?.buildCommit ? { buildCommit: lifecycle.buildCommit } : {}),
     recoveryState:
       lifecycle?.state ??
       (bridge.state === "ready" ? ("ready" as const) : ("unavailable" as const)),
@@ -3698,9 +3737,22 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       refreshing: true,
       refreshError: false,
     });
-    rateLimitsRequest = bridge
-      .request<unknown>("account/rateLimits/read", undefined)
-      .then(parseAccountRateLimits)
+    const read =
+      codexAccounts && codexAccounts.status().accounts.length
+        ? codexAccounts.refresh().then((status) => {
+            const state = status.accounts.find(
+              (account) => account.id === status.currentAccountId,
+            )?.rateLimits;
+            if (!state?.limits || state.refreshError)
+              throw new AccountRuntimeError(
+                "Could not refresh Codex account limits through its selected connection",
+              );
+            return state.limits;
+          })
+        : bridge
+            .request<unknown>("account/rateLimits/read", undefined)
+            .then(parseAccountRateLimits);
+    rateLimitsRequest = read
       .then((limits) => {
         if (
           !switching &&
@@ -3757,7 +3809,9 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         refreshError: false,
       },
     );
-    pollRateLimits();
+    const selected = status.accounts.find((account) => account.id === status.currentAccountId);
+    if (!selected?.rateLimits.updatedAt || Date.now() - selected.rateLimits.updatedAt > 60_000)
+      pollRateLimits();
   };
   const rateLimitsBridgeStateHandler = (state: string) => {
     if (state === "ready") {
@@ -3775,8 +3829,10 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   app.addHook("onReady", async () => {
     bridge.on("state", rateLimitsBridgeStateHandler);
     codexAccounts?.on("selected", accountSelectionHandler);
-    rateLimitsTimer = setInterval(pollRateLimits, 300_000);
-    rateLimitsTimer.unref();
+    if (!codexAccounts) {
+      rateLimitsTimer = setInterval(pollRateLimits, 300_000);
+      rateLimitsTimer.unref();
+    }
     pollRateLimits();
   });
   app.addHook("onClose", async () => {
@@ -3791,8 +3847,32 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   if (codexAccounts) {
     const prefix = "/api/v1/settings/codex/accounts";
     app.get(prefix, () => codexAccounts.status());
+    app.patch(prefix, async (request) => {
+      const body = requireRecord<{ autoSwitch?: unknown; warmLimits?: unknown }>(request.body);
+      if (
+        Object.keys(body).some((key) => !["autoSwitch", "warmLimits"].includes(key)) ||
+        (body.autoSwitch === undefined && body.warmLimits === undefined) ||
+        (body.autoSwitch !== undefined && typeof body.autoSwitch !== "boolean") ||
+        (body.warmLimits !== undefined && typeof body.warmLimits !== "boolean")
+      )
+        throw new CodexAccountError("validation", "autoSwitch and warmLimits must be booleans");
+      if (typeof body.autoSwitch === "boolean") await codexAccounts.setAutoSwitch(body.autoSwitch);
+      if (typeof body.warmLimits === "boolean") await codexAccounts.setWarmLimits(body.warmLimits);
+      return codexAccounts.status();
+    });
+    app.patch<{ Params: { id: string } }>(`${prefix}/:id`, (request) => {
+      const body = requireRecord<{ proxy: unknown }>(request.body);
+      return codexAccounts.updateProxy(
+        request.params.id,
+        requireRecord<ClaudeProxyInput>(body.proxy),
+      );
+    });
+    app.post(`${prefix}/proxy/test`, (request) => {
+      const body = requireRecord<{ proxy: unknown }>(request.body);
+      return testAccountProxy(requireRecord<ClaudeProxyInput>(body.proxy));
+    });
     app.post(`${prefix}/refresh`, async (request) => {
-      const body = requireRecord<{ accountId?: unknown }>(request.body ?? {});
+      const body = requireRecord<{ accountId?: unknown; proxy?: unknown }>(request.body ?? {});
       if (body?.accountId !== undefined && typeof body.accountId !== "string")
         throw new CodexAccountError("validation", "accountId must be text");
       return codexAccounts.refresh(body?.accountId as string | undefined);
@@ -3804,10 +3884,13 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       codexAccounts.remove(request.params.id),
     );
     app.post(`${prefix}/logins`, (request) => {
-      const body = requireRecord<{ accountId?: unknown }>(request.body ?? {});
+      const body = requireRecord<{ accountId?: unknown; proxy?: unknown }>(request.body ?? {});
       if (body?.accountId !== undefined && typeof body.accountId !== "string")
         throw new CodexAccountError("validation", "accountId must be text");
-      return codexAccounts.startLogin(body?.accountId as string | undefined);
+      return codexAccounts.startLogin({
+        accountId: body.accountId as string | undefined,
+        ...(body.proxy !== undefined ? { proxy: requireRecord<ClaudeProxyInput>(body.proxy) } : {}),
+      });
     });
     app.get<{ Params: { id: string } }>(`${prefix}/logins/:id`, (request) =>
       codexAccounts.login(request.params.id),
@@ -5822,6 +5905,15 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     }
     if (error instanceof AccountSwitchInProgressError || error instanceof AccountLoginRequiredError)
       return apiError(reply, 409, "conflict", error.message);
+    if (error instanceof AccountProxyError)
+      return apiError(
+        reply,
+        error.kind === "validation" ? 400 : 503,
+        error.kind === "validation" ? "validation_failed" : "app_server_unavailable",
+        error.message,
+      );
+    if (error instanceof AccountRuntimeError)
+      return apiError(reply, 503, "app_server_unavailable", error.message);
     if (error instanceof CodexAccountError) {
       if (error.kind === "validation")
         return apiError(reply, 400, "validation_failed", error.message);
@@ -6969,7 +7061,7 @@ async function handleManagedTeamNotification(
   }
 
   if (notification.method === "turn/completed") {
-    if (isCapacityFailure(notification.params.turn)) {
+    if (projection.canAutomaticallyRetry(notification.params.turn)) {
       await projection.prepareCapacityRetry(childThreadId, notification.params.turn);
       return affected;
     }
@@ -7649,7 +7741,7 @@ async function reconcileTeamOrchestration(
           ? page.data.find((turn) => turn.id === expectedTurnId)
           : page.data[0];
         if (recoveredTurn && recoveredTurn.status !== "inProgress") {
-          if (isCapacityFailure(recoveredTurn)) {
+          if (projection.canAutomaticallyRetry(recoveredTurn)) {
             await projection.prepareCapacityRetry(task.childThreadId, recoveredTurn);
             continue;
           }

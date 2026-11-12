@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { watch } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { buildApp } from "./app";
 import { AttentionManager } from "./attention";
@@ -20,6 +22,15 @@ import { TranscriptionService } from "./transcription";
 import { TranscriptRefiner } from "./transcript-refiner";
 
 const config = loadConfig();
+const releaseRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const buildCommit = config.managedInstall
+  ? (await readFile(resolve(releaseRoot, ".codexnest-built"), "utf8").catch(() => "")).trim()
+  : "";
+const managedRelease =
+  /^[0-9a-f]{40}$/.test(buildCommit) && basename(dirname(releaseRoot)) === "releases";
+if (config.managedInstall && !managedRelease) {
+  throw new Error("Managed CodexNest release is missing its exact build marker");
+}
 const store = new StateStore(config.statePath, { databasePath: config.databasePath });
 await store.load();
 let authRefreshTimer: NodeJS.Timeout | undefined;
@@ -49,24 +60,36 @@ const bridge = new CodexBridge({
         }) as unknown as JsonlProcess),
 });
 const projection = new AppProjection(bridge, store, attention, config.sessionLimit);
-const codexAccounts = new CodexAccounts(bridge, {
-  stateDir: dirname(config.statePath),
-  codexHome: resolve(process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex")),
-  codexBin: config.codexBin,
-  proxyEnvFile: config.codexProxyEnvFile,
-  activeTurnCount: () =>
-    projection.snapshot().threads.filter((thread) => thread.currentTurnId !== null).length,
-});
-await codexAccounts.initialize();
-projection.setCodexAccounts(codexAccounts.status());
-codexAccounts.on("changed", (status) => projection.setCodexAccounts(status));
 const lifecycle = new RuntimeLifecycle({
   transport: config.codexTransport,
   tokenPath: config.restartTokenPath,
   bridgeReady: () => bridge.state === "ready",
   checkpoint: () => store.checkpoint(),
+  ...(managedRelease
+    ? { buildCommit, updateJournalPath: resolve(releaseRoot, "../../recovery/journal.json") }
+    : {}),
 });
 await lifecycle.initialize();
+const codexAccounts = new CodexAccounts(bridge, {
+  stateDir: dirname(config.statePath),
+  codexHome: resolve(process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex")),
+  codexBin: config.codexBin,
+  proxyEnvFile: config.codexProxyEnvFile,
+  serverEnvFile: config.serverEnvFile,
+  managedInstall: config.managedInstall,
+  workAllowed: () => !lifecycle.updatePending,
+  activeTurnCount: () =>
+    projection.snapshot().threads.filter((thread) => thread.currentTurnId !== null).length,
+});
+await codexAccounts.initialize();
+projection.setCodexAccounts(codexAccounts.status());
+codexAccounts.on("changed", (status) => {
+  projection.setCodexAccounts(status);
+  const selected = status.accounts.find(
+    (account: { id: string }) => account.id === status.currentAccountId,
+  );
+  if (selected) projection.setCodexRateLimits(selected.rateLimits);
+});
 const threadTitles = new ThreadTitleGenerator(bridge);
 const transcriptRefiner = new TranscriptRefiner(bridge);
 const transcription = new TranscriptionService({
@@ -107,6 +130,7 @@ const appManager = new AppManager({
   statusPath: config.updateStatusPath,
   managementCli: config.managementCli,
   transport: config.codexTransport,
+  updatePending: () => lifecycle.updatePending,
   activeTurnCount: () =>
     projection.snapshot().threads.filter((thread) => thread.currentTurnId !== null).length,
   setEmergencyShutdown: (requested) => {

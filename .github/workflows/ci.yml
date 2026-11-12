@@ -18,6 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -49,6 +50,7 @@ jobs:
           test -s apps/client/dist-claude/index.html
           test -s apps/client/dist-gemini/index.html
           test -s apps/server/dist/index.js
+          test -s apps/server/dist/account-runtime-main.js
           test -s apps/claude-server/dist/index.js
           test -s apps/gemini-server/dist/daemon.js
           test -s apps/gemini-server/dist/index.js
@@ -70,9 +72,157 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  native-account-network:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        codex: ["0.154.0", "0.167.0", "0.167.1", "0.167.2"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @codexnest/protocol
+      - run: npm run build -w @nest-apps/kanban
+      - run: npm run build -w @codexnest/server
+      - name: Install the exact isolated native runtime
+        env:
+          NATIVE_VERSION: ${{ matrix.codex }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/account-native" --ignore-scripts --no-audit --no-fund "@openai/codex@$NATIVE_VERSION"
+          "$RUNNER_TEMP/account-native/node_modules/.bin/codex" --version | grep -Fx "codex-cli $NATIVE_VERSION"
+      - name: Prove per-account egress with real native HTTP, TLS, WebSocket and OAuth
+        env:
+          NODE_ENV: test
+          CODEXNEST_ACCOUNT_CODEX_BIN: ${{ runner.temp }}/account-native/node_modules/.bin/codex
+          CODEXNEST_ACCOUNT_WORKER: ${{ github.workspace }}/apps/server/dist/account-runtime-main.js
+        run: |
+          test -x "$CODEXNEST_ACCOUNT_CODEX_BIN"
+          npm run test -w @codexnest/server -- src/account-proxy.integration.test.ts src/codex-accounts.integration.test.ts --reporter=default --reporter=junit --outputFile.junit="$RUNNER_TEMP/account-network.xml"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: account-network-${{ github.event.pull_request.head.sha || github.sha }}-${{ matrix.codex }}
+          path: ${{ runner.temp }}/account-network.xml
+          if-no-files-found: error
+
+  release-environment:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        codex: ["0.154.0", "0.167.0", "0.167.1", "0.167.2"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Prove isolated systemd and the actual native daemon
+        env:
+          NATIVE_VERSION: ${{ matrix.codex }}
+        run: bash deploy/qualification/environment.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: release-environment-${{ github.event.pull_request.head.sha || github.sha }}-${{ matrix.codex }}
+          path: ${{ runner.temp }}/qualification-environment-${{ matrix.codex }}/
+          if-no-files-found: error
+
+  release-lifecycle-diagnostics:
+    if: github.event_name == 'pull_request'
+    needs: [release-clean-install-diagnostics, release-interruption-diagnostics]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        codex: ["0.154.0", "0.167.0", "0.167.1", "0.167.2"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exercise the real installer, installed updater and automatic rollback
+        env:
+          NATIVE_VERSION: ${{ matrix.codex }}
+          QUALIFICATION_MODE: lifecycle
+        run: bash deploy/qualification/environment.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: lifecycle-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}-${{ matrix.codex }}
+          path: ${{ runner.temp }}/qualification-lifecycle-${{ matrix.codex }}/
+          if-no-files-found: error
+
+  release-clean-install-diagnostics:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the exact candidate into an empty isolated HOME
+        env:
+          NATIVE_VERSION: "0.167.2"
+          QUALIFICATION_MODE: lifecycle
+          QUALIFICATION_SCOPE: clean
+        run: bash deploy/qualification/environment.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: clean-install-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/qualification-lifecycle-0.167.2/
+          if-no-files-found: error
+
+  release-interruption-diagnostics:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Interrupt the actual old updater and candidate at update boundaries
+        env:
+          NATIVE_VERSION: "0.167.2"
+          QUALIFICATION_MODE: lifecycle
+          QUALIFICATION_SCOPE: interruption
+        run: bash deploy/qualification/environment.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: interruption-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/qualification-lifecycle-0.167.2/
+          if-no-files-found: error
+
+  # A green build is not qualification. Keep publication closed until the native
+  # old-updater upgrade/failed-candidate rollback/large-history matrix exists.
+  release-qualification:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce the mandatory lifecycle gate
+        run: |
+          echo '::error::Publication blocked by docs/release-safety.md: the complete isolated native lifecycle matrix is not implemented and demonstrated. Unit and account-network tests do not replace it.'
+          exit 1
+
   publish:
     if: github.event_name == 'push'
-    needs: verify
+    needs: [verify, native-account-network, release-qualification]
     runs-on: ubuntu-latest
     concurrency:
       group: release-${{ github.ref_type == 'tag' && github.ref_name || 'rolling' }}

@@ -342,7 +342,7 @@ export function ProxySettingsCard() {
       loading={loading}
       className="codex-settings-card"
       description={t(
-        "Внутренние запросы Codex идут через fail-closed прокси; команды агента — напрямую.",
+        "Подключение общего Codex. Для сохранённых аккаунтов прокси настраивается в разделе аккаунтов.",
       )}
       icon={<ToolIcon />}
       title={t("Прокси")}

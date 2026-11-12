@@ -283,10 +283,41 @@ export class ApiClient {
     });
   }
 
-  startCodexLogin(accountId?: string): Promise<CodexLoginStatus> {
+  updateCodexAutoSwitch(autoSwitch: boolean): Promise<CodexAccountsStatus> {
+    return this.request("/api/v1/settings/codex/accounts", {
+      method: "PATCH",
+      body: { autoSwitch },
+    });
+  }
+  updateCodexWarmLimits(warmLimits: boolean): Promise<CodexAccountsStatus> {
+    return this.request("/api/v1/settings/codex/accounts", {
+      method: "PATCH",
+      body: { warmLimits },
+    });
+  }
+  updateCodexAccountProxy(
+    accountId: string,
+    proxy: ClaudeProxyInput,
+  ): Promise<CodexAccountsStatus> {
+    return this.request(`/api/v1/settings/codex/accounts/${encodeURIComponent(accountId)}`, {
+      method: "PATCH",
+      body: { proxy },
+      timeoutMs: null,
+    });
+  }
+  testCodexProxy(proxy: ClaudeProxyInput): Promise<ClaudeProxyTestResult> {
+    return this.request("/api/v1/settings/codex/accounts/proxy/test", {
+      method: "POST",
+      body: { proxy },
+      timeoutMs: 25_000,
+    });
+  }
+  startCodexLogin(
+    input: { accountId?: string; proxy?: ClaudeProxyInput } = {},
+  ): Promise<CodexLoginStatus> {
     return this.request("/api/v1/settings/codex/accounts/logins", {
       method: "POST",
-      body: accountId ? { accountId } : {},
+      body: input,
       timeoutMs: null,
     });
   }

@@ -6,8 +6,68 @@ import type { CodexBridge } from "./codex/bridge";
 import type { ServerNotification } from "./codex/generated/index";
 import type { Thread, Turn } from "./codex/generated/v2/index";
 import { ThreadTitleGenerator } from "./thread-title";
+import { CodexAccountRouter } from "./account-router";
+import type { AccountRuntimePool } from "./account-runtime";
 
 describe("ThreadTitleGenerator", () => {
+  it("receives an ephemeral title completion from the selected account runtime", async () => {
+    const bridge = fakeBridge();
+    const worker = fakeBridge('{"title":"Qualified title"}');
+    const descriptor = { id: "account-runtime", accountId: "account" };
+    const account = { id: "account", native: true, home: "/fixture", proxy: null };
+    const pool = Object.assign(new EventEmitter(), {
+      ensure: async () => ({ descriptor, bridge: worker }),
+      descriptor: () => descriptor,
+      connect: async () => worker,
+      matches: () => true,
+      close: async () => undefined,
+    });
+    const nativeRequest = vi.fn();
+    Object.assign(bridge, {
+      setRequestRouter: (route: any) => {
+        if (route) bridge.request = vi.fn(route);
+      },
+      setNativeNotificationFilter: () => undefined,
+      acceptNotification: (notice: ServerNotification) => bridge.emit("notification", notice),
+      requestNative: nativeRequest,
+    });
+    worker.on("notification", (notice) => pool.emit("notification", descriptor, notice));
+    const request = worker.request;
+    worker.request = vi.fn(async (method: string, params: any) => {
+      const result = await request(method, params);
+      if (method === "thread/start")
+        pool.emit("notification", descriptor, {
+          method: "thread/started",
+          params: { thread: result.thread },
+        });
+      return result;
+    });
+    const router = new CodexAccountRouter(
+      bridge as unknown as CodexBridge,
+      pool as unknown as AccountRuntimePool,
+      {
+        state: { threadOwners: {}, legacyAccountId: "account" },
+        selected: () => account,
+        account: () => account,
+        save: async () => undefined,
+        observe: () => undefined,
+        userWork: () => undefined,
+        beforeStart: () => undefined,
+      },
+    );
+    try {
+      await expect(
+        new ThreadTitleGenerator(bridge as unknown as CodexBridge).generate("Create a title", {
+          cwd: "/fixture",
+          timeoutMs: 1000,
+        }),
+      ).resolves.toBe("Qualified title");
+      expect(nativeRequest).not.toHaveBeenCalled();
+    } finally {
+      await router.close();
+    }
+  });
+
   it("generates a structured title in an ephemeral read-only thread", async () => {
     const bridge = fakeBridge('{"title":"  Нейросетевые   названия  "}');
     const generator = new ThreadTitleGenerator(bridge as unknown as CodexBridge);

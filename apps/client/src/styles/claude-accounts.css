@@ -283,7 +283,7 @@
 }
 
 .claude-account-success {
-  color: var(--color-success);
+  color: color-mix(in srgb, var(--color-success) 70%, var(--color-ink-strong));
 }
 
 .claude-account-state.warning {
@@ -618,7 +618,7 @@
   align-items: center;
   gap: var(--space-2);
   margin: 0 0 var(--space-3);
-  color: var(--color-success);
+  color: color-mix(in srgb, var(--color-success) 70%, var(--color-ink-strong));
   font-size: var(--text-ui);
 }
 
@@ -660,6 +660,31 @@
   display: grid;
   justify-items: start;
   gap: var(--space-2);
+}
+
+.claude-proxy-feedback {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.claude-proxy-feedback > .claude-proxy-feedback-reserve {
+  visibility: hidden;
+  pointer-events: none;
+  margin: 0;
+}
+
+.claude-proxy-feedback-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  overflow: auto;
+}
+
+.claude-proxy-feedback-content > .settings-notice {
+  width: 100%;
+  margin: 0;
 }
 
 .claude-account-success {

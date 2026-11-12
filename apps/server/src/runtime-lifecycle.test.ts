@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -19,6 +19,113 @@ afterEach(async () => {
 });
 
 describe("RuntimeLifecycle", () => {
+  it("refuses candidate mutations when its first startup has no recovery journal", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codexnest-update-no-journal-"));
+    directories.push(directory);
+    const lifecycle = new RuntimeLifecycle({
+      transport: "daemon",
+      tokenPath: join(directory, "token"),
+      bridgeReady: () => true,
+      checkpoint: async () => undefined,
+      buildCommit: "b".repeat(40),
+      updateJournalPath: join(directory, "missing.json"),
+    });
+    try {
+      await lifecycle.initialize();
+      lifecycle.ready();
+      expect(lifecycle.acceptsMutations).toBe(false);
+    } finally {
+      await lifecycle.close();
+    }
+  });
+
+  it("keeps a new build read-only until that exact update is committed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codexnest-update-admission-"));
+    directories.push(directory);
+    const journalPath = join(directory, "journal.json");
+    const baseline = "a".repeat(40);
+    const candidate = "b".repeat(40);
+    const save = async (phase: string, target = candidate) => {
+      const temporary = `${journalPath}.tmp`;
+      await writeFile(
+        temporary,
+        JSON.stringify({
+          schemaVersion: 1,
+          phase,
+          baseline: { commit: baseline },
+          target: { commit: target },
+        }),
+        { mode: 0o600 },
+      );
+      await rename(temporary, journalPath);
+    };
+    await save("pending");
+    const resume = vi.fn(async () => undefined);
+    const lifecycle = new RuntimeLifecycle({
+      transport: "daemon",
+      tokenPath: join(directory, "token"),
+      bridgeReady: () => true,
+      checkpoint: async () => undefined,
+      buildCommit: candidate,
+      updateJournalPath: journalPath,
+    });
+    lifecycle.register({ pause: () => undefined, resume });
+    try {
+      await lifecycle.initialize();
+      lifecycle.ready();
+      expect(lifecycle.state).toBe("ready");
+      expect(lifecycle.acceptsMutations).toBe(false);
+      await unlink(journalPath);
+      await new Promise((done) => setTimeout(done, 60));
+      expect(lifecycle.acceptsMutations).toBe(false);
+      await save("committed", "c".repeat(40));
+      await new Promise((done) => setTimeout(done, 60));
+      expect(lifecycle.acceptsMutations).toBe(false);
+      await save("committed");
+      await vi.waitFor(() => expect(lifecycle.acceptsMutations).toBe(true));
+      expect(resume).toHaveBeenCalledOnce();
+      await save("committed");
+      await new Promise((done) => setTimeout(done, 60));
+      expect(resume).toHaveBeenCalledOnce();
+    } finally {
+      await lifecycle.close();
+    }
+  });
+
+  it("lets the recorded healthy baseline resume during automatic restoration", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codexnest-update-baseline-"));
+    directories.push(directory);
+    const buildCommit = "a".repeat(40);
+    const journalPath = join(directory, "journal.json");
+    await writeFile(
+      journalPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        phase: "restoring",
+        baseline: { commit: buildCommit },
+        target: { commit: "b".repeat(40) },
+      }),
+      { mode: 0o600 },
+    );
+    const lifecycle = new RuntimeLifecycle({
+      transport: "daemon",
+      tokenPath: join(directory, "token"),
+      bridgeReady: () => true,
+      checkpoint: async () => undefined,
+      buildCommit,
+      updateJournalPath: journalPath,
+    });
+    try {
+      await lifecycle.initialize();
+      lifecycle.ready();
+      expect(lifecycle.acceptsMutations).toBe(true);
+    } finally {
+      await lifecycle.close();
+    }
+    await chmod(journalPath, 0o644);
+    await expect(lifecycle.initialize()).rejects.toThrow("Unsafe update recovery journal");
+  });
+
   it("keeps the built release marker aligned with the server protocol", async () => {
     const marker = JSON.parse(
       await readFile(resolve(process.cwd(), "../../deploy/restart-protocol.json"), "utf8"),

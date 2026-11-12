@@ -237,7 +237,13 @@ describe("clientReducer", () => {
     });
   });
   it("updates Codex accounts across devices and rejects stale account selections", () => {
-    const codexAccounts = { currentAccountId: "first", accounts: [] };
+    const codexAccounts = {
+      cliVersion: null,
+      autoSwitch: true,
+      warmLimits: false,
+      currentAccountId: "first",
+      accounts: [],
+    };
     let state = clientReducer(initialState, {
       type: "snapshot",
       snapshot: { ...snapshot, codexAccounts },

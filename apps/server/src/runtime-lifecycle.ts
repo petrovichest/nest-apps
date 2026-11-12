@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { watch, type FSWatcher } from "node:fs";
+import { chmod, lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 
 export const RESTART_RECOVERY_PROTOCOL_VERSION = 2;
 
@@ -19,6 +20,8 @@ export interface RuntimeLifecycleOptions {
   checkpoint(): Promise<void>;
   drainTimeoutMs?: number;
   drainLeaseMs?: number;
+  buildCommit?: string;
+  updateJournalPath?: string;
 }
 
 export class RestartTokenError extends Error {}
@@ -52,6 +55,9 @@ export class RuntimeLifecycle {
   private activeDrain?: DrainAttempt;
   private transitionQueue = Promise.resolve();
   private shuttingDown = false;
+  private admissionPending = false;
+  private admissionWatcher?: FSWatcher;
+  private admissionTimer?: NodeJS.Timeout;
 
   constructor(private readonly options: RuntimeLifecycleOptions) {}
 
@@ -64,10 +70,33 @@ export class RuntimeLifecycle {
   }
 
   get acceptsMutations(): boolean {
-    return this.recoveryState === "ready";
+    return this.recoveryState === "ready" && !this.admissionPending;
+  }
+
+  get updatePending(): boolean {
+    return this.admissionPending;
+  }
+
+  get buildCommit(): string | undefined {
+    return this.options.buildCommit;
   }
 
   async initialize(): Promise<void> {
+    this.admissionPending = !(await this.updateAdmitted());
+    if (this.admissionPending) {
+      const path = this.options.updateJournalPath!;
+      this.admissionWatcher = watch(dirname(path), { persistent: false }, (_event, filename) => {
+        if (filename && filename !== basename(path)) return;
+        if (this.admissionTimer) clearTimeout(this.admissionTimer);
+        this.admissionTimer = setTimeout(() => {
+          this.admissionTimer = undefined;
+          void this.confirmAdmission().catch(() => undefined);
+        }, 25);
+        this.admissionTimer.unref();
+      });
+      // Cover a commit between the initial read and installing the watcher.
+      await this.confirmAdmission();
+    }
     await mkdir(dirname(this.options.tokenPath), { recursive: true, mode: 0o700 });
     await writeFile(this.options.tokenPath, `${this.restartToken}\n`, { mode: 0o600 });
     await chmod(this.options.tokenPath, 0o600);
@@ -189,9 +218,61 @@ export class RuntimeLifecycle {
   }
 
   async close(): Promise<void> {
+    this.admissionWatcher?.close();
+    if (this.admissionTimer) clearTimeout(this.admissionTimer);
     this.clearLease();
     this.pauseController?.abort();
     await unlink(this.options.tokenPath).catch(() => undefined);
+  }
+
+  private async updateAdmitted(): Promise<boolean> {
+    const { updateJournalPath, buildCommit } = this.options;
+    if (!updateJournalPath || !buildCommit) return true;
+    const metadata = await lstat(updateJournalPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!metadata) return false;
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.uid !== process.getuid?.() ||
+      (metadata.mode & 0o077) !== 0
+    ) {
+      throw new Error("Unsafe update recovery journal");
+    }
+    const value = JSON.parse(await readFile(updateJournalPath, "utf8"));
+    if (
+      value.schemaVersion !== 1 ||
+      !["clean", "pending", "restoring", "committed", "aborted"].includes(value.phase)
+    ) {
+      throw new Error("Unsupported update recovery journal");
+    }
+    // The recorded baseline can always resume its own work. A new candidate
+    // cannot accept private-runtime work until the updater confirms that build.
+    return (
+      value.baseline?.commit === buildCommit ||
+      (value.phase === "clean" && value.target?.commit === buildCommit) ||
+      (value.phase === "committed" && value.target?.commit === buildCommit)
+    );
+  }
+
+  private async confirmAdmission(): Promise<void> {
+    if (!this.admissionPending || !(await this.updateAdmitted())) return;
+    await this.transition(async () => {
+      if (!this.admissionPending || this.shuttingDown) return;
+      this.admissionPending = false;
+      this.admissionWatcher?.close();
+      if (this.recoveryState !== "ready") return;
+      this.recoveryState = "recovering";
+      try {
+        await Promise.all([...this.participants].map((participant) => participant.resume()));
+        if (this.recoveryState === "recovering") this.ready();
+      } catch (error) {
+        this.failed();
+        throw error;
+      }
+    });
   }
 
   private async pauseAndCheckpoint(signal: AbortSignal, attempt: DrainAttempt): Promise<void> {

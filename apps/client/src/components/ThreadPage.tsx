@@ -4526,6 +4526,7 @@ export function ThreadPage({
                           waitingForUserInput={active && waitingForUserInput}
                           capacityRetryAt={
                             !workspaceSummary.currentTurnId &&
+                            workspaceSummary.capacityRetry?.reason !== "account" &&
                             workspaceSummary.capacityRetry?.failedTurnId === turn.id
                               ? workspaceSummary.capacityRetry.nextAttemptAt
                               : undefined
