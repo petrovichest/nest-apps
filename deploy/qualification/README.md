@@ -29,6 +29,8 @@ to remain unchanged and the same native work to finish after clearing the fault.
 It records original native PID/start-time identity and operation counters to
 detect a daemon restart or request replay. Cold tests evict only their own
 history files using `posix_fadvise`, without changing host-wide kernel settings.
+PID capture selects actual Native processes owning listening Unix sockets,
+including private account servers. Short-lived CLI status commands are not daemons.
 The native PID update-loop helper is recorded separately from the app-server;
 cold setup also verifies that no fixture process retains history or SQLite
 descriptors. Complete fixture ID membership is checked in both native pages and
@@ -43,6 +45,11 @@ profile uses independently resumable Native V1 children; it does not impersonate
 V2 parent ownership. Actual application-managed Team execution is tested separately.
 Fixture import has a separate 1380-second construction budget, including stopping
 the writer and freezing its consistent index; measured cold/warm budgets stay at 60.
+Its four preparation workers use independent real Native connections, within the
+same 4-CPU/10-GiB cgroup. This avoids depending on request scheduling within one
+connection. The previous single-connection preparation reached only 1500/2048
+chats at its limit on Native 0.154.0 in run `43222054709`; the changed preparation
+must be demonstrated on the complete runtime matrix. No workload or deadline is removed.
 This preparation limit replaces the initial 600-second estimate based on measured
 run `43078675692` at `b4be4410b3cc46d43340ffbf880d1808bf0c8981`:
 Native 0.154.0 imports 100 chats per 56–57 seconds, reaching 1000 at the old limit.
@@ -63,8 +70,11 @@ budget fails the scenario; the harness does not rerun a failed scenario or
 increase timeouts.
 
 `QUALIFICATION_SCOPE=interruption` is a separate diagnostic on the actual old
-updater. A FIFO pauses its existing version-file write after switching `current`;
-the test kills only the fixture updater service and requires automatic recovery.
+updater. Real FIFOs pause its build checkpoint, version write and final update
+confirmation; a delayed real Native response exposes candidate recovery. The
+test terminates the fixture updater at each boundary and also terminates the
+unconfirmed candidate during recovery. Every case requires automatic restoration
+of A and completion of the original work with the same surviving Native daemon.
 This scope does not run or qualify the large-history matrix.
 
 `QUALIFICATION_SCOPE=clean` installs the exact candidate using the same version/SHA
@@ -72,6 +82,13 @@ substitution as publication. It verifies its committed build identity and the
 effective 420-second systemd recovery stop limit, then resumes actual private
 account requests, a queue, an approval and a managed result after an API restart.
 It does not qualify the separate large-history, upgrade or failed-candidate matrix.
+It also starts the actual packaged ClaudeNest API and GeminiNest daemon/gateway,
+checks their health/version and serves both UI bundles from the candidate release.
+These startup smoke tests use an empty private HOME and the real pinned Claude
+2.1.289 and Antigravity 1.5.6 binaries (Google's distribution is checksum-verified).
+They do not log in or execute model requests; provider traffic is disabled/blocked
+in their subprocess environment. Native model execution and proxy qualification
+remain the separate Codex lifecycle/network cases.
 
 The candidate installs its persistent recovery guard from `postbuild` only while
 building a managed release inside the real updater service. Ordinary checkout

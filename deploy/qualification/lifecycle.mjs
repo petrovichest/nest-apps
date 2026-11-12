@@ -237,7 +237,7 @@ result=[]
 bound=set()
 for line in Path('/proc/net/unix').read_text().splitlines()[1:]:
     fields=line.split()
-    if len(fields)>7 and fields[7]=='${nativeSocket}':
+    if len(fields)>7 and int(fields[3],16) & 0x10000 and (${all ? "True" : "False"} or fields[7]=='${nativeSocket}'):
         bound.add('socket:['+fields[6]+']')
 for proc in Path('/proc').iterdir():
     if not proc.name.isdigit(): continue
@@ -250,7 +250,7 @@ for proc in Path('/proc').iterdir():
         for fd in (proc/'fd').iterdir():
             try: sockets.add(os.readlink(fd))
             except OSError: pass
-        if Path(exe).name == 'codex' and b'app-server' in command and (${all ? "True" : "False"} or sockets.intersection(bound)):
+        if Path(exe).name == 'codex' and b'app-server' in command and sockets.intersection(bound):
             result.append({'pid':int(proc.name),'startTime':(proc/'stat').read_text().split(') ',1)[1].split()[19]})
     except (OSError,ValueError): pass
 print(json.dumps(result))
@@ -262,6 +262,7 @@ print(json.dumps(result))
 async function assertSurviving(previous, all = false) {
   assert.ok(previous.length, "Original native PID identity missing");
   const current = await pidIdentity(all);
+  report.lastNativeIdentity = { expected: previous, current };
   for (const process of previous)
     assert.ok(
       current.some((entry) => entry.pid === process.pid && entry.startTime === process.startTime),
@@ -871,102 +872,191 @@ async function qualify() {
         systemdRecoveryStopSeconds: 420,
       };
     });
+    await stage("other-packaged-applications-startup", async () => {
+      await run("node", [join(input, "packaged-smoke.mjs"), join(root, "current")], {
+        timeout: 180_000,
+      });
+      return JSON.parse(await readFile(join(output, "packaged-smoke.json"), "utf8"));
+    });
     return;
   }
   if (scope === "interruption") {
-    await stage("old-updater-interrupted-between-pointer-and-version-write", async () => {
-      const work = await holdWork("interrupted-switch");
-      const oldTarget = await readlink(join(root, "current"));
-      const originalCli = await readFile(cli);
-      assert.equal(
-        originalCli.toString(),
-        await run("git", [
-          "-C",
-          join(root, "source"),
-          "show",
-          `${baseline.commit}:deploy/codexnest`,
-        ]),
-      );
-      await control({
-        manifest: { schemaVersion: 1, version: candidateVersion, commit: candidate },
-      });
-      await systemctl("start", "--no-block", "codexnest-update.service");
-      const updaterPid = await until("Actual updater process started", async () => {
-        const pid = Number(
-          (await systemctl("show", "codexnest-update.service", "-p", "MainPID", "--value")).trim(),
+    for (const point of ["prepared", "pointer", "candidate-recovery", "candidate-confirmation"]) {
+      await stage(`old-updater-interrupted-${point}`, async () => {
+        const work = await holdWork(`interrupted-${point}`);
+        const oldTarget = await readlink(join(root, "current"));
+        const originalCli = await readFile(cli);
+        assert.equal(
+          originalCli.toString(),
+          await run("git", [
+            "-C",
+            join(root, "source"),
+            "show",
+            `${baseline.commit}:deploy/codexnest`,
+          ]),
         );
-        return pid > 1 ? pid : null;
-      });
-      // A real FIFO blocks the unchanged script's shell redirection at its
-      // existing server.env.$$ write. No updater, RPC or systemctl is mocked.
-      const fifo = join(home, `.config/codexnest/server.env.${updaterPid}`);
-      await run("mkfifo", ["--mode=600", fifo]);
-      let interruptedAt;
-      try {
+        await control({
+          manifest: { schemaVersion: 1, version: candidateVersion, commit: candidate },
+        });
+        await until("Previous updater exited", async () =>
+          ["inactive", "failed"].includes(
+            (
+              await systemctl("show", "codexnest-update.service", "-p", "ActiveState", "--value")
+            ).trim(),
+          ),
+        );
+        const previousStatus = await readFile(statusPath, "utf8").catch(() => "");
+        if (point.startsWith("candidate-")) relay.hold("thread/list", 10_000, true);
+        await systemctl("reset-failed", "codexnest-update.service");
+        await systemctl("start", "--no-block", "codexnest-update.service");
+        const updaterPid = await until("Actual updater process started", async () => {
+          const pid = Number(
+            (
+              await systemctl("show", "codexnest-update.service", "-p", "MainPID", "--value")
+            ).trim(),
+          );
+          return pid > 1 ? pid : null;
+        });
+        // Block existing writes in the unchanged updater. Candidate startup uses
+        // a delayed response from the real Native daemon, never a synthetic RPC.
+        let fifo;
+        let interruptedAt;
+        try {
+          if (point === "prepared") {
+            const directory = join(root, "releases", `v${candidateVersion}`);
+            await until(
+              "Candidate worktree created",
+              async () => (await stat(join(directory, "package.json")).catch(() => null))?.isFile(),
+              report.budgetsMs.build,
+            );
+            fifo = join(directory, ".codexnest-built");
+            await run("mkfifo", ["--mode=600", fifo]);
+            await until(
+              "Recovery installed before the build checkpoint",
+              async () => {
+                const value = JSON.parse(
+                  await readFile(join(root, "recovery/journal.json"), "utf8").catch(() => "null"),
+                );
+                if (value?.phase !== "pending" || value.target?.commit !== candidate) return false;
+                return (
+                  await systemctl(
+                    "show",
+                    "codexnest-update.service",
+                    "-p",
+                    "ExecStopPost",
+                    "--value",
+                  )
+                ).includes("after-update");
+              },
+              report.budgetsMs.build,
+            );
+            assert.equal(await readlink(join(root, "current")), oldTarget);
+          } else if (point === "pointer") {
+            fifo = join(home, `.config/codexnest/server.env.${updaterPid}`);
+            await run("mkfifo", ["--mode=600", fifo]);
+            await until(
+              "Old updater switched the real current pointer",
+              async () => {
+                const current = await readlink(join(root, "current"));
+                const raw = await readFile(statusPath, "utf8").catch((error) => {
+                  if (error.code === "ENOENT") return null;
+                  throw error;
+                });
+                if (!raw) return false;
+                if (raw === previousStatus) return false;
+                const status = JSON.parse(raw);
+                if (status.result === "failed")
+                  throw new Error(`Update failed before injection: ${status.message}`);
+                return current.endsWith(`/v${candidateVersion}`);
+              },
+              report.budgetsMs.build,
+            );
+            const config = await readFile(join(home, ".config/codexnest/server.env"), "utf8");
+            assert.equal(config.match(/^CODEXNEST_VERSION=(.*)$/m)?.[1], baseline.version);
+          } else {
+            await until(
+              "Candidate HTTP started before Native recovery completed",
+              async () => {
+                const raw = await readFile(statusPath, "utf8");
+                if (raw !== previousStatus) {
+                  const value = JSON.parse(raw);
+                  if (value.operation === "idle" && value.result === "failed")
+                    throw new Error(`Update failed before injection: ${value.message}`);
+                }
+                const value = await health();
+                return value?.serverVersion === candidateVersion && value.recoveryState !== "ready";
+              },
+              report.budgetsMs.build,
+            );
+            assert.ok(relay.holding(), "Candidate did not traverse the delayed Native response");
+            if (point === "candidate-confirmation") {
+              fifo = `${statusPath}.${updaterPid}`;
+              await run("mkfifo", ["--mode=600", fifo]);
+              await ready(candidateVersion);
+              assert.equal(JSON.parse(await readFile(statusPath, "utf8")).operation, "restarting");
+              await assert.rejects(
+                api(`/projects/${projectId}/threads`, { clientCreationId: randomUUID() }),
+                (error) => error.status === 503,
+                "Unconfirmed candidate accepted new work",
+              );
+            } else {
+              // Terminate the real unconfirmed candidate as well as its updater.
+              // Its state was checkpointed by A; neither Native nor its work is killed.
+              await systemctl("kill", "--kill-whom=main", "--signal=SIGKILL", "codexnest.service");
+            }
+          }
+          if (fifo) assert.ok((await stat(fifo)).isFIFO());
+          interruptedAt = Date.now();
+          report.interruption = {
+            point,
+            originalUpdaterSha256: createHash("sha256").update(originalCli).digest("hex"),
+            updaterPid,
+            observations: [],
+          };
+          await systemctl(
+            "kill",
+            "--kill-whom=all",
+            "--signal=SIGKILL",
+            "codexnest-update.service",
+          );
+        } finally {
+          if (fifo) await unlink(fifo);
+        }
         await until(
-          "Old updater switched the real current pointer",
+          "Interrupted updater automatically restored A",
           async () => {
             const current = await readlink(join(root, "current"));
-            const raw = await readFile(statusPath, "utf8").catch((error) => {
-              if (error.code === "ENOENT") return null;
-              throw error;
-            });
-            if (!raw) return false;
-            const status = JSON.parse(raw);
-            if (status.result === "failed")
-              throw new Error(`Update failed before injection: ${status.message}`);
-            return current.endsWith(`/v${candidateVersion}`);
+            const state = JSON.parse(await readFile(statusPath, "utf8"));
+            const value = await health();
+            const observation = {
+              afterMs: Date.now() - interruptedAt,
+              pointer: current === oldTarget ? "baseline" : "candidate",
+              healthVersion: value?.serverVersion ?? null,
+              recovery: value?.recoveryState ?? "unavailable",
+              updaterOperation: state.operation,
+              updaterResult: state.result,
+            };
+            const signature = JSON.stringify({ ...observation, afterMs: 0 });
+            if (report.interruption.observations.at(-1)?.signature !== signature) {
+              report.interruption.observations.push({ ...observation, signature });
+              await saveReport();
+            }
+            return (
+              current === oldTarget &&
+              value?.serverVersion === baseline.version &&
+              value.recoveryState === "ready" &&
+              state.operation === "idle" &&
+              ["failed", "rolled_back"].includes(state.result)
+            );
           },
-          report.budgetsMs.build,
+          Math.max(1, report.budgetsMs.rollback - (Date.now() - interruptedAt)),
         );
-        assert.ok((await stat(fifo)).isFIFO());
-        const config = await readFile(join(home, ".config/codexnest/server.env"), "utf8");
-        assert.equal(config.match(/^CODEXNEST_VERSION=(.*)$/m)?.[1], baseline.version);
-        interruptedAt = Date.now();
-        report.interruption = {
-          point: "current switched; existing version write blocked before mutation",
-          originalUpdaterSha256: createHash("sha256").update(originalCli).digest("hex"),
-          updaterPid,
-          observations: [],
-        };
-        await systemctl("kill", "--kill-whom=all", "--signal=SIGKILL", "codexnest-update.service");
-      } finally {
-        await unlink(fifo);
-      }
-      await until(
-        "Interrupted updater automatically restored A",
-        async () => {
-          const current = await readlink(join(root, "current"));
-          const state = JSON.parse(await readFile(statusPath, "utf8"));
-          const value = await health();
-          const observation = {
-            afterMs: Date.now() - interruptedAt,
-            pointer: current === oldTarget ? "baseline" : "candidate",
-            healthVersion: value?.serverVersion ?? null,
-            recovery: value?.recoveryState ?? "unavailable",
-            updaterOperation: state.operation,
-            updaterResult: state.result,
-          };
-          const signature = JSON.stringify({ ...observation, afterMs: 0 });
-          if (report.interruption.observations.at(-1)?.signature !== signature) {
-            report.interruption.observations.push({ ...observation, signature });
-            await saveReport();
-          }
-          return (
-            current === oldTarget &&
-            value?.serverVersion === baseline.version &&
-            value.recoveryState === "ready" &&
-            state.operation === "idle" &&
-            ["failed", "rolled_back"].includes(state.result)
-          );
-        },
-        Math.max(1, report.budgetsMs.rollback - (Date.now() - interruptedAt)),
-      );
-      const recovered = { ...(await ready(baseline.version)), ...(await finishWork(work)) };
-      const fullRecoveryMs = Date.now() - interruptedAt;
-      assert.ok(fullRecoveryMs <= report.budgetsMs.rollback);
-      return { ...recovered, fullRecoveryMs };
-    });
+        const recovered = { ...(await ready(baseline.version)), ...(await finishWork(work)) };
+        const fullRecoveryMs = Date.now() - interruptedAt;
+        assert.ok(fullRecoveryMs <= report.budgetsMs.rollback);
+        return { ...recovered, fullRecoveryMs, interruption: report.interruption };
+      });
+    }
     return;
   }
   await stage("representative-synthetic-history-files", async () => {
@@ -982,9 +1072,9 @@ async function qualify() {
     await run("codex", ["app-server", "daemon", "bootstrap"]);
     const history = JSON.parse(await readFile(join(privateRoot, "history-manifest.json"), "utf8"));
     let next = 0;
-    await nativeRpc(async (rpc) => {
-      await Promise.all(
-        Array.from({ length: 4 }, async () => {
+    await Promise.all(
+      Array.from({ length: 4 }, () =>
+        nativeRpc(async (rpc) => {
           while (next < history.length) {
             assert.ok(
               Date.now() - started < report.budgetsMs.fixtureImport,
@@ -1012,8 +1102,8 @@ async function qualify() {
               process.stdout.write(`Native fixture import: ${next}/${history.length}\n`);
           }
         }),
-      );
-    });
+      ),
+    );
     await writeFile(join(privateRoot, "history-manifest.json"), JSON.stringify(history));
     await stopNative();
     await run("python3", [join(input, "history.py"), "freeze"], { timeout: 180_000 });

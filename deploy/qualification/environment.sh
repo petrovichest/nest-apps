@@ -6,7 +6,7 @@ set -euo pipefail
   exit 2
 }
 [[ "$(id -un)" == runner && "${RUNNER_OS:-}" == Linux ]]
-case "${NATIVE_VERSION:-}" in 0.154.0|0.167.0|0.167.1) ;; *) exit 2 ;; esac
+case "${NATIVE_VERSION:-}" in 0.154.0|0.167.0|0.167.1|0.167.2) ;; *) exit 2 ;; esac
 qualification_mode="${QUALIFICATION_MODE:-environment}"
 case "$qualification_mode" in environment|lifecycle) ;; *) exit 2 ;; esac
 qualification_scope="${QUALIFICATION_SCOPE:-all}"
@@ -75,11 +75,25 @@ printf '%s  %s\n' "$qualification_node_sha" "$RUNNER_TEMP/qualification-node.tar
 sudo tar -xJf "$RUNNER_TEMP/qualification-node.tar.xz" --strip-components=1 -C /opt/node
 sudo env PATH=/opt/node/bin:/usr/bin:/bin /opt/node/bin/npm install \
   --prefix /opt/native --ignore-scripts --no-audit --no-fund "@openai/codex@$NATIVE_VERSION"
+qualification_packages=(ws@8.21.1)
+if [[ "$qualification_mode" == lifecycle && "$qualification_scope" == clean ]]; then
+  qualification_packages+=(@anthropic-ai/claude-code@2.1.289)
+  # Pinned public Google distribution and SHA512 from its official manifest.
+  curl -fsSL --max-time 120 \
+    https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.6-6212266538958848/linux-x64/cli_linux_x64.tar.gz \
+    -o "$RUNNER_TEMP/qualification-agy.tar.gz"
+  printf '%s  %s\n' \
+    0c67824908caf9cc3156699802b8097f2fd02c4608ae9293c9aa7f17e1bcd342c4b9c2e158388253a37804ef6bd9c6b1d25cfaca3c07bbb7587378fc91839bb4 \
+    "$RUNNER_TEMP/qualification-agy.tar.gz" | sha512sum --check --strict
+  sudo tar -xzf "$RUNNER_TEMP/qualification-agy.tar.gz" -C /opt/qualification antigravity
+  sudo mv /opt/qualification/antigravity /opt/qualification/agy
+  sudo chmod 0755 /opt/qualification/agy
+fi
 sudo env PATH=/opt/node/bin:/usr/bin:/bin /opt/node/bin/npm install \
-  --prefix /opt/qualification --ignore-scripts --no-audit --no-fund ws@8.21.1
+  --prefix /opt/qualification --ignore-scripts --no-audit --no-fund "${qualification_packages[@]}"
 sudo install -m 0644 "$qualification_root/deploy/qualification/guest.sh" /qualification-input/guest.sh
 if [[ "$qualification_mode" == lifecycle ]]; then
-  for file in services.py provision.sh lifecycle.mjs native-relay.mjs history.py; do
+  for file in services.py provision.sh lifecycle.mjs native-relay.mjs history.py packaged-smoke.mjs; do
     sudo install -m 0644 "$qualification_root/deploy/qualification/$file" "/qualification-input/$file"
   done
   curl -fsSL --max-time 60 \
