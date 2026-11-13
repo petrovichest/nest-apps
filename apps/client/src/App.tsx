@@ -2487,9 +2487,7 @@ function ThreadLink({
           onClick={() => {
             closeActions();
             onNavigate();
-            navigate(
-              `/projects/${encodeURIComponent(boardProject.id)}/kanban?thread=${encodeURIComponent(thread.id)}`,
-            );
+            navigate(`/projects/${encodeURIComponent(boardProject.id)}/kanban`);
           }}
           type="button"
         >
