@@ -3950,11 +3950,9 @@ describe("AppProjection", () => {
         new AttentionManager(),
       );
 
-      const recovery = vi.fn();
-      projection.on("syncCompleted", recovery);
       await projection.sync();
       expect(projection.summary("retry")).toBeUndefined();
-      expect(recovery.mock.calls).toEqual([[false]]);
+      expect(projection.recoveryComplete).toBe(false);
 
       await vi.advanceTimersByTimeAsync(1_000);
       await vi.advanceTimersByTimeAsync(0);
@@ -3964,7 +3962,7 @@ describe("AppProjection", () => {
         currentTurnId: "live",
       });
       expect(loadedReads).toBe(2);
-      expect(recovery.mock.calls).toEqual([[false], [true]]);
+      expect(projection.recoveryComplete).toBe(true);
     } finally {
       vi.useRealTimers();
     }

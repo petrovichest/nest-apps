@@ -1058,8 +1058,11 @@ async function qualify() {
       assert.equal((await control()).oauthGeneration, before.oauthGeneration);
       const state = await control();
       await control({ released: [...state.released, held] });
-      await completed(savedThread, held);
-      await completed(savedThread, queued);
+      const detail = await completed(savedThread, queued);
+      assert.ok(
+        JSON.stringify(detail.turns).includes(`QUALIFICATION_OK:${held}`),
+        "The active request's response was lost after refusing the unsupported runtime",
+      );
       const finished = await control();
       assert.equal(finished.requests[held], 1, "Active request replayed on refused update");
       assert.equal(finished.requests[queued], 1, "Queued request replayed on refused update");

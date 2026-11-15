@@ -140,11 +140,6 @@ const appManager = new AppManager({
 projection.on("projectionError", (error: Error) => {
   process.stderr.write(`CodexNest projection update failed (${error.name})\n`);
 });
-projection.on("syncCompleted", (recovered: boolean) => {
-  if (lifecycle.state !== "syncing" && lifecycle.state !== "failed") return;
-  if (recovered) lifecycle.ready();
-  else lifecycle.failed();
-});
 bridge.on("protocolError", (error: Error) => {
   process.stderr.write(`CodexNest app-server protocol error (${error.message})\n`);
 });

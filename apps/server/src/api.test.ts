@@ -2066,7 +2066,8 @@ describe("HTTP authentication", () => {
       ).statusCode,
     ).toBe(401);
 
-    lifecycle.ready();
+    await projection.sync();
+    await vi.waitFor(() => expect(lifecycle.state).toBe("ready"));
     expect(
       (
         await app.inject({
@@ -2228,7 +2229,8 @@ describe("HTTP authentication", () => {
       });
       return { ok: true };
     });
-    lifecycle.ready();
+    await projection.sync();
+    await vi.waitFor(() => expect(lifecycle.state).toBe("ready"));
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("Expected a TCP test server");
@@ -2262,99 +2264,117 @@ describe("HTTP authentication", () => {
     await lifecycle.close();
   });
 
-  it("recovers to ready while preserving accepted messages for missing sessions", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "codexnest-startup-recovery-test-"));
-    directories.push(directory);
-    const store = new StateStore(join(directory, "state.json"));
-    await store.load();
-    await store.update((state) => {
-      state.auth.tokenSha256 = hashToken("correct");
-      state.threadMeta["queued-thread"] = {
-        pinned: false,
-        lastReadUpdatedAt: 0,
-      };
-      state.messageQueues = {
-        "queued-thread": [
-          {
-            id: "queued-message",
-            threadId: "queued-thread",
-            text: "Recover me",
-            createdAt: 1,
-            status: "dispatching",
-          },
-        ],
-      };
-    });
-    const bridge = new EventEmitter() as EventEmitter & {
-      state: "ready";
-      request: ReturnType<typeof vi.fn>;
-    };
-    bridge.state = "ready";
-    bridge.request = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
-      if (method === "thread/list") {
-        if (params.archived) return { data: [], nextCursor: null, backwardsCursor: null };
-        return {
-          data: [
+  it.each([false, true])(
+    "recovers accepted messages after a loaded-index failure: %s",
+    async (failLoadedIndex) => {
+      const directory = await mkdtemp(join(tmpdir(), "codexnest-startup-recovery-test-"));
+      directories.push(directory);
+      const store = new StateStore(join(directory, "state.json"));
+      await store.load();
+      await store.update((state) => {
+        state.auth.tokenSha256 = hashToken("correct");
+        state.threadMeta["queued-thread"] = {
+          pinned: false,
+          lastReadUpdatedAt: 0,
+        };
+        state.messageQueues = {
+          "queued-thread": [
             {
-              ...testThread("orphan-thread"),
-              status: { type: "idle" as const },
-              updatedAt: 5,
-              recencyAt: 5,
+              id: "queued-message",
+              threadId: "queued-thread",
+              text: "Recover me",
+              createdAt: 1,
+              status: "dispatching",
             },
           ],
-          nextCursor: null,
-          backwardsCursor: null,
         };
+      });
+      const bridge = new EventEmitter() as EventEmitter & {
+        state: "ready";
+        request: ReturnType<typeof vi.fn>;
+      };
+      bridge.state = "ready";
+      let loadedIndexFailed = false;
+      bridge.request = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+        if (method === "thread/list") {
+          if (params.archived) return { data: [], nextCursor: null, backwardsCursor: null };
+          return {
+            data: [
+              {
+                ...testThread("orphan-thread"),
+                status: { type: "idle" as const },
+                updatedAt: 5,
+                recencyAt: 5,
+              },
+            ],
+            nextCursor: null,
+            backwardsCursor: null,
+          };
+        }
+        if (method === "thread/loaded/list") {
+          if (failLoadedIndex && !loadedIndexFailed) {
+            loadedIndexFailed = true;
+            throw new Error("Loaded index temporarily unavailable");
+          }
+          return { data: [], nextCursor: null };
+        }
+        if (method === "thread/turns/list" && params.threadId === "orphan-thread") {
+          throw new RpcError(-32_600, "no rollout found for thread id orphan-thread");
+        }
+        if (method === "thread/turns/list" && params.threadId === "queued-thread") {
+          throw new RpcError(-32_600, "no rollout found for thread id queued-thread");
+        }
+        if (method === "model/list") return { data: [], nextCursor: null };
+        if (method === "thread/turns/list") {
+          return { data: [], nextCursor: null, backwardsCursor: null };
+        }
+        throw new Error(`Unexpected ${method}`);
+      });
+      const attention = new AttentionManager();
+      const projection = new AppProjection(bridge as unknown as CodexBridge, store, attention);
+      const tokenPath = join(directory, "restart-token");
+      const lifecycle = new RuntimeLifecycle({
+        transport: "daemon",
+        tokenPath,
+        bridgeReady: () => true,
+        checkpoint: () => store.checkpoint(),
+        drainLeaseMs: 1_000,
+      });
+      await lifecycle.initialize();
+      const app = await buildApp(
+        loadConfig({
+          statePath: store.path,
+          clientDist: join(directory, "missing"),
+          allowedOrigins: new Set(["http://localhost"]),
+        }),
+        {
+          bridge: bridge as unknown as CodexBridge,
+          store,
+          projection,
+          attention,
+          lifecycle,
+        },
+      );
+      lifecycle.syncing();
+      await projection.sync();
+      if (failLoadedIndex) {
+        expect(lifecycle.state).toBe("failed");
+        expect((await app.inject({ url: "/api/v1/health" })).json()).toMatchObject({
+          status: "degraded",
+          recoveryState: "failed",
+        });
+        expect(store.snapshot().messageQueues?.["queued-thread"]?.[0]?.status).toBe("dispatching");
       }
-      if (method === "thread/loaded/list") return { data: [], nextCursor: null };
-      if (method === "thread/turns/list" && params.threadId === "orphan-thread") {
-        throw new RpcError(-32_600, "no rollout found for thread id orphan-thread");
-      }
-      if (method === "thread/turns/list" && params.threadId === "queued-thread") {
-        throw new RpcError(-32_600, "no rollout found for thread id queued-thread");
-      }
-      if (method === "model/list") return { data: [], nextCursor: null };
-      if (method === "thread/turns/list") {
-        return { data: [], nextCursor: null, backwardsCursor: null };
-      }
-      throw new Error(`Unexpected ${method}`);
-    });
-    const attention = new AttentionManager();
-    const projection = new AppProjection(bridge as unknown as CodexBridge, store, attention);
-    const tokenPath = join(directory, "restart-token");
-    const lifecycle = new RuntimeLifecycle({
-      transport: "daemon",
-      tokenPath,
-      bridgeReady: () => true,
-      checkpoint: () => store.checkpoint(),
-      drainLeaseMs: 1_000,
-    });
-    await lifecycle.initialize();
-    const app = await buildApp(
-      loadConfig({
-        statePath: store.path,
-        clientDist: join(directory, "missing"),
-        allowedOrigins: new Set(["http://localhost"]),
-      }),
-      {
-        bridge: bridge as unknown as CodexBridge,
-        store,
-        projection,
-        attention,
-        lifecycle,
-      },
-    );
-    lifecycle.syncing();
-    await projection.sync();
-    await vi.waitFor(() => expect(lifecycle.state).toBe("ready"));
-    expect(store.snapshot().threadMeta["orphan-thread"]).toBeUndefined();
-    expect(store.snapshot().threadMeta["queued-thread"]).toBeDefined();
-    expect(store.snapshot().messageQueues?.["queued-thread"]).toMatchObject([
-      { id: "queued-message", text: "Recover me", deliveryError: { retryable: false } },
-    ]);
-    await app.close();
-    await lifecycle.close();
-  });
+      await vi.waitFor(() => expect(lifecycle.state).toBe("ready"), { timeout: 3_000 });
+      expect(store.snapshot().threadMeta["orphan-thread"]).toBeUndefined();
+      expect(store.snapshot().threadMeta["queued-thread"]).toBeDefined();
+      expect(store.snapshot().messageQueues?.["queued-thread"]).toMatchObject([
+        { id: "queued-message", text: "Recover me", deliveryError: { retryable: false } },
+      ]);
+      await app.close();
+      await lifecycle.close();
+    },
+  );
 
   it("keeps health public and rejects missing, query, and bad tokens", async () => {
     const directory = await mkdtemp(join(tmpdir(), "codexnest-api-test-"));

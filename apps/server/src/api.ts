@@ -3052,6 +3052,10 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
 
   let recoveryAgain = false;
   const runRecovery = (): Promise<void> => {
+    if (!projection.recoveryComplete) {
+      lifecycle?.failed();
+      return Promise.resolve();
+    }
     if (recoveryPromise) {
       recoveryAgain = true;
       return recoveryPromise;
@@ -3098,7 +3102,11 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           }
         }
       } while (recoveryAgain && !teamContinuationsClosed);
-      if (bridge.state === "ready" && lifecycle?.state !== "draining" && !teamContinuationsClosed) {
+      if (
+        projection.recoveryComplete &&
+        lifecycle?.state !== "draining" &&
+        !teamContinuationsClosed
+      ) {
         lifecycle?.ready();
         if (lifecycle?.updatePending) return;
         teamContinuationsPaused = false;
