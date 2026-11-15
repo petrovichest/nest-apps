@@ -7,6 +7,108 @@ import type { ServerRequest } from "./codex/generated/index";
 import type { JsonlTransport } from "./codex/transport";
 import { AttentionManager } from "./attention";
 
+it.each(["none", "resume", "save"])(
+  "preserves live history and hides internal archive events during a handover (%s failure)",
+  async (failure) => {
+    const state = { threadOwners: { chat: "native" }, legacyAccountId: "account" };
+    let writer: string | null = "native";
+    let archived = false;
+    let failedSave = false;
+    let filter: (notice: any) => boolean;
+    const bridge = Object.assign(new EventEmitter(), {
+      setRequestRouter: vi.fn(),
+      setNativeNotificationFilter: (next: any) => {
+        filter = next;
+      },
+      threadActive: () => false,
+      acceptNotification: vi.fn(),
+      requestNative: vi.fn(async (method: string) => {
+        if (method === "thread/read") return { thread: { status: { type: "idle" } } };
+        if (method === "thread/archive") {
+          writer = null;
+          archived = true;
+          for (const method of ["thread/archived", "thread/closed"]) {
+            const notice = { method, params: { threadId: "chat" } };
+            if (filter(notice)) bridge.acceptNotification(notice);
+          }
+        }
+        if (method === "thread/unarchive") archived = false;
+        if (method === "thread/resume") {
+          expect(writer).toBeNull();
+          writer = "native";
+        }
+        return {};
+      }),
+    });
+    const target = {
+      request: vi.fn(async (method: string) => {
+        if (method === "thread/archive") {
+          writer = null;
+          archived = true;
+        }
+        if (method === "thread/unarchive") {
+          archived = false;
+          pool.emit(
+            "notification",
+            { id: "next" },
+            {
+              method: "thread/unarchived",
+              params: { threadId: "chat" },
+            },
+          );
+        }
+        if (method === "thread/resume") {
+          expect(writer).toBeNull();
+          if (failure === "resume") throw new Error("target resume failed");
+          writer = "next";
+        }
+        return {};
+      }),
+    };
+    const pool = Object.assign(new EventEmitter(), {
+      ensure: async () => ({ descriptor: { id: "next" }, bridge: target }),
+      close: async () => undefined,
+    });
+    const router = new CodexAccountRouter(
+      bridge as unknown as CodexBridge,
+      pool as unknown as AccountRuntimePool,
+      {
+        state,
+        selected: () => null,
+        save: async () => {
+          if (failure === "save" && !failedSave && state.threadOwners.chat === "next") {
+            failedSave = true;
+            throw new Error("metadata write failed");
+          }
+        },
+        observe: () => undefined,
+        userWork: () => undefined,
+        account: () => null,
+        beforeStart: () => undefined,
+      },
+    );
+    try {
+      const transfer = router.move("chat", {
+        id: "account",
+        native: false,
+        home: "/fixture",
+        proxy: null,
+      });
+      if (failure === "none") await transfer;
+      else
+        await expect(transfer).rejects.toThrow(
+          failure === "save" ? "metadata write failed" : "target resume failed",
+        );
+      expect(archived).toBe(false);
+      expect(writer).toBe(failure === "none" ? "next" : "native");
+      expect(state.threadOwners.chat).toBe(writer);
+      expect(bridge.acceptNotification).not.toHaveBeenCalled();
+    } finally {
+      await router.close();
+    }
+  },
+);
+
 it("blocks background dispatch and keeps legacy resumes on Native before update confirmation", async () => {
   let admitted = false;
   const nativeRequest = vi.fn(async () => ({ thread: { id: "legacy" } }));

@@ -438,8 +438,29 @@ it.skipIf(!binary)(
     };
     try {
       await bridge.start();
+      // The original daemon keeps a writer even for an idle saved session.
+      // A later account handover must release it, not merely unsubscribe.
+      const legacy = await bridge.requestNative<any>("thread/start", {
+        cwd: root,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      });
       await manager.initialize();
       await manager.restore();
+      expect((await run(legacy.thread.id, "Reply ACCOUNT_OK from saved history")).status).toBe(
+        "completed",
+      );
+      expect(requests.filter((request) => request.path.endsWith("/responses")).at(-1)?.route).toBe(
+        "A",
+      );
+      expect(
+        (
+          await bridge.request<any>("thread/read", {
+            threadId: legacy.thread.id,
+            includeTurns: true,
+          })
+        ).thread.turns,
+      ).toHaveLength(1);
       const { thread } = await bridge.request<any>("thread/start", {
         cwd: root,
         approvalPolicy: "never",

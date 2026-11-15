@@ -50,6 +50,12 @@ export class CodexAccountRouter {
           : "threadId" in notice.params
             ? notice.params.threadId
             : undefined;
+      if (
+        typeof id === "string" &&
+        this.migrations.has(id) &&
+        ["thread/archived", "thread/unarchived", "thread/closed"].includes(notice.method)
+      )
+        return false;
       const owner = typeof id === "string" ? options.state.threadOwners[id] : undefined;
       return !owner || owner === LEGACY;
     });
@@ -161,6 +167,12 @@ export class CodexAccountRouter {
         : "threadId" in notice.params
           ? notice.params.threadId
           : undefined;
+    if (
+      typeof id === "string" &&
+      this.migrations.has(id) &&
+      ["thread/archived", "thread/unarchived", "thread/closed"].includes(notice.method)
+    )
+      return;
     if (notice.method === "thread/started" && notice.params.thread.ephemeral)
       this.ephemeral.add(notice.params.thread.id);
     if (typeof id === "string" && this.ephemeral.has(id)) {
@@ -337,20 +349,32 @@ export class CodexAccountRouter {
         throw new AccountRuntimeError("Wait for the active response before changing its account");
       const next = await this.pool.ensure(account);
       if (owner === next.descriptor.id) return next.bridge;
-      await native("thread/unsubscribe", { threadId }, 30_000);
+      // Unsubscribe retains Native's idle runtime and its SQLite writer lease.
+      // Archive flushes and unloads it; restore the same history on the new owner.
+      await native("thread/archive", { threadId }, 30_000);
       // Persist before subscribing: replayed events must already belong to the new owner.
-      await this.bind(threadId, next.descriptor.id);
       try {
+        await this.bind(threadId, next.descriptor.id);
+        await next.bridge.request("thread/unarchive", { threadId }, 30_000);
         await next.bridge.request(
           "thread/resume",
           { threadId, excludeTurns: true, config: { "features.respect_system_proxy": true } },
           30_000,
         );
       } catch (error) {
-        if (owner) await this.bind(threadId, owner);
-        else {
-          delete this.options.state.threadOwners[threadId];
-          await this.save();
+        // A failed resume must leave the conversation live on its original owner.
+        await next.bridge.request("thread/archive", { threadId }, 30_000).catch(() => undefined);
+        try {
+          if (owner) await this.bind(threadId, owner);
+          else {
+            delete this.options.state.threadOwners[threadId];
+            await this.save();
+          }
+        } finally {
+          await native("thread/unarchive", { threadId }, 30_000);
+          // Reacquiring the writer proves the original context was restored,
+          // including when the target's cleanup connection was unavailable.
+          await native("thread/resume", { threadId, excludeTurns: true }, 30_000);
         }
         throw error;
       }

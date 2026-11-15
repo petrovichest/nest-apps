@@ -22,7 +22,7 @@ STATE = {'manifest': json.loads((ROOT / 'baseline.json').read_text()),
          'requests': {}, 'auxiliaryRequests': {}, 'released': [], 'oauthGeneration': 0, 'authFailure': False,
          'registryUnavailable': False,
          'proxyConnections': 0, 'deniedConnections': 0, 'directModelRequests': 0,
-         'directOAuthRequests': 0, 'rejectedAccessTokens': 0}
+         'directOAuthRequests': 0, 'rejectedAccessTokens': 0, 'failedOAuthRequests': 0}
 LOCK = threading.Lock()
 PROXY_PORTS = set()
 
@@ -160,8 +160,11 @@ class Model(Handler):
                           refresh != f'qualification-refresh-{STATE["oauthGeneration"]}')
                 if not failed:
                     STATE['oauthGeneration'] += 1
+                else:
+                    STATE['failedOAuthRequests'] += 1
                 generation = STATE['oauthGeneration']
-            self.send(401 if failed else 200,
+                transient = STATE['authFailure'] == 'transient'
+            self.send((503 if transient else 401) if failed else 200,
                       {'error': 'invalid_grant'} if failed else
                       {'id_token': jwt(generation), 'access_token': jwt(generation),
                        'refresh_token': f'qualification-refresh-{generation}',

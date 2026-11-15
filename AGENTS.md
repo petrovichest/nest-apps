@@ -32,10 +32,10 @@
   a normal fast-forward push to `main` is allowed after the required `verify` check passes.
   Saving source on `main` does not qualify an application release. Keep the CI publication
   gate closed until qualification succeeds; do not create a release tag to bypass it.
-- The existing workflow does not yet enforce the complete gate in the linked policy.
-  Until the gate is implemented and demonstrated, treat application publication as blocked;
-  writing this policy does not make the current release process safe. Policy documentation
-  may be committed and pushed on a non-publishing branch without publishing an application.
+- The workflow accepts only the complete successful manual native matrix for the exact
+  candidate SHA, including the validated qualification artifact and unchanged healthy
+  baseline. Until that matrix passes, application publication remains blocked. Neither
+  policy documentation nor the presence of the harness qualifies a candidate.
 - Report code completion, CI results, candidate qualification, release publication, and
   installation health as separate facts. Never claim the user's application was updated
   or recovered without observing that specific result.

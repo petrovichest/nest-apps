@@ -112,16 +112,25 @@ if [[ "$qualification_mode" == lifecycle ]]; then
     sudo install -m 0644 "$qualification_root/deploy/qualification/$file" "/qualification-input/$file"
   done
   sudo install -m 0644 "$qualification_root/deploy/restart-protocol.json" /qualification-input/candidate-restart-protocol.json
-  # Keep the observed healthy A even after rolling-latest moves. Reproduce its
-  # release packaging from immutable source and require the published bytes.
-  printf '%s\n' '{"schemaVersion":1,"version":"0.1.9-fe3c5c8","commit":"fe3c5c858344b5f03c2619250b01d351930c891b"}' \
-    > "$RUNNER_TEMP/qualification-baseline.json"
-  git -C "$qualification_root" show fe3c5c858344b5f03c2619250b01d351930c891b:deploy/install.sh \
-    | sed -e 's/^codexnest_default_version=.*/codexnest_default_version="0.1.9-fe3c5c8"/' \
-          -e 's/^codexnest_default_ref=.*/codexnest_default_ref="fe3c5c858344b5f03c2619250b01d351930c891b"/' \
+  # Pin both the last healthy publication and the incident recovery release.
+  # Reproduce release packaging from immutable source and check published bytes.
+  case "${QUALIFICATION_BASELINE:-current}" in
+    current)
+      qualification_baseline=f42edbee78b582bb54c96ab7bfc732286f10a667
+      qualification_baseline_hash=263410a46f2af777c215463f6754af2d4c06637a963c269ecb0f64805b9b90f1 ;;
+    incident)
+      qualification_baseline=fe3c5c858344b5f03c2619250b01d351930c891b
+      qualification_baseline_hash=0642c7e8a4cfbd5d3cef539d797d7f109cfa0453399b2640830dc02f3745e316 ;;
+    *) exit 2 ;;
+  esac
+  printf '{"schemaVersion":1,"version":"0.1.9-%s","commit":"%s"}\n' \
+    "${qualification_baseline:0:7}" "$qualification_baseline" > "$RUNNER_TEMP/qualification-baseline.json"
+  git -C "$qualification_root" show "$qualification_baseline:deploy/install.sh" \
+    | sed -e "s/^codexnest_default_version=.*/codexnest_default_version=\"0.1.9-${qualification_baseline:0:7}\"/" \
+          -e "s/^codexnest_default_ref=.*/codexnest_default_ref=\"$qualification_baseline\"/" \
       > "$RUNNER_TEMP/qualification-install-A.sh"
   printf '%s  %s\n' \
-    0642c7e8a4cfbd5d3cef539d797d7f109cfa0453399b2640830dc02f3745e316 \
+    "$qualification_baseline_hash" \
     "$RUNNER_TEMP/qualification-install-A.sh" | sha256sum --check --strict
   sudo install -m 0644 "$RUNNER_TEMP/qualification-baseline.json" /qualification-input/baseline.json
   sudo install -m 0644 "$RUNNER_TEMP/qualification-install-A.sh" /qualification-input/install-A.sh
@@ -133,7 +142,7 @@ if [[ "$qualification_mode" == lifecycle ]]; then
   sha256sum "$RUNNER_TEMP/qualification-install-B.sh" > "$qualification_output/candidate-installer-sha256.txt"
   git clone --bare --no-hardlinks "$qualification_root" "$RUNNER_TEMP/qualification-source.git"
   git -C "$RUNNER_TEMP/qualification-source.git" update-ref refs/heads/qualification "$qualification_sha"
-  git -C "$RUNNER_TEMP/qualification-source.git" update-ref refs/heads/main fe3c5c858344b5f03c2619250b01d351930c891b
+  git -C "$RUNNER_TEMP/qualification-source.git" update-ref refs/heads/main "$qualification_baseline"
   git -C "$RUNNER_TEMP/qualification-source.git" update-server-info
   sudo cp -a "$RUNNER_TEMP/qualification-source.git" /qualification-input/nest-apps.git
   printf '%s\n' "$qualification_sha" | sudo tee /qualification-input/candidate-sha >/dev/null

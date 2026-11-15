@@ -3,7 +3,7 @@
 Run these diagnostics explicitly with the CI workflow's **Run workflow** action
 against the candidate branch. Ordinary pushes run source and account-network
 checks without requiring a PR. Publication is restricted to main/version tags
-and still depends on the closed mandatory qualification gate.
+and requires a complete successful manual qualification of the exact same SHA.
 
 `environment.sh` runs only on disposable GitHub-hosted VMs. Each matrix job owns
 a fresh VM with real systemd as PID 1 and a separate real user manager, uid 17001,
@@ -15,7 +15,7 @@ an additional OS image or APT packages.
 
 The default mode checks the exact pinned native package and actual daemon.
 `QUALIFICATION_MODE=lifecycle` additionally runs `lifecycle.mjs`. It uses the
-published `0.1.9-fe3c5c8` installer and its installed updater, with the exact
+published `0.1.9-f42edbe` installer and its installed updater, with the exact
 candidate Git commit served by a VM-local HTTPS artifact registry. The
 registry changes download inputs, not installer/updater code. The model and OAuth
 services are local fixtures; native RPC, health, systemctl and service units are
@@ -25,6 +25,8 @@ disposable test VM; the mapping is removed during cleanup.
 The pinned published installer is reconstructed with its original packaging
 from immutable source, and must match the SHA-256 of the observed published
 file. Moving the rolling channel cannot silently replace the baseline.
+Interrupted updates additionally run from the incident recovery release
+`0.1.9-fe3c5c8`. Both baseline installers match their observed published hashes.
 
 Published A reapplies auth on reconnect. Real Native 0.167.2 and 0.169.0
 terminate an active turn on that call with `application network permission was
@@ -63,20 +65,19 @@ an already paginated turns view merely by listing or reading its JSONL file.
 That full database-loss fault is not claimed as passing here. The nested file
 profile uses independently resumable Native V1 children; it does not impersonate
 V2 parent ownership. Actual application-managed Team execution is tested separately.
-Fixture import has a separate 1380-second construction budget, including stopping
+Fixture import has a separate 2100-second construction budget, including stopping
 the writer and freezing its consistent index; measured cold/warm budgets stay at 60.
 Its four preparation workers use independent real Native connections, within the
 same 4-CPU/10-GiB cgroup. This avoids depending on request scheduling within one
-connection. The previous single-connection preparation reached only 1500/2048
-chats at its limit on Native 0.154.0 in run `43222054709`; the changed preparation
-must be demonstrated on the complete runtime matrix. No workload or deadline is removed.
-This preparation limit replaces the initial 600-second estimate based on measured
-run `43078675692` at `b4be4410b3cc46d43340ffbf880d1808bf0c8981`:
-Native 0.154.0 imports 100 chats per 56–57 seconds, reaching 1000 at the old limit.
-The full 2048-chat workload therefore needs approximately 1160–1230 seconds before
-freezing. The volume, CPU/RAM limits and startup/RPC/health/rollback budgets are
-unchanged; the entire affected runtime matrix must run again with the declared
-construction limit. A fixture preparation pass is never a startup performance pass.
+connection. Run `43699932619` measured 89–90 seconds per 100 chats on Native
+0.154.0 even with four connections, reaching only 1500/2048 at the previous
+1380-second construction limit. This supersedes the earlier single-connection
+estimate of 56–57 seconds per 100. The complete workload therefore needs about
+1830 seconds, plus stopping the writer and freezing its consistent index.
+The declared 2100-second construction limit and 60-minute whole-job limit cover
+that measured work. Volume, CPU/RAM limits and startup/RPC/health/rollback
+deadlines are unchanged. The entire affected runtime matrix must run again;
+a fixture preparation pass is never a startup performance pass.
 On cold bootstrap, the CLI's internal short probe may time out while its spawned
 server continues initializing. The diagnostic then observes that same process
 without another bootstrap; native readiness and Nest recovery must still finish
@@ -121,11 +122,18 @@ Authentication and native history are never reverted. New candidate work remains
 blocked until the exact update is confirmed. These mechanisms still require the native diagnostics;
 their presence alone is not evidence that interrupted recovery works.
 
-These are **diagnostics, not complete release qualification**. `lifecycle.json`
-always has `releaseQualified: false` and explicitly lists unfinished mandatory
-cases. The publication gate stays closed until all requirements in
-`docs/release-safety.md` are implemented and demonstrated for the exact candidate.
-An environment-only pass or diagnostic pass must never authorize publication.
+Each `lifecycle.json` describes only its own scope and keeps `releaseQualified:
+false`. `release-report` depends on source verification, all native account-network
+and environment jobs, clean installation, both baseline interruption jobs and
+the full five-version history matrix. Its independent report validator rejects
+missing/failed cases, incomplete scopes, a different SHA, smaller history,
+changed readiness budgets, direct provider traffic and OOM. Only that successful
+aggregate produces the immutable `qualified-release-<SHA>` artifact.
+The publication gate requires the complete successful manual CI run at the same
+SHA, validates that artifact and installer hash, and checks that the published
+healthy baseline has not moved. Missing/expired evidence or a moved baseline
+blocks release. The qualification report and asset checksums accompany the release.
+An environment-only pass or a single diagnostic pass cannot authorize publication.
 The large-history jobs start after clean installation and interrupted-update
 diagnostics pass. An early failure therefore avoids building several large native
 fixtures for an already rejected candidate; skipped matrix jobs remain unqualified.

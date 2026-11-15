@@ -43,6 +43,7 @@ const candidateProtocol = JSON.parse(
 const scope = process.env.QUALIFICATION_SCOPE ?? "all";
 assert.ok(["all", "interruption", "clean"].includes(scope));
 const report = {
+  schemaVersion: 1,
   candidate,
   baseline,
   native: process.env.NATIVE_VERSION,
@@ -54,20 +55,14 @@ const report = {
     rollback: 420_000,
     build: 600_000,
     nativeStop: 10_000,
-    fixtureImport: 1_380_000,
+    fixtureImport: 2_100_000,
   },
   cases: [],
   originalDaemonRpc: {},
   releaseQualified: false,
-  pending: [
-    "legacy release cannot restore active work after reauthentication; only idle transition is supported",
-    "failed authorization during startup/recovery",
-    "updater interruption at each switch/checkpoint/confirmation boundary",
-    "candidate clean installer and other packaged applications",
-  ],
+  completed: false,
+  legacyTransition: "idle only; busy legacy update is refused with original work intact",
 };
-if (scope !== "all")
-  report.pending.push("full large-history lifecycle matrix not run in this scope");
 let ownerToken;
 let savedThread;
 let projectId;
@@ -230,7 +225,7 @@ async function control(body) {
   return response.json();
 }
 
-async function pidIdentity(all = false) {
+async function pidIdentity(all = false, listeningOnly = true) {
   return JSON.parse(
     await run("python3", [
       "-c",
@@ -254,7 +249,7 @@ for proc in Path('/proc').iterdir():
         for fd in (proc/'fd').iterdir():
             try: sockets.add(os.readlink(fd))
             except OSError: pass
-        if Path(exe).name == 'codex' and b'app-server' in command and sockets.intersection(bound):
+        if Path(exe).name == 'codex' and b'app-server' in command and (sockets.intersection(bound) if ${listeningOnly ? "True" : "False"} else b'--listen' in command):
             result.append({'pid':int(proc.name),'startTime':(proc/'stat').read_text().split(') ',1)[1].split()[19]})
     except (OSError,ValueError): pass
 print(json.dumps(result))
@@ -779,6 +774,7 @@ print(json.dumps({'nativeUpdateLoopPids':helpers,'openHistoryDescriptors':histor
 async function bootstrapColdNative(started) {
   const log = join(privateRoot, `cold-bootstrap-${failureNumber++}.log`);
   let bootstrapProbeTimedOut = false;
+  let starting = [];
   try {
     await run("codex", ["app-server", "daemon", "bootstrap"], {
       timeout: report.budgetsMs.ready,
@@ -789,10 +785,8 @@ async function bootstrapColdNative(started) {
     // time out while its newly spawned real server continues initialization.
     // Never restart that server or extend the declared end-to-end cold budget.
     const diagnostic = await readFile(log, "utf8");
-    if (
-      !diagnostic.includes("app server did not become ready") ||
-      !(await pidIdentity(true)).length
-    )
+    starting = await pidIdentity(true, false);
+    if (!diagnostic.includes("app server did not become ready") || starting.length !== 1)
       throw error;
     bootstrapProbeTimedOut = true;
   }
@@ -801,7 +795,21 @@ async function bootstrapColdNative(started) {
     async () => (await stat(nativeSocket).catch(() => null))?.isSocket(),
     Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
   );
+  if (starting.length) await assertSurviving(starting, true);
   return { bootstrapProbeTimedOut };
+}
+
+async function expireFixtureCredentials() {
+  const path = join(home, ".codex/auth.json");
+  const auth = JSON.parse(await readFile(path, "utf8"));
+  const parts = auth.tokens.access_token.split(".");
+  const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+  assert.equal(claims.sub, "qualification-user", "Only synthetic credentials may be expired");
+  claims.exp = Math.floor(Date.now() / 1000) - 3600;
+  parts[1] = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  auth.tokens.access_token = parts.join(".");
+  auth.last_refresh = "2020-01-01T00:00:00Z";
+  await writeFile(path, JSON.stringify(auth), { mode: 0o600 });
 }
 
 async function qualify() {
@@ -1275,20 +1283,7 @@ async function qualify() {
   }
   await stage("expired-credentials-on-native-startup", async () => {
     await stopNative();
-    const path = join(home, ".codex/auth.json");
-    const auth = JSON.parse(await readFile(path, "utf8"));
-    const parts = auth.tokens.access_token.split(".");
-    const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString());
-    assert.equal(
-      claims.sub,
-      "qualification-user",
-      "Only synthetic fixture credentials may be expired",
-    );
-    claims.exp = Math.floor(Date.now() / 1000) - 3600;
-    parts[1] = Buffer.from(JSON.stringify(claims)).toString("base64url");
-    auth.tokens.access_token = parts.join(".");
-    auth.last_refresh = "2020-01-01T00:00:00Z";
-    await writeFile(path, JSON.stringify(auth), { mode: 0o600 });
+    await expireFixtureCredentials();
     const before = (await control()).oauthGeneration;
     const started = Date.now();
     const bootstrap = await bootstrapColdNative(started);
@@ -1317,6 +1312,48 @@ async function qualify() {
       savedWorkRecoveryMs,
       nativeOAuthRefreshed: true,
     };
+  });
+  await stage("failed-oauth-on-native-startup", async () => {
+    await stopNative();
+    await expireFixtureCredentials();
+    const before = await control();
+    const marker = `failed-auth-${randomUUID()}`;
+    let identity;
+    await control({ authFailure: "transient" });
+    try {
+      const started = Date.now();
+      await bootstrapColdNative(started);
+      relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
+      await systemctl("start", "codexnest.service");
+      await ready(candidateVersion, Math.max(1, report.budgetsMs.ready - (Date.now() - started)));
+      await api(`/threads/${savedThread}/turns`, {
+        input: `QUALIFICATION_REQUEST:${marker}`,
+        clientMessageId: randomUUID(),
+      });
+      await until("Native exposes failed authentication", async () => {
+        const detail = await api(`/threads/${savedThread}`);
+        return detail.turns.at(-1)?.status === "failed";
+      });
+      const failed = await control();
+      assert.ok(failed.failedOAuthRequests > before.failedOAuthRequests);
+      assert.equal(failed.requests[marker], undefined, "Unauthorized model request was accepted");
+      assert.equal(failed.directOAuthRequests, 0, "Failed OAuth bypassed its proxy");
+      identity = await pidIdentity(true);
+    } finally {
+      await control({ authFailure: false });
+    }
+    const started = Date.now();
+    const accounts = await api("/settings/codex/accounts");
+    await api("/settings/codex/accounts/refresh", { accountId: accounts.currentAccountId });
+    const recovered = {
+      ...(await ready(candidateVersion)),
+      ...(await request(savedThread, "oauth-available-again")),
+      ...(await assertSurviving(identity, true)),
+    };
+    const savedWorkRecoveryMs = Date.now() - started;
+    assert.ok(savedWorkRecoveryMs <= report.budgetsMs.ready);
+    assert.ok((await control()).oauthGeneration > before.oauthGeneration);
+    return { ...recovered, savedWorkRecoveryMs, failedAuthorizationReported: true };
   });
   await stage("transient-native-timeout-recovers-readiness", async () => {
     const work = await holdWork("transient-native-timeout");
@@ -1596,15 +1633,12 @@ async function qualify() {
     await run("python3", [join(input, "history.py"), "check"], { timeout: 120_000 });
     return verifyIndex();
   });
-  // This diagnostic job must never be mistaken for the policy's complete gate.
-  // Publication remains technically closed until every pending case is implemented.
-  process.stdout.write(
-    `Lifecycle diagnostics complete; releaseQualified=false; pending=${report.pending.length}\n`,
-  );
+  process.stdout.write("Lifecycle scope complete; publication requires the full matrix.\n");
 }
 
 try {
   await qualify();
+  report.completed = true;
 } catch (error) {
   process.stderr.write(`Qualification stopped: ${error.message}\n`);
   process.exitCode = 1;
@@ -1612,6 +1646,7 @@ try {
   report.fixtureCounters = await control().catch(() => null);
   await relay?.close().catch((error) => {
     report.relayCleanupError = error.code ?? error.name;
+    report.completed = false;
     process.exitCode = 1;
   });
   report.memoryPeakBytes = Number(
