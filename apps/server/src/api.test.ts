@@ -2036,7 +2036,7 @@ describe("HTTP authentication", () => {
     expect((await app.inject({ url: "/api/v1/health" })).json()).toMatchObject({
       status: "degraded",
       recoveryState: "starting",
-      restartProtocolVersion: 2,
+      restartProtocolVersion: 3,
       transport: "daemon",
     });
     expect(

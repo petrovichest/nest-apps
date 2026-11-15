@@ -17,6 +17,21 @@ services are local fixtures; native RPC, health, systemctl and service units are
 real. The private fixture CA and GitHub hostname mapping exist only in the
 disposable test VM; the mapping is removed during cleanup.
 
+The pinned published installer is reconstructed with its original packaging
+from immutable source, and must match the SHA-256 of the observed published
+file. Moving the rolling channel cannot silently replace the baseline.
+
+Published A reapplies auth on reconnect. Real Native 0.167.2 and 0.169.0
+terminate an active turn on that call with `application network permission was
+revoked`, even when its daemon PID survives. A's active replacement is therefore
+unsupported. Recovery protocol 3 requires the legacy transition to be idle;
+the actual old updater must refuse a busy transition and preserve the held
+request, queue, approval and managed result. Legacy warm starts and interrupted
+replacement/rollback diagnostics then use idle A, preserving its PID/history
+and exercising a new saved-chat request after recovery. Candidate warm recovery
+still requires all active work and operation counters. These scopes must not
+be reported as qualifying an active rollback into the legacy version.
+
 The lifecycle diagnostic exercises installation, real saved-chat requests,
 rebuilding the native index from at least 2000 nonarchived synthetic sessions and
 3 GiB of valid history, three cold and warm runs, A → B, active requests/queues,

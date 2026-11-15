@@ -3,7 +3,7 @@ import { watch, type FSWatcher } from "node:fs";
 import { chmod, lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 
-export const RESTART_RECOVERY_PROTOCOL_VERSION = 2;
+export const RESTART_RECOVERY_PROTOCOL_VERSION = 3;
 
 export type RecoveryState =
   "starting" | "syncing" | "recovering" | "ready" | "draining" | "unavailable" | "failed";

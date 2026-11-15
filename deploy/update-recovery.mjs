@@ -174,10 +174,11 @@ async function waitHealthy(info, deadline) {
   throw new Error("Application did not prove readiness within the recovery budget");
 }
 
-async function statusFailed(message) {
+async function statusFailed(message, force = false) {
   const path = join(stateDir, "update.json");
   const prior = JSON.parse(await readFile(path, "utf8").catch(() => "{}"));
-  if (prior.operation === "idle" && ["failed", "rolled_back"].includes(prior.result)) return;
+  if (!force && prior.operation === "idle" && ["failed", "rolled_back"].includes(prior.result))
+    return;
   await atomic(
     path,
     `${JSON.stringify({ ...prior, operation: "idle", result: "failed", message, updatedAt: new Date().toISOString() })}\n`,
@@ -195,9 +196,34 @@ async function begin(target = null) {
     assert.equal(prior.baseline.commit, baseline.commit, "Unfinished recovery must complete first");
     assert.equal(prior.phase, "pending");
   }
+  let baselineQuiescent = false;
+  if (
+    baseline.admissionProtocolVersion !== 1 ||
+    (target && target.protocol !== baseline.protocol)
+  ) {
+    // Older releases reapply authentication on restart, which Native treats as
+    // revoking a running turn's network permission. They can only be replaced idle.
+    const secret = await token();
+    try {
+      const prepared = await localApi("/internal/restart/prepare", secret, 75_000);
+      assert.ok(
+        prepared.quiescent === true &&
+          prepared.appServerReady === true &&
+          prepared.transport === "daemon" &&
+          prepared.restartProtocolVersion === baseline.protocol,
+        "Finish active requests, queued messages and approvals before updating this older release",
+      );
+      baselineQuiescent = true;
+    } finally {
+      // The installed updater repeats the live compatibility check immediately
+      // before switching. Preparation must not keep A paused during its build.
+      await localApi("/internal/restart/resume", secret, 10_000).catch(() => undefined);
+    }
+  }
   if (prior?.phase === "pending" && prior.baseline.commit === baseline.commit) {
     if (target) {
       prior.target = target;
+      prior.baselineQuiescent = baselineQuiescent;
       await save(prior);
     }
     return;
@@ -209,6 +235,7 @@ async function begin(target = null) {
     activatedAt: null,
     baseline,
     target,
+    baselineQuiescent,
   });
 }
 
@@ -300,7 +327,8 @@ async function restoreFiles(value) {
 async function candidateMatches(value, current) {
   if (current.commit === value.baseline.commit) return false;
   assert.equal(current.admissionProtocolVersion, 1);
-  assert.equal(current.protocol, value.baseline.protocol);
+  if (current.protocol !== value.baseline.protocol && value.baselineQuiescent !== true)
+    return false;
   if (!value.target) {
     const status = JSON.parse(await readFile(join(stateDir, "update.json"), "utf8"));
     if (status.latestVersion !== current.version) return false;
@@ -473,6 +501,7 @@ try {
   if (["before-update", "after-update"].includes(mode))
     await statusFailed(
       "CodexNest recovery/preflight failed; the recorded healthy release is retained",
+      mode === "before-update",
     ).catch(() => undefined);
   process.exitCode = 1;
 }

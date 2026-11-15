@@ -6,7 +6,7 @@ set -euo pipefail
   exit 2
 }
 [[ "$(id -un)" == runner && "${RUNNER_OS:-}" == Linux ]]
-case "${NATIVE_VERSION:-}" in 0.154.0|0.167.0|0.167.1|0.167.2) ;; *) exit 2 ;; esac
+case "${NATIVE_VERSION:-}" in 0.154.0|0.167.0|0.167.1|0.167.2|0.169.0) ;; *) exit 2 ;; esac
 qualification_mode="${QUALIFICATION_MODE:-environment}"
 case "$qualification_mode" in environment|lifecycle) ;; *) exit 2 ;; esac
 qualification_scope="${QUALIFICATION_SCOPE:-all}"
@@ -111,6 +111,7 @@ if [[ "$qualification_mode" == lifecycle ]]; then
   for file in services.py provision.sh lifecycle.mjs native-relay.mjs history.py packaged-smoke.mjs; do
     sudo install -m 0644 "$qualification_root/deploy/qualification/$file" "/qualification-input/$file"
   done
+  sudo install -m 0644 "$qualification_root/deploy/restart-protocol.json" /qualification-input/candidate-restart-protocol.json
   # Keep the observed healthy A even after rolling-latest moves. Reproduce its
   # release packaging from immutable source and require the published bytes.
   printf '%s\n' '{"schemaVersion":1,"version":"0.1.9-fe3c5c8","commit":"fe3c5c858344b5f03c2619250b01d351930c891b"}' \

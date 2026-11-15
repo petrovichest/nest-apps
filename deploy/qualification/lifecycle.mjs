@@ -37,6 +37,9 @@ const candidate = (await readFile(join(input, "candidate-sha"), "utf8")).trim();
 assert.match(candidate, /^[0-9a-f]{40}$/);
 const baseline = JSON.parse(await readFile(join(input, "baseline.json"), "utf8"));
 const candidateVersion = `0.1.9-${candidate.slice(0, 7)}`;
+const candidateProtocol = JSON.parse(
+  await readFile(join(input, "candidate-restart-protocol.json"), "utf8"),
+).runtimeRecoveryProtocolVersion;
 const scope = process.env.QUALIFICATION_SCOPE ?? "all";
 assert.ok(["all", "interruption", "clean"].includes(scope));
 const report = {
@@ -57,6 +60,7 @@ const report = {
   originalDaemonRpc: {},
   releaseQualified: false,
   pending: [
+    "legacy release cannot restore active work after reauthentication; only idle transition is supported",
     "failed authorization during startup/recovery",
     "updater interruption at each switch/checkpoint/confirmation boundary",
     "candidate clean installer and other packaged applications",
@@ -204,7 +208,7 @@ async function ready(version, timeout = report.budgetsMs.ready, observe) {
         value.transport === "daemon" &&
         value.appServer?.state === "ready" &&
         value.appServer.installedVersion === process.env.NATIVE_VERSION &&
-        value.restartProtocolVersion === 2
+        value.restartProtocolVersion === (version === baseline.version ? 2 : candidateProtocol)
         ? value
         : null;
     },
@@ -668,7 +672,10 @@ exec '${root}/runtime/current/bin/node' '${root}/current/apps/server/dist/index.
 
 async function rejectUpdate(expectedMessage) {
   const active = await readlink(join(root, "current"));
-  const previous = await readlink(join(root, "previous"));
+  const previous = await readlink(join(root, "previous")).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
   const script = await readFile(cli);
   assert.equal(
     script.toString(),
@@ -681,8 +688,12 @@ async function rejectUpdate(expectedMessage) {
       (await systemctl("show", "codexnest-update.service", "-p", "ActiveState", "--value")).trim(),
     ),
   );
-  const before = await readFile(statusPath, "utf8");
-  await systemctl("reset-failed", "codexnest-update.service");
+  const before = await readFile(statusPath, "utf8").catch(() => "");
+  if (
+    (await systemctl("show", "codexnest-update.service", "-p", "ActiveState", "--value")).trim() ===
+    "failed"
+  )
+    await systemctl("reset-failed", "codexnest-update.service");
   await systemctl("start", "--no-block", "codexnest-update.service");
   const rejected = await until(
     "Old updater rejected an unsafe candidate",
@@ -691,6 +702,10 @@ async function rejectUpdate(expectedMessage) {
       if (raw === before) return null;
       const value = JSON.parse(raw);
       if (value.operation !== "idle") return null;
+      const unit = (
+        await systemctl("show", "codexnest-update.service", "-p", "ActiveState", "--value")
+      ).trim();
+      if (!["inactive", "failed"].includes(unit)) return null;
       assert.equal(value.result, "failed", "Faulted update unexpectedly accepted");
       assert.match(value.message, expectedMessage);
       return value;
@@ -699,7 +714,10 @@ async function rejectUpdate(expectedMessage) {
   );
   assert.equal(await readlink(join(root, "current")), active, "Rejected update changed current");
   assert.equal(
-    await readlink(join(root, "previous")),
+    await readlink(join(root, "previous")).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }),
     previous,
     "Rejected update replaced rollback",
   );
@@ -894,9 +912,17 @@ async function qualify() {
     return;
   }
   if (scope === "interruption") {
+    await stage("busy-legacy-upgrade-refused-with-work-intact", async () => {
+      const work = await holdWork("busy-legacy-upgrade");
+      return {
+        ...(await rejectUpdate(/Failed to build|preflight|cannot safely recover/i)),
+        ...(await ready(baseline.version)),
+        ...(await finishWork(work)),
+      };
+    });
     for (const point of ["prepared", "pointer", "candidate-recovery", "candidate-confirmation"]) {
       await stage(`old-updater-interrupted-${point}`, async () => {
-        const work = await holdWork(`interrupted-${point}`);
+        const identity = await pidIdentity(true);
         const oldTarget = await readlink(join(root, "current"));
         const originalCli = await readFile(cli);
         assert.equal(
@@ -1073,7 +1099,12 @@ async function qualify() {
           },
           Math.max(1, report.budgetsMs.rollback - (Date.now() - interruptedAt)),
         );
-        const recovered = { ...(await ready(baseline.version)), ...(await finishWork(work)) };
+        const recovered = {
+          ...(await ready(baseline.version)),
+          ...(await assertSurviving(identity, true)),
+          ...(await request(savedThread, `restored-${point}`)),
+          transition: "idle legacy release; active work is refused before replacement",
+        };
         const fullRecoveryMs = Date.now() - interruptedAt;
         assert.ok(fullRecoveryMs <= report.budgetsMs.rollback);
         return { ...recovered, fullRecoveryMs, interruption: report.interruption };
@@ -1172,15 +1203,19 @@ async function qualify() {
     });
   }
   for (let index = 1; index <= 3; index++) {
-    await stage(`warm-A-${index}`, async () => {
-      const work = await holdWork(`warm-A-${index}`);
+    await stage(`warm-A-idle-${index}`, async () => {
+      const identity = await pidIdentity(true);
       const started = Date.now();
       await run(cli, ["restart"]);
       assert.ok(
         Date.now() - started <= report.budgetsMs.ready,
         "Warm restart exceeded startup budget",
       );
-      const recovered = { ...(await ready(baseline.version)), ...(await finishWork(work)) };
+      const recovered = {
+        ...(await ready(baseline.version)),
+        ...(await assertSurviving(identity, true)),
+        ...(await request(savedThread, `warm-A-idle-${index}`)),
+      };
       const savedWorkRecoveryMs = Date.now() - started;
       assert.ok(
         savedWorkRecoveryMs <= report.budgetsMs.ready,
@@ -1189,13 +1224,22 @@ async function qualify() {
       return { ...recovered, savedWorkRecoveryMs };
     });
   }
+  await stage("busy-legacy-upgrade-refused-with-work-intact", async () => {
+    const work = await holdWork("busy-legacy-upgrade");
+    return {
+      ...(await rejectUpdate(/Failed to build|preflight|cannot safely recover/i)),
+      ...(await ready(baseline.version)),
+      ...(await finishWork(work)),
+    };
+  });
   await stage("installed-old-updater-A-to-B", async () => {
-    const work = await holdWork("upgrade");
+    const identity = await pidIdentity(true);
     return {
       ...(await update("updated")),
       ...(await ready(candidateVersion)),
-      ...(await finishWork(work)),
+      ...(await assertSurviving(identity, true)),
       ...(await request(savedThread, "upgraded")),
+      transition: "idle legacy release; active work is refused before replacement",
     };
   });
   for (let index = 1; index <= 3; index++) {
@@ -1363,7 +1407,7 @@ async function qualify() {
   for (const mode of ["wrong-version", "no-http", "no-token", "slow-rpc", "rotated-auth"]) {
     await stage(`failed-B-automatic-A-${mode}`, async () => {
       await fault(mode);
-      const work = await holdWork(mode);
+      const identity = await pidIdentity(true);
       const delayedBefore = relay.delayedResponseCount("thread/list");
       if (mode === "slow-rpc") relay.hold("thread/list", 145_000, true);
       const updateEvidence = await update(
@@ -1381,15 +1425,13 @@ async function qualify() {
                 (error) => error.status === 503,
                 "Unconfirmed candidate accepted new native work",
               );
-              const approval = (await snapshot()).attention.find(
-                (request) =>
-                  request.threadId === work.approvalThread && request.kind === "commandApproval",
-              );
-              assert.ok(approval);
               await assert.rejects(
-                api(`/attention/${approval.id}/respond`, { kind: "approval", decision: "accept" }),
+                api(`/threads/${savedThread}/turns`, {
+                  input: `QUALIFICATION_REQUEST:unconfirmed-${mode}`,
+                  clientMessageId: randomUUID(),
+                }),
                 (error) => error.status === 503,
-                "Unconfirmed candidate accepted an approval",
+                "Unconfirmed candidate accepted a model request",
               );
               if (mode === "no-token") {
                 await unlink(join(home, ".local/state/codexnest/restart-token"));
@@ -1431,8 +1473,9 @@ async function qualify() {
       const confirmedAt = Date.now();
       const recovered = {
         ...(await ready(baseline.version)),
-        ...(await finishWork(work)),
+        ...(await assertSurviving(identity, true)),
         ...(await request(savedThread, `rolled-back-${mode}`)),
+        transition: "idle legacy release; active work is refused before replacement",
       };
       const fullRecoveryMs = updateEvidence.recoveryMs + Date.now() - confirmedAt;
       assert.ok(
@@ -1443,8 +1486,8 @@ async function qualify() {
     });
   }
   await fault("none");
-  await stage("unavailable-native-refuses-update-with-active-work", async () => {
-    const work = await holdWork("permanent-native-unavailable");
+  await stage("unavailable-native-refuses-update", async () => {
+    const identity = await pidIdentity(true);
     relay.disconnect(Infinity);
     let rejected;
     try {
@@ -1457,10 +1500,15 @@ async function qualify() {
     } finally {
       relay.reconnect();
     }
-    return { ...rejected, ...(await ready(baseline.version)), ...(await finishWork(work)) };
+    return {
+      ...rejected,
+      ...(await ready(baseline.version)),
+      ...(await assertSurviving(identity, true)),
+      ...(await request(savedThread, "native-available-again")),
+    };
   });
   await stage("artifact-download-failure-keeps-A", async () => {
-    const work = await holdWork("artifact-download");
+    const identity = await pidIdentity(true);
     await control({ registryUnavailable: true });
     let rejected;
     try {
@@ -1468,22 +1516,32 @@ async function qualify() {
     } finally {
       await control({ registryUnavailable: false });
     }
-    return { ...rejected, ...(await ready(baseline.version)), ...(await finishWork(work)) };
+    return {
+      ...rejected,
+      ...(await ready(baseline.version)),
+      ...(await assertSurviving(identity, true)),
+      ...(await request(savedThread, "artifact-available-again")),
+    };
   });
   await stage("incompatible-artifact-protocol-keeps-A", async () => {
-    const work = await holdWork("incompatible-protocol");
+    const identity = await pidIdentity(true);
     const path = join(root, "releases", `v${candidateVersion}`, "deploy/restart-protocol.json");
     const original = await readFile(path);
     const incompatible = JSON.parse(original);
-    incompatible.runtimeRecoveryProtocolVersion = 3;
+    incompatible.runtimeRecoveryProtocolVersion = candidateProtocol + 1;
     await writeFile(path, JSON.stringify(incompatible));
     let rejected;
     try {
-      rejected = await rejectUpdate(/preflight|cannot recover|cannot safely recover/i);
+      rejected = await rejectUpdate(/preflight|cannot recover|cannot safely recover|interrupted/i);
     } finally {
       await writeFile(path, original);
     }
-    return { ...rejected, ...(await ready(baseline.version)), ...(await finishWork(work)) };
+    return {
+      ...rejected,
+      ...(await ready(baseline.version)),
+      ...(await assertSurviving(identity, true)),
+      ...(await request(savedThread, "protocol-restored")),
+    };
   });
   await stage("failed-state-checkpoint-keeps-A", async () => {
     const work = await holdWork("state-checkpoint");
@@ -1493,7 +1551,9 @@ async function qualify() {
     await mkdir(path);
     let rejected;
     try {
-      rejected = await rejectUpdate(/preflight|internal server error|EISDIR|directory/i);
+      rejected = await rejectUpdate(
+        /Failed to build|preflight|internal server error|EISDIR|directory/i,
+      );
     } finally {
       await rmdir(path);
       await rename(backup, path);
@@ -1501,7 +1561,7 @@ async function qualify() {
     return { ...rejected, ...(await ready(baseline.version)), ...(await finishWork(work)) };
   });
   await stage("missing-build-dependency-keeps-A", async () => {
-    const work = await holdWork("build-dependency");
+    const identity = await pidIdentity(true);
     const npm = join(root, "runtime/current/bin/npm");
     const backup = join(root, "runtime/current/bin/npm.qualification-unavailable");
     await unlink(join(root, "releases", `v${candidateVersion}`, ".codexnest-built"));
@@ -1512,15 +1572,20 @@ async function qualify() {
     } finally {
       await rename(backup, npm);
     }
-    return { ...rejected, ...(await ready(baseline.version)), ...(await finishWork(work)) };
+    return {
+      ...rejected,
+      ...(await ready(baseline.version)),
+      ...(await assertSurviving(identity, true)),
+      ...(await request(savedThread, "build-dependency-restored")),
+    };
   });
   await stage("repeat-upgrade-after-failed-candidates", async () => {
     await fault("none");
-    const work = await holdWork("repeat-upgrade");
+    const identity = await pidIdentity(true);
     return {
       ...(await update("updated")),
       ...(await ready(candidateVersion)),
-      ...(await finishWork(work)),
+      ...(await assertSurviving(identity, true)),
       ...(await request(savedThread, "repeated-upgrade")),
     };
   });
