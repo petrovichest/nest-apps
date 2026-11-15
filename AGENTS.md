@@ -27,9 +27,11 @@
 - Missing, skipped, flaky, timed-out, or inconclusive mandatory checks block publication.
   Do not bypass branch protection, weaken health checks, increase timeouts without measured
   justification, or substitute mocked lifecycle tests for the native update/rollback test.
-- Work on a non-publishing branch and use a PR with required checks for the exact commit.
-  Do not push directly to `main` or create a release tag while the publication gate is unmet.
-  In this repository even a documentation-only push to `main` currently publishes a release.
+- PRs and independent approvals are optional in this single-account repository. Do not
+  impose them as a requirement. Verify the exact commit on a non-publishing branch, then
+  a normal fast-forward push to `main` is allowed after the required `verify` check passes.
+  Saving source on `main` does not qualify an application release. Keep the CI publication
+  gate closed until qualification succeeds; do not create a release tag to bypass it.
 - The existing workflow does not yet enforce the complete gate in the linked policy.
   Until the gate is implemented and demonstrated, treat application publication as blocked;
   writing this policy does not make the current release process safe. Policy documentation

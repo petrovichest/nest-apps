@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
     tags: ["v*"]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -113,7 +113,7 @@ jobs:
           if-no-files-found: error
 
   release-environment:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -137,7 +137,7 @@ jobs:
           if-no-files-found: error
 
   release-lifecycle-diagnostics:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     needs: [release-clean-install-diagnostics, release-interruption-diagnostics]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -164,7 +164,7 @@ jobs:
           if-no-files-found: error
 
   release-clean-install-diagnostics:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -187,7 +187,7 @@ jobs:
           if-no-files-found: error
 
   release-interruption-diagnostics:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -216,7 +216,7 @@ jobs:
   # A green build is not qualification. Keep publication closed until the native
   # old-updater upgrade/failed-candidate rollback/large-history matrix exists.
   release-qualification:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
       - name: Enforce the mandatory lifecycle gate
@@ -225,7 +225,7 @@ jobs:
           exit 1
 
   publish:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [verify, native-account-network, release-qualification]
     runs-on: ubuntu-latest
     concurrency:

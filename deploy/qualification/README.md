@@ -1,5 +1,10 @@
 # Isolated native lifecycle diagnostics
 
+Run these diagnostics explicitly with the CI workflow's **Run workflow** action
+against the candidate branch. Ordinary pushes run source and account-network
+checks without requiring a PR. Publication is restricted to main/version tags
+and still depends on the closed mandatory qualification gate.
+
 `environment.sh` runs only on disposable GitHub-hosted VMs. Each matrix job owns
 a fresh VM with real systemd as PID 1 and a separate real user manager, uid 17001,
 private HOME/state/authentication/native socket. All fixture units share a cgroup
