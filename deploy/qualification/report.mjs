@@ -29,6 +29,7 @@ export const requiredCases = {
       (point) => `old-updater-interrupted-${point}`,
     ),
     "completed-upgrade-after-interruptions",
+    "restore-A-before-failed-upgrade",
   ],
   all: [
     "published-installer-A",

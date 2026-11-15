@@ -816,6 +816,18 @@ async function expireFixtureCredentials() {
   await writeFile(path, JSON.stringify(auth), { mode: 0o600 });
 }
 
+async function restoreBaseline() {
+  await stage("restore-A-before-failed-upgrade", async () => {
+    const identity = await pidIdentity(true);
+    await run(cli, ["rollback"]);
+    return {
+      ...(await ready(baseline.version)),
+      ...(await assertSurviving(identity, true)),
+      ...(await request(savedThread, "restored")),
+    };
+  });
+}
+
 async function transientNativeTimeoutRecovery() {
   await stage("transient-native-timeout-recovers-readiness", async () => {
     const work = await holdWork("transient-native-timeout");
@@ -1357,6 +1369,7 @@ async function qualify() {
         ...(await request(savedThread, "interrupted-upgrade-retried")),
       };
     });
+    await restoreBaseline();
     return;
   }
   await stage("representative-synthetic-history-files", async () => {
@@ -1560,15 +1573,7 @@ async function qualify() {
       return { ...recovered, savedWorkRecoveryMs };
     });
   }
-  await stage("restore-A-before-failed-upgrade", async () => {
-    const identity = await pidIdentity();
-    await run(cli, ["rollback"]);
-    return {
-      ...(await ready(baseline.version)),
-      ...(await assertSurviving(identity)),
-      ...(await request(savedThread, "restored")),
-    };
-  });
+  await restoreBaseline();
   for (const mode of ["wrong-version", "no-http", "no-token", "slow-rpc", "rotated-auth"]) {
     await stage(`failed-B-automatic-A-${mode}`, async () => {
       await fault(mode);
