@@ -18,6 +18,7 @@ export const requiredCases = {
     "clean-install-confirmation-and-surviving-private-work",
     "expired-credentials-on-native-startup",
     "failed-oauth-on-native-startup",
+    "transient-native-timeout-recovers-readiness",
     "legacy-rollback-writer-handover",
     "other-packaged-applications-startup",
   ],

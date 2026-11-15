@@ -816,6 +816,48 @@ async function expireFixtureCredentials() {
   await writeFile(path, JSON.stringify(auth), { mode: 0o600 });
 }
 
+async function transientNativeTimeoutRecovery() {
+  await stage("transient-native-timeout-recovers-readiness", async () => {
+    const work = await holdWork("transient-native-timeout");
+    const delayedBefore = relay.delayedResponseCount("thread/loaded/list");
+    relay.hold("thread/loaded/list", 35_000, true);
+    const started = Date.now();
+    await systemctl("restart", "codexnest.service");
+    const serverPid = (
+      await systemctl("show", "codexnest.service", "-p", "MainPID", "--value")
+    ).trim();
+    let observedFailed = false;
+    const evidence = await ready(
+      candidateVersion,
+      Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
+      (health) => {
+        if (health?.recoveryState === "failed") observedFailed = true;
+      },
+    );
+    assert.ok(observedFailed, "The injected response did not exercise the real RPC timeout");
+    assert.ok(
+      relay.delayedResponseCount("thread/loaded/list") > delayedBefore,
+      "Startup did not traverse the injected native transport",
+    );
+    assert.equal(
+      (await systemctl("show", "codexnest.service", "-p", "MainPID", "--value")).trim(),
+      serverPid,
+      "Recovery required another application restart",
+    );
+    const recovered = {
+      ...evidence,
+      observedFailed,
+      totalRecoveryMs: Date.now() - started,
+      ...(await finishWork(work)),
+    };
+    assert.ok(
+      Date.now() - started <= report.budgetsMs.ready,
+      "Transient RPC failure did not resume work within budget",
+    );
+    return recovered;
+  });
+}
+
 async function startupAuthorizationChecks() {
   await stage("expired-credentials-on-native-startup", async () => {
     await stopNative();
@@ -1063,6 +1105,7 @@ async function qualify() {
       };
     });
     await startupAuthorizationChecks();
+    await transientNativeTimeoutRecovery();
     await stage("legacy-rollback-writer-handover", async () => {
       const identity = await pidIdentity(true);
       const token = (
@@ -1472,45 +1515,7 @@ async function qualify() {
     });
   }
   await startupAuthorizationChecks();
-  await stage("transient-native-timeout-recovers-readiness", async () => {
-    const work = await holdWork("transient-native-timeout");
-    const delayedBefore = relay.delayedResponseCount("thread/loaded/list");
-    relay.hold("thread/loaded/list", 35_000, true);
-    const started = Date.now();
-    await systemctl("restart", "codexnest.service");
-    const serverPid = (
-      await systemctl("show", "codexnest.service", "-p", "MainPID", "--value")
-    ).trim();
-    let observedFailed = false;
-    const evidence = await ready(
-      candidateVersion,
-      Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
-      (health) => {
-        if (health?.recoveryState === "failed") observedFailed = true;
-      },
-    );
-    assert.ok(observedFailed, "The injected response did not exercise the real RPC timeout");
-    assert.ok(
-      relay.delayedResponseCount("thread/loaded/list") > delayedBefore,
-      "Startup did not traverse the injected native transport",
-    );
-    assert.equal(
-      (await systemctl("show", "codexnest.service", "-p", "MainPID", "--value")).trim(),
-      serverPid,
-      "Recovery required another application restart",
-    );
-    const recovered = {
-      ...evidence,
-      observedFailed,
-      totalRecoveryMs: Date.now() - started,
-      ...(await finishWork(work)),
-    };
-    assert.ok(
-      Date.now() - started <= report.budgetsMs.ready,
-      "Transient RPC failure did not resume work within budget",
-    );
-    return recovered;
-  });
+  await transientNativeTimeoutRecovery();
   await stage("temporary-native-transport-unavailable", async () => {
     const work = await holdWork("temporary-native-unavailable");
     const started = Date.now();

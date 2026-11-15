@@ -590,6 +590,11 @@ export class AppProjection extends EventEmitter {
   async sync(): Promise<void> {
     if (this.syncPromise) return this.syncPromise;
     this.syncPromise = this.performSync()
+      .then(() => {
+        // A usable partial snapshot does not mean loaded work has recovered.
+        // Publish this for retries too, so startup can become ready without a restart.
+        this.emit("syncCompleted", !this.recoverLoadedThreads);
+      })
       .catch((error: unknown) => {
         if (this.recoverLoadedThreads) this.scheduleLoadedRecovery();
         throw error;
