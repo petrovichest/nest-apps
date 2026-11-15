@@ -94,6 +94,10 @@ the restart phase. The latter accommodates the existing health wait, restart
 preflight, graceful shutdown and restored-version health wait. Exceeding any
 budget fails the scenario; the harness does not rerun a failed scenario or
 increase timeouts.
+The existing paginated `thread/list` RPC has a 120-second deadline. The transient
+timeout case holds the actual startup `thread/loaded/list` response for 35 seconds
+against that RPC's 30-second deadline; it must observe failed readiness and then
+recover with the same API/Native processes inside the unchanged 60-second budget.
 
 `QUALIFICATION_SCOPE=interruption` is a separate diagnostic on the actual old
 updater. Real FIFOs pause its build checkpoint, version write and final update

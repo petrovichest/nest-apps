@@ -356,8 +356,10 @@ export class CodexAccountRouter {
         ? await this.pool.ensure(account)
         : { descriptor: { id: LEGACY }, bridge: this.bridge };
       if (owner === next.descriptor.id) return next.bridge;
-      if (!account && thread.path?.split(/[\\/]/).includes("archived_sessions")) {
-        // Archived runtimes are already unloaded. Preserve their archive state.
+      const unloaded = thread.status?.type === "notLoaded";
+      const archived = thread.path?.split(/[\\/]/).includes("archived_sessions");
+      if (!account && (unloaded || archived)) {
+        // No writer exists on an unloaded runtime. Preserve its archive state.
         await this.bind(threadId, LEGACY);
         return this.bridge;
       }
@@ -367,11 +369,11 @@ export class CodexAccountRouter {
           : next.bridge.request.bind(next.bridge);
       // Unsubscribe retains Native's idle runtime and its SQLite writer lease.
       // Archive flushes and unloads it; restore the same history on the new owner.
-      await native("thread/archive", { threadId }, 30_000);
+      if (!unloaded && !archived) await native("thread/archive", { threadId }, 30_000);
       // Persist before subscribing: replayed events must already belong to the new owner.
       try {
         await this.bind(threadId, next.descriptor.id);
-        await nextRequest("thread/unarchive", { threadId }, 30_000);
+        if (!unloaded || archived) await nextRequest("thread/unarchive", { threadId }, 30_000);
         await nextRequest(
           "thread/resume",
           { threadId, excludeTurns: true, config: { "features.respect_system_proxy": true } },
@@ -387,7 +389,13 @@ export class CodexAccountRouter {
             await this.save();
           }
         } finally {
-          await native("thread/unarchive", { threadId }, 30_000);
+          const restored = await native<any>(
+            "thread/read",
+            { threadId, includeTurns: false },
+            30_000,
+          );
+          if (restored.thread.path?.split(/[\\/]/).includes("archived_sessions"))
+            await native("thread/unarchive", { threadId }, 30_000);
           // Reacquiring the writer proves the original context was restored,
           // including when the target's cleanup connection was unavailable.
           await native("thread/resume", { threadId, excludeTurns: true }, 30_000);

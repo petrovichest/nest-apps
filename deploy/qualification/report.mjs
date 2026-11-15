@@ -75,6 +75,8 @@ export function validateScope(report, candidate, native, scope, baseline) {
   assert.equal(report.budgetsMs.ready, 60_000);
   assert.equal(report.budgetsMs.updaterHealth, 120_000);
   assert.equal(report.budgetsMs.rollback, 420_000);
+  assert.equal(report.budgetsMs.threadListRpc, 120_000);
+  assert.equal(report.budgetsMs.loadedListRpc, 30_000);
   if (scope === "all") {
     const history = report.cases.find(
       (entry) => entry.name === "actual-native-import-and-metadata-index-rebuild",

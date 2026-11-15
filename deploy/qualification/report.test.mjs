@@ -27,7 +27,13 @@ function fixture() {
     })),
     fixtureCounters: { directModelRequests: 0, directOAuthRequests: 0 },
     enforcedResources: { memoryMaxBytes: 10 * 1024 ** 3, cpuQuota: [400000, 100000] },
-    budgetsMs: { ready: 60000, updaterHealth: 120000, rollback: 420000 },
+    budgetsMs: {
+      ready: 60000,
+      updaterHealth: 120000,
+      rollback: 420000,
+      threadListRpc: 120000,
+      loadedListRpc: 30000,
+    },
   };
 }
 

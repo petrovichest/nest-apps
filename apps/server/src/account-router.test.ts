@@ -7,9 +7,11 @@ import type { ServerRequest } from "./codex/generated/index";
 import type { JsonlTransport } from "./codex/transport";
 import { AttentionManager } from "./attention";
 
-it.each([false, true])(
-  "returns an idle owner to Native without changing its archived state (%s)",
-  async (archived) => {
+it.each(["loaded", "unloaded", "archived"])(
+  "returns an idle owner to Native without changing its saved state (%s)",
+  async (stateKind) => {
+    const archived = stateKind === "archived";
+    const unloaded = stateKind === "unloaded";
     const state = { threadOwners: { chat: "worker" }, legacyAccountId: "account" };
     const original = Object.assign(new EventEmitter(), {
       setRequestRouter: vi.fn(),
@@ -23,7 +25,7 @@ it.each([false, true])(
         method === "thread/read"
           ? {
               thread: {
-                status: { type: "idle" },
+                status: { type: unloaded ? "notLoaded" : "idle" },
                 path: archived
                   ? "/fixture/archived_sessions/chat.jsonl"
                   : "/fixture/sessions/chat.jsonl",
@@ -53,10 +55,10 @@ it.each([false, true])(
       await router.restoreNativeOwnership();
       expect(state.threadOwners.chat).toBe("native");
       expect(worker.request.mock.calls.map(([method]) => method)).toEqual(
-        archived ? ["thread/read"] : ["thread/read", "thread/archive"],
+        archived || unloaded ? ["thread/read"] : ["thread/read", "thread/archive"],
       );
       expect(original.requestNative.mock.calls.map((call) => call[0])).toEqual(
-        archived ? [] : ["thread/unarchive", "thread/resume"],
+        archived || unloaded ? [] : ["thread/unarchive", "thread/resume"],
       );
     } finally {
       await router.close();
@@ -64,11 +66,15 @@ it.each([false, true])(
   },
 );
 
-it.each(["none", "resume", "save"])(
-  "preserves live history and hides internal archive events during a handover (%s failure)",
-  async (failure) => {
+it.each(
+  ["none", "resume", "save"].flatMap((failure) =>
+    [false, true].map((unloaded) => ({ failure, unloaded })),
+  ),
+)(
+  "preserves live history during a handover ($failure failure, unloaded=$unloaded)",
+  async ({ failure, unloaded }) => {
     const state = { threadOwners: { chat: "native" }, legacyAccountId: "account" };
-    let writer: string | null = "native";
+    let writer: string | null = unloaded ? null : "native";
     let archived = false;
     let failedSave = false;
     let filter: (notice: any) => boolean;
@@ -80,7 +86,15 @@ it.each(["none", "resume", "save"])(
       threadActive: () => false,
       acceptNotification: vi.fn(),
       requestNative: vi.fn(async (method: string) => {
-        if (method === "thread/read") return { thread: { status: { type: "idle" } } };
+        if (method === "thread/read")
+          return {
+            thread: {
+              status: { type: unloaded ? "notLoaded" : "idle" },
+              path: archived
+                ? "/fixture/archived_sessions/chat.jsonl"
+                : "/fixture/sessions/chat.jsonl",
+            },
+          };
         if (method === "thread/archive") {
           writer = null;
           archived = true;

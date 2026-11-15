@@ -56,6 +56,8 @@ const report = {
     build: 600_000,
     nativeStop: 10_000,
     fixtureImport: 2_100_000,
+    threadListRpc: 120_000,
+    loadedListRpc: 30_000,
   },
   cases: [],
   originalDaemonRpc: {},
@@ -1409,8 +1411,8 @@ async function qualify() {
   await startupAuthorizationChecks();
   await stage("transient-native-timeout-recovers-readiness", async () => {
     const work = await holdWork("transient-native-timeout");
-    const delayedBefore = relay.delayedResponseCount("thread/list");
-    relay.hold("thread/list", 35_000, true);
+    const delayedBefore = relay.delayedResponseCount("thread/loaded/list");
+    relay.hold("thread/loaded/list", 35_000, true);
     const started = Date.now();
     await systemctl("restart", "codexnest.service");
     const serverPid = (
@@ -1426,7 +1428,7 @@ async function qualify() {
     );
     assert.ok(observedFailed, "The injected response did not exercise the real RPC timeout");
     assert.ok(
-      relay.delayedResponseCount("thread/list") > delayedBefore,
+      relay.delayedResponseCount("thread/loaded/list") > delayedBefore,
       "Startup did not traverse the injected native transport",
     );
     assert.equal(
