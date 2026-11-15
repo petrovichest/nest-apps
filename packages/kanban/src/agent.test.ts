@@ -1,9 +1,9 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agentCapability,
   classificationPrompt,
@@ -83,9 +83,41 @@ describe("agent file bridge", () => {
       { id: "run" } as KanbanRun,
       "token",
     );
-    const child = spawn(process.execPath, [helper, capability, "read", "{}"], {
-      stdio: ["ignore", "pipe", "pipe"],
+    // Hold the first missing-file read until the atomic response's event has
+    // arrived. Dropping that event while checking would wait for five minutes.
+    const hook = join(directory, "hold-first-read.mjs");
+    await writeFile(
+      hook,
+      `
+import promises from 'node:fs/promises';
+import fs from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
+const read=promises.readFile, watch=fs.watch;
+let first=true;
+promises.readFile=async(path,...args)=>{
+  if(first&&String(path).includes('/results/')){
+    first=false;
+    await new Promise(resolve=>{
+      process.once('message',()=>{process.disconnect();resolve();});
+      process.send('read-pending');
     });
+    throw Object.assign(new Error('controlled missing-file read'),{code:'ENOENT'});
+  }
+  return read(path,...args);
+};
+fs.watch=(...args)=>{
+  const watcher=watch(...args);
+  watcher.on('change',(_event,name)=>{if(process.connected&&String(name).endsWith('.json'))process.send('response-changed');});
+  return watcher;
+};
+syncBuiltinESMExports();
+`,
+    );
+    const child = spawn(process.execPath, ["--import", hook, helper, capability, "read", "{}"], {
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    const signals = new Set();
+    child.on("message", (message) => signals.add(message));
     let output = "",
       errors = "";
     child.stdout.on("data", (value) => {
@@ -118,10 +150,13 @@ describe("agent file bridge", () => {
       command: "read",
       payload: {},
     });
+    await vi.waitFor(() => expect(signals.has("read-pending")).toBe(true));
     await atomicJson(join(directory, "results", requestName), {
       ok: true,
       result: { stage: "review" },
     });
+    await vi.waitFor(() => expect(signals.has("response-changed")).toBe(true));
+    child.send("finish-initial-read");
     expect(await ended).toBe(0);
     expect(JSON.parse(output)).toEqual({ stage: "review" });
   });

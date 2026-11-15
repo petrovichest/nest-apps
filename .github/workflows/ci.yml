@@ -139,7 +139,13 @@ jobs:
 
   release-lifecycle-diagnostics:
     if: github.event_name == 'workflow_dispatch'
-    needs: [release-clean-install-diagnostics, release-interruption-diagnostics]
+    needs:
+      [
+        verify,
+        native-account-network,
+        release-clean-install-diagnostics,
+        release-interruption-diagnostics,
+      ]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:

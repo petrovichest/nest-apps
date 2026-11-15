@@ -134,8 +134,8 @@ SHA, validates that artifact and installer hash, and checks that the published
 healthy baseline has not moved. Missing/expired evidence or a moved baseline
 blocks release. The qualification report and asset checksums accompany the release.
 An environment-only pass or a single diagnostic pass cannot authorize publication.
-The large-history jobs start after clean installation and interrupted-update
-diagnostics pass. An early failure therefore avoids building several large native
+The large-history jobs start after source/account checks, clean installation and
+interrupted-update diagnostics pass. An early failure avoids building large native
 fixtures for an already rejected candidate; skipped matrix jobs remain unqualified.
 
 Raw installer output and synthetic credentials stay in a private VM

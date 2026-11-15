@@ -445,6 +445,9 @@ it.skipIf(!binary)(
         approvalPolicy: "never",
         sandbox: "danger-full-access",
       });
+      expect((await run(legacy.thread.id, "Reply ACCOUNT_OK before account handover")).status).toBe(
+        "completed",
+      );
       await manager.initialize();
       await manager.restore();
       expect((await run(legacy.thread.id, "Reply ACCOUNT_OK from saved history")).status).toBe(
@@ -460,7 +463,7 @@ it.skipIf(!binary)(
             includeTurns: true,
           })
         ).thread.turns,
-      ).toHaveLength(1);
+      ).toHaveLength(2);
       const { thread } = await bridge.request<any>("thread/start", {
         cwd: root,
         approvalPolicy: "never",

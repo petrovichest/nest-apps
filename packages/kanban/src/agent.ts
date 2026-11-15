@@ -20,8 +20,8 @@ const cap=JSON.parse(await readFile(capPath,'utf8'));
 const id=randomUUID(), resultPath=join(cap.directory,'results',id+'.json');
 const watcher=watch(join(cap.directory,'results'));
 const finished=new Promise((resolve,reject)=>{
- let checking=false;
- const check=async()=>{if(checking)return;checking=true;try{const r=JSON.parse(await readFile(resultPath,'utf8'));if(r.ok)resolve(r.result);else reject(new Error(r.error));}catch(e){if(e.code!=='ENOENT')reject(e);}finally{checking=false;}};
+ let checking=false,changed=false;
+ const check=async()=>{changed=true;if(checking)return;checking=true;try{while(changed){changed=false;try{const r=JSON.parse(await readFile(resultPath,'utf8'));if(r.ok)resolve(r.result);else reject(new Error(r.error));return;}catch(e){if(e.code!=='ENOENT'){reject(e);return;}}}}finally{checking=false;}};
  watcher.on('change',()=>void check());watcher.on('error',reject);
  watcher.once('close',()=>{});void check();
 });

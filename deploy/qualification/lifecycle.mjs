@@ -1331,8 +1331,11 @@ async function qualify() {
         clientMessageId: randomUUID(),
       });
       await until("Native exposes failed authentication", async () => {
-        const detail = await api(`/threads/${savedThread}`);
-        return detail.turns.at(-1)?.status === "failed";
+        const detail = await api(`/threads/${savedThread}`).catch((error) => {
+          if (error.status !== 503) throw error;
+          return null;
+        });
+        return detail?.turns.at(-1)?.status === "failed";
       });
       const failed = await control();
       assert.ok(failed.failedOAuthRequests > before.failedOAuthRequests);
