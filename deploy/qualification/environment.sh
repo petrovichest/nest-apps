@@ -111,22 +111,17 @@ if [[ "$qualification_mode" == lifecycle ]]; then
   for file in services.py provision.sh lifecycle.mjs native-relay.mjs history.py packaged-smoke.mjs; do
     sudo install -m 0644 "$qualification_root/deploy/qualification/$file" "/qualification-input/$file"
   done
-  curl -fsSL --max-time 60 \
-    https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/NestApps-latest.json \
-    -o "$RUNNER_TEMP/qualification-baseline.json"
-  curl -fsSL --max-time 60 \
-    https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/install.sh \
-    -o "$RUNNER_TEMP/qualification-install-A.sh"
-  python3 - "$RUNNER_TEMP/qualification-baseline.json" "$RUNNER_TEMP/qualification-install-A.sh" <<'PY'
-import json,sys
-from pathlib import Path
-baseline=json.loads(Path(sys.argv[1]).read_text())
-assert baseline == {'schemaVersion':1,'version':'0.1.9-fe3c5c8',
-                    'commit':'fe3c5c858344b5f03c2619250b01d351930c891b'}, 'Reconfirm the healthy baseline before using a new channel pointer.'
-installer=Path(sys.argv[2]).read_text()
-assert f'codexnest_default_ref="{baseline["commit"]}"' in installer
-assert f'codexnest_default_version="{baseline["version"]}"' in installer
-PY
+  # Keep the observed healthy A even after rolling-latest moves. Reproduce its
+  # release packaging from immutable source and require the published bytes.
+  printf '%s\n' '{"schemaVersion":1,"version":"0.1.9-fe3c5c8","commit":"fe3c5c858344b5f03c2619250b01d351930c891b"}' \
+    > "$RUNNER_TEMP/qualification-baseline.json"
+  git -C "$qualification_root" show fe3c5c858344b5f03c2619250b01d351930c891b:deploy/install.sh \
+    | sed -e 's/^codexnest_default_version=.*/codexnest_default_version="0.1.9-fe3c5c8"/' \
+          -e 's/^codexnest_default_ref=.*/codexnest_default_ref="fe3c5c858344b5f03c2619250b01d351930c891b"/' \
+      > "$RUNNER_TEMP/qualification-install-A.sh"
+  printf '%s  %s\n' \
+    0642c7e8a4cfbd5d3cef539d797d7f109cfa0453399b2640830dc02f3745e316 \
+    "$RUNNER_TEMP/qualification-install-A.sh" | sha256sum --check --strict
   sudo install -m 0644 "$RUNNER_TEMP/qualification-baseline.json" /qualification-input/baseline.json
   sudo install -m 0644 "$RUNNER_TEMP/qualification-install-A.sh" /qualification-input/install-A.sh
   sed -e "s/^codexnest_default_version=.*/codexnest_default_version=\"0.1.9-${qualification_sha:0:7}\"/" \
