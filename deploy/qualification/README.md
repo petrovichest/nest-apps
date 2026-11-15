@@ -102,6 +102,10 @@ This scope does not run or qualify the large-history matrix.
 substitution as publication. It verifies its committed build identity and the
 effective 420-second systemd recovery stop limit, then resumes actual private
 account requests, a queue, an approval and a managed result after an API restart.
+It also exercises expired credentials and a transient OAuth service failure
+before the expensive full-history jobs. Explicit refusal before dispatch and a
+failed native turn both require a real OAuth failure and no accepted model call;
+clearing the fault must restore a saved-chat request with the same Native PID.
 It does not qualify the separate large-history, upgrade or failed-candidate matrix.
 It also starts the actual packaged ClaudeNest API and GeminiNest daemon/gateway,
 checks their health/version and serves both UI bundles from the candidate release.

@@ -812,6 +812,98 @@ async function expireFixtureCredentials() {
   await writeFile(path, JSON.stringify(auth), { mode: 0o600 });
 }
 
+async function startupAuthorizationChecks() {
+  await stage("expired-credentials-on-native-startup", async () => {
+    await stopNative();
+    await expireFixtureCredentials();
+    const before = (await control()).oauthGeneration;
+    const started = Date.now();
+    const bootstrap = await bootstrapColdNative(started);
+    relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
+    await systemctl("start", "codexnest.service");
+    const evidence = await ready(
+      candidateVersion,
+      Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
+    );
+    const requestEvidence = await request(savedThread, "expired-auth-startup");
+    const savedWorkRecoveryMs = Date.now() - started;
+    assert.ok(
+      savedWorkRecoveryMs <= report.budgetsMs.ready,
+      "Expired credential recovery exceeded startup budget",
+    );
+    const refreshed = await control();
+    assert.ok(
+      refreshed.oauthGeneration > before,
+      "Native did not refresh the expired fixture credential",
+    );
+    assert.equal(refreshed.directOAuthRequests, 0, "Expired token refresh bypassed its proxy");
+    return {
+      ...bootstrap,
+      ...evidence,
+      ...requestEvidence,
+      savedWorkRecoveryMs,
+      nativeOAuthRefreshed: true,
+    };
+  });
+  await stage("failed-oauth-on-native-startup", async () => {
+    await stopNative();
+    await expireFixtureCredentials();
+    const before = await control();
+    const marker = `failed-auth-${randomUUID()}`;
+    let identity;
+    await control({ authFailure: "transient" });
+    try {
+      const started = Date.now();
+      await bootstrapColdNative(started);
+      relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
+      await systemctl("start", "codexnest.service");
+      await ready(candidateVersion, Math.max(1, report.budgetsMs.ready - (Date.now() - started)));
+      let rejectedBeforeDispatch = false;
+      try {
+        await api(`/threads/${savedThread}/turns`, {
+          input: `QUALIFICATION_REQUEST:${marker}`,
+          clientMessageId: randomUUID(),
+        });
+      } catch (error) {
+        assert.equal(error.status, 409);
+        const status = await api("/settings/codex/accounts");
+        assert.equal(
+          status.accounts.find((account) => account.id === status.currentAccountId)?.authenticated,
+          false,
+        );
+        rejectedBeforeDispatch = true;
+      }
+      if (!rejectedBeforeDispatch)
+        await until("Native exposes failed authentication", async () => {
+          const detail = await api(`/threads/${savedThread}`).catch((error) => {
+            if (error.status !== 503) throw error;
+            return null;
+          });
+          return detail?.turns.at(-1)?.status === "failed";
+        });
+      const failed = await control();
+      assert.ok(failed.failedOAuthRequests > before.failedOAuthRequests);
+      assert.equal(failed.requests[marker], undefined, "Unauthorized model request was accepted");
+      assert.equal(failed.directOAuthRequests, 0, "Failed OAuth bypassed its proxy");
+      identity = await pidIdentity(true);
+    } finally {
+      await control({ authFailure: false });
+    }
+    const started = Date.now();
+    const accounts = await api("/settings/codex/accounts");
+    await api("/settings/codex/accounts/refresh", { accountId: accounts.currentAccountId });
+    const recovered = {
+      ...(await ready(candidateVersion)),
+      ...(await request(savedThread, "oauth-available-again")),
+      ...(await assertSurviving(identity, true)),
+    };
+    const savedWorkRecoveryMs = Date.now() - started;
+    assert.ok(savedWorkRecoveryMs <= report.budgetsMs.ready);
+    assert.ok((await control()).oauthGeneration > before.oauthGeneration);
+    return { ...recovered, savedWorkRecoveryMs, failedAuthorizationReported: true };
+  });
+}
+
 async function qualify() {
   await saveReport();
   const memoryMax = Number((await readFile(join(cgroupPath, "memory.max"), "utf8")).trim());
@@ -914,6 +1006,7 @@ async function qualify() {
         systemdRecoveryStopSeconds: 420,
       };
     });
+    await startupAuthorizationChecks();
     await stage("other-packaged-applications-startup", async () => {
       await run("node", [join(input, "packaged-smoke.mjs"), join(root, "current")], {
         timeout: 180_000,
@@ -1281,83 +1374,7 @@ async function qualify() {
       };
     });
   }
-  await stage("expired-credentials-on-native-startup", async () => {
-    await stopNative();
-    await expireFixtureCredentials();
-    const before = (await control()).oauthGeneration;
-    const started = Date.now();
-    const bootstrap = await bootstrapColdNative(started);
-    relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
-    await systemctl("start", "codexnest.service");
-    const evidence = await ready(
-      candidateVersion,
-      Math.max(1, report.budgetsMs.ready - (Date.now() - started)),
-    );
-    const requestEvidence = await request(savedThread, "expired-auth-startup");
-    const savedWorkRecoveryMs = Date.now() - started;
-    assert.ok(
-      savedWorkRecoveryMs <= report.budgetsMs.ready,
-      "Expired credential recovery exceeded startup budget",
-    );
-    const refreshed = await control();
-    assert.ok(
-      refreshed.oauthGeneration > before,
-      "Native did not refresh the expired fixture credential",
-    );
-    assert.equal(refreshed.directOAuthRequests, 0, "Expired token refresh bypassed its proxy");
-    return {
-      ...bootstrap,
-      ...evidence,
-      ...requestEvidence,
-      savedWorkRecoveryMs,
-      nativeOAuthRefreshed: true,
-    };
-  });
-  await stage("failed-oauth-on-native-startup", async () => {
-    await stopNative();
-    await expireFixtureCredentials();
-    const before = await control();
-    const marker = `failed-auth-${randomUUID()}`;
-    let identity;
-    await control({ authFailure: "transient" });
-    try {
-      const started = Date.now();
-      await bootstrapColdNative(started);
-      relay = await NativeRelay.open(nativeSocket, report.originalDaemonRpc);
-      await systemctl("start", "codexnest.service");
-      await ready(candidateVersion, Math.max(1, report.budgetsMs.ready - (Date.now() - started)));
-      await api(`/threads/${savedThread}/turns`, {
-        input: `QUALIFICATION_REQUEST:${marker}`,
-        clientMessageId: randomUUID(),
-      });
-      await until("Native exposes failed authentication", async () => {
-        const detail = await api(`/threads/${savedThread}`).catch((error) => {
-          if (error.status !== 503) throw error;
-          return null;
-        });
-        return detail?.turns.at(-1)?.status === "failed";
-      });
-      const failed = await control();
-      assert.ok(failed.failedOAuthRequests > before.failedOAuthRequests);
-      assert.equal(failed.requests[marker], undefined, "Unauthorized model request was accepted");
-      assert.equal(failed.directOAuthRequests, 0, "Failed OAuth bypassed its proxy");
-      identity = await pidIdentity(true);
-    } finally {
-      await control({ authFailure: false });
-    }
-    const started = Date.now();
-    const accounts = await api("/settings/codex/accounts");
-    await api("/settings/codex/accounts/refresh", { accountId: accounts.currentAccountId });
-    const recovered = {
-      ...(await ready(candidateVersion)),
-      ...(await request(savedThread, "oauth-available-again")),
-      ...(await assertSurviving(identity, true)),
-    };
-    const savedWorkRecoveryMs = Date.now() - started;
-    assert.ok(savedWorkRecoveryMs <= report.budgetsMs.ready);
-    assert.ok((await control()).oauthGeneration > before.oauthGeneration);
-    return { ...recovered, savedWorkRecoveryMs, failedAuthorizationReported: true };
-  });
+  await startupAuthorizationChecks();
   await stage("transient-native-timeout-recovers-readiness", async () => {
     const work = await holdWork("transient-native-timeout");
     const delayedBefore = relay.delayedResponseCount("thread/list");

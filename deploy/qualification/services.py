@@ -165,7 +165,7 @@ class Model(Handler):
                 generation = STATE['oauthGeneration']
                 transient = STATE['authFailure'] == 'transient'
             self.send((503 if transient else 401) if failed else 200,
-                      {'error': 'invalid_grant'} if failed else
+                      {'error': 'temporarily_unavailable' if transient else 'invalid_grant'} if failed else
                       {'id_token': jwt(generation), 'access_token': jwt(generation),
                        'refresh_token': f'qualification-refresh-{generation}',
                        'token_type': 'Bearer', 'expires_in': 3600})

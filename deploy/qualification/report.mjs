@@ -15,6 +15,8 @@ export const requiredCases = {
   clean: [
     "candidate-clean-installer-B",
     "clean-install-confirmation-and-surviving-private-work",
+    "expired-credentials-on-native-startup",
+    "failed-oauth-on-native-startup",
     "other-packaged-applications-startup",
   ],
   interruption: [
