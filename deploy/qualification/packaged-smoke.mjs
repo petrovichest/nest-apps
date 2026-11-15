@@ -81,7 +81,8 @@ try {
     const name = `${provider}nest`;
     const config = join(home, ".config", name);
     await mkdir(config, { recursive: true, mode: 0o700 });
-    await writeFile(join(config, "token"), randomBytes(32).toString("hex"), { mode: 0o600 });
+    const token = randomBytes(32).toString("hex");
+    await writeFile(join(config, "token"), token, { mode: 0o600 });
     const native =
       provider === "claude"
         ? "/opt/qualification/node_modules/.bin/claude"
@@ -118,6 +119,7 @@ try {
       }
       try {
         const response = await fetch(`http://127.0.0.1:${port}/api/v1/health`, {
+          headers: { authorization: `Bearer ${token}` },
           signal: AbortSignal.timeout(1000),
         });
         if (response.ok) health = await response.json();

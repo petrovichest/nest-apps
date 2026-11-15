@@ -66,6 +66,9 @@ export class CodexAccountRouter {
         : null;
   }
   async selected(): Promise<{ descriptor: AccountRuntimeDescriptor; bridge: CodexBridge } | null> {
+    // Metadata requests run during startup too. Until confirmation they must not
+    // create another Native process against the surviving daemon's state.
+    if (this.options.workAllowed?.() === false) return null;
     const profile = this.options.selected();
     return profile ? this.pool.ensure(profile) : null;
   }
@@ -94,17 +97,24 @@ export class CodexAccountRouter {
     // Connect before checking activity: a surviving daemon may still be working after an API restart.
     for (const descriptor of descriptors) {
       const client = await this.pool.connect(descriptor.id);
-      const loaded = await client.request<{ data: string[] }>("thread/loaded/list", { limit: 100 });
-      for (const threadId of loaded.data) {
-        const { thread } = await client.request<any>("thread/read", {
-          threadId,
-          includeTurns: false,
-        });
-        if (thread.status?.type === "active")
-          throw new AccountRuntimeError(
-            "Wait for this account's active responses before changing its connection",
-          );
-      }
+      let cursor: string | null = null;
+      do {
+        const loaded: { data: string[]; nextCursor?: string | null } = await client.request(
+          "thread/loaded/list",
+          { limit: 100, cursor },
+        );
+        for (const threadId of loaded.data) {
+          const { thread } = await client.request<any>("thread/read", {
+            threadId,
+            includeTurns: false,
+          });
+          if (thread.status?.type === "active")
+            throw new AccountRuntimeError(
+              "Wait for this account's active responses before changing its connection",
+            );
+        }
+        cursor = loaded.nextCursor ?? null;
+      } while (cursor);
       if (this.pool.active(descriptor.id))
         throw new AccountRuntimeError(
           "Wait for this account's active responses before changing its connection",

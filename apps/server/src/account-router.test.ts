@@ -8,6 +8,7 @@ import type { JsonlTransport } from "./codex/transport";
 import { AttentionManager } from "./attention";
 
 it("blocks background dispatch and keeps legacy resumes on Native before update confirmation", async () => {
+  let admitted = false;
   const nativeRequest = vi.fn(async () => ({ thread: { id: "legacy" } }));
   const bridge = Object.assign(new EventEmitter(), {
     setRequestRouter: vi.fn(),
@@ -29,7 +30,7 @@ it("blocks background dispatch and keeps legacy resumes on Native before update 
       userWork: () => undefined,
       account: () => null,
       beforeStart: () => undefined,
-      workAllowed: () => false,
+      workAllowed: () => admitted,
     },
   );
   const route = bridge.setRequestRouter.mock.calls[0]![0] as (
@@ -53,7 +54,75 @@ it("blocks background dispatch and keeps legacy resumes on Native before update 
     expect(pool.ensure).not.toHaveBeenCalled();
     await route("thread/resume", { threadId: "legacy", excludeTurns: true }, 1000);
     expect(nativeRequest).toHaveBeenCalledOnce();
+    for (const method of ["model/list", "account/read", "getAuthStatus"]) {
+      await route(method, {}, 1000);
+      expect(nativeRequest).toHaveBeenLastCalledWith(method, {}, 1000);
+    }
     expect(pool.ensure).not.toHaveBeenCalled();
+    admitted = true;
+    const request = vi.fn(async () => ({ data: ["account-model"] }));
+    pool.ensure.mockResolvedValue({ descriptor: { id: "runtime" }, bridge: { request } });
+    await expect(route("model/list", {}, 1000)).resolves.toEqual({ data: ["account-model"] });
+    expect(pool.ensure).toHaveBeenCalledOnce();
+  } finally {
+    await router.close();
+  }
+});
+
+it("refuses to replace a connection when an active native turn is beyond the first loaded page", async () => {
+  const bridge = Object.assign(new EventEmitter(), {
+    setRequestRouter: vi.fn(),
+    setNativeNotificationFilter: vi.fn(),
+    threadActive: () => false,
+  });
+  const client = {
+    request: vi.fn(async (method: string, params: { cursor?: string; threadId?: string }) => {
+      if (method === "thread/loaded/list")
+        return params.cursor
+          ? { data: ["live"], nextCursor: null }
+          : { data: Array.from({ length: 100 }, (_, i) => `idle-${i}`), nextCursor: "page-2" };
+      return { thread: { status: { type: params.threadId === "live" ? "active" : "idle" } } };
+    }),
+  };
+  const descriptor = { id: "old", accountId: "account", retired: false };
+  const pool = Object.assign(new EventEmitter(), {
+    descriptors: () => [descriptor],
+    matches: () => false,
+    connect: async () => client,
+    active: () => false,
+    ensure: vi.fn(),
+    stop: vi.fn(),
+    close: async () => undefined,
+  });
+  const router = new CodexAccountRouter(
+    bridge as unknown as CodexBridge,
+    pool as unknown as AccountRuntimePool,
+    {
+      state: { threadOwners: { live: "old" }, legacyAccountId: null },
+      selected: () => null,
+      save: async () => undefined,
+      observe: () => undefined,
+      userWork: () => undefined,
+      account: () => null,
+      beforeStart: () => undefined,
+    },
+  );
+  try {
+    await expect(
+      router.replaceAccountConnection({
+        id: "account",
+        home: "/fixture",
+        native: false,
+        proxy: null,
+      }),
+    ).rejects.toThrow("active responses");
+    expect(client.request).toHaveBeenCalledWith("thread/loaded/list", {
+      limit: 100,
+      cursor: "page-2",
+    });
+    expect(pool.stop).not.toHaveBeenCalled();
+    expect(pool.ensure).not.toHaveBeenCalled();
+    expect(descriptor.retired).toBe(false);
   } finally {
     await router.close();
   }

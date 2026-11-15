@@ -524,9 +524,18 @@ async function finishWork(work) {
     "Approved side effect replayed",
   );
   const detail = await api(`/threads/${savedThread}`);
+  const state = await control();
+  if (!detail.summary.currentTurnId || detail.queuedMessages.length !== 1) {
+    report.lastWorkRecoveryFailure = {
+      activeTurnId: detail.summary.currentTurnId,
+      turns: detail.turns.slice(-5).map(({ id, status }) => ({ id, status })),
+      queue: detail.queuedMessages.map(({ id, status }) => ({ id, status })),
+      heldRequestCount: state.requests[work.held] ?? 0,
+      queuedRequestCount: state.requests[work.queued] ?? 0,
+    };
+  }
   assert.ok(detail.summary.currentTurnId, "Active native turn lost during restart");
   assert.equal(detail.queuedMessages.length, 1, "Queued message lost or dispatched early");
-  const state = await control();
   await control({
     released: [...state.released, work.held, `team-child-${work.backgroundMarker}`],
   });
