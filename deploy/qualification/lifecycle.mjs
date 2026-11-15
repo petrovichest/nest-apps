@@ -983,26 +983,50 @@ async function qualify() {
   if (scope === "unsupported") {
     await stage("unsupported-native-update-refused-with-work-intact", async () => {
       assert.equal(process.env.NATIVE_VERSION, "0.154.0");
-      const work = await holdWork("unsupported-native");
+      const held = `unsupported-held-${randomUUID()}`;
+      const queued = `unsupported-queued-${randomUUID()}`;
+      const identity = await pidIdentity(true);
+      await api(`/threads/${savedThread}/turns`, {
+        input: `QUALIFICATION_HOLD:${held}`,
+        clientMessageId: randomUUID(),
+      });
+      await until(
+        "Legacy Native accepted the held request",
+        async () => (await control()).requests[held] === 1,
+      );
+      await api(`/threads/${savedThread}/queue`, {
+        input: `QUALIFICATION_REQUEST:${queued}`,
+        clientMessageId: randomUUID(),
+      });
+      const log = join(privateRoot, "unsupported-updater.log");
+      const dropin = join(home, ".config/systemd/user/codexnest-update.service.d");
+      await mkdir(dropin, { recursive: true });
+      await writeFile(
+        join(dropin, "qualification-output.conf"),
+        `[Service]\nStandardOutput=append:${log}\nStandardError=append:${log}\n`,
+      );
+      await systemctl("daemon-reload");
       const before = await control();
       const refused = await rejectUpdate(/Failed to build|preflight/i);
-      const journal = await run("journalctl", [
-        "--user",
-        "-u",
-        "codexnest-update.service",
-        "--no-pager",
-        "-o",
-        "cat",
-      ]);
+      const journal = await readFile(log, "utf8");
       assert.ok(
         journal.includes(`Codex CLI >= ${candidateMetadata.minimumNativeVersion} is required`),
         "Refusal did not exercise the native version gate",
       );
       assert.equal((await control()).oauthGeneration, before.oauthGeneration);
+      const state = await control();
+      await control({ released: [...state.released, held] });
+      await completed(savedThread, held);
+      await completed(savedThread, queued);
+      const finished = await control();
+      assert.equal(finished.requests[held], 1, "Active request replayed on refused update");
+      assert.equal(finished.requests[queued], 1, "Queued request replayed on refused update");
       return {
         ...refused,
         ...(await ready(baseline.version)),
-        ...(await finishWork(work)),
+        ...(await assertSurviving(identity, true)),
+        activeRequestCount: 1,
+        queuedRequestCount: 1,
         nativeRefusalBeforeSwitch: true,
       };
     });

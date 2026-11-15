@@ -157,7 +157,8 @@ An environment-only pass or a single diagnostic pass cannot authorize publicatio
 Each interruption scope also finishes a successful upgrade and saved-chat request,
 including the incident recovery baseline. The unsupported-native scope requires
 the specific version-gate diagnostic before switch, preserving the same Native
-process, held request, queue, approval and managed result.
+process, held request and queue. Approval and Team recovery remain mandatory on
+supported runtimes; legacy 0.154.0 cannot run the fixture's managed child scenario.
 The large-history jobs start after source/account checks, clean installation and
 interrupted-update diagnostics pass. An early failure avoids building large native
 fixtures for an already rejected candidate; skipped matrix jobs remain unqualified.
