@@ -429,6 +429,11 @@ export class CodexAccounts extends EventEmitter {
 
   private refreshing = new Map<string, Promise<void>>();
   async refresh(id?: string): Promise<CodexAccountsStatus> {
+    if (this.options.workAllowed?.() === false)
+      throw new CodexAccountError(
+        "conflict",
+        "CodexNest is finalizing the update; retry after confirmation",
+      );
     const accounts = id
       ? [this.find(id)]
       : this.registry.accounts.filter((account) => account.authenticated);
@@ -1004,7 +1009,8 @@ export class CodexAccounts extends EventEmitter {
   }
   private planWarmup(): void {
     clearTimeout(this.warmTimer);
-    if (this.closed || this.options.poll === false) return;
+    if (this.closed || this.options.poll === false || this.options.workAllowed?.() === false)
+      return;
     this.computeWarmSchedule();
     const now = Date.now();
     const scheduled = this.registry.accounts

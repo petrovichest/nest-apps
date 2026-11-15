@@ -528,7 +528,11 @@ async function finishWork(work) {
   if (!detail.summary.currentTurnId || detail.queuedMessages.length !== 1) {
     report.lastWorkRecoveryFailure = {
       activeTurnId: detail.summary.currentTurnId,
-      turns: detail.turns.slice(-5).map(({ id, status }) => ({ id, status })),
+      turns: detail.turns.slice(-5).map(({ id, status, error }) => ({
+        id,
+        status,
+        error: error?.codexErrorInfo ?? null,
+      })),
       queue: detail.queuedMessages.map(({ id, status }) => ({ id, status })),
       heldRequestCount: state.requests[work.held] ?? 0,
       queuedRequestCount: state.requests[work.queued] ?? 0,

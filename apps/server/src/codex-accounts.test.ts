@@ -288,6 +288,20 @@ describe("CodexAccounts", () => {
     expect(h.accounts.status().accounts[0]?.rateLimits.limits).toBeNull();
   });
 
+  it("keeps quota polling from starting another runtime before update confirmation", async () => {
+    let admitted = false;
+    const h = await harness(() => admitted);
+    await h.accounts.restore();
+    const before = h.accounts.status();
+    await expect(h.accounts.refresh()).rejects.toThrow("finalizing the update");
+    expect(h.accounts.status()).toEqual(before);
+    expect(h.ensure).not.toHaveBeenCalled();
+    admitted = true;
+    await h.accounts.refresh();
+    expect(h.ensure).toHaveBeenCalledTimes(1);
+    expect(h.runtimeRequests.some(({ method }) => method === "account/rateLimits/read")).toBe(true);
+  });
+
   it("warms idle subscribed accounts in separate five-hour slots and stops scheduling when disabled", async () => {
     const h = await harness();
     await h.accounts.restore();
@@ -367,7 +381,7 @@ function responses(name: () => string) {
     },
   );
 }
-async function harness() {
+async function harness(workAllowed?: () => boolean) {
   const root = await mkdtemp(join(tmpdir(), "codex-accounts-test-"));
   directories.push(root);
   const nativeHome = join(root, "native");
@@ -407,6 +421,7 @@ async function harness() {
     codexBin: "unused",
     proxyEnvFile: join(root, "no-proxy.env"),
     activeTurnCount: active,
+    workAllowed,
     openProcess,
   };
   const quota = new Map<string, any>();

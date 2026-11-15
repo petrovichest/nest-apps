@@ -3146,6 +3146,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       teamContinuationsPaused = false;
       await queue.resume();
       wakeKanban();
+      pollRateLimits();
       const deferred = [...deferredServerRequests.values()];
       deferredServerRequests.clear();
       for (const [request, transport] of deferred) teamRequestHandler(request, transport);
@@ -3788,6 +3789,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   const pollRateLimits = () => {
     if (
       rateLimitsClosed ||
+      lifecycle?.updatePending ||
       bridge.state !== "ready" ||
       bridge.accountSwitching ||
       bridge.accountLoginRequired
