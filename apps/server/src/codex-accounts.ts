@@ -345,6 +345,35 @@ export class CodexAccounts extends EventEmitter {
     });
   }
 
+  prepareLegacyRollback(): Promise<void> {
+    return this.serial(async () => {
+      const owners = Object.values(this.registry.threadOwners).filter(
+        (owner) => owner !== "native",
+      );
+      if (!owners.length) return;
+      const account = this.registry.accounts.find(
+        (entry) => entry.id === this.registry.currentAccountId,
+      );
+      const inherited = await readProxyUrl(this.options.proxyEnvFile);
+      if (
+        !account ||
+        account.id !== this.registry.legacyAccountId ||
+        account.credentialId ||
+        !account.authenticated ||
+        account.proxy?.url !== (inherited ? parseClaudeProxy(inherited).url : undefined) ||
+        owners.some(
+          (owner) =>
+            this.registry.runtimes.find((entry) => entry.id === owner)?.accountId !== account.id,
+        )
+      )
+        throw new CodexAccountError(
+          "conflict",
+          "This older release needs the original account and connection before rollback",
+        );
+      await this.router!.restoreNativeOwnership();
+    });
+  }
+
   setAutoSwitch(enabled: boolean): Promise<CodexAccountsStatus> {
     return this.serial(async () => {
       this.registry.autoSwitch = enabled;

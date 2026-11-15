@@ -38,6 +38,11 @@ replacement/rollback diagnostics then use idle A, preserving its PID/history
 and exercising a new saved-chat request after recovery. Candidate warm recovery
 still requires all active work and operation counters. These scopes must not
 be reported as qualifying an active rollback into the legacy version.
+For an idle rollback, the new CLI supplies the target recovery protocol. The API
+returns private threads' writer leases to the original daemon before replacement,
+without terminating either daemon or exposing internal archive events. Archived
+chats stay archived. A selected account/credential generation or connection that
+the old version cannot recover refuses downgrade before any pointer switch.
 
 The lifecycle diagnostic exercises installation, real saved-chat requests,
 rebuilding the native index from at least 2000 nonarchived synthetic sessions and

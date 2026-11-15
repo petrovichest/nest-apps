@@ -2016,6 +2016,13 @@ describe("HTTP authentication", () => {
         operation: "idle",
       })),
     } as unknown as CodexManager;
+    const prepareLegacyRollback = vi.fn(async () => undefined);
+    const codexAccounts = Object.assign(new EventEmitter(), {
+      prepareLegacyRollback,
+      status: () => ({ accounts: [] }),
+      observeLimits: () => undefined,
+      close: async () => undefined,
+    }) as unknown as CodexAccounts;
     const app = await buildApp(
       loadConfig({
         statePath: store.path,
@@ -2030,6 +2037,7 @@ describe("HTTP authentication", () => {
         lifecycle,
         appManager,
         codexManager,
+        codexAccounts,
       },
     );
     const headers = { authorization: "Bearer correct" };
@@ -2093,7 +2101,7 @@ describe("HTTP authentication", () => {
     const prepared = await app.inject({
       method: "POST",
       url: "/api/v1/internal/restart/prepare",
-      headers: { "x-codexnest-restart-token": token },
+      headers: { "x-codexnest-restart-token": token, "x-codexnest-target-recovery-protocol": "2" },
     });
     expect(prepared.statusCode).toBe(200);
     expect(prepared.json()).toMatchObject({
@@ -2102,6 +2110,7 @@ describe("HTTP authentication", () => {
       hasManagedWork: true,
       quiescent: false,
     });
+    expect(prepareLegacyRollback).not.toHaveBeenCalled();
     expect(
       (
         await app.inject({
@@ -2152,9 +2161,18 @@ describe("HTTP authentication", () => {
     const historyOnly = await app.inject({
       method: "POST",
       url: "/api/v1/internal/restart/prepare",
-      headers: { "x-codexnest-restart-token": token },
+      headers: { "x-codexnest-restart-token": token, "x-codexnest-target-recovery-protocol": "2" },
     });
     expect(historyOnly.json()).toMatchObject({ hasManagedWork: false, quiescent: true });
+    expect(prepareLegacyRollback).toHaveBeenCalledOnce();
+    await lifecycle.resume(token);
+    const compatible = await app.inject({
+      method: "POST",
+      url: "/api/v1/internal/restart/prepare",
+      headers: { "x-codexnest-restart-token": token },
+    });
+    expect(compatible.statusCode).toBe(200);
+    expect(prepareLegacyRollback).toHaveBeenCalledOnce();
     await lifecycle.resume(token);
     await app.close();
     await lifecycle.close();

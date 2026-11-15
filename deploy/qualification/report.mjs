@@ -17,6 +17,7 @@ export const requiredCases = {
     "clean-install-confirmation-and-surviving-private-work",
     "expired-credentials-on-native-startup",
     "failed-oauth-on-native-startup",
+    "legacy-rollback-writer-handover",
     "other-packaged-applications-startup",
   ],
   interruption: [
@@ -166,6 +167,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     assert.deepEqual(result.nativeVersions, nativeVersions);
     assert.equal(result.qualified, true);
     assert.equal(result.sourceRun, process.env.QUALIFIED_RUN_ID);
-    assert.ok(result.evidence.length >= 60);
+    // Five environment scopes contribute two files each; nine lifecycle scopes
+    // contribute five each. This is the collector's complete immutable record.
+    assert.equal(result.evidence.length, 55);
   }
 }

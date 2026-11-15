@@ -29,6 +29,48 @@ const proxy: ClaudeProxyInput = {
 };
 
 describe("CodexAccounts", () => {
+  it.each(["none", "credentials", "proxy", "other-account"])(
+    "checks legacy rollback compatibility before transferring writers (%s)",
+    async (fault) => {
+      const h = await harness();
+      await h.accounts.restore();
+      const path = join(h.root, "codex-accounts.json");
+      const saved = JSON.parse(await readFile(path, "utf8"));
+      const owner = randomUUID();
+      saved.threadOwners = { chat: owner };
+      saved.runtimes = [{ id: owner, accountId: saved.currentAccountId }];
+      if (fault === "credentials") saved.accounts[0].credentialId = randomUUID();
+      if (fault === "proxy") saved.accounts[0].proxy = parseClaudeProxy(proxy.value, "socks5");
+      if (fault === "other-account") saved.runtimes[0].accountId = randomUUID();
+      await writeFile(path, JSON.stringify(saved), { mode: 0o600 });
+      const worker = {
+        threadActive: () => false,
+        request: vi.fn(async (method: string) =>
+          method === "thread/read"
+            ? { thread: { status: { type: "idle" }, path: "/fixture/sessions/chat.jsonl" } }
+            : {},
+        ),
+      };
+      const connect = vi
+        .spyOn(AccountRuntimePool.prototype, "connect")
+        .mockResolvedValue(worker as unknown as CodexBridge);
+      const restarted = new CodexAccounts(h.bridge as unknown as CodexBridge, h.options);
+      managers.push(restarted);
+      await restarted.initialize();
+      if (fault === "none") {
+        await restarted.prepareLegacyRollback();
+        expect(JSON.parse(await readFile(path, "utf8")).threadOwners.chat).toBe("native");
+        expect(worker.request).toHaveBeenCalledWith("thread/archive", { threadId: "chat" }, 30000);
+      } else {
+        await expect(restarted.prepareLegacyRollback()).rejects.toThrow(
+          "original account and connection",
+        );
+        expect(connect).not.toHaveBeenCalled();
+        expect(JSON.parse(await readFile(path, "utf8")).threadOwners.chat).toBe(owner);
+      }
+    },
+  );
+
   it("imports native metadata without copying credentials or starting another native process", async () => {
     const h = await harness();
     await h.accounts.restore();

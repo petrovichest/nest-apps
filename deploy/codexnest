@@ -291,6 +291,7 @@ codexnest_prepare_restart() {
     --max-time 75 \
     -X POST \
     -H "X-CodexNest-Restart-Token: $token" \
+    -H "X-CodexNest-Target-Recovery-Protocol: $target_protocol" \
     http://127.0.0.1:4310/api/v1/internal/restart/prepare)"; then
     codexnest_preflight_error="$(printf '%s' "$body" | "$node_bin" -e '
       const fs = require("node:fs");

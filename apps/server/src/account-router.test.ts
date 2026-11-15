@@ -7,6 +7,63 @@ import type { ServerRequest } from "./codex/generated/index";
 import type { JsonlTransport } from "./codex/transport";
 import { AttentionManager } from "./attention";
 
+it.each([false, true])(
+  "returns an idle owner to Native without changing its archived state (%s)",
+  async (archived) => {
+    const state = { threadOwners: { chat: "worker" }, legacyAccountId: "account" };
+    const original = Object.assign(new EventEmitter(), {
+      setRequestRouter: vi.fn(),
+      setNativeNotificationFilter: vi.fn(),
+      requestNative: vi.fn(async (method: string) => ({ method })),
+      threadActive: () => false,
+    });
+    const worker = {
+      threadActive: () => false,
+      request: vi.fn(async (method: string) =>
+        method === "thread/read"
+          ? {
+              thread: {
+                status: { type: "idle" },
+                path: archived
+                  ? "/fixture/archived_sessions/chat.jsonl"
+                  : "/fixture/sessions/chat.jsonl",
+              },
+            }
+          : {},
+      ),
+    };
+    const pool = Object.assign(new EventEmitter(), {
+      connect: async () => worker,
+      close: async () => undefined,
+    });
+    const router = new CodexAccountRouter(
+      original as unknown as CodexBridge,
+      pool as unknown as AccountRuntimePool,
+      {
+        state,
+        selected: () => null,
+        save: async () => undefined,
+        observe: () => undefined,
+        userWork: () => undefined,
+        account: () => null,
+        beforeStart: () => undefined,
+      },
+    );
+    try {
+      await router.restoreNativeOwnership();
+      expect(state.threadOwners.chat).toBe("native");
+      expect(worker.request.mock.calls.map(([method]) => method)).toEqual(
+        archived ? ["thread/read"] : ["thread/read", "thread/archive"],
+      );
+      expect(original.requestNative.mock.calls.map((call) => call[0])).toEqual(
+        archived ? [] : ["thread/unarchive", "thread/resume"],
+      );
+    } finally {
+      await router.close();
+    }
+  },
+);
+
 it.each(["none", "resume", "save"])(
   "preserves live history and hides internal archive events during a handover (%s failure)",
   async (failure) => {

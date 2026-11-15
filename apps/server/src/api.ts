@@ -3271,6 +3271,11 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     if (typeof token !== "string") {
       return apiError(reply, 403, "forbidden", "Restart token is required");
     }
+    const targetProtocol = Number(
+      request.headers["x-codexnest-target-recovery-protocol"] ?? RESTART_RECOVERY_PROTOCOL_VERSION,
+    );
+    if (!Number.isSafeInteger(targetProtocol) || targetProtocol < 1)
+      return apiError(reply, 400, "validation_failed", "Invalid target recovery protocol");
     try {
       await lifecycle.prepare(token);
     } catch (error) {
@@ -3302,6 +3307,15 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     const hasActiveVoiceTranscriptions = Object.values(snapshot.voiceTranscriptions ?? {}).some(
       (job) => ["queued", "transcribing", "applying"].includes(job.status),
     );
+    const quiescent =
+      activeTurnCount === 0 &&
+      !hasManagedWork &&
+      pendingToolOperationCount === 0 &&
+      pendingAttentionCount === 0 &&
+      !hasQueuedMessages &&
+      !hasActiveVoiceTranscriptions;
+    if (quiescent && targetProtocol < RESTART_RECOVERY_PROTOCOL_VERSION)
+      await codexAccounts?.prepareLegacyRollback();
     return {
       restartProtocolVersion: RESTART_RECOVERY_PROTOCOL_VERSION,
       transport: lifecycle.transport,
@@ -3314,13 +3328,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       hasDispatchingMessages,
       hasQueuedMessages,
       hasActiveVoiceTranscriptions,
-      quiescent:
-        activeTurnCount === 0 &&
-        !hasManagedWork &&
-        pendingToolOperationCount === 0 &&
-        pendingAttentionCount === 0 &&
-        !hasQueuedMessages &&
-        !hasActiveVoiceTranscriptions,
+      quiescent,
     };
   });
 

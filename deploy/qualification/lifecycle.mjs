@@ -1007,6 +1007,38 @@ async function qualify() {
       };
     });
     await startupAuthorizationChecks();
+    await stage("legacy-rollback-writer-handover", async () => {
+      const identity = await pidIdentity(true);
+      const token = (
+        await readFile(join(home, ".local/state/codexnest/restart-token"), "utf8")
+      ).trim();
+      const restart = async (action) => {
+        const response = await fetch(`http://127.0.0.1:4310/api/v1/internal/restart/${action}`, {
+          method: "POST",
+          headers: {
+            "X-CodexNest-Restart-Token": token,
+            "X-CodexNest-Target-Recovery-Protocol": "2",
+          },
+          signal: AbortSignal.timeout(60_000),
+        });
+        assert.ok(response.ok, `Legacy rollback ${action}: HTTP ${response.status}`);
+        return response.status === 204 ? null : response.json();
+      };
+      try {
+        assert.equal((await restart("prepare")).quiescent, true);
+        await nativeRpc(async (rpc) => {
+          const resumed = await rpc("thread/resume", { threadId: savedThread, excludeTurns: true });
+          assert.equal(resumed.thread.id, savedThread);
+        });
+        await assertSurviving(identity, true);
+      } finally {
+        await restart("resume");
+      }
+      return {
+        ...(await request(savedThread, "cancelled-legacy-rollback")),
+        ...(await assertSurviving(identity, true)),
+      };
+    });
     await stage("other-packaged-applications-startup", async () => {
       await run("node", [join(input, "packaged-smoke.mjs"), join(root, "current")], {
         timeout: 180_000,
@@ -1499,9 +1531,21 @@ async function qualify() {
                 // Rotate through the same surviving real daemon while B is
                 // running. Foreground candidate work remains admission-blocked.
                 const before = (await control()).oauthGeneration;
-                await nativeRpc((rpc) =>
-                  rpc("getAuthStatus", { includeToken: true, refreshToken: true }),
+                const accounts = JSON.parse(
+                  await readFile(join(home, ".local/state/codexnest/codex-accounts.json"), "utf8"),
                 );
+                const runtime = accounts.runtimes.find(
+                  (entry) => !entry.retired && entry.accountId === accounts.currentAccountId,
+                );
+                assert.ok(runtime, "Surviving account Native is missing");
+                // A's original daemon has host-owned external tokens: Native
+                // explicitly skips refresh there. Exercise the actual file-auth
+                // account daemon, retaining its PID and current refresh token.
+                const refreshed = await nativeRpc(
+                  (rpc) => rpc("getAuthStatus", { includeToken: true, refreshToken: true }),
+                  runtime.socketPath,
+                );
+                assert.equal(refreshed.authMethod, "chatgpt");
                 const after = await control();
                 assert.ok(
                   after.oauthGeneration > before,
