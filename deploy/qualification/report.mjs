@@ -30,6 +30,7 @@ export const requiredCases = {
     ),
     "completed-upgrade-after-interruptions",
     "restore-A-before-failed-upgrade",
+    "repeat-upgrade-after-manual-rollback",
   ],
   all: [
     "published-installer-A",

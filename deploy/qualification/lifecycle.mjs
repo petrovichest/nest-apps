@@ -606,7 +606,11 @@ async function update(expectedResult, afterRestart) {
     ),
   );
   const previousStatus = await readFile(statusPath, "utf8").catch(() => "");
-  await systemctl("reset-failed", "codexnest-update.service");
+  if (
+    (await systemctl("show", "codexnest-update.service", "-p", "ActiveState", "--value")).trim() ===
+    "failed"
+  )
+    await systemctl("reset-failed", "codexnest-update.service");
   await systemctl("start", "--no-block", "codexnest-update.service");
   await until(
     "Update entered restart",
@@ -1370,6 +1374,15 @@ async function qualify() {
       };
     });
     await restoreBaseline();
+    await stage("repeat-upgrade-after-manual-rollback", async () => {
+      const identity = await pidIdentity(true);
+      return {
+        ...(await update("updated")),
+        ...(await ready(candidateVersion)),
+        ...(await assertSurviving(identity, true)),
+        ...(await request(savedThread, "manual-rollback-retried")),
+      };
+    });
     return;
   }
   await stage("representative-synthetic-history-files", async () => {
