@@ -111,7 +111,7 @@ fi
 if [[ "$*" == *'/api/v1/internal/restart/prepare'* ]]; then
   if [[ -f "$HOME/managed-team-work" ]]; then
     printf '%s\n' \
-      '{"restartProtocolVersion":2,"transport":"daemon","appServerReady":true,"hasManagedWork":true,"quiescent":false}'
+      '{"restartProtocolVersion":3,"transport":"daemon","appServerReady":true,"hasManagedWork":true,"quiescent":false}'
     exit 0
   fi
   printf '%s\n' \
@@ -179,7 +179,7 @@ grep -q '"result":"updated"' "$case_home/.local/state/codexnest/update.json"
 run_cli check-update | grep -q '"updateAvailable":false'
 touch "$case_home/managed-team-work"
 run_cli restart >/dev/null
-sed -i 's/"runtimeRecoveryProtocolVersion": 2/"runtimeRecoveryProtocolVersion": 1/' \
+sed -i 's/"runtimeRecoveryProtocolVersion": 3/"runtimeRecoveryProtocolVersion": 1/' \
   "$case_home/.local/share/codexnest/current/deploy/restart-protocol.json"
 if run_cli restart >/dev/null 2>&1; then
   printf '%s\n' 'Expected restart to reject a mismatched recovery protocol' >&2

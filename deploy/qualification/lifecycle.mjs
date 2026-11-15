@@ -698,8 +698,11 @@ async function rejectUpdate(expectedMessage) {
   const rejected = await until(
     "Old updater rejected an unsafe candidate",
     async () => {
-      const raw = await readFile(statusPath, "utf8");
-      if (raw === before) return null;
+      const raw = await readFile(statusPath, "utf8").catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (!raw || raw === before) return null;
       const value = JSON.parse(raw);
       if (value.operation !== "idle") return null;
       const unit = (
