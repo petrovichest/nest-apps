@@ -14,6 +14,13 @@ reports are used. The preinstalled VM tools avoid any dependency on downloading
 an additional OS image or APT packages.
 
 The default mode checks the exact pinned native package and actual daemon.
+Application support starts at CLI 0.167.0. Full lifecycle qualification covers
+0.167.0, 0.167.1, 0.167.2 and 0.169.0. Native 0.154.0 retains network compatibility
+probes and a mandatory real installed-updater refusal with active work intact;
+it is not claimed as a supported large-history startup. Run `43712939488` measured
+31 minutes for its fixture construction, then 62 seconds for baseline A's first
+cold saved-chat recovery, exceeding the unchanged 60-second limit. The user
+approved the 0.167.0 floor and blocking updates on older CLI versions.
 `QUALIFICATION_MODE=lifecycle` additionally runs `lifecycle.mjs`. It uses the
 published `0.1.9-f42edbe` installer and its installed updater, with the exact
 candidate Git commit served by a VM-local HTTPS artifact registry. The
@@ -147,6 +154,10 @@ SHA, validates that artifact and installer hash, and checks that the published
 healthy baseline has not moved. Missing/expired evidence or a moved baseline
 blocks release. The qualification report and asset checksums accompany the release.
 An environment-only pass or a single diagnostic pass cannot authorize publication.
+Each interruption scope also finishes a successful upgrade and saved-chat request,
+including the incident recovery baseline. The unsupported-native scope requires
+the specific version-gate diagnostic before switch, preserving the same Native
+process, held request, queue, approval and managed result.
 The large-history jobs start after source/account checks, clean installation and
 interrupted-update diagnostics pass. An early failure avoids building large native
 fixtures for an already rejected candidate; skipped matrix jobs remain unqualified.

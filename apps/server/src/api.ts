@@ -5852,6 +5852,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       {
         err: safeError(error),
         rpcCode: error instanceof RpcError ? error.code : undefined,
+        rpcMethod: error instanceof RpcError ? error.method : undefined,
         method: request.method,
         route: request.routeOptions.url,
       },

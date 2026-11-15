@@ -37,16 +37,18 @@ const candidate = (await readFile(join(input, "candidate-sha"), "utf8")).trim();
 assert.match(candidate, /^[0-9a-f]{40}$/);
 const baseline = JSON.parse(await readFile(join(input, "baseline.json"), "utf8"));
 const candidateVersion = `0.1.9-${candidate.slice(0, 7)}`;
-const candidateProtocol = JSON.parse(
+const candidateMetadata = JSON.parse(
   await readFile(join(input, "candidate-restart-protocol.json"), "utf8"),
-).runtimeRecoveryProtocolVersion;
+);
+const candidateProtocol = candidateMetadata.runtimeRecoveryProtocolVersion;
 const scope = process.env.QUALIFICATION_SCOPE ?? "all";
-assert.ok(["all", "interruption", "clean"].includes(scope));
+assert.ok(["all", "interruption", "clean", "unsupported"].includes(scope));
 const report = {
   schemaVersion: 1,
   candidate,
   baseline,
   native: process.env.NATIVE_VERSION,
+  minimumNativeVersion: candidateMetadata.minimumNativeVersion,
   scope,
   resources: { cpus: 4, memoryGiB: 10 },
   budgetsMs: {
@@ -978,6 +980,34 @@ async function qualify() {
       return { ...evidence, ...requestEvidence };
     },
   );
+  if (scope === "unsupported") {
+    await stage("unsupported-native-update-refused-with-work-intact", async () => {
+      assert.equal(process.env.NATIVE_VERSION, "0.154.0");
+      const work = await holdWork("unsupported-native");
+      const before = await control();
+      const refused = await rejectUpdate(/Failed to build|preflight/i);
+      const journal = await run("journalctl", [
+        "--user",
+        "-u",
+        "codexnest-update.service",
+        "--no-pager",
+        "-o",
+        "cat",
+      ]);
+      assert.ok(
+        journal.includes(`Codex CLI >= ${candidateMetadata.minimumNativeVersion} is required`),
+        "Refusal did not exercise the native version gate",
+      );
+      assert.equal((await control()).oauthGeneration, before.oauthGeneration);
+      return {
+        ...refused,
+        ...(await ready(baseline.version)),
+        ...(await finishWork(work)),
+        nativeRefusalBeforeSwitch: true,
+      };
+    });
+    return;
+  }
   if (scope === "clean") {
     await stage("clean-install-confirmation-and-surviving-private-work", async () => {
       const health = (await ready(candidateVersion)).health;
@@ -1248,6 +1278,15 @@ async function qualify() {
         return { ...recovered, fullRecoveryMs, interruption: report.interruption };
       });
     }
+    await stage("completed-upgrade-after-interruptions", async () => {
+      const identity = await pidIdentity(true);
+      return {
+        ...(await update("updated")),
+        ...(await ready(candidateVersion)),
+        ...(await assertSurviving(identity, true)),
+        ...(await request(savedThread, "interrupted-upgrade-retried")),
+      };
+    });
     return;
   }
   await stage("representative-synthetic-history-files", async () => {

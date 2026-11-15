@@ -10,7 +10,7 @@ case "${NATIVE_VERSION:-}" in 0.154.0|0.167.0|0.167.1|0.167.2|0.169.0) ;; *) exi
 qualification_mode="${QUALIFICATION_MODE:-environment}"
 case "$qualification_mode" in environment|lifecycle) ;; *) exit 2 ;; esac
 qualification_scope="${QUALIFICATION_SCOPE:-all}"
-case "$qualification_scope" in all|interruption|clean) ;; *) exit 2 ;; esac
+case "$qualification_scope" in all|interruption|clean|unsupported) ;; *) exit 2 ;; esac
 [[ -n "${RUNNER_TEMP:-}" && -n "${GITHUB_RUN_ID:-}" ]]
 qualification_root="$(git rev-parse --show-toplevel)"
 qualification_sha="$(git rev-parse HEAD)"

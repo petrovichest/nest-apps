@@ -145,13 +145,14 @@ jobs:
         native-account-network,
         release-clean-install-diagnostics,
         release-interruption-diagnostics,
+        release-unsupported-native-diagnostics,
       ]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        codex: ["0.154.0", "0.167.0", "0.167.1", "0.167.2", "0.169.0"]
+        codex: ["0.167.0", "0.167.1", "0.167.2", "0.169.0"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -227,6 +228,28 @@ jobs:
           path: ${{ runner.temp }}/qualification-lifecycle-${{ matrix.codex }}/
           if-no-files-found: error
 
+  release-unsupported-native-diagnostics:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse the old native runtime before switching the installed release
+        env:
+          NATIVE_VERSION: "0.154.0"
+          QUALIFICATION_MODE: lifecycle
+          QUALIFICATION_SCOPE: unsupported
+        run: bash deploy/qualification/environment.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: unsupported-native-diagnostics-${{ github.sha }}-0.154.0
+          path: ${{ runner.temp }}/qualification-lifecycle-0.154.0/
+          if-no-files-found: error
+
   release-report:
     if: github.event_name == 'workflow_dispatch'
     needs:
@@ -237,6 +260,7 @@ jobs:
         release-lifecycle-diagnostics,
         release-clean-install-diagnostics,
         release-interruption-diagnostics,
+        release-unsupported-native-diagnostics,
       ]
     runs-on: ubuntu-latest
     steps:
@@ -501,6 +525,7 @@ jobs:
           printf 'CodexNest and ClaudeNest from verified commit `%s`.\n\nCodexNest: `curl -fsSL https://github.com/%s/releases/download/%s/install.sh | bash`\n\nClaudeNest: `curl -fsSL https://github.com/%s/releases/download/%s/install-claudenest.sh | bash`\n\nThe installers build the server and web client from this exact commit.\n' \
             "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$tag" "$GITHUB_REPOSITORY" "$tag" > release/notes.md
           printf '\nGeminiNest (Google AI Ultra through Antigravity ACP): `curl -fsSL https://github.com/%s/releases/download/%s/install-gemininest.sh | bash`\n' "$GITHUB_REPOSITORY" "$tag" >> release/notes.md
+          printf '\nCodexNest requires Codex CLI 0.167.0 or newer. Older CLI updates are refused before switching the installed application.\n' >> release/notes.md
           if [[ "$GITHUB_REF_TYPE" != tag ]]; then
             release_assets+=(release/CodexNest-latest.apk release/ClaudeNest-latest.apk release/GeminiNest-latest.apk)
             printf '\nThe signed CodexNest, ClaudeNest and GeminiNest Android APKs and the CodexNest, ClaudeNest and GeminiNest Chrome extensions are built from the same verified commit.\n' >> release/notes.md

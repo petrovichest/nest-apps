@@ -46,9 +46,11 @@ describe("CodexAccounts", () => {
       const worker = {
         threadActive: () => false,
         request: vi.fn(async (method: string) =>
-          method === "thread/read"
-            ? { thread: { status: { type: "idle" }, path: "/fixture/sessions/chat.jsonl" } }
-            : {},
+          method === "thread/loaded/list"
+            ? { data: ["chat"], nextCursor: null }
+            : method === "thread/read"
+              ? { thread: { status: { type: "idle" }, path: "/fixture/sessions/chat.jsonl" } }
+              : {},
         ),
       };
       const connect = vi

@@ -22,16 +22,18 @@ it.each(["loaded", "unloaded", "archived"])(
     const worker = {
       threadActive: () => false,
       request: vi.fn(async (method: string) =>
-        method === "thread/read"
-          ? {
-              thread: {
-                status: { type: unloaded ? "notLoaded" : "idle" },
-                path: archived
-                  ? "/fixture/archived_sessions/chat.jsonl"
-                  : "/fixture/sessions/chat.jsonl",
-              },
-            }
-          : {},
+        method === "thread/loaded/list"
+          ? { data: archived || unloaded ? [] : ["chat"], nextCursor: null }
+          : method === "thread/read"
+            ? {
+                thread: {
+                  status: { type: unloaded ? "notLoaded" : "idle" },
+                  path: archived
+                    ? "/fixture/archived_sessions/chat.jsonl"
+                    : "/fixture/sessions/chat.jsonl",
+                },
+              }
+            : {},
       ),
     };
     const pool = Object.assign(new EventEmitter(), {
@@ -55,7 +57,9 @@ it.each(["loaded", "unloaded", "archived"])(
       await router.restoreNativeOwnership();
       expect(state.threadOwners.chat).toBe("native");
       expect(worker.request.mock.calls.map(([method]) => method)).toEqual(
-        archived || unloaded ? ["thread/read"] : ["thread/read", "thread/archive"],
+        archived || unloaded
+          ? ["thread/loaded/list"]
+          : ["thread/loaded/list", "thread/read", "thread/archive"],
       );
       expect(original.requestNative.mock.calls.map((call) => call[0])).toEqual(
         archived || unloaded ? [] : ["thread/unarchive", "thread/resume"],

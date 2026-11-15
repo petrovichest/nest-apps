@@ -166,14 +166,21 @@ if [[ ! -f "$codexnest_release/.codexnest-built" || \
   }
 fi
 
+codexnest_codex_bin="$(command -v codex 2>/dev/null || true)"
+[[ -n "$codexnest_codex_bin" ]] || codexnest_codex_bin=codex
+if grep -q '"minimumNativeVersion"' "$codexnest_release/deploy/restart-protocol.json"; then
+  (
+    cd "$codexnest_release"
+    CODEXNEST_CODEX_BIN="$codexnest_codex_bin" "$codexnest_runtime/current/bin/node" deploy/update-recovery.mjs check-native
+  )
+fi
+
 codexnest_old_current="$(readlink -f "$codexnest_root/current" 2>/dev/null || true)"
 if [[ -n "$codexnest_old_current" && "$codexnest_old_current" != "$codexnest_release" ]]; then
   ln -sfn "$codexnest_old_current" "$codexnest_root/previous"
 fi
 ln -sfn "$codexnest_release" "$codexnest_root/current"
 
-codexnest_codex_bin="$(command -v codex 2>/dev/null || true)"
-[[ -n "$codexnest_codex_bin" ]] || codexnest_codex_bin=codex
 if [[ ! -f "$codexnest_config" ]]; then
   codexnest_log "Creating production configuration"
   umask 077

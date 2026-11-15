@@ -31,7 +31,7 @@ affiliated with or endorsed by OpenAI.
 
 ## Quick start
 
-Use an Ubuntu or Debian machine (`amd64` or `arm64`) with Codex CLI installed and
+Use an Ubuntu or Debian machine (`amd64` or `arm64`) with Codex CLI 0.167.0 or newer installed and
 signed in. Run the installer as a regular user:
 
 > **Private access only.** Keep CodexNest on the host, a fully trusted LAN, or your

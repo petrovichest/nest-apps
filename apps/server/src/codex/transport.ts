@@ -141,6 +141,7 @@ export class RpcError extends Error {
     public readonly code: number,
     message: string,
     public readonly data?: unknown,
+    public readonly method?: string,
   ) {
     super(message);
     this.name = "RpcError";
@@ -263,7 +264,9 @@ export class JsonlTransport extends EventEmitter {
     this.pending.delete(value.id);
     clearTimeout(pending.timer);
     if (isRpcError(value.error)) {
-      pending.reject(new RpcError(value.error.code, value.error.message, value.error.data));
+      pending.reject(
+        new RpcError(value.error.code, value.error.message, value.error.data, pending.method),
+      );
     } else if ("result" in value) {
       pending.resolve(value.result);
     } else {

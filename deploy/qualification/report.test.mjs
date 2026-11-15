@@ -8,6 +8,7 @@ function fixture() {
     schemaVersion: 1,
     candidate,
     native: "0.169.0",
+    minimumNativeVersion: "0.167.0",
     baseline: { commit: healthyBaseline },
     scope: "all",
     completed: true,

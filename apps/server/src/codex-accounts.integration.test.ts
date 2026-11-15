@@ -14,6 +14,7 @@ import { CodexAccounts } from "./codex-accounts";
 import { CodexBridge } from "./codex/bridge";
 import { DetachedAccountRuntimeLauncher, type AccountRuntimeDescriptor } from "./account-runtime";
 import { createAccountProxyConnection } from "./account-proxy";
+import type { CodexAccountRouter } from "./account-router";
 
 const binary = process.env.CODEXNEST_ACCOUNT_CODEX_BIN;
 
@@ -464,6 +465,64 @@ it.skipIf(!binary)(
           })
         ).thread.turns,
       ).toHaveLength(2);
+      // Finished ephemeral work has no rollout after its runtime goes cold.
+      // Downgrade must transfer only actual loaded writers, retaining saved chats.
+      const handoverRouter = (manager as unknown as { router: CodexAccountRouter }).router;
+      const handoverRegistry = JSON.parse(
+        await readFile(join(root, "codex-accounts.json"), "utf8"),
+      );
+      const handoverDescriptor = handoverRegistry.runtimes.find(
+        (entry: AccountRuntimeDescriptor) => entry.accountId === ids[0],
+      );
+      const handoverSource = await handoverRouter.pool.connect(handoverDescriptor.id);
+      const ephemeralConversation = await bridge.request<any>("thread/start", {
+        cwd: root,
+        ephemeral: true,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      });
+      await handoverSource.request("turn/start", {
+        threadId: ephemeralConversation.thread.id,
+        input: [{ type: "text", text: "Reply ACCOUNT_OK for ephemeralConversation work" }],
+      });
+      await vi.waitFor(
+        async () => {
+          const detail = await handoverSource.request<any>("thread/read", {
+            threadId: ephemeralConversation.thread.id,
+            includeTurns: false,
+          });
+          expect(detail.thread.status.type).toBe("idle");
+        },
+        { timeout: 8000 },
+      );
+      await handoverRouter.pool.stop(handoverDescriptor.id);
+      const reconnectedChat = await bridge.request<any>("thread/start", {
+        cwd: root,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      });
+      expect(
+        (await run(reconnectedChat.thread.id, "Reply ACCOUNT_OK from reconnectedChat work")).status,
+      ).toBe("completed");
+      await handoverRouter.restoreNativeOwnership();
+      await bridge.requestNative("thread/resume", {
+        threadId: legacy.thread.id,
+        excludeTurns: true,
+      });
+      expect(
+        (
+          await bridge.requestNative<any>("thread/read", {
+            threadId: legacy.thread.id,
+            includeTurns: true,
+          })
+        ).thread.turns,
+      ).toHaveLength(2);
+      expect(
+        (await run(legacy.thread.id, "Reply ACCOUNT_OK after cancelled downgrade")).status,
+      ).toBe("completed");
+      expect(requests.filter((request) => request.path.endsWith("/responses")).at(-1)?.route).toBe(
+        "A",
+      );
       const { thread } = await bridge.request<any>("thread/start", {
         cwd: root,
         approvalPolicy: "never",

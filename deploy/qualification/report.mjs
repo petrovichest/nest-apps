@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const nativeVersions = ["0.154.0", "0.167.0", "0.167.1", "0.167.2", "0.169.0"];
+export const nativeVersions = ["0.167.0", "0.167.1", "0.167.2", "0.169.0"];
 export const healthyBaseline = "f42edbee78b582bb54c96ab7bfc732286f10a667";
 const incidentBaseline = "fe3c5c858344b5f03c2619250b01d351930c891b";
 const baselineHashes = {
@@ -12,6 +12,7 @@ const baselineHashes = {
   [incidentBaseline]: "0642c7e8a4cfbd5d3cef539d797d7f109cfa0453399b2640830dc02f3745e316",
 };
 export const requiredCases = {
+  unsupported: ["published-installer-A", "unsupported-native-update-refused-with-work-intact"],
   clean: [
     "candidate-clean-installer-B",
     "clean-install-confirmation-and-surviving-private-work",
@@ -26,6 +27,7 @@ export const requiredCases = {
     ...["prepared", "pointer", "candidate-recovery", "candidate-confirmation"].map(
       (point) => `old-updater-interrupted-${point}`,
     ),
+    "completed-upgrade-after-interruptions",
   ],
   all: [
     "published-installer-A",
@@ -58,6 +60,7 @@ export function validateScope(report, candidate, native, scope, baseline) {
   assert.equal(report.schemaVersion, 1);
   assert.equal(report.candidate, candidate, "Qualification SHA mismatch");
   assert.equal(report.native, native);
+  assert.equal(report.minimumNativeVersion, nativeVersions[0]);
   assert.equal(report.scope, scope);
   assert.equal(report.baseline.commit, baseline);
   assert.equal(report.completed, true, "Native scope did not complete");
@@ -77,6 +80,13 @@ export function validateScope(report, candidate, native, scope, baseline) {
   assert.equal(report.budgetsMs.rollback, 420_000);
   assert.equal(report.budgetsMs.threadListRpc, 120_000);
   assert.equal(report.budgetsMs.loadedListRpc, 30_000);
+  if (scope === "unsupported") {
+    const refusal = report.cases.find(
+      (entry) => entry.name === "unsupported-native-update-refused-with-work-intact",
+    );
+    assert.equal(refusal.nativeRefusalBeforeSwitch, true);
+    assert.equal(refusal.activeAndRollbackTargetsPreserved, true);
+  }
   if (scope === "all") {
     const history = report.cases.find(
       (entry) => entry.name === "actual-native-import-and-metadata-index-rebuild",
@@ -99,7 +109,7 @@ async function collect(directory, candidate, installerHash) {
     evidence.push({ artifact, file, sha256: createHash("sha256").update(bytes).digest("hex") });
     return bytes.toString();
   };
-  for (const native of nativeVersions) {
+  for (const native of ["0.154.0", ...nativeVersions]) {
     const artifact = `release-environment-${candidate}-${native}`;
     const environment = JSON.parse(await read(artifact, "environment.json"));
     assert.equal(environment.phase, "environment-only");
@@ -115,6 +125,7 @@ async function collect(directory, candidate, installerHash) {
     ["interruption", "0.167.2", "interruption", healthyBaseline],
     ["interruption", "0.169.0", "interruption", healthyBaseline],
     ["interruption", "0.169.0", "interruption", incidentBaseline],
+    ["unsupported-native", "0.154.0", "unsupported", healthyBaseline],
   ];
   for (const [kind, native, scope, baseline] of scopes) {
     const suffix =
@@ -145,6 +156,7 @@ async function collect(directory, candidate, installerHash) {
     installerHash,
     baseline: healthyBaseline,
     nativeVersions,
+    minimumNativeVersion: nativeVersions[0],
     legacyTransition: "idle only; busy updates refused without interrupting work",
     qualified: true,
     sourceRun: process.env.GITHUB_RUN_ID,
@@ -167,6 +179,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     assert.equal(result.installerHash, installerHash);
     assert.equal(result.baseline, healthyBaseline);
     assert.deepEqual(result.nativeVersions, nativeVersions);
+    assert.equal(result.minimumNativeVersion, nativeVersions[0]);
     assert.equal(result.qualified, true);
     assert.equal(result.sourceRun, process.env.QUALIFIED_RUN_ID);
     // Five environment scopes contribute two files each; nine lifecycle scopes

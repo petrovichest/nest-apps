@@ -70,9 +70,19 @@ async function release(path) {
   assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9a-f]{7})?$/);
   const commit = (await readFile(join(directory, ".codexnest-built"), "utf8")).trim();
   assert.match(commit, /^[0-9a-f]{40}$/);
-  const protocol = JSON.parse(
-    await readFile(join(directory, "deploy/restart-protocol.json"), "utf8"),
+  const marker = await readFile(join(directory, "deploy/restart-protocol.json"), "utf8");
+  const committedMarker = (
+    await exec("git", ["show", `${commit}:deploy/restart-protocol.json`], {
+      cwd: directory,
+      timeout: 5000,
+    })
+  ).stdout;
+  assert.equal(
+    marker,
+    committedMarker,
+    "Release recovery metadata differs from its immutable commit",
   );
+  const protocol = JSON.parse(marker);
   assert.equal(protocol.schemaVersion, 1);
   const protocolVersion =
     protocol.runtimeRecoveryProtocolVersion ?? protocol.recoveryProtocolVersion;
@@ -83,7 +93,41 @@ async function release(path) {
     commit,
     protocol: protocolVersion,
     admissionProtocolVersion: protocol.updateAdmissionProtocolVersion,
+    minimumNativeVersion: protocol.minimumNativeVersion,
   };
+}
+
+async function requireNativeVersion(minimum) {
+  if (!minimum) return;
+  assert.match(minimum, /^\d+\.\d+\.\d+$/);
+  const { stdout } = await exec(process.env.CODEXNEST_CODEX_BIN || "codex", ["--version"], {
+    timeout: 5000,
+  });
+  const installed = /(?:^|\n)codex-cli (\d+\.\d+\.\d+)(?:\s|$)/.exec(stdout)?.[1];
+  const required = minimum.split(".").map(Number);
+  const supported = (version) => {
+    if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) return false;
+    const parts = version.split(".").map(Number);
+    return (
+      parts[0] > required[0] ||
+      (parts[0] === required[0] &&
+        (parts[1] > required[1] || (parts[1] === required[1] && parts[2] >= required[2])))
+    );
+  };
+  const active = ["install-from-build", "before-update"].includes(mode)
+    ? await localApi("/health").catch(() => null)
+    : null;
+  if (
+    !supported(installed) ||
+    (active?.appServer?.state === "ready" && !supported(active.appServer.installedVersion))
+  ) {
+    process.stderr.write(
+      `Codex CLI >= ${minimum} is required; update the CLI before updating CodexNest.\n`,
+    );
+    throw Object.assign(new Error("Unsupported native runtime"), {
+      code: "UNSUPPORTED_NATIVE_RUNTIME",
+    });
+  }
 }
 
 async function version() {
@@ -188,6 +232,16 @@ async function statusFailed(message, force = false) {
 async function begin(target = null) {
   const baseline = await release(join(root, "current"));
   const prior = await journal();
+  if (
+    !target &&
+    prior?.target &&
+    prior.target.commit !== baseline.commit &&
+    (await lstat(join(prior.target.path, ".codexnest-built")).catch(() => null))
+  ) {
+    const cached = await release(prior.target.path);
+    assert.equal(cached.commit, prior.target.commit);
+    await requireNativeVersion(cached.minimumNativeVersion);
+  }
   assert.equal(await version(), baseline.version);
   if (!(await healthy(baseline)))
     throw new Error("Restart preflight failed: the current application is unavailable");
@@ -264,13 +318,25 @@ async function install(fromBuild) {
   if (fromBuild) {
     const commit = (await exec("git", ["rev-parse", "HEAD"], { cwd })).stdout.trim();
     assert.match(commit, /^[0-9a-f]{40}$/);
-    const protocol = JSON.parse(await readFile(join(cwd, "deploy/restart-protocol.json"), "utf8"));
+    const marker = await readFile(join(cwd, "deploy/restart-protocol.json"), "utf8");
+    assert.equal(
+      marker,
+      (
+        await exec("git", ["show", `${commit}:deploy/restart-protocol.json`], {
+          cwd,
+          timeout: 5000,
+        })
+      ).stdout,
+    );
+    const protocol = JSON.parse(marker);
+    await requireNativeVersion(protocol.minimumNativeVersion);
     await begin({
       path: cwd,
       commit,
       version: basename(cwd).replace(/^v/, ""),
       protocol: protocol.runtimeRecoveryProtocolVersion ?? protocol.recoveryProtocolVersion,
       admissionProtocolVersion: 1,
+      minimumNativeVersion: protocol.minimumNativeVersion,
     });
   }
   await atomic(join(recovery, "guard.mjs"), await readFile(fileURLToPath(import.meta.url)), 0o700);
@@ -335,9 +401,14 @@ async function candidateMatches(value, current) {
     value.target = current;
     await save(value);
   }
-  return ["commit", "path", "version", "protocol", "admissionProtocolVersion"].every(
-    (key) => value.target[key] === current[key],
-  );
+  return [
+    "commit",
+    "path",
+    "version",
+    "protocol",
+    "admissionProtocolVersion",
+    "minimumNativeVersion",
+  ].every((key) => value.target[key] === current[key]);
 }
 
 async function afterUpdate() {
@@ -442,6 +513,7 @@ async function beforeApp() {
   }
   const current = await release(join(root, "current"));
   assert.equal(await version(), current.version, "Refusing a mixed release/version pair");
+  await requireNativeVersion(current.minimumNativeVersion);
   if (value?.phase === "pending" && current.commit !== value.baseline.commit) {
     assert.ok(await candidateMatches(value, current), "Refusing an unexpected candidate build");
   }
@@ -466,7 +538,9 @@ async function beforeApp() {
 }
 
 try {
-  if (mode === "install-from-build") await install(true);
+  if (mode === "check-native")
+    await requireNativeVersion((await release(process.cwd())).minimumNativeVersion);
+  else if (mode === "install-from-build") await install(true);
   else if (mode === "install-clean") await install(false);
   else {
     const group = await readFile("/proc/self/cgroup", "utf8");

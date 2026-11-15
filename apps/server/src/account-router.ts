@@ -82,8 +82,28 @@ export class CodexAccountRouter {
     await this.migrate(threadId, account);
   }
   async restoreNativeOwnership(): Promise<void> {
-    for (const [threadId, owner] of Object.entries(this.options.state.threadOwners)) {
-      if (owner !== LEGACY) await this.migrate(threadId, null);
+    const owners = new Set(Object.values(this.options.state.threadOwners));
+    for (const owner of owners) {
+      if (owner === LEGACY) continue;
+      const source = await this.pool.connect(owner);
+      const loaded = new Set<string>();
+      let cursor: string | null = null;
+      do {
+        const page: { data: string[]; nextCursor?: string | null } = await source.request(
+          "thread/loaded/list",
+          { cursor, limit: 100 },
+          30_000,
+        );
+        for (const id of page.data) loaded.add(id);
+        cursor = page.nextCursor ?? null;
+      } while (cursor);
+      for (const [threadId, current] of Object.entries(this.options.state.threadOwners)) {
+        if (current !== owner) continue;
+        // Only loaded contexts can retain a writer. Finished ephemeral contexts
+        // may have no persisted rollout and cannot be read after a cold start.
+        if (loaded.has(threadId)) await this.migrate(threadId, null);
+        else await this.bind(threadId, LEGACY);
+      }
     }
   }
   async replaceAccountConnection(account: RoutedAccount): Promise<void> {
@@ -358,7 +378,7 @@ export class CodexAccountRouter {
       if (owner === next.descriptor.id) return next.bridge;
       const unloaded = thread.status?.type === "notLoaded";
       const archived = thread.path?.split(/[\\/]/).includes("archived_sessions");
-      if (!account && (unloaded || archived)) {
+      if (!account && (unloaded || archived || thread.ephemeral)) {
         // No writer exists on an unloaded runtime. Preserve its archive state.
         await this.bind(threadId, LEGACY);
         return this.bridge;
