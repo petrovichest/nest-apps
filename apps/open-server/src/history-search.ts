@@ -60,6 +60,7 @@ const { parentPort, workerData: input } = await import('node:worker_threads');
 const { DatabaseSync } = await import('node:sqlite');
 let db;
 let failure = 'unavailable';
+let result;
 try {
   db = new DatabaseSync(input.databasePath, { readOnly: true, timeout: 500 });
   db.exec('PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN');
@@ -131,12 +132,15 @@ try {
     sessionId: row.sessionId, turnId: row.turnId, messageId: row.messageId,
     itemId: row.itemId, time: row.time, ...JSON.parse(row.match)
   }));
-  parentPort.postMessage({ ok: true, rows });
+  result = { ok: true, rows };
 } catch {
-  parentPort.postMessage({ ok: false, code: failure });
+  result = { ok: false, code: failure };
 } finally {
-  if (db) db.close();
+  try { if (db) db.close(); }
+  catch { result = { ok: false, code: 'unavailable' }; }
 }
+// Completion is published only after releasing the native read transaction.
+parentPort.postMessage(result);
 })();
 `;
 
@@ -210,13 +214,19 @@ export async function searchNativeHistory(
       resourceLimits: { maxOldGenerationSizeMb: 128 },
     });
     let settled = false;
-    const finish = (error: NativeHistorySearchError | null, value?: Row[]) => {
+    const finish = async (error: NativeHistorySearchError | null, value?: Row[]) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      // Timeout/error paths can interrupt a read transaction too. Do not report
+      // completion while worker teardown still holds native SQLite resources.
+      try {
+        await worker.terminate();
+      } catch {
+        error ??= new NativeHistorySearchError("unavailable");
+      }
       if (error) reject(error);
       else resolve(value!);
-      void worker.terminate();
     };
     const timer = setTimeout(() => finish(new NativeHistorySearchError("timeout")), timeoutMs);
     worker.once("message", (message: { ok: boolean; rows?: Row[]; code?: ErrorCode }) =>

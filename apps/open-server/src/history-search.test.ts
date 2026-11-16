@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
 import { searchNativeHistory } from "./history-search";
 
@@ -49,6 +50,41 @@ async function fixture() {
 }
 
 describe("read-only native history search", () => {
+  it.each(["success", "invalid_data", "timeout"] as const)(
+    "releases the worker and SQLite read transaction before %s completion",
+    async (outcome) => {
+      const f = await fixture();
+      f.message("msg_a", "ses_a", 1, "user");
+      if (outcome === "invalid_data")
+        f.db
+          .prepare("INSERT INTO part VALUES(?,?,?,?,?)")
+          .run("prt_a", "msg_a", "ses_a", 1, "not-json");
+      else f.part("prt_a", "msg_a", "ses_a", { type: "text", text: "matching" });
+      let exited = false;
+      const created = (worker: Worker) =>
+        worker.once("exit", () => {
+          exited = true;
+        });
+      process.once("worker", created);
+      try {
+        const pending = searchNativeHistory({
+          databasePath: f.databasePath,
+          query: "matching",
+          sessionIds: ["ses_a"],
+          ...(outcome === "timeout" ? { timeoutMs: 1 } : {}),
+        });
+        if (outcome === "success")
+          await expect(pending).resolves.toMatchObject({ data: [{ itemId: "prt_a" }] });
+        else await expect(pending).rejects.toMatchObject({ code: outcome });
+        // Observe actual worker teardown, without sleeps or retrying a busy DB.
+        expect(exited).toBe(true);
+        expect(() => f.db.exec("BEGIN EXCLUSIVE; UPDATE session SET id=id; COMMIT")).not.toThrow();
+      } finally {
+        process.off("worker", created);
+        f.db.close();
+      }
+    },
+  );
   it("scopes every lookup to explicit managed sessions and treats SQL metacharacters literally", async () => {
     const f = await fixture();
     f.message("msg_a", "ses_a", 1, "user");
