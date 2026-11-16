@@ -232,14 +232,27 @@ async function statusFailed(message, force = false) {
 async function begin(target = null) {
   const baseline = await release(join(root, "current"));
   const prior = await journal();
+  let cachedPath = prior?.target?.path;
+  if (!target && !cachedPath) {
+    // A failed download can leave an aborted journal without a target even
+    // though the installed updater will reuse this version's previous build.
+    const status = JSON.parse(
+      await readFile(join(stateDir, "update.json"), "utf8").catch((error) => {
+        if (error.code === "ENOENT") return "{}";
+        throw error;
+      }),
+    );
+    if (/^\d+\.\d+\.\d+(?:-[0-9a-f]{7})?$/.test(status.latestVersion ?? ""))
+      cachedPath = join(root, "releases", `v${status.latestVersion}`);
+  }
   if (
     !target &&
-    prior?.target &&
-    prior.target.commit !== baseline.commit &&
-    (await lstat(join(prior.target.path, ".codexnest-built")).catch(() => null))
+    cachedPath &&
+    cachedPath !== baseline.path &&
+    (await lstat(join(cachedPath, ".codexnest-built")).catch(() => null))
   ) {
-    const cached = await release(prior.target.path);
-    assert.equal(cached.commit, prior.target.commit);
+    const cached = await release(cachedPath);
+    if (prior?.target) assert.equal(cached.commit, prior.target.commit);
     await requireNativeVersion(cached.minimumNativeVersion);
   }
   assert.equal(await version(), baseline.version);
