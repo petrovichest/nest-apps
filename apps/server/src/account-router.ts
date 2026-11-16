@@ -2,6 +2,7 @@ import type { ParsedClaudeProxy } from "@codexnest/protocol";
 import type { CodexBridge } from "./codex/bridge";
 import type { ServerNotification, ServerRequest } from "./codex/generated/index";
 import type { JsonlTransport } from "./codex/transport";
+import { isThreadNotLoadedError } from "./thread-state";
 import {
   AccountRuntimeError,
   type AccountRuntimePool,
@@ -369,7 +370,13 @@ export class CodexAccountRouter {
         "thread/read",
         { threadId, includeTurns: false },
         30_000,
-      );
+      ).catch((error: unknown) => {
+        if (account || previous.threadActive(threadId) || !isThreadNotLoadedError(error))
+          throw error;
+        // Native can unload a finished ephemeral context after loaded/list.
+        // It has no writer or persisted history to transfer back to the daemon.
+        return { thread: { status: { type: "notLoaded" } } };
+      });
       if (thread.status?.type === "active" || previous.threadActive(threadId))
         throw new AccountRuntimeError("Wait for the active response before changing its account");
       const next = account

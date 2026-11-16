@@ -6,12 +6,24 @@ import type { CodexBridge } from "./codex/bridge";
 import type { ServerRequest } from "./codex/generated/index";
 import type { JsonlTransport } from "./codex/transport";
 import { AttentionManager } from "./attention";
+import { RpcError } from "./codex/transport";
 
-it.each(["loaded", "unloaded", "archived"])(
+const legacyRecoveryCases = [
+  "loaded",
+  "unloaded",
+  "archived",
+  "unloaded-after-list",
+  "active-unloaded-after-list",
+  "read-failed",
+];
+it.each(legacyRecoveryCases)(
   "returns an idle owner to Native without changing its saved state (%s)",
   async (stateKind) => {
     const archived = stateKind === "archived";
     const unloaded = stateKind === "unloaded";
+    const active = stateKind === "active-unloaded-after-list";
+    const readFailed = stateKind === "read-failed";
+    const unloadedAfterList = stateKind.endsWith("unloaded-after-list");
     const state = { threadOwners: { chat: "worker" }, legacyAccountId: "account" };
     const original = Object.assign(new EventEmitter(), {
       setRequestRouter: vi.fn(),
@@ -20,9 +32,13 @@ it.each(["loaded", "unloaded", "archived"])(
       threadActive: () => false,
     });
     const worker = {
-      threadActive: () => false,
-      request: vi.fn(async (method: string) =>
-        method === "thread/loaded/list"
+      threadActive: () => active,
+      request: vi.fn(async (method: string) => {
+        if (method === "thread/read") {
+          if (unloadedAfterList) throw new RpcError(-32600, "thread not loaded: chat");
+          if (readFailed) throw new RpcError(-32000, "Native connection failed");
+        }
+        return method === "thread/loaded/list"
           ? { data: archived || unloaded ? [] : ["chat"], nextCursor: null }
           : method === "thread/read"
             ? {
@@ -33,8 +49,8 @@ it.each(["loaded", "unloaded", "archived"])(
                     : "/fixture/sessions/chat.jsonl",
                 },
               }
-            : {},
-      ),
+            : {};
+      }),
     };
     const pool = Object.assign(new EventEmitter(), {
       connect: async () => worker,
@@ -54,15 +70,25 @@ it.each(["loaded", "unloaded", "archived"])(
       },
     );
     try {
+      if (active || readFailed) {
+        await expect(router.restoreNativeOwnership()).rejects.toThrow(
+          active ? "thread not loaded" : "Native connection failed",
+        );
+        expect(state.threadOwners.chat).toBe("worker");
+        expect(original.requestNative).not.toHaveBeenCalled();
+        return;
+      }
       await router.restoreNativeOwnership();
       expect(state.threadOwners.chat).toBe("native");
       expect(worker.request.mock.calls.map(([method]) => method)).toEqual(
         archived || unloaded
           ? ["thread/loaded/list"]
-          : ["thread/loaded/list", "thread/read", "thread/archive"],
+          : unloadedAfterList
+            ? ["thread/loaded/list", "thread/read"]
+            : ["thread/loaded/list", "thread/read", "thread/archive"],
       );
       expect(original.requestNative.mock.calls.map((call) => call[0])).toEqual(
-        archived || unloaded ? [] : ["thread/unarchive", "thread/resume"],
+        archived || unloaded || unloadedAfterList ? [] : ["thread/unarchive", "thread/resume"],
       );
     } finally {
       await router.close();
