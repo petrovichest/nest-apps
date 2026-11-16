@@ -330,7 +330,7 @@ jobs:
           echo "run-id=$qualified_run" >> "$GITHUB_OUTPUT"
 
   publish:
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: ${{ !cancelled() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && needs.verify.result == 'success' && needs.native-account-network.result == 'success' && needs.release-qualification.result == 'success' }}
     needs: [verify, native-account-network, release-qualification]
     runs-on: ubuntu-latest
     concurrency:
