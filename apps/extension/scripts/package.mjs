@@ -4,7 +4,12 @@ import { deflateRawSync } from "node:zlib";
 
 const packageRoot = resolve(import.meta.dirname, "..");
 const variant = process.argv[2] ?? "chrome";
-const artifactPrefixes = { chrome: "codexnest", claude: "claudenest", gemini: "gemininest" };
+const artifactPrefixes = {
+  chrome: "codexnest",
+  claude: "claudenest",
+  gemini: "gemininest",
+  open: "opennest",
+};
 if (!(variant in artifactPrefixes)) throw new Error(`Unknown extension variant ${variant}`);
 process.stdout.write(`${await packageChrome()}\n`);
 

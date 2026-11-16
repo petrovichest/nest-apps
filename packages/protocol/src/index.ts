@@ -3,8 +3,9 @@ import type { ClaudeAccountsStatus } from "./claude-accounts.js";
 import type { CodexAccountsStatus } from "./codex-accounts.js";
 export * from "./pasted-text.js";
 
-export type AppProvider = "codex" | "claude" | "gemini";
+export type AppProvider = "codex" | "claude" | "gemini" | "open";
 export * from "./gemini.js";
+export * from "./open.js";
 
 /** Optional provider capabilities; existing Codex clients retain their defaults. */
 export type AppCapabilities = {
@@ -30,7 +31,7 @@ export type RecoveryState =
 
 export type HealthResponse = {
   provider?: AppProvider;
-  app?: "codexnest" | "claudenest" | "gemininest";
+  app?: "codexnest" | "claudenest" | "gemininest" | "opennest";
   status: "ok" | "degraded";
   serverVersion: string;
   recoveryState: RecoveryState;
@@ -1163,6 +1164,11 @@ export const BROWSER_EXTENSION_ORIGIN = `chrome-extension://${BROWSER_EXTENSION_
 export const CLAUDE_BROWSER_EXTENSION_ID = "chncmaejombdlkgeleeenghomodjfnfj" as const;
 export const CLAUDE_BROWSER_EXTENSION_ORIGIN =
   `chrome-extension://${CLAUDE_BROWSER_EXTENSION_ID}` as const;
+/** The separately packaged OpenNest extension speaks the same protocol under its own ID. */
+export const OPEN_BROWSER_EXTENSION_ID = "gdbdnekpamgcfekchjaofjgnmaidlofc" as const;
+export const OPEN_BROWSER_EXTENSION_ORIGIN =
+  `chrome-extension://${OPEN_BROWSER_EXTENSION_ID}` as const;
+
 /** The separately packaged GeminiNest extension speaks the same protocol under its own ID. */
 export const GEMINI_BROWSER_EXTENSION_ID = "jhlbincgaaicjfdomdchbcgadlbkmhmj" as const;
 export const GEMINI_BROWSER_EXTENSION_ORIGIN =

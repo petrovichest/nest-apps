@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">OpenNest</string>
+    <string name="title_activity_main">OpenNest</string>
+    <string name="notification_channel_connection">Подключение OpenNest</string>
+    <string name="notification_channel_events">События OpenNest</string>
+    <string name="notification_attention">OpenCode ждёт решения</string>
+    <string name="notification_default_task">Задача OpenCode</string>
+    <string name="notification_open_details">Откройте OpenNest для подробностей</string>
+</resources>

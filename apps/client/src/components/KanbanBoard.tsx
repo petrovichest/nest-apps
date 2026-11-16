@@ -167,7 +167,13 @@ const cardBusy = (board: Board, cardId: string) =>
   );
 
 const providerName = (provider: KanbanProvider) =>
-  provider === "gemini" ? "GeminiNest" : provider === "claude" ? "ClaudeNest" : "CodexNest";
+  provider === "open"
+    ? "OpenNest"
+    : provider === "gemini"
+      ? "GeminiNest"
+      : provider === "claude"
+        ? "ClaudeNest"
+        : "CodexNest";
 
 /** A drop runs the same action as the button for that step; the app alone moves into Waiting. */
 function dropRule(board: Board, card: KanbanCard, target: KanbanStage): DropRule | null {

@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "OpenNest Browser",
+  "short_name": "OpenNest",
+  "description": "Attach Chrome tabs to OpenNest sessions.",
+  "version": "0.1.9",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkZuzchFncCKN/wuKRlRfbWUggN1Db3Ok8uTDP6y5FyDQuWN26+N8LpfRW6Zi2xjg2S/ThyGfHi+cfOxi1WnrIiNVXxS1ekLXwSmyL42PBt+LPXJEbA7P8amVPlxg1QQ3J7HmyxYs/3fIbUw0LMzvbfdr+gdFdy7y+kDOvwEUhQu5scPDbu7QMZlKa6eM6ChFh0YrI+jJXLP0hX9MmsP/PxMaueJ3fx3DP0ekv39fuFwVXwcvzwEvLE23qUML+/JCwltu93Nmi++NpzlRdZozIFJwzBzmz8q70oz3RdeNXIEljc2l0lDWkIZP1bCHszVIOAP6U7ktFFZlOfJk1ejWsQIDAQAB",
+  "icons": {
+    "16": "icons/opennest-16.png",
+    "32": "icons/opennest-32.png",
+    "48": "icons/opennest-48.png",
+    "128": "icons/opennest-128.png"
+  },
+  "action": {
+    "default_title": "OpenNest Browser",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/opennest-16.png",
+      "32": "icons/opennest-32.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "permissions": [
+    "debugger",
+    "tabs",
+    "tabGroups",
+    "windows",
+    "scripting",
+    "storage",
+    "alarms",
+    "sidePanel"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'"
+  }
+}

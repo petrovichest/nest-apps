@@ -8,6 +8,48 @@ afterEach(() => {
 });
 
 describe("application variants", () => {
+  it("isolates OpenNest credentials and validates its native provider API without dropping shared controls", async () => {
+    vi.stubEnv("VITE_APP_PROVIDER", "open");
+    vi.resetModules();
+    const { application } = await import("./application");
+    const { ApiClient } = await import("./api");
+    const { saveConnectionSettings } = await import("./storage");
+    const { translate } = await import("./i18n");
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient({ baseUrl: "https://open.home.arpa", token: "open-secret" });
+    expect(application.name).toBe("OpenNest");
+    expect(application.agentName).toBe("OpenCode");
+    expect(application.capabilities).toMatchObject({
+      codexManagement: false,
+      rateLimits: false,
+      plan: true,
+      team: true,
+      goal: true,
+      forks: true,
+      browserIntegration: true,
+      fullTextSearch: true,
+      skills: true,
+      artifacts: true,
+    });
+    expect(api.webSocketUrl()).toBe("wss://open.home.arpa/api/v1/ui/events");
+    await api.health();
+    await api.saveOpenKey("sk-or-input");
+    await api.readOpenProxy();
+    expect((fetchMock.mock.calls[0]![1]!.headers as Headers).get("Authorization")).toBe(
+      "Bearer open-secret",
+    );
+    expect(String(fetchMock.mock.calls[1]![0])).toBe("https://open.home.arpa/api/v1/settings/open");
+    expect(fetchMock.mock.calls[1]![1]!.body).toBe(JSON.stringify({ apiKey: "sk-or-input" }));
+    expect(String(fetchMock.mock.calls[2]![0])).toBe(
+      "https://open.home.arpa/api/v1/settings/open/proxy",
+    );
+    await saveConnectionSettings({ baseUrl: "https://open.home.arpa", token: "open-secret" });
+    expect(localStorage.getItem("opennest.token")).toBe("open-secret");
+    expect(localStorage.getItem("codexnest.token")).toBeNull();
+    expect(translate("en", "Подключение к CodexNest")).toBe("Connect to OpenNest");
+    expect(translate("en", "{{title}}", { title: "My Codex task" })).toBe("My Codex task");
+  });
   it("isolates Gemini sign-in and storage and disables unsupported controls", async () => {
     vi.stubEnv("VITE_APP_PROVIDER", "gemini");
     vi.resetModules();

@@ -10,3 +10,4 @@ package-lock.json
 output/
 
 dist-gemini/
+dist-open/

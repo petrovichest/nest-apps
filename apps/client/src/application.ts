@@ -1,34 +1,44 @@
 import type { AppCapabilities, AppProvider } from "@codexnest/protocol";
 
 const provider: AppProvider =
-  import.meta.env.VITE_APP_PROVIDER === "gemini"
-    ? "gemini"
-    : import.meta.env.VITE_APP_PROVIDER === "claude"
-      ? "claude"
-      : "codex";
+  import.meta.env.VITE_APP_PROVIDER === "open"
+    ? "open"
+    : import.meta.env.VITE_APP_PROVIDER === "gemini"
+      ? "gemini"
+      : import.meta.env.VITE_APP_PROVIDER === "claude"
+        ? "claude"
+        : "codex";
+const isOpen = provider === "open";
 const isClaude = provider === "claude";
 const isGemini = provider === "gemini";
 const isCodex = provider === "codex";
 export const application = {
   provider,
+  isOpen,
   isClaude,
   isGemini,
   isCodex,
   supportsSteering: !isCodex,
   supportsKanban: true,
-  name: isGemini ? "GeminiNest" : isClaude ? "ClaudeNest" : "CodexNest",
-  agentName: isGemini ? "Gemini" : isClaude ? "Claude" : "Codex",
-  storagePrefix: isGemini ? "gemininest" : isClaude ? "claudenest" : "codexnest",
+  name: isOpen ? "OpenNest" : isGemini ? "GeminiNest" : isClaude ? "ClaudeNest" : "CodexNest",
+  agentName: isOpen ? "OpenCode" : isGemini ? "Gemini" : isClaude ? "Claude" : "Codex",
+  storagePrefix: isOpen
+    ? "opennest"
+    : isGemini
+      ? "gemininest"
+      : isClaude
+        ? "claudenest"
+        : "codexnest",
   eventsPath: isCodex ? "/api/v1/events" : "/api/v1/ui/events",
   /** Codex takes `$name` anywhere in a message; Claude runs `/name` only at the very start. */
   skillPrefix: isCodex ? "$" : "/",
   capabilities: {
     codexManagement: isCodex,
-    rateLimits: true,
+    rateLimits: !isOpen,
     plan: !isGemini,
-    team: isCodex,
-    goal: isCodex,
-    forks: isCodex,
+    team: isCodex || isOpen,
+    goal: isCodex || isOpen,
+    forks: isCodex || isOpen,
     browserIntegration: true,
     fullTextSearch: true,
     sessionApprovalGrants: true,
@@ -42,6 +52,10 @@ export const application = {
 
 /** Translate product labels without touching user or assistant content. */
 export function applicationText(text: string): string {
+  if (application.isOpen)
+    return text
+      .replace(/\b(?:CodexNest|ClaudeNest|GeminiNest)\b/g, "OpenNest")
+      .replace(/\b(?:Codex|Claude|Gemini)\b/g, "OpenCode");
   if (application.isGemini)
     return text
       .replace(/\b(?:CodexNest|ClaudeNest)\b/g, "GeminiNest")

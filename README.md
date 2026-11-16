@@ -23,6 +23,7 @@
   <a href="#screenshots">Screenshots</a> ·
   <a href="./apps/claude-server/README.md">ClaudeNest</a> ·
   <a href="./apps/gemini-server/README.md">GeminiNest</a> ·
+  <a href="./apps/open-server/README.md">OpenNest</a> ·
   <a href="./deploy/DEPLOYMENT.md">Documentation</a>
 </p>
 
@@ -175,6 +176,8 @@ HTTPS for shared or otherwise untrusted networks. See the
 [Android network caveat](./apps/client/android/README.md).
 
 GeminiNest is the separate Antigravity ACP client for Google AI Ultra, with Google sign-in and a required proxy configured in its own UI. See [GeminiNest setup and current capabilities](./apps/gemini-server/README.md).
+
+OpenNest is the separate OpenCode client for OpenRouter, using the shared Nest interface and its own configuration, state, PWA, Android package and browser extension. See [OpenNest development and verification](./apps/open-server/README.md). Source builds are available; release installation and update publication remain gated on native lifecycle qualification.
 
 ## Architecture and sources of truth
 

@@ -4,8 +4,10 @@ declare const __APP_NAME__: string | undefined;
 export const appName = typeof __APP_NAME__ === "string" ? __APP_NAME__ : "CodexNest";
 
 export const defaultBaseUrl =
-  appName === "GeminiNest"
-    ? "http://127.0.0.1:4312"
-    : appName === "ClaudeNest"
-      ? "http://127.0.0.1:4311"
-      : "http://127.0.0.1:4310";
+  appName === "OpenNest"
+    ? "http://127.0.0.1:4313"
+    : appName === "GeminiNest"
+      ? "http://127.0.0.1:4312"
+      : appName === "ClaudeNest"
+        ? "http://127.0.0.1:4311"
+        : "http://127.0.0.1:4310";

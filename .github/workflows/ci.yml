@@ -25,6 +25,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Install the managed Team sandbox dependency
+        run: sudo apt-get update -qq && sudo apt-get install --yes bubblewrap
       - run: npm audit --audit-level=high
       - run: npm run format:check
       - run: npm run lint
@@ -32,7 +34,7 @@ jobs:
       - run: npm run typecheck
       - run: NODE_ENV=test npm test
       - run: node --test deploy/qualification/report.test.mjs
-      - run: bash -n deploy/install.sh deploy/adopt-existing.sh deploy/adopt-existing.test.sh deploy/codexnest deploy/claudenest/install.sh deploy/claudenest/claudenest deploy/gemininest/install.sh
+      - run: bash -n deploy/install.sh deploy/adopt-existing.sh deploy/adopt-existing.test.sh deploy/codexnest deploy/claudenest/install.sh deploy/claudenest/claudenest deploy/gemininest/install.sh deploy/opennest/install.sh deploy/opennest/opennest
       - run: deploy/adopt-existing.test.sh
       - name: Verify pinned Node.js checksums are published
         run: |
@@ -47,14 +49,19 @@ jobs:
           unzip -t apps/extension/artifacts/codexnest-browser-*.zip
           unzip -t apps/extension/artifacts/claudenest-browser-*.zip
           unzip -t apps/extension/artifacts/gemininest-browser-*.zip
+          unzip -t apps/extension/artifacts/opennest-browser-*.zip
           test -s apps/client/dist/index.html
           test -s apps/client/dist-claude/index.html
           test -s apps/client/dist-gemini/index.html
+          test -s apps/client/dist-open/index.html
           test -s apps/server/dist/index.js
           test -s apps/server/dist/account-runtime-main.js
           test -s apps/claude-server/dist/index.js
           test -s apps/gemini-server/dist/daemon.js
           test -s apps/gemini-server/dist/index.js
+          test -s apps/open-server/dist/index.js
+          test -s apps/open-server/dist/native.js
+          test -s apps/open-server/dist/plugin.js
       - name: Upload verified release inputs
         if: github.event_name == 'push'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -63,15 +70,49 @@ jobs:
           path: |
             apps/client/dist/
             apps/client/dist-gemini/
+            apps/client/dist-open/
             apps/client/dist-claude/
             apps/server/dist/
             apps/gemini-server/dist/
+            apps/open-server/dist/
             apps/claude-server/dist/
             apps/extension/artifacts/codexnest-browser-*.zip
             apps/extension/artifacts/claudenest-browser-*.zip
             apps/extension/artifacts/gemininest-browser-*.zip
+            apps/extension/artifacts/opennest-browser-*.zip
           if-no-files-found: error
           retention-days: 1
+
+  opennest-native-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install the managed Team sandbox dependency
+        run: sudo apt-get update -qq && sudo apt-get install --yes bubblewrap
+      - run: npm run build -w @codexnest/protocol && npm run build -w @nest-apps/kanban && npm run build -w @opennest/server
+      - name: Download the exact isolated OpenCode binary
+        run: |
+          mkdir -p "$RUNNER_TEMP/opennest-native"
+          curl -fsSL --retry 2 --max-time 120 https://github.com/anomalyco/opencode/releases/download/v1.19.5/opencode-linux-x64-baseline.tar.gz -o "$RUNNER_TEMP/opennest-native/opencode.tar.gz"
+          printf '%s  %s\n' 17c200fd4b2289954cc01552559f9b6d03ec157b2ddfb5eb54144f491656333d "$RUNNER_TEMP/opennest-native/opencode.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/opennest-native/opencode.tar.gz" -C "$RUNNER_TEMP/opennest-native"
+          "$RUNNER_TEMP/opennest-native/opencode" --version | grep -Fx 1.19.5
+      - name: Exercise native protocol, proxy and production application tools
+        env:
+          NODE_ENV: test
+        run: |
+          node apps/open-server/scripts/native-smoke.mjs "$RUNNER_TEMP/opennest-native/opencode"
+          node apps/open-server/scripts/proxy-smoke.mjs "$RUNNER_TEMP/opennest-native/opencode" apps/open-server/dist/native.js apps/open-server/dist/plugin.js
+          node apps/open-server/scripts/workflows-smoke.mjs "$RUNNER_TEMP/opennest-native/opencode"
 
   native-account-network:
     runs-on: ubuntu-latest

@@ -23,6 +23,32 @@ const LEGACY_INSTALLATION_KEYS = [
 ];
 
 const ENGLISH: Record<string, string> = {
+  "Проверьте формат API-ключа.": "Check the API key format.",
+  "Проверьте адрес прокси.": "Check the proxy address.",
+  "Это приложение подключается к OpenNest": "This application connects to OpenNest",
+  "Не удалось загрузить настройки OpenCode.": "Could not load OpenCode settings.",
+  "Модели и выполнение задач — через OpenCode.": "Models and task execution through OpenCode.",
+  "API-ключ OpenRouter": "OpenRouter API key",
+  "Ключ хранится на сервере, в OpenCode.": "The key is stored on the server, in OpenCode.",
+  "Сохранить ключ": "Save key",
+  "Проверить OpenCode": "Check OpenCode",
+  "Ключ сохранён.": "Key saved.",
+  "Ключ проверяется при запросе к модели.": "The key is checked when requesting a model.",
+  "OpenCode доступен. Ключ проверяется при запросе к модели.":
+    "OpenCode is available. The key is checked when requesting a model.",
+  "OpenCode недоступен. Повторите сохранение.": "OpenCode is unavailable. Try saving again.",
+  "OpenCode недоступен. Повторите проверку.": "OpenCode is unavailable. Run the check again.",
+  "Завершите активные задачи и повторите.": "Finish active tasks and try again.",
+  "Прокси OpenCode": "OpenCode proxy",
+  "Прокси для запросов OpenCode к провайдерам моделей.":
+    "Proxy for OpenCode requests to model providers.",
+  "HTTP, HTTPS или SOCKS5. Необязательная настройка.": "HTTP, HTTPS or SOCKS5. Optional.",
+  "Прокси настроен.": "Proxy configured.",
+  "Соединение через прокси проверено.": "Proxy connection checked.",
+  "Изменение применяется к новым запросам.": "The change applies to new requests.",
+  "Не удалось загрузить настройки прокси.": "Could not load proxy settings.",
+  "Не удалось подключиться через прокси. Проверьте адрес и учётные данные.":
+    "Could not connect through the proxy. Check its address and credentials.",
   "Страница Google использует настройки сети вашего браузера. При необходимости включите прокси и в нём.":
     "The Google page uses your browser's network settings. Enable its proxy as well if needed.",
   "Не удалось загрузить настройки Gemini.": "Could not load Gemini settings.",

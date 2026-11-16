@@ -49,6 +49,8 @@ import { ApplicationSettingsCard } from "./ApplicationSettingsCard";
 import { CodexSettingsCard, CodexSettingsProvider, ProxySettingsCard } from "./CodexSettingsCard";
 import { ClaudeAccountsSettings } from "./ClaudeAccountsSettings";
 import { CodexAccountsSettings } from "./CodexAccountsSettings";
+import { OpenConnectionSettings } from "./OpenConnectionSettings";
+import { OpenProxySettings } from "./OpenProxySettings";
 import { GeminiConnectionSettings } from "./GeminiConnectionSettings";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { RecoverySettingsCard } from "./RecoverySettingsCard";
@@ -170,7 +172,11 @@ export function SettingsPage({
   const [settings, setSettings] = useState<GlobalPermissionSettings | null>(null);
   const savedPermissionsRef = useRef<GlobalPermissionSettings | null>(null);
   const [selected, setSelected] = useState<PermissionPreset>(
-    application.isGemini ? "ask" : application.isClaude ? "full-access" : "auto",
+    application.isGemini || application.isOpen
+      ? "ask"
+      : application.isClaude
+        ? "full-access"
+        : "auto",
   );
   const snapshotPermissionsRef = useRef(state?.snapshot?.permissionSettings);
   snapshotPermissionsRef.current = state?.snapshot?.permissionSettings;
@@ -279,7 +285,11 @@ export function SettingsPage({
         setSettings(current);
         setSelected(
           current.preset ??
-            (application.isGemini ? "ask" : application.isClaude ? "full-access" : "auto"),
+            (application.isGemini || application.isOpen
+              ? "ask"
+              : application.isClaude
+                ? "full-access"
+                : "auto"),
         );
       } catch (caught) {
         const localization = localizationRef.current;
@@ -306,7 +316,7 @@ export function SettingsPage({
     savedPermissionsRef.current = next;
     setSelected((current) =>
       previous === null || current === previous.preset
-        ? (next.preset ?? (application.isGemini ? "ask" : "full-access"))
+        ? (next.preset ?? (application.isGemini || application.isOpen ? "ask" : "full-access"))
         : current,
     );
     setSettings(next);
@@ -631,6 +641,12 @@ export function SettingsPage({
             {application.isClaude && activeSection === "codex" && <ClaudeAccountsSettings />}
             {application.isCodex && activeSection === "codex" && <CodexAccountsSettings />}
             {application.isGemini && activeSection === "codex" && <GeminiConnectionSettings />}
+            {application.isOpen && activeSection === "codex" && (
+              <>
+                <OpenProxySettings />
+                <OpenConnectionSettings />
+              </>
+            )}
             <SettingsGroup
               as="form"
               description={t(
@@ -1433,7 +1449,13 @@ function transcriptionForm(config: TranscriptionConfigResponse | null): Transcri
     refineLocal: config?.refineLocal ?? true,
     refinementModel:
       config?.refinementModel ??
-      (application.isClaude ? "haiku" : application.isGemini ? "gemini-3-flash" : "gpt-5.6-luna"),
+      (application.isOpen
+        ? ""
+        : application.isClaude
+          ? "haiku"
+          : application.isGemini
+            ? "gemini-3-flash"
+            : "gpt-5.6-luna"),
   };
 }
 

@@ -4,15 +4,16 @@ apply plugin: 'com.android.application'
 
 def nestAppProvider = System.getenv('NEST_APP_PROVIDER')
 if (nestAppProvider == null) nestAppProvider = 'codex'
-if (!['codex', 'claude', 'gemini'].contains(nestAppProvider)) {
-    throw new GradleException('NEST_APP_PROVIDER must be codex, claude or gemini')
+if (!['codex', 'claude', 'gemini', 'open'].contains(nestAppProvider)) {
+    throw new GradleException('NEST_APP_PROVIDER must be codex, claude, gemini or open')
 }
+def open = nestAppProvider == 'open'
 def claude = nestAppProvider == 'claude'
 def gemini = nestAppProvider == 'gemini'
-def nestApplicationId = gemini ? 'com.gemininest.app' : claude ? 'com.claudenest.app' : 'com.codexnest.app'
-def nestStoragePrefix = gemini ? 'gemininest' : claude ? 'claudenest' : 'codexnest'
-def nestEventsPath = (claude || gemini) ? '/api/v1/ui/events' : '/api/v1/events'
-def nestWebDir = gemini ? 'dist-gemini' : claude ? 'dist-claude' : 'dist'
+def nestApplicationId = open ? 'com.opennest.app' : gemini ? 'com.gemininest.app' : claude ? 'com.claudenest.app' : 'com.codexnest.app'
+def nestStoragePrefix = open ? 'opennest' : gemini ? 'gemininest' : claude ? 'claudenest' : 'codexnest'
+def nestEventsPath = (claude || gemini || open) ? '/api/v1/ui/events' : '/api/v1/events'
+def nestWebDir = open ? 'dist-open' : gemini ? 'dist-gemini' : claude ? 'dist-claude' : 'dist'
 
 def packageVersion = new JsonSlurper().parse(file('../../../../package.json')).version as String
 def codexNestVersionName = System.getenv('CODEXNEST_ANDROID_VERSION_NAME') ?: packageVersion
@@ -63,7 +64,7 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
-    if (claude || gemini) {
+    if (claude || gemini || open) {
         sourceSets {
             debug.res.srcDir "src/${nestAppProvider}/res"
             release.res.srcDir "src/${nestAppProvider}/res"
@@ -75,7 +76,7 @@ tasks.named('preBuild') {
     doFirst {
         def capacitorConfig = file('src/main/assets/capacitor.config.json')
         def publicIndex = file('src/main/assets/public/index.html')
-        def syncCommand = gemini ? 'android:sync:gemini' : claude ? 'android:sync:claude' : 'android:sync'
+        def syncCommand = open ? 'android:sync:open' : gemini ? 'android:sync:gemini' : claude ? 'android:sync:claude' : 'android:sync'
         def mismatchMessage = "Android assets do not match ${nestAppProvider}; run npm run ${syncCommand} -w @codexnest/client before building"
         if (!capacitorConfig.isFile() || !publicIndex.isFile()) {
             throw new GradleException(mismatchMessage)
@@ -83,7 +84,8 @@ tasks.named('preBuild') {
         def copiedConfig = new JsonSlurper().parse(capacitorConfig)
         def copiedClaude = (publicIndex.getText('UTF-8') =~ /<html\b[^>]*\bdata-application=["']claudenest["']/).find()
         def copiedGemini = (publicIndex.getText('UTF-8') =~ /<html\b[^>]*\bdata-application=["']gemininest["']/).find()
-        if (copiedConfig.appId != nestApplicationId || copiedConfig.webDir != nestWebDir || copiedClaude != claude || copiedGemini != gemini) {
+        def copiedOpen = (publicIndex.getText('UTF-8') =~ /<html\b[^>]*\bdata-application=["']opennest["']/).find()
+        if (copiedConfig.appId != nestApplicationId || copiedConfig.webDir != nestWebDir || copiedClaude != claude || copiedGemini != gemini || copiedOpen != open) {
             throw new GradleException(mismatchMessage)
         }
     }

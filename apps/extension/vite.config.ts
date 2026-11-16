@@ -5,11 +5,12 @@ const brands = {
   chrome: "CodexNest",
   claude: "ClaudeNest",
   gemini: "GeminiNest",
+  open: "OpenNest",
 } as const;
 
 export default ({ mode }: { mode: string }) => {
   if (!(mode in brands))
-    throw new Error("Build with --mode chrome, --mode claude, or --mode gemini");
+    throw new Error("Build with --mode chrome, --mode claude, --mode gemini, or --mode open");
   const appName = brands[mode as keyof typeof brands];
   return {
     publicDir: `public/${mode}`,

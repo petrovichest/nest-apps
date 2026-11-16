@@ -27,7 +27,13 @@
     "android:sync:gemini": "NEST_APP_PROVIDER=gemini cap sync android",
     "android:debug:gemini": "npm run build:gemini && npm run android:sync:gemini && cd android && NEST_APP_PROVIDER=gemini ./gradlew assembleDebug",
     "android:release:gemini": "npm run build:gemini && npm run android:sync:gemini && cd android && NEST_APP_PROVIDER=gemini ./gradlew assembleRelease",
-    "smoke:gemini": "node e2e/gemini/smoke.mjs"
+    "smoke:gemini": "node e2e/gemini/smoke.mjs",
+    "build:open": "tsc -b && vite build --mode open",
+    "dev:open": "vite --mode open",
+    "smoke:open": "node e2e/open/smoke.mjs",
+    "android:sync:open": "NEST_APP_PROVIDER=open cap sync android",
+    "android:debug:open": "npm run build:open && npm run android:sync:open && cd android && NEST_APP_PROVIDER=open ./gradlew assembleDebug",
+    "android:release:open": "npm run build:open && npm run android:sync:open && cd android && NEST_APP_PROVIDER=open ./gradlew assembleRelease"
   },
   "dependencies": {
     "@aparajita/capacitor-secure-storage": "8.0.0",

@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">OpenNest</string>
+    <string name="title_activity_main">OpenNest</string>
+    <string name="notification_channel_connection">OpenNest connection</string>
+    <string name="notification_channel_events">OpenNest events</string>
+    <string name="notification_attention">OpenCode needs your decision</string>
+    <string name="notification_default_task">OpenCode task</string>
+    <string name="notification_open_details">Open OpenNest for details</string>
+</resources>

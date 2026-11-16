@@ -22,6 +22,7 @@
   <a href="#как-это-работает">Как это работает</a> ·
   <a href="#скриншоты">Скриншоты</a> ·
   <a href="./apps/claude-server/README.md">ClaudeNest</a> ·
+  <a href="./apps/open-server/README.md">OpenNest</a> ·
   <a href="./deploy/DEPLOYMENT.md">Документация</a>
 </p>
 
@@ -177,6 +178,8 @@ Bearer token даёт права владельца CodexNest, а сервер �
 недоверенной сети используйте приватный HTTPS. Подробности приведены в
 [инструкции по развёртыванию](./deploy/DEPLOYMENT.md) и
 [предупреждении для Android](./apps/client/android/README.md).
+
+OpenNest — отдельный клиент OpenCode для OpenRouter с общим интерфейсом Nest, собственными настройками, состоянием, PWA, Android-пакетом и расширением браузера. См. [разработку и проверки OpenNest](./apps/open-server/README.md). Сборка исходников доступна; публикация установщика и обновлений требует квалификации полного жизненного цикла с нативным runtime.
 
 ## Архитектура и источники истины
 

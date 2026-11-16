@@ -3,14 +3,15 @@ import { defineConfig } from "vite";
 import { configDefaults } from "vitest/config";
 
 export default defineConfig(({ mode }) => {
+  const open = mode === "open";
   const claude = mode === "claude";
   const gemini = mode === "gemini";
-  const variant = gemini ? "gemini" : "claude";
-  const product = gemini ? "GeminiNest" : "ClaudeNest";
+  const variant = open ? "open" : gemini ? "gemini" : "claude";
+  const product = open ? "OpenNest" : gemini ? "GeminiNest" : "ClaudeNest";
   return {
     plugins: [
       react(),
-      ...(claude || gemini
+      ...(claude || gemini || open
         ? [
             {
               name: `${variant}nest-identity`,
@@ -33,11 +34,14 @@ export default defineConfig(({ mode }) => {
         : []),
     ],
     define: {
-      ...(claude || gemini ? { "import.meta.env.VITE_APP_PROVIDER": JSON.stringify(variant) } : {}),
+      ...(claude || gemini || open
+        ? { "import.meta.env.VITE_APP_PROVIDER": JSON.stringify(variant) }
+        : {}),
       "import.meta.env.VITE_APP_VERSION": JSON.stringify(
         process.env.VITE_APP_VERSION ||
           process.env.CODEXNEST_VERSION ||
           process.env.CLAUDENEST_VERSION ||
+          process.env.OPENNEST_VERSION ||
           "",
       ),
     },
@@ -45,19 +49,24 @@ export default defineConfig(({ mode }) => {
     optimizeDeps: { include: ["react-dom/server"] },
     server: {
       host: "127.0.0.1",
-      port: gemini ? 5175 : claude ? 5174 : 5173,
+      port: open ? 5176 : gemini ? 5175 : claude ? 5174 : 5173,
       proxy: {
         "/api": {
-          target: gemini
-            ? "http://127.0.0.1:4312"
-            : claude
-              ? "http://127.0.0.1:4311"
-              : "http://127.0.0.1:4310",
+          target: open
+            ? "http://127.0.0.1:4313"
+            : gemini
+              ? "http://127.0.0.1:4312"
+              : claude
+                ? "http://127.0.0.1:4311"
+                : "http://127.0.0.1:4310",
           ws: true,
         },
       },
     },
-    build: { sourcemap: true, outDir: gemini ? "dist-gemini" : claude ? "dist-claude" : "dist" },
+    build: {
+      sourcemap: true,
+      outDir: open ? "dist-open" : gemini ? "dist-gemini" : claude ? "dist-claude" : "dist",
+    },
     test: {
       environment: "jsdom",
       setupFiles: ["./src/test/setup.ts"],

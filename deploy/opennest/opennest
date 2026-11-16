@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+opennest_root="${XDG_DATA_HOME:-$HOME/.local/share}/opennest"
+opennest_node="${OPENNEST_NODE_BIN:-node}"
+if [[ -x "$opennest_root/runtime/current/bin/node" ]]; then
+  opennest_node="$opennest_root/runtime/current/bin/node"
+elif [[ "$opennest_node" == "node" && -x "$HOME/.local/node-v24/bin/node" ]]; then
+  opennest_node="$HOME/.local/node-v24/bin/node"
+fi
+case "$opennest_node" in
+  */*) export PATH="$(dirname "$opennest_node"):$PATH" ;;
+esac
+case "${1:-help}" in
+  logs) exec journalctl --user -u opennest.service -u opennest-daemon.service -f ;;
+  *) exec "$opennest_node" "$opennest_root/current/apps/open-server/scripts/manage.mjs" "$@" ;;
+esac

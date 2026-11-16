@@ -125,3 +125,13 @@ The service reads the existing server URL and encrypted bearer token from the sa
 storage as the UI, reconnects after network loss and device reboot, and emits local
 notifications for completed/failed tasks and attention requests. No additional account or
 server credential is required. The signing keystore, passwords, and APKs remain ignored.
+
+## OpenNest
+
+OpenNest uses `npm run build:open`, `npm run android:sync:open` and
+`NEST_APP_PROVIDER=open` for Gradle. Its application ID is `com.opennest.app`,
+its web assets are `dist-open`, and its encrypted preferences and notifications
+use the independent `opennest` namespace. It can be installed beside the existing
+Nest clients. Build with `npm run android:debug:open -w @codexnest/client`; the
+release command uses the same configured signing identity as the other clients.
+Building an APK does not qualify or publish an application release.

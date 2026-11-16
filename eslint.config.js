@@ -9,6 +9,7 @@ export default tseslint.config(
       "**/dist/**",
       "**/dist-claude/**",
       "**/dist-gemini/**",
+      "**/dist-open/**",
       "**/coverage/**",
       "output/**",
       "apps/server/src/codex/generated/**",

@@ -26,6 +26,9 @@ import type {
   GlobalPermissionSettings,
   HealthResponse,
   GeminiConnectionStatus,
+  OpenConnectionStatus,
+  OpenProxyStatus,
+  OpenProxyTestResult,
   MarkReadRequest,
   MarkViewedRequest,
   MoveProjectRequest,
@@ -330,6 +333,34 @@ export class ApiClient {
     return this.request(`/api/v1/settings/codex/accounts/logins/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
+  }
+
+  readOpenConnection(): Promise<OpenConnectionStatus> {
+    return this.request("/api/v1/settings/open");
+  }
+
+  saveOpenKey(apiKey: string): Promise<OpenConnectionStatus> {
+    return this.request("/api/v1/settings/open", { method: "PUT", body: { apiKey } });
+  }
+
+  testOpenConnection(): Promise<OpenConnectionStatus> {
+    return this.request("/api/v1/settings/open/test", { method: "POST", timeoutMs: 30_000 });
+  }
+
+  readOpenProxy(): Promise<OpenProxyStatus> {
+    return this.request("/api/v1/settings/open/proxy");
+  }
+
+  saveOpenProxy(proxy: string | null): Promise<OpenProxyStatus> {
+    return this.request("/api/v1/settings/open/proxy", {
+      method: "PUT",
+      body: { proxy },
+      timeoutMs: 45_000,
+    });
+  }
+
+  testOpenProxy(): Promise<OpenProxyTestResult> {
+    return this.request("/api/v1/settings/open/proxy/test", { method: "POST", timeoutMs: 30_000 });
   }
 
   readGeminiConnection(): Promise<GeminiConnectionStatus> {

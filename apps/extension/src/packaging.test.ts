@@ -19,6 +19,24 @@ describe("browser packaging", () => {
     expect(manifest.key).toMatch(/^MIGf/);
   });
 
+  it("pins a separate OpenNest identity to the protocol origin", async () => {
+    const { createHash } = await import("node:crypto");
+    const { OPEN_BROWSER_EXTENSION_ID } = await import("@codexnest/protocol");
+    const manifest = await readJson("public/open/manifest.json");
+    const id = [
+      ...createHash("sha256")
+        .update(Buffer.from(manifest.key, "base64"))
+        .digest("hex")
+        .slice(0, 32),
+    ]
+      .map((c) => String.fromCharCode(97 + parseInt(c, 16)))
+      .join("");
+    expect(id).toBe(OPEN_BROWSER_EXTENSION_ID);
+    expect(manifest.name).toBe("OpenNest Browser");
+    expect(manifest.key).not.toBe((await readJson("public/chrome/manifest.json")).key);
+    expect(Object.values(manifest.icons)).toContain("icons/opennest-128.png");
+  });
+
   it("ships popup and panel surfaces from the shared popup entrypoint", async () => {
     const [popup, panel] = await Promise.all([
       readFile(resolve(extensionRoot, "popup.html"), "utf8"),
@@ -34,7 +52,8 @@ describe("browser packaging", () => {
   it("declares the Chrome ZIP package names", async () => {
     const script = await readFile(resolve(extensionRoot, "scripts/package.mjs"), "utf8");
     expect(script).toContain("${artifactPrefixes[variant]}-browser-${manifest.version}.zip");
-    expect(script).toContain('chrome: "codexnest", claude: "claudenest", gemini: "gemininest"');
+    for (const variant of ["chrome", "claude", "gemini", "open"])
+      expect(script).toContain(variant + ":");
   });
 
   it("gives the ClaudeNest and GeminiNest builds their own identities and icons", async () => {

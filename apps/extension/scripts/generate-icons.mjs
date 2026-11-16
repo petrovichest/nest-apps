@@ -10,6 +10,10 @@ const brands = {
     favicon: "../../client/public/claude/favicon.svg",
     output: "../public/claude/icons",
   },
+  opennest: {
+    favicon: "../../client/public/open/favicon.svg",
+    output: "../public/open/icons",
+  },
   gemininest: {
     favicon: "../../client/public/gemini/favicon.svg",
     output: "../public/gemini/icons",

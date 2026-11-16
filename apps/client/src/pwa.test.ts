@@ -64,6 +64,7 @@ describe("PWA metadata", () => {
   it.each([
     ["claude", "ClaudeNest"],
     ["gemini", "GeminiNest"],
+    ["open", "OpenNest"],
   ])("ships a separate %s standalone identity and correctly sized icons", (provider, name) => {
     const manifest = JSON.parse(
       readFileSync(resolve(process.cwd(), `public/${provider}/manifest.webmanifest`), "utf8"),

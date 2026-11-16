@@ -24,11 +24,20 @@ export function registerKanbanRoutes(
             ? "KANBAN_CODEX_URL"
             : run.provider === "claude"
               ? "KANBAN_CLAUDE_URL"
-              : "KANBAN_GEMINI_URL"
+              : run.provider === "open"
+                ? "KANBAN_OPEN_URL"
+                : "KANBAN_GEMINI_URL"
         ];
       const base = new URL(configured ?? `${request.protocol}://${request.host}`);
       if (!configured)
-        base.port = run.provider === "codex" ? "4310" : run.provider === "claude" ? "4311" : "4312";
+        base.port =
+          run.provider === "codex"
+            ? "4310"
+            : run.provider === "claude"
+              ? "4311"
+              : run.provider === "open"
+                ? "4313"
+                : "4312";
       return { ...run, sessionUrl: new URL(run.sessionUrl, base).href };
     }),
   });
