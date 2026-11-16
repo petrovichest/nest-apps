@@ -1276,6 +1276,59 @@ describe("shared provider board service", () => {
     await closing;
     expect((await service.read(f.project)).runs[0]?.threadId).toBe(board.runs[0]?.id);
   });
+  it("waits for an in-flight session notification to save its outcome before closing", async () => {
+    const f = await fixture();
+    let unblock!: () => void, started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const service = new KanbanService({
+      provider: "codex",
+      dataDir: join(f.directory, "notification-closing"),
+      classifies: () => false,
+      adapter: {
+        launch: async () => ({ threadId: "notification-thread" }),
+        resume: async () => {},
+        readReply: async () => {
+          started();
+          await blocked;
+          return { question: null, published: false };
+        },
+      },
+    });
+    await service.initialize();
+    cleanups.push(() => service.close());
+    const board = await service.createCard(f.project, {
+      description: "Save the completed outcome",
+      clientCreationId: randomUUID(),
+    });
+    await service.action(f.project, {
+      action: "execute",
+      cardIds: [board.cards[0]!.id],
+      clientActionId: randomUUID(),
+    });
+    await until(
+      () => service.read(f.project),
+      (board) => board.runs[0]?.threadId === "notification-thread",
+    );
+    const notification = service.notifyThread("notification-thread", "completed");
+    await entered;
+    let closed = false;
+    const closing = service.close().then(() => {
+      closed = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(closed).toBe(false);
+    } finally {
+      unblock();
+      await Promise.all([notification, closing]);
+    }
+    expect((await service.read(f.project)).runs[0]?.status).toBe("completed");
+  });
   it("keeps unavailable-provider jobs queued and starts them only after wake", async () => {
     let available = false;
     const f = await fixture(() => available);

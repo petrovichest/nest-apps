@@ -1215,12 +1215,24 @@ export class KanbanService {
     this.changed(board);
   }
   /** Called from local session notifications; unknown sessions are a constant-time no-op. */
-  async notifyThread(threadId: string, state: string): Promise<void> {
+  notifyThread(threadId: string, state: string): Promise<void> {
     const known = this.threads.get(threadId);
-    if (!known || this.closed || this.observedStates.get(threadId) === state) return;
+    if (!known || this.closed || this.observedStates.get(threadId) === state)
+      return Promise.resolve();
     this.observedStates.set(threadId, state);
     // Remember the initial idle state until a real turn transition arrives.
-    if (state === "idle" && this.launching.has(known.runId)) return;
+    if (state === "idle" && this.launching.has(known.runId)) return Promise.resolve();
+    const pending = this.saveThreadState(known, threadId, state).finally(() =>
+      this.pending.delete(pending),
+    );
+    this.pending.add(pending);
+    return pending;
+  }
+  private async saveThreadState(
+    known: { boardId: string; runId: string },
+    threadId: string,
+    state: string,
+  ): Promise<void> {
     let classifierFailed = false;
     let awaitingText: string[] = [];
     let target = known;
