@@ -7,8 +7,33 @@ the independently managed OpenCode service defaults to `127.0.0.1:4097`.
 
 The shared client has been integrated after approval of its concrete preview.
 Source implementation and isolated tests do **not** qualify an application release.
-There is no published healthy OpenNest baseline, and publication remains closed
-under [the release safety rules](../../docs/release-safety.md).
+Publication is gated by [the native release safety rules](../../docs/release-safety.md).
+The first release independently qualifies its initial baseline; later releases
+qualify an upgrade from the previously published OpenNest version.
+
+## Installing a qualified release
+
+The published backend supports Linux **x86_64**, Node.js **24**, and OpenCode
+**1.19.5**. Install Git, npm, `flock` and `/usr/bin/bwrap` (bubblewrap) first.
+OpenCode is an external prerequisite; the installer verifies its exact version.
+Set `OPENNEST_OPENCODE_BIN=/absolute/path/to/opencode` when it is not on PATH.
+
+Installers appear only after the complete native qualification has passed:
+
+```sh
+curl -fsSL https://github.com/petrovichest/nest-apps/releases/download/opennest-latest/install-opennest.sh | bash
+```
+
+Open `http://127.0.0.1:4313`. The owner token is in
+`~/.config/opennest/token`; enter the OpenRouter key in OpenNest settings and
+choose a model. The same qualified release contains `OpenNest-latest.apk` and
+`opennest-browser-latest.zip`. [OpenNest releases](https://github.com/petrovichest/nest-apps/releases)
+use their own `opennest-v…` tags and `opennest-latest` update channel.
+
+The installer creates its own API/native services and directories; existing Nest
+installations are preserved. Use the OpenNest update button or `opennest update`
+for qualified updates. Source templates intentionally refuse to install until
+release packaging pins their tested version and full commit.
 
 ## Implemented behavior
 

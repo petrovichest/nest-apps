@@ -1,0 +1,202 @@
+name: OpenNest qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+concurrency:
+  group: opennest-qualification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      baseline: ${{ steps.baseline.outputs.commit }}
+      baseline-kind: ${{ steps.baseline.outputs.kind }}
+      baseline-version: ${{ steps.baseline.outputs.version }}
+      baseline-installer-url: ${{ steps.baseline.outputs.installer-url }}
+      baseline-installer-sha256: ${{ steps.baseline.outputs.installer-sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Require successful source and native contract checks at this exact SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" > "$RUNNER_TEMP/source-checks.json"
+          node --input-type=module - "$RUNNER_TEMP/source-checks.json" "$GITHUB_SHA" <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { validateSourceChecks } from './deploy/opennest/qualification/report.mjs';
+          validateSourceChecks(JSON.parse(readFileSync(process.argv[2])),process.argv[3]);
+          JS
+      - name: Pin the independently verified first-release baseline
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/opennest-latest" > "$RUNNER_TEMP/channel.json" 2> "$RUNNER_TEMP/channel-error.txt"; then
+            jq -e '.draft == false' "$RUNNER_TEMP/channel.json"
+            gh release download opennest-latest -R "$GITHUB_REPOSITORY" -p OpenNest-latest.json -D "$RUNNER_TEMP/published-opennest"
+            kind=published
+            baseline_version="$(jq -er '.version' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
+            installer_url="$(jq -er '.applications.opennest.installer.url' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
+            installer_sha="$(jq -er '.applications.opennest.installer.sha256 | select(test("^[0-9a-f]{64}$"))' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
+            baseline="$(jq -er '.commit | select(test("^[0-9a-f]{40}$"))' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
+          else
+            grep -q 'HTTP 404' "$RUNNER_TEMP/channel-error.txt" || { cat "$RUNNER_TEMP/channel-error.txt" >&2; exit 1; }
+            prior="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.draft == false and (.tag_name | startswith("opennest-v"))) | .tag_name')"
+            test -z "$prior" || { echo 'A public OpenNest version already exists; finish its channel before another first release.' >&2; exit 1; }
+            baseline=2088ee59d442bd0882c7c65d671d8a8f37aa00d6
+            kind=first-release
+            baseline_version=0.1.9-2088ee5
+            installer_url=
+            installer_sha=5067427e8523cdb369f669e7c552de3998da1062f279e1acdc820150d125c879
+          fi
+          echo "commit=$baseline" >> "$GITHUB_OUTPUT"
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "version=$baseline_version" >> "$GITHUB_OUTPUT"
+          echo "installer-url=$installer_url" >> "$GITHUB_OUTPUT"
+          echo "installer-sha256=$installer_sha" >> "$GITHUB_OUTPUT"
+
+  native:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Exercise real installation, representative native history and automatic rollback
+        env:
+          OPENNEST_QUALIFICATION_BASELINE: ${{ needs.source.outputs.baseline }}
+          OPENNEST_QUALIFICATION_BASELINE_VERSION: ${{ needs.source.outputs.baseline-version }}
+          OPENNEST_QUALIFICATION_BASELINE_KIND: ${{ needs.source.outputs.baseline-kind }}
+          OPENNEST_QUALIFICATION_BASELINE_INSTALLER_URL: ${{ needs.source.outputs.baseline-installer-url }}
+          OPENNEST_QUALIFICATION_BASELINE_INSTALLER_SHA256: ${{ needs.source.outputs.baseline-installer-sha256 }}
+        run: bash deploy/opennest/qualification/environment.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: opennest-native-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/opennest-qualification/
+          if-no-files-found: error
+          retention-days: 30
+
+  packages:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - run: npm ci --include=dev
+      - name: Build exact OpenNest web and extension assets
+        run: |
+          set -euo pipefail
+          export VITE_APP_VERSION="0.1.9-${GITHUB_SHA::7}"
+          npm run build:open
+          npm run build:open -w @codexnest/extension
+          npm run package:open -w @codexnest/extension
+          mkdir -p release
+          sed -e "s/^opennest_default_version=.*/opennest_default_version=\"$VITE_APP_VERSION\"/" -e "s/^opennest_default_ref=.*/opennest_default_ref=\"$GITHUB_SHA\"/" deploy/opennest/install.sh > release/install-opennest.sh
+          bash -n release/install-opennest.sh
+          cp apps/extension/artifacts/opennest-browser-*.zip release/opennest-browser-latest.zip
+          unzip -t release/opennest-browser-latest.zip
+          npm run android:sync:open -w @codexnest/client
+      - name: Build and verify signed OpenNest Android package
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_BASE64 }}
+          CODEXNEST_KEY_ALIAS: ${{ secrets.CODEXNEST_ANDROID_KEY_ALIAS }}
+          CODEXNEST_KEYSTORE_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_PASSWORD }}
+          CODEXNEST_KEY_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64" && test -n "$CODEXNEST_KEY_ALIAS" && test -n "$CODEXNEST_KEYSTORE_PASSWORD" && test -n "$CODEXNEST_KEY_PASSWORD"
+          export CODEXNEST_KEYSTORE_PATH="$RUNNER_TEMP/opennest.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$CODEXNEST_KEYSTORE_PATH"
+          chmod 0600 "$CODEXNEST_KEYSTORE_PATH"
+          export NEST_APP_PROVIDER=open
+          export CODEXNEST_ANDROID_VERSION_NAME="0.1.9-${GITHUB_SHA::7}"
+          export CODEXNEST_ANDROID_VERSION_CODE="$((3000000 + GITHUB_RUN_NUMBER))"
+          (cd apps/client/android && ./gradlew testDebugUnitTest assembleRelease)
+          apk=apps/client/android/app/build/outputs/apk/release/app-release.apk
+          tools="$(printf '%s\n' "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          "$tools/apksigner" verify --print-certs "$apk" > "$RUNNER_TEMP/apk-signature.txt"
+          keytool -exportcert -keystore "$CODEXNEST_KEYSTORE_PATH" -alias "$CODEXNEST_KEY_ALIAS" -storepass:env CODEXNEST_KEYSTORE_PASSWORD -file "$RUNNER_TEMP/signature.der"
+          certificate="$(sha256sum "$RUNNER_TEMP/signature.der" | cut -d ' ' -f 1)"
+          apk_certificate="$(sed -nE 's/^[[:space:]]*(V[0-9]+ )?Signer.* certificate SHA-256 digest: ([[:xdigit:]]{64})[[:space:]]*$/\2/p' "$RUNNER_TEMP/apk-signature.txt" | tr '[:upper:]' '[:lower:]' | sort -u)"
+          test "$certificate" = "$apk_certificate"
+          "$tools/aapt" dump badging "$apk" | grep -F "name='com.opennest.app'" | grep -F "versionName='$CODEXNEST_ANDROID_VERSION_NAME'" | grep -F "versionCode='$CODEXNEST_ANDROID_VERSION_CODE'"
+          unzip -p "$apk" assets/capacitor.config.json | node -e 'let s="";process.stdin.on("data",v=>s+=v);process.stdin.on("end",()=>{if(JSON.parse(s).appId!=="com.opennest.app")process.exit(1)})'
+          unzip -p "$apk" assets/public/index.html | grep -F 'data-application="opennest"'
+          cp "$apk" release/OpenNest-latest.apk
+          rm -f "$CODEXNEST_KEYSTORE_PATH" "$RUNNER_TEMP/signature.der"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: opennest-packages-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+
+  report:
+    needs: [source, native, packages]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: opennest-native-evidence-${{ github.sha }}
+          path: evidence
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: opennest-packages-${{ github.sha }}
+          path: packages
+      - name: Validate native results and bind the exact packaged installer
+        run: |
+          set -euo pipefail
+          installer_hash="$(sha256sum packages/install-opennest.sh | cut -d ' ' -f 1)"
+          node deploy/opennest/qualification/report.mjs collect evidence "$GITHUB_SHA" "$installer_hash"
+          cp packages/install-opennest.sh packages/OpenNest-latest.apk packages/opennest-browser-latest.zip evidence/
+          (cd evidence && sha256sum install-opennest.sh OpenNest-latest.apk opennest-browser-latest.zip qualification.json > package-SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: opennest-qualified-release-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30

@@ -87,5 +87,10 @@ are supplemental source tests, not the mandatory native lifecycle matrix.
 
 No installer or manager is run against an existing user installation during
 development. Native lifecycle checks require isolated HOME, credentials, native
-state, ports and services. OpenNest's first-release baseline and publication gate
-still need qualification before distributing an installer.
+state, ports and services. The first-release baseline is qualified independently as specified in the
+release policy. The separate `OpenNest qualification` workflow executes the
+complete native matrix, signed Android packaging and extension checks. Only a
+successful completed manual run for the exact source SHA enables
+`Publish qualified OpenNest`; its versioned release artifacts are immutable and
+the dedicated channel manifest is written last. The existing Nest Apps channel
+is never updated by this publisher.

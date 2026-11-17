@@ -34,7 +34,8 @@ jobs:
       - run: npm run typecheck
       - run: NODE_ENV=test npm test
       - run: node --test deploy/qualification/report.test.mjs
-      - run: bash -n deploy/install.sh deploy/adopt-existing.sh deploy/adopt-existing.test.sh deploy/codexnest deploy/claudenest/install.sh deploy/claudenest/claudenest deploy/gemininest/install.sh deploy/opennest/install.sh deploy/opennest/opennest
+      - run: bash -n deploy/install.sh deploy/adopt-existing.sh deploy/adopt-existing.test.sh deploy/codexnest deploy/claudenest/install.sh deploy/claudenest/claudenest deploy/gemininest/install.sh deploy/opennest/install.sh deploy/opennest/opennest deploy/opennest/qualification/environment.sh deploy/opennest/qualification/guest.sh
+      - run: python3 -m py_compile deploy/opennest/qualification/history.py
       - run: deploy/adopt-existing.test.sh
       - name: Verify pinned Node.js checksums are published
         run: |
