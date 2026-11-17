@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 import {
   createManager,
@@ -12,6 +25,7 @@ import {
 import { manifestCandidate } from "../../apps/open-server/scripts/update.mjs";
 
 const commit = "1234567890abcdef1234567890abcdef12345678";
+const execute = promisify(execFile);
 
 async function fixture(t) {
   const home = await mkdtemp(join(tmpdir(), "opennest-manager-"));
@@ -140,6 +154,60 @@ test("API restart preserves the native service and verifies the expected applica
     { command: "systemctl", args: ["--user", "restart", "opennest.service"] },
   ]);
   assert.equal(f.requests(), 1);
+});
+
+test("the installed CLI dispatches through the current release symlink", async (t) => {
+  const f = await fixture(t);
+  const scripts = join(f.release, "apps/open-server/scripts");
+  await mkdir(scripts, { recursive: true });
+  for (const name of ["manage.mjs", "update.mjs"])
+    await copyFile(
+      new URL(`../../apps/open-server/scripts/${name}`, import.meta.url),
+      join(scripts, name),
+    );
+  await copyFile(
+    new URL("./opennest", import.meta.url),
+    join(f.release, "deploy/opennest/opennest"),
+  );
+  let token;
+  let requests = 0;
+  const health = {
+    app: "opennest",
+    provider: "open",
+    status: "ok",
+    recoveryState: "ready",
+    serverVersion: "0.1.9-1234567",
+    restartProtocolVersion: 1,
+    appServer: { state: "ready", installedVersion: "1.19.5" },
+  };
+  const server = createServer((request, response) => {
+    requests++;
+    assert.equal(request.url, "/api/v1/health");
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(health));
+  });
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const env = {
+    ...f.env,
+    PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+    OPENNEST_PORT: String(server.address().port),
+  };
+  await createManager({ env, run: f.run, fetcher: f.fetcher }).setup(f.release);
+  const location = paths(env);
+  assert.ok((await lstat(join(location.root, "current"))).isSymbolicLink());
+  token = (await readFile(location.token, "utf8")).trim();
+  const installed = join(location.bin, "opennest");
+  const result = await execute(installed, ["status"], { env, cwd: f.home, timeout: 5000 });
+  assert.equal(requests, 1, "The installed command did not dispatch its status action");
+  assert.deepEqual(JSON.parse(result.stdout), health);
+  await assert.rejects(
+    execute(installed, ["unknown-command"], { env, cwd: f.home, timeout: 5000 }),
+    (error) => error.code === 1,
+  );
 });
 
 test("setup refuses an active installation before writing any credentials", async (t) => {

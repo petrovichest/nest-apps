@@ -13,5 +13,8 @@ case "$opennest_node" in
 esac
 case "${1:-help}" in
   logs) exec journalctl --user -u opennest.service -u opennest-daemon.service -f ;;
-  *) exec "$opennest_node" "$opennest_root/current/apps/open-server/scripts/manage.mjs" "$@" ;;
+  *)
+    opennest_release="$(readlink -f -- "$opennest_root/current")"
+    exec "$opennest_node" "$opennest_release/apps/open-server/scripts/manage.mjs" "$@"
+    ;;
 esac
