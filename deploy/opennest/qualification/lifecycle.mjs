@@ -611,7 +611,8 @@ async function resetA() {
   );
   await systemctl("daemon-reload");
   // Fixture reset is between independent cases, never the measured rollback.
-  await systemctl("reset-failed", "opennest.service", "opennest-update.service");
+  // Inactive update/recovery units may have been unloaded by systemd already.
+  await systemctl("reset-failed");
   token = (await readFile(join(configuration, "token"), "utf8")).trim();
   await systemctl("start", "opennest-daemon.service", "opennest.service");
   await ready();
