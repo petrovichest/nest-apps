@@ -206,7 +206,7 @@ export function createUpdater({
     const raw = await download(
       config.OPENNEST_UPDATE_MANIFEST_URL ||
         env.OPENNEST_UPDATE_MANIFEST_URL ||
-        "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/NestApps-latest.json",
+        "https://github.com/petrovichest/nest-apps/releases/download/opennest-latest/OpenNest-latest.json",
     );
     let manifest;
     try {
@@ -381,6 +381,16 @@ export function createUpdater({
     );
     await control(["daemon-reload"]);
   }
+  const nativeReady = (health, version) =>
+    health?.app === "opennest" &&
+    health.provider === "open" &&
+    health.status === "ok" &&
+    health.serverVersion === version &&
+    health.restartProtocolVersion === 1 &&
+    health.appServer?.state === "ready" &&
+    health.appServer.installedVersion === "1.19.5";
+  const healthy = (health, version) =>
+    nativeReady(health, version) && health.recoveryState === "ready";
   async function waitHealthy(version, nativePid) {
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
@@ -388,17 +398,7 @@ export function createUpdater({
         throw new Error("The surviving native process changed during API replacement");
       try {
         const health = await api("health");
-        if (
-          health.app === "opennest" &&
-          health.provider === "open" &&
-          health.status === "ok" &&
-          health.recoveryState === "ready" &&
-          health.serverVersion === version &&
-          health.restartProtocolVersion === 1 &&
-          health.appServer?.state === "ready" &&
-          health.appServer.installedVersion === "1.19.5"
-        )
-          return;
+        if (healthy(health, version)) return;
       } catch {
         /* The API is still reconnecting to the same native owner. */
       }
@@ -429,6 +429,38 @@ export function createUpdater({
     const previous = await verifyRelease(transaction.previousRelease);
     if (previous.commit !== transaction.previousCommit)
       throw new Error("The previous OpenNest source changed");
+    const pointer = await realpath(join(location.root, "current")).catch(() => null);
+    const config = await configuration();
+    if (
+      !restartApi &&
+      pointer === previous.release &&
+      config.OPENNEST_RELEASE_PATH === previous.release &&
+      config.OPENNEST_VERSION === transaction.previousVersion &&
+      (await nativeIdentity()) === transaction.nativePid
+    ) {
+      const health = await api("health").catch(() => null);
+      if (
+        nativeReady(health, transaction.previousVersion) &&
+        ["ready", "draining"].includes(health.recoveryState)
+      ) {
+        // Preparation can fail while A is still healthy (for example a temporary
+        // checkpoint write error). Preserve its live state instead of restarting
+        // it into the same transient failure. B has not been activated here.
+        await api("internal/restart/resume", {});
+        if (
+          (await nativeIdentity()) !== transaction.nativePid ||
+          !healthy(await api("health"), transaction.previousVersion)
+        )
+          throw new Error("The unchanged OpenNest baseline did not remain ready");
+        await writeStatus(
+          "idle",
+          "failed",
+          "Обновление остановлено до переключения; действующий API и native-процесс OpenNest сохранены.",
+        );
+        await rm(transactionPath);
+        return "unchanged";
+      }
+    }
     await setRelease(previous.release, transaction.previousVersion);
     await control(["restart", "opennest.service"]);
     await waitHealthy(transaction.previousVersion, transaction.nativePid);
@@ -525,6 +557,10 @@ export function createUpdater({
         );
         throw new Error("OpenNest recovery was not confirmed", { cause: error });
       }
+      if (recovered === "unchanged")
+        throw new Error(
+          "OpenNest update stopped before switching; the previous ready API was preserved",
+        );
       if (recovered)
         throw new Error("OpenNest candidate failed; the previous ready version was restored");
       await writeStatus(

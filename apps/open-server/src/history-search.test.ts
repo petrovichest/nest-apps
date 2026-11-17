@@ -50,6 +50,102 @@ async function fixture() {
 }
 
 describe("read-only native history search", () => {
+  it("searches long native sessions within the existing worker memory bound", async () => {
+    const f = await fixture();
+    // Native-owned indexes reproduce the actual 1.19.5 planner. The previous
+    // SQL UDF repeatedly retained whole part bodies until its worker exhausted V8.
+    f.db
+      .exec(`CREATE INDEX message_session_time_created_id_idx ON message(session_id,time_created,id);
+      CREATE INDEX part_message_id_id_idx ON part(message_id,id);
+      CREATE INDEX part_session_idx ON part(session_id); BEGIN`);
+    const text =
+      "Persist the accepted receipt before acknowledgement and resume the same native operation without sending it twice. ".repeat(
+        640,
+      );
+    for (let index = 0; index < 96; index++) {
+      const suffix = String(index).padStart(3, "0"),
+        messageId = `msg_long_${suffix}`;
+      f.message(messageId, "ses_a", index + 1, "user");
+      f.part(`prt_long_${suffix}`, messageId, "ses_a", {
+        type: "text",
+        text: text + (index === 95 ? " qualified-final-marker" : ""),
+      });
+    }
+    f.db.exec("COMMIT");
+    const result = await searchNativeHistory({
+      databasePath: f.databasePath,
+      query: "qualified-final-marker",
+      sessionIds: ["ses_a"],
+    });
+    expect(result.data.map((item) => item.itemId)).toEqual(["prt_long_095"]);
+    expect(result.nextCursor).toBeNull();
+    f.db.close();
+  });
+  it("does not retain large native system instructions while paging search metadata", async () => {
+    const f = await fixture();
+    f.db.exec(
+      "CREATE INDEX message_session_time_created_id_idx ON message(session_id,time_created,id); CREATE INDEX part_message_id_id_idx ON part(message_id,id); BEGIN",
+    );
+    const metadata = JSON.stringify({
+      role: "user",
+      system: "Persist the current goal and continue its authorized work. ".repeat(3500),
+    });
+    const insert = f.db.prepare("INSERT INTO message VALUES(?,?,?,?)");
+    for (let index = 0; index < 700; index++) {
+      const suffix = String(index).padStart(4, "0"),
+        messageId = `msg_system_${suffix}`;
+      insert.run(messageId, "ses_a", index + 1, metadata);
+      f.part(`prt_system_${suffix}`, messageId, "ses_a", {
+        type: "text",
+        text: index === 699 ? "matching final result" : "unrelated history",
+      });
+    }
+    f.db.exec("COMMIT");
+    const result = await searchNativeHistory({
+      databasePath: f.databasePath,
+      query: "matching final result",
+      sessionIds: ["ses_a"],
+    });
+    expect(result.data.map((item) => item.itemId)).toEqual(["prt_system_0699"]);
+    f.db.close();
+  });
+  it("keeps exact cursors across part and metadata batches without dropping sparse matches", async () => {
+    const f = await fixture();
+    f.message("msg_a", "ses_a", 1, "user");
+    const expected: string[] = [];
+    for (let index = 0; index < 80; index++) {
+      const id = `prt_a_${String(index).padStart(3, "0")}`;
+      f.part(id, "msg_a", "ses_a", { type: "text", text: "matching original parts" });
+      expected.push(id);
+    }
+    for (let index = 0; index < 530; index++) {
+      const suffix = String(index).padStart(3, "0"),
+        id = `prt_tail_${suffix}`,
+        messageId = `msg_tail_${suffix}`;
+      f.message(messageId, "ses_a", index + 100, "user");
+      f.part(id, messageId, "ses_a", {
+        type: "text",
+        text: index >= 500 ? "matching sparse tail" : "unrelated history",
+      });
+      if (index >= 500) expected.push(id);
+    }
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await searchNativeHistory({
+        databasePath: f.databasePath,
+        query: "matching",
+        sessionIds: ["ses_a"],
+        limit: 37,
+        cursor,
+      });
+      seen.push(...page.data.map((item) => item.itemId));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(seen).toEqual(expected);
+    expect(new Set(seen).size).toBe(expected.length);
+    f.db.close();
+  });
   it.each(["success", "invalid_data", "timeout"] as const)(
     "releases the worker and SQLite read transaction before %s completion",
     async (outcome) => {
@@ -121,6 +217,50 @@ describe("read-only native history search", () => {
     ).toEqual({ data: [], nextCursor: null });
   });
 
+  it("preserves escaped Unicode, JSON-special queries and corrupt-record errors while filtering raw text", async () => {
+    const f = await fixture();
+    f.message("msg_a", "ses_a", 1, "user");
+    f.db
+      .prepare("INSERT INTO part VALUES(?,?,?,?,?)")
+      .run(
+        "prt_escaped",
+        "msg_a",
+        "ses_a",
+        1,
+        '{"type":"text","text":"\\u0051UALIFICATION escaped marker"}',
+      );
+    f.part("prt_special", "msg_a", "ses_a", {
+      type: "text",
+      text: 'C:\\workspace\\file / "quoted" line\nnext',
+    });
+    expect(
+      (
+        await searchNativeHistory({
+          databasePath: f.databasePath,
+          query: "QUALIFICATION",
+          sessionIds: ["ses_a"],
+        })
+      ).data.map((item) => item.itemId),
+    ).toEqual(["prt_escaped"]);
+    for (const query of ["C:\\workspace", '/ "quoted"', "line\nnext"]) {
+      expect(
+        (
+          await searchNativeHistory({ databasePath: f.databasePath, query, sessionIds: ["ses_a"] })
+        ).data.map((item) => item.itemId),
+      ).toEqual(["prt_special"]);
+    }
+    f.db
+      .prepare("INSERT INTO part VALUES(?,?,?,?,?)")
+      .run("prt_bad", "msg_a", "ses_a", 1, '{"type":"text","text":"unrelated"');
+    await expect(
+      searchNativeHistory({
+        databasePath: f.databasePath,
+        query: "nonmatching needle",
+        sessionIds: ["ses_a"],
+      }),
+    ).rejects.toMatchObject({ code: "invalid_data" });
+    f.db.close();
+  });
   it("preserves native turn parentage, Unicode matching and UTF-16 snippet ranges", async () => {
     const f = await fixture();
     f.message("msg_user", "ses_a", 1, "user");

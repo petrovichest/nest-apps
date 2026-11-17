@@ -68,7 +68,8 @@ async function fixture(t) {
         status: "ok",
         recoveryState: "ready",
         serverVersion: "0.1.9-1234567",
-        appServer: { state: "ready" },
+        restartProtocolVersion: 1,
+        appServer: { state: "ready", installedVersion: "1.19.5" },
       }),
     );
   };
@@ -92,6 +93,10 @@ test("setup writes private credentials and independent services without starting
   assert.equal(config.OPENNEST_NATIVE_URL, "http://127.0.0.1:4097");
   assert.equal(config.OPENNEST_VERSION, "0.1.9-1234567");
   assert.equal(config.OPENNEST_PORT, "4313");
+  assert.equal(
+    config.OPENNEST_UPDATE_MANIFEST_URL,
+    "https://github.com/petrovichest/nest-apps/releases/download/opennest-latest/OpenNest-latest.json",
+  );
   assert.equal(
     config.OPENNEST_EVENT_SOCKET,
     join(config.OPENNEST_RUNTIME_DIR, "native-events.sock"),
@@ -236,4 +241,106 @@ test("unit quoting protects literal percent/dollar paths and rejects newlines", 
 test("legacy manifests cannot qualify OpenNest implicitly", async () => {
   assert.equal(manifestCandidate({ schemaVersion: 1, version: "0.1.9-1234567", commit }), null);
   assert.throws(() => parseEnvironment('SECRET="bad secret'), /invalid environment value/);
+});
+
+test("failed first startup removes only its own service/configuration files and can be retried", async (t) => {
+  const f = await fixture(t);
+  const location = paths(f.env);
+  await mkdir(location.config, { recursive: true });
+  await writeFile(join(location.config, "connection.json"), '{"version":1,"proxy":null}');
+  await mkdir(join(f.home, "state/opennest"), { recursive: true });
+  await writeFile(join(f.home, "state/opennest/owner-state"), "preserved");
+  let failed = false;
+  const manager = createManager({
+    env: f.env,
+    fetcher: f.fetcher,
+    run: async (command, args, options) => {
+      const response = await f.run(command, args, options);
+      if (!failed && command === "systemctl" && args.includes("enable")) {
+        failed = true;
+        throw new Error("controlled initial start failure");
+      }
+      return response;
+    },
+  });
+  await assert.rejects(manager.setup(f.release, true), /installation can be retried/);
+  for (const path of [
+    location.env,
+    location.token,
+    join(location.root, "current"),
+    join(location.bin, "opennest"),
+    ...Object.keys(
+      serviceUnits({
+        configuration: location.env,
+        release: f.release,
+        node: process.execPath,
+        home: f.home,
+      }),
+    ).map((name) => join(location.units, name)),
+  ])
+    await assert.rejects(readFile(path), { code: "ENOENT" });
+  assert.equal(
+    await readFile(join(location.config, "connection.json"), "utf8"),
+    '{"version":1,"proxy":null}',
+  );
+  assert.equal(await readFile(join(f.home, "state/opennest/owner-state"), "utf8"), "preserved");
+  assert.ok(
+    f.calls.some(
+      (call) =>
+        call.command === "systemctl" &&
+        call.args.join(" ") === "--user disable --now opennest.service opennest-daemon.service",
+    ),
+  );
+  await manager.setup(f.release, true);
+  assert.equal((await manager.status()).recoveryState, "ready");
+});
+
+test("first setup preserves a pre-existing private token when startup fails", async (t) => {
+  const f = await fixture(t),
+    location = paths(f.env);
+  await mkdir(location.config, { recursive: true });
+  const token = "fixture-private-owner-token".repeat(3);
+  await writeFile(location.token, token, { mode: 0o600 });
+  const manager = createManager({
+    env: f.env,
+    fetcher: f.fetcher,
+    run: async (command, args, options) => {
+      const response = await f.run(command, args, options);
+      if (command === "systemctl" && args.includes("enable"))
+        throw new Error("controlled startup failure");
+      return response;
+    },
+  });
+  await assert.rejects(manager.setup(f.release, true), /installation can be retried/);
+  assert.equal(await readFile(location.token, "utf8"), token);
+});
+
+test("setup refuses to overwrite existing inactive service or command files", async (t) => {
+  const f = await fixture(t),
+    location = paths(f.env);
+  await mkdir(location.units, { recursive: true });
+  const path = join(location.units, "opennest-daemon.service");
+  await writeFile(path, "owner-defined service");
+  await assert.rejects(f.manager.setup(f.release), /does not overwrite/);
+  assert.equal(await readFile(path, "utf8"), "owner-defined service");
+  await assert.rejects(readFile(location.token), { code: "ENOENT" });
+});
+
+test("managed services preserve explicit TLS trust configuration", async (t) => {
+  const f = await fixture(t);
+  const manager = createManager({
+    env: {
+      ...f.env,
+      NODE_EXTRA_CA_CERTS: "/fixture/ca.pem",
+      SSL_CERT_FILE: "/fixture/ca.pem",
+      CURL_CA_BUNDLE: "/fixture/ca.pem",
+      GIT_SSL_CAINFO: "/fixture/ca.pem",
+    },
+    run: f.run,
+    fetcher: f.fetcher,
+  });
+  await manager.setup(f.release);
+  const config = parseEnvironment(await readFile(paths(f.env).env, "utf8"));
+  for (const key of ["NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"])
+    assert.equal(config[key], "/fixture/ca.pem");
 });

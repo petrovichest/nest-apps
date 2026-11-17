@@ -19,7 +19,7 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const template =
   'opennest_default_version="__OPENNEST_VERSION__"\nopennest_default_ref="__OPENNEST_REF__"\n';
 const installer = template.replace("__OPENNEST_VERSION__", version).replace("__OPENNEST_REF__", B);
-const baseURL = "https://github.com/petrovichest/nest-apps/releases/download/rolling-latest/";
+const baseURL = "https://github.com/petrovichest/nest-apps/releases/download/opennest-latest/";
 function report() {
   return {
     schemaVersion: 1,
@@ -113,7 +113,12 @@ async function fixture(t) {
   );
   await writeFile(join(location.units, "opennest-daemon.service"), "original native unit\n");
   const configuration = async () => parseEnvironment(await readFile(location.env, "utf8"));
-  const calls = [];
+  const calls = [],
+    apiCalls = [],
+    healthStates = [];
+  let prepareFailure = false,
+    apiPid = 8181,
+    apiAccepting = true;
   let failCandidate = false,
     changeNative = false,
     pid = 4242,
@@ -124,7 +129,7 @@ async function fixture(t) {
     if (command === "curl") {
       const url = args.at(-1);
       return {
-        stdout: url.endsWith("NestApps-latest.json")
+        stdout: url.endsWith("OpenNest-latest.json")
           ? JSON.stringify(legacy ? { schemaVersion: 1, version, commit: B } : manifest())
           : url.endsWith("opennest-qualification.json")
             ? JSON.stringify(report())
@@ -146,15 +151,26 @@ async function fixture(t) {
       if (changeNative) pid++;
       throw new Error("fixture candidate startup failure");
     }
+    if (command === "systemctl" && args.includes("restart") && args.at(-1) === "opennest.service") {
+      apiPid++;
+      apiAccepting = true;
+    }
     return { stdout: "", stderr: "" };
   };
-  const api = async (route) =>
-    route === "health"
+  const api = async (route) => {
+    apiCalls.push(route);
+    if (route.endsWith("prepare")) {
+      apiAccepting = false;
+      if (prepareFailure) throw new Error("Controlled checkpoint write failure");
+    }
+    if (route.endsWith("resume")) apiAccepting = true;
+    if (route === "health") healthStates.push(apiAccepting ? "ready" : "draining");
+    return route === "health"
       ? {
           app: "opennest",
           provider: "open",
           status: "ok",
-          recoveryState: "ready",
+          recoveryState: apiAccepting ? "ready" : "draining",
           serverVersion: (await configuration()).OPENNEST_VERSION,
           restartProtocolVersion: 1,
           appServer: { state: "ready", installedVersion: "1.19.5" },
@@ -162,6 +178,7 @@ async function fixture(t) {
       : route.endsWith("prepare")
         ? { ready: true, supportedRunnerProtocols: [1] }
         : { resumed: true };
+  };
   const updater = createUpdater({
     location,
     env: {},
@@ -178,6 +195,13 @@ async function fixture(t) {
     target,
     state,
     calls,
+    apiCalls,
+    healthStates,
+    apiPid: () => apiPid,
+    nativePid: () => pid,
+    failPrepare: () => {
+      prepareFailure = true;
+    },
     configuration,
     updater,
     fail: (nativeToo = false) => {
@@ -268,7 +292,7 @@ test("unsupported native versions are rejected before source build or service ch
   assert.ok(f.calls.every((call) => !["git", "npm", "systemctl"].includes(call.command)));
   assert.equal(await realpath(join(f.root, "current")), f.previous);
 });
-test("retry first recovers an orphaned transaction and preserves its confirmed rollback result", async (t) => {
+test("retry finalizes an unswitched healthy transaction without restarting the API", async (t) => {
   const f = await fixture(t);
   await writeFile(
     join(f.root, "update-transaction.json"),
@@ -284,10 +308,37 @@ test("retry first recovers an orphaned transaction and preserves its confirmed r
     { mode: 0o600 },
   );
   await f.updater.updateWorker();
-  assert.equal(
-    JSON.parse(await readFile(join(f.state, "update.json"), "utf8")).result,
-    "rolled_back",
-  );
+  assert.equal(JSON.parse(await readFile(join(f.state, "update.json"), "utf8")).result, "failed");
   assert.equal(await realpath(join(f.root, "current")), f.previous);
   assert.ok(f.calls.every((call) => call.command !== "curl"));
+});
+
+test("checkpoint refusal preserves the running healthy baseline and native owner without candidate activation", async (t) => {
+  const f = await fixture(t),
+    apiPid = f.apiPid(),
+    nativePid = f.nativePid();
+  f.failPrepare();
+  await assert.rejects(f.updater.updateWorker(), /previous ready API was preserved/);
+  assert.equal(await realpath(join(f.root, "current")), f.previous);
+  assert.equal((await f.configuration()).OPENNEST_VERSION, oldVersion);
+  assert.equal(f.apiPid(), apiPid);
+  assert.equal(f.nativePid(), nativePid);
+  assert.ok(f.apiCalls.includes("internal/restart/prepare"));
+  assert.ok(f.apiCalls.includes("internal/restart/resume"));
+  assert.ok(
+    f.healthStates.includes("draining"),
+    "Preparation must model actual admission drain before checkpoint failure",
+  );
+  assert.equal(f.healthStates.at(-1), "ready");
+  assert.ok(
+    f.calls.every(
+      (call) =>
+        call.command !== "systemctl" ||
+        !call.args.some((value) => ["restart", "start", "stop", "daemon-reload"].includes(value)),
+    ),
+  );
+  const status = JSON.parse(await readFile(join(f.state, "update.json"), "utf8"));
+  assert.equal(status.result, "failed");
+  assert.match(status.message, /до переключения/);
+  await assert.rejects(readFile(join(f.root, "update-transaction.json")), { code: "ENOENT" });
 });

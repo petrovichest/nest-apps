@@ -10,6 +10,7 @@ import {
   readFile,
   realpath,
   rename,
+  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -170,7 +171,9 @@ export function createManager({ env = process.env, run = execute, fetcher = fetc
           health.status === "ok" &&
           health.recoveryState === "ready" &&
           health.serverVersion === config.OPENNEST_VERSION &&
-          health.appServer?.state === "ready"
+          health.restartProtocolVersion === 1 &&
+          health.appServer?.state === "ready" &&
+          health.appServer.installedVersion === nativeVersion
         )
           return;
       } catch {
@@ -246,9 +249,23 @@ export function createManager({ env = process.env, run = execute, fetcher = fetc
     const { release, commit } = await verifyRelease(target);
     await ensureStopped();
     if ((await exists(join(location.root, "current"))) || (await exists(location.env)))
-      throw new Error(
-        "OpenNest is already configured; replacement waits for upgrade/rollback qualification",
-      );
+      throw new Error("OpenNest is already configured; use its qualified updater");
+    const ownedFiles = [
+      ...Object.keys(
+        serviceUnits({
+          configuration: location.env,
+          release,
+          node: process.execPath,
+          home: location.home,
+        }),
+      ).map((name) => join(location.units, name)),
+      join(location.bin, "opennest"),
+    ];
+    for (const path of ownedFiles)
+      if (await exists(path))
+        throw new Error(
+          "OpenNest service or command files already exist; setup does not overwrite them",
+        );
     await access("/usr/bin/bwrap", constants.X_OK).catch(() => {
       throw new Error(
         "Install bubblewrap (/usr/bin/bwrap) before configuring OpenNest Team isolation",
@@ -295,93 +312,133 @@ export function createManager({ env = process.env, run = execute, fetcher = fetc
     }
     await mkdir(location.units, { recursive: true });
     await mkdir(location.bin, { recursive: true });
+    let tokenCreated = false;
+    let servicesStarted = false;
+    const created = [];
     try {
-      await writeFile(location.token, randomBytes(32).toString("hex") + "\n", {
-        flag: "wx",
-        mode: 0o600,
-      });
+      try {
+        await writeFile(location.token, randomBytes(32).toString("hex") + "\n", {
+          flag: "wx",
+          mode: 0o600,
+        });
+        tokenCreated = true;
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+      await token();
+      const values = {
+        OPENNEST_CONFIG_DIR: location.config,
+        OPENNEST_STATE_DIR: state,
+        OPENNEST_RUNTIME_DIR: runtime,
+        OPENNEST_EVENT_SOCKET: resolve(
+          env.OPENNEST_EVENT_SOCKET || join(runtime, "native-events.sock"),
+        ),
+        OPENNEST_RELEASE_PATH: release,
+        OPENNEST_VERSION: env.OPENNEST_VERSION || `0.1.9-${commit.slice(0, 7)}`,
+        OPENNEST_MANAGED_INSTALL: "1",
+        OPENNEST_PORT: String(apiPort),
+        OPENNEST_HOST: env.OPENNEST_HOST || "127.0.0.1",
+        OPENNEST_NATIVE_URL: native.origin,
+        OPENNEST_OPENCODE_BIN: binary,
+        OPENNEST_NODE_BIN: node,
+        OPENCODE_SERVER_USERNAME: "opencode",
+        OPENCODE_SERVER_PASSWORD: randomBytes(32).toString("hex"),
+        ...(env.OPENNEST_NATIVE_DATABASE_PATH
+          ? { OPENNEST_NATIVE_DATABASE_PATH: env.OPENNEST_NATIVE_DATABASE_PATH }
+          : {}),
+        OPENNEST_UPDATE_MANIFEST_URL:
+          env.OPENNEST_UPDATE_MANIFEST_URL ||
+          "https://github.com/petrovichest/nest-apps/releases/download/opennest-latest/OpenNest-latest.json",
+        ...(env.OPENNEST_REPOSITORY_URL
+          ? { OPENNEST_REPOSITORY_URL: env.OPENNEST_REPOSITORY_URL }
+          : {}),
+        ...(env.PATH ? { PATH: env.PATH } : {}),
+        ...(env.OPENNEST_ALLOWED_ORIGINS
+          ? { OPENNEST_ALLOWED_ORIGINS: env.OPENNEST_ALLOWED_ORIGINS }
+          : {}),
+      };
+      for (const key of [
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_FILE",
+        "CURL_CA_BUNDLE",
+        "GIT_SSL_CAINFO",
+      ])
+        if (env[key]) values[key] = env[key];
+      created.push(location.env);
+      await atomicFile(
+        location.env,
+        Object.entries(values)
+          .map(([key, value]) => `${key}=${envValue(value)}`)
+          .join("\n") + "\n",
+      );
+      for (const [name, content] of Object.entries(
+        serviceUnits({
+          configuration: location.env,
+          release,
+          node,
+          binary,
+          nativePort,
+          home: location.home,
+        }),
+      )) {
+        const path = join(location.units, name);
+        created.push(path);
+        await atomicFile(path, content);
+      }
+      const temporary = join(location.root, `.current-${randomUUID()}`);
+      await symlink(release, temporary);
+      const current = join(location.root, "current");
+      created.push(current);
+      await rename(temporary, current);
+      created.push(join(location.bin, "opennest"));
+      await atomicFile(
+        join(location.bin, "opennest"),
+        await readFile(join(release, "deploy/opennest/opennest"), "utf8"),
+        0o700,
+      );
+      await systemctl(["daemon-reload"]);
+      if (start) {
+        servicesStarted = true;
+        await systemctl(["enable", "--now", nativeUnit, apiUnit]);
+        await waitHealthy();
+      }
+      return {
+        configDir: location.config,
+        tokenPath: location.token,
+        port: apiPort,
+        started: start,
+      };
     } catch (error) {
-      if (error.code !== "EEXIST") throw error;
+      try {
+        if (servicesStarted) await systemctl(["disable", "--now", apiUnit, nativeUnit]);
+        for (const path of created.reverse()) await rm(path, { force: true });
+        if (tokenCreated) await rm(location.token, { force: true });
+        await systemctl(["daemon-reload"]);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "OpenNest setup failed and cleanup was not confirmed; configuration and diagnostics must be inspected before retrying",
+          { cause: cleanupError },
+        );
+      }
+      throw new Error(
+        "OpenNest setup failed; its new services and configuration were removed so installation can be retried",
+        { cause: error },
+      );
     }
-    await token();
-    const values = {
-      OPENNEST_CONFIG_DIR: location.config,
-      OPENNEST_STATE_DIR: state,
-      OPENNEST_RUNTIME_DIR: runtime,
-      OPENNEST_EVENT_SOCKET: resolve(
-        env.OPENNEST_EVENT_SOCKET || join(runtime, "native-events.sock"),
-      ),
-      OPENNEST_RELEASE_PATH: release,
-      OPENNEST_VERSION: env.OPENNEST_VERSION || `0.1.9-${commit.slice(0, 7)}`,
-      OPENNEST_MANAGED_INSTALL: "1",
-      OPENNEST_PORT: String(apiPort),
-      OPENNEST_HOST: env.OPENNEST_HOST || "127.0.0.1",
-      OPENNEST_NATIVE_URL: native.origin,
-      OPENNEST_OPENCODE_BIN: binary,
-      OPENNEST_NODE_BIN: node,
-      OPENCODE_SERVER_USERNAME: "opencode",
-      OPENCODE_SERVER_PASSWORD: randomBytes(32).toString("hex"),
-      ...(env.OPENNEST_NATIVE_DATABASE_PATH
-        ? { OPENNEST_NATIVE_DATABASE_PATH: env.OPENNEST_NATIVE_DATABASE_PATH }
-        : {}),
-      ...(env.OPENNEST_UPDATE_MANIFEST_URL
-        ? { OPENNEST_UPDATE_MANIFEST_URL: env.OPENNEST_UPDATE_MANIFEST_URL }
-        : {}),
-      ...(env.OPENNEST_REPOSITORY_URL
-        ? { OPENNEST_REPOSITORY_URL: env.OPENNEST_REPOSITORY_URL }
-        : {}),
-      ...(env.PATH ? { PATH: env.PATH } : {}),
-      ...(env.OPENNEST_ALLOWED_ORIGINS
-        ? { OPENNEST_ALLOWED_ORIGINS: env.OPENNEST_ALLOWED_ORIGINS }
-        : {}),
-    };
-    for (const key of [
-      "XDG_CONFIG_HOME",
-      "XDG_DATA_HOME",
-      "XDG_STATE_HOME",
-      "XDG_CACHE_HOME",
-      "XDG_RUNTIME_DIR",
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "ALL_PROXY",
-      "NO_PROXY",
-      "http_proxy",
-      "https_proxy",
-      "all_proxy",
-      "no_proxy",
-    ])
-      if (env[key]) values[key] = env[key];
-    await atomicFile(
-      location.env,
-      Object.entries(values)
-        .map(([key, value]) => `${key}=${envValue(value)}`)
-        .join("\n") + "\n",
-    );
-    for (const [name, content] of Object.entries(
-      serviceUnits({
-        configuration: location.env,
-        release,
-        node,
-        binary,
-        nativePort,
-        home: location.home,
-      }),
-    ))
-      await atomicFile(join(location.units, name), content);
-    const temporary = join(location.root, `.current-${randomUUID()}`);
-    await symlink(release, temporary);
-    await rename(temporary, join(location.root, "current"));
-    await atomicFile(
-      join(location.bin, "opennest"),
-      await readFile(join(release, "deploy/opennest/opennest"), "utf8"),
-      0o700,
-    );
-    await systemctl(["daemon-reload"]);
-    if (start) {
-      await systemctl(["enable", "--now", nativeUnit, apiUnit]);
-      await waitHealthy();
-    }
-    return { configDir: location.config, tokenPath: location.token, port: apiPort, started: start };
   }
 
   const updater = createUpdater({

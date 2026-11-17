@@ -82,7 +82,8 @@ try {
   }
   failure = 'invalid_data';
   const needle = input.query.toLocaleLowerCase();
-  db.function('opennest_match_part', { deterministic: true }, raw => {
+  const normalNeedle = ![...input.query].some(character => character === '"' || character === '\\' || character === '/' || character.charCodeAt(0) < 32);
+  function matchPart(raw) {
     const part = JSON.parse(raw);
     const state = part.state || {};
     const data = state.input || {};
@@ -107,31 +108,67 @@ try {
       }
       const before = Math.max(0, start - 60), after = Math.min(text.length, end + 120);
       const prefix = before > 0 ? '…' : '';
-      return JSON.stringify({
+      return {
         snippet: prefix + text.slice(before, after).replace(/\s/g, ' ') + (after < text.length ? '…' : ''),
         snippetMatchRange: { start: prefix.length + start - before, end: prefix.length + end - before }
-      });
+      };
     }
     return null;
-  });
-  const turn = "CASE WHEN json_extract(m.data,'$.role')='user' THEN m.id ELSE COALESCE(json_extract(m.data,'$.parentID'),(SELECT previous.id FROM message previous WHERE previous.session_id=m.session_id AND json_extract(previous.data,'$.role')='user' AND (previous.time_created < m.time_created OR (previous.time_created=m.time_created AND previous.id <= m.id)) ORDER BY previous.time_created DESC, previous.id DESC LIMIT 1),m.id) END";
-  const params = { scope, upper: input.upper, count: input.limit + 1 };
-  let cursor = '';
-  if (input.cursor) {
-    if (input.distinctSessions) { cursor = 'AND m.session_id > :sessionId'; params.sessionId = input.cursor.sessionId; }
-    else {
-      cursor = 'AND (m.time_created > :time OR (m.time_created=:time AND (m.id > :messageId OR (m.id=:messageId AND p.id > :itemId))))';
-      Object.assign(params, { time: input.cursor.time, messageId: input.cursor.messageId, itemId: input.cursor.itemId });
-    }
   }
-  const select = 'SELECT m.session_id AS sessionId,' + turn + ' AS turnId,m.id AS messageId,p.id AS itemId,m.time_created AS time,opennest_match_part(p.data) AS match FROM message m JOIN part p ON p.message_id=m.id AND p.session_id=m.session_id JOIN session s ON s.id=m.session_id WHERE m.session_id IN (SELECT value FROM json_each(:scope)) AND m.time_created <= :upper AND p.time_created <= :upper ' + cursor + ' AND opennest_match_part(p.data) IS NOT NULL';
-  const sql = input.distinctSessions ?
-    'SELECT * FROM (SELECT *,ROW_NUMBER() OVER (PARTITION BY sessionId ORDER BY time,messageId,itemId) AS occurrence FROM (' + select + ')) WHERE occurrence=1 ORDER BY sessionId LIMIT :count' :
-    select + ' ORDER BY m.time_created,m.id,p.id LIMIT :count';
-  const rows = db.prepare(sql).all(params).map(row => ({
-    sessionId: row.sessionId, turnId: row.turnId, messageId: row.messageId,
-    itemId: row.itemId, time: row.time, ...JSON.parse(row.match)
-  }));
+  // Use the native-owned index if present; never add or modify a history index.
+  const partIndex = db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='part_message_id_id_idx' AND tbl_name='part'").get() ? ' INDEXED BY part_message_id_id_idx' : '';
+  const parts = db.prepare('SELECT id AS itemId,data,json_valid(data) AS valid FROM part' + partIndex + ' WHERE message_id=:messageId AND session_id=:sessionId AND id>:itemId AND time_created<=:upper ORDER BY id LIMIT 32');
+  const messageInfo = db.prepare('SELECT data FROM message WHERE id=?');
+  const previousUser = db.prepare("SELECT id FROM message WHERE session_id=:sessionId AND json_extract(data,'$.role')='user' AND (time_created<:time OR (time_created=:time AND id<=:messageId)) ORDER BY time_created DESC,id DESC LIMIT 1");
+  const rows = [];
+  let after = input.cursor ? { sessionId: input.cursor.sessionId, time: input.cursor.time, messageId: input.cursor.messageId, inclusive: !input.distinctSessions, skipSession: input.distinctSessions } : null;
+  let matchedSession = input.distinctSessions ? input.cursor && input.cursor.sessionId : null;
+  let initialPart = input.distinctSessions ? null : input.cursor;
+  scan: while (rows.length < input.limit + 1) {
+    const params = { scope, upper: input.upper };
+    let boundary = '';
+    if (after) {
+      Object.assign(params, { time: after.time, messageId: after.messageId });
+      const same = '(m.time_created>:time OR (m.time_created=:time AND m.id' + (after.inclusive ? '>=' : '>') + ':messageId))';
+      if (input.distinctSessions) {
+        params.sessionId = after.sessionId;
+        boundary = after.skipSession ? 'AND m.session_id>:sessionId' : 'AND (m.session_id>:sessionId OR (m.session_id=:sessionId AND ' + same + '))';
+        if (after.skipSession) { delete params.time; delete params.messageId; }
+      } else boundary = 'AND ' + same;
+    }
+    const order = input.distinctSessions ? 'm.session_id,m.time_created,m.id' : 'm.time_created,m.id';
+    // Sort bounded metadata pages, not transcript bodies. Matching outside an
+    // SQLite JS UDF prevents callback handles retaining the whole scan in V8.
+    const messages = db.prepare('SELECT m.session_id AS sessionId,m.id AS messageId,m.time_created AS time FROM message m JOIN session s ON s.id=m.session_id WHERE m.session_id IN (SELECT value FROM json_each(:scope)) AND m.time_created<=:upper ' + boundary + ' ORDER BY ' + order + ' LIMIT 512').all(params);
+    if (!messages.length) break;
+    for (const message of messages) {
+      after = { ...message, inclusive: false, skipSession: false };
+      if (input.distinctSessions && message.sessionId === matchedSession) continue;
+      let partId = initialPart && message.messageId === initialPart.messageId ? initialPart.itemId : '';
+      initialPart = null;
+      while (true) {
+        const batch = parts.all({ messageId: message.messageId, sessionId: message.sessionId, itemId: partId, upper: input.upper });
+        if (!batch.length) break;
+        for (const part of batch) {
+          partId = part.itemId;
+          if (!part.valid) throw Error('Invalid native part JSON');
+          // For ordinary needles, raw JSON can only add false positives. Escaped
+          // Unicode and JSON-special query characters retain full parsing.
+          if (normalNeedle && part.data.trim() !== 'null' && !part.data.includes('\\u') && !part.data.toLocaleLowerCase().includes(needle)) continue;
+          const match = matchPart(part.data);
+          if (!match) continue;
+          const info = JSON.parse(messageInfo.get(message.messageId).data);
+          const turnId = info.role === 'user' ? message.messageId : typeof info.parentID === 'string' ? info.parentID : previousUser.get({ sessionId: message.sessionId, time: message.time, messageId: message.messageId })?.id || message.messageId;
+          rows.push({ sessionId: message.sessionId, turnId, messageId: message.messageId, itemId: part.itemId, time: message.time, ...match });
+          if (rows.length >= input.limit + 1) break scan;
+          if (input.distinctSessions) { matchedSession = message.sessionId; break; }
+        }
+        if ((input.distinctSessions && message.sessionId === matchedSession) || batch.length < 32) break;
+      }
+    }
+    if (input.distinctSessions && after.sessionId === matchedSession) after.skipSession = true;
+    if (messages.length < 512) break;
+  }
   result = { ok: true, rows };
 } catch {
   result = { ok: false, code: failure };
