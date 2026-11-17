@@ -170,6 +170,32 @@ describe("OpenCode native transport", () => {
     await expect(stream.next()).rejects.toMatchObject({ code: "timeout" });
   });
 
+  it("bounds an unresponsive SSE handshake so reconnect can recover without shortening normal RPCs", async () => {
+    let attempts = 0;
+    const baseUrl = await server((req, res) => {
+      if (req.url === "/slow") {
+        setTimeout(() => res.writeHead(200).end('{"completed":true}'), 3500);
+        return;
+      }
+      attempts++;
+      if (attempts === 1) return;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end('data: {"type":"server.connected","properties":{}}\n\n');
+    });
+    const client = new OpenCodeClient({ baseUrl, timeoutMs: 30_000 });
+    const regularRpc = client.request("GET", "/slow");
+    const started = performance.now();
+    await expect(client.events().next()).rejects.toMatchObject({ code: "timeout" });
+    expect(performance.now() - started).toBeLessThan(8000);
+    const recovered = client.events();
+    await expect(recovered.next()).resolves.toMatchObject({
+      value: { type: "server.connected" },
+    });
+    await recovered.return(undefined);
+    expect(attempts).toBe(2);
+    await expect(regularRpc).resolves.toEqual({ completed: true });
+  }, 10_000);
+
   it("cancels a blocked SSE read immediately on caller abort", async () => {
     const cancel = vi.fn();
     const client = new OpenCodeClient({

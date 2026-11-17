@@ -227,7 +227,9 @@ export class OpenCodeClient {
   async *events(directory?: string, signal?: AbortSignal): AsyncGenerator<OpenCodeEvent> {
     const controller = new AbortController();
     const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    // A stalled loopback handshake must leave time for reconnection during
+    // startup. This deadline ends at the headers; stream idle/RPC limits stay separate.
+    const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, 3_000));
     timer.unref();
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let body: ReadableStream<Uint8Array> | null = null;
