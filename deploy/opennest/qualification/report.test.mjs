@@ -49,6 +49,7 @@ function lifecycle() {
     fixtureCounters: { directModelRequests: 0, unexpectedExternalRequests: 0 },
     resources: {
       memoryMaxBytes: 10 * 1024 ** 3,
+      memoryHighBytes: 9 * 1024 ** 3,
       cpuQuota: "400000 100000",
       memoryPeakBytes: 1024,
       oomKills: 0,
@@ -195,6 +196,12 @@ for (const [name, mutate] of [
     "OOM",
     (v) => {
       v.resources.oomKills = 1;
+    },
+  ],
+  [
+    "missing memory pressure budget",
+    (v) => {
+      delete v.resources.memoryHighBytes;
     },
   ],
   [

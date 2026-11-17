@@ -1381,6 +1381,7 @@ qualification: try {
   );
   report.resources = {
     memoryMaxBytes: Number((await readFile(join(cgroup, "memory.max"), "utf8")).trim()),
+    memoryHighBytes: Number((await readFile(join(cgroup, "memory.high"), "utf8")).trim()),
     memoryPeakBytes: Number((await readFile(join(cgroup, "memory.peak"), "utf8")).trim()),
     cpuQuota: (await readFile(join(cgroup, "cpu.max"), "utf8")).trim(),
     oomKills: events.oom_kill,

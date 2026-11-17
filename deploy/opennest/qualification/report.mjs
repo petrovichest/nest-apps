@@ -5,10 +5,10 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { qualifyCandidate } from "../../../apps/open-server/scripts/update.mjs";
 
-export const bootstrapBaseline = "e0ef856bb54cffdde3d024da80a5f4a8c5affac7";
+export const bootstrapBaseline = "7b742ce0ad920f8b247c4295365be7057948a905";
 export const nativeVersion = "1.19.5";
 export const bootstrapInstallerSha256 =
-  "4afae345c37aaaffc13127de5465a096a6e8894ce14f4b9869c2018f2ba10710";
+  "192393d039b10982cdead831cd53c5662402d4149f3bfeea28b618bb9ac4bb71";
 export const nativeBinarySha256 =
   "7df4e4136301f16589b0f30bf91a61380fca5f8ef22dd36570f5ebe1d4ec802c";
 export const requiredCases = [
@@ -127,6 +127,7 @@ export function validateLifecycle(report, candidate, baseline, installerSha256) 
     assert.equal(report.fixtureCounters[key], 0);
   const resources = report.resources;
   assert.equal(resources.memoryMaxBytes, 10 * 1024 ** 3);
+  assert.equal(resources.memoryHighBytes, 9 * 1024 ** 3);
   assert.equal(resources.cpuQuota, "400000 100000");
   measured(resources.memoryPeakBytes, resources.memoryMaxBytes);
   assert.equal(resources.oomKills, 0);

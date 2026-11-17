@@ -69,7 +69,7 @@ group=Path('/sys/fs/cgroup/user.slice/user-17002.slice')
 destination=Path('/opennest-qualification-output')
 if group.exists():
     events=dict(line.split() for line in (group/'memory.events').read_text().splitlines())
-    resources={'memoryMaxBytes':int((group/'memory.max').read_text()),'memoryPeakBytes':int((group/'memory.peak').read_text()),'cpuQuota':(group/'cpu.max').read_text().strip(),'oomKills':int(events['oom_kill']),'oomEvents':int(events['oom'])}
+    resources={'memoryMaxBytes':int((group/'memory.max').read_text()),'memoryHighBytes':int((group/'memory.high').read_text()),'memoryPeakBytes':int((group/'memory.peak').read_text()),'cpuQuota':(group/'cpu.max').read_text().strip(),'oomKills':int(events['oom_kill']),'oomEvents':int(events['oom'])}
     (destination/'resources.json').write_text(json.dumps(resources,indent=2)+'\n')
     lifecycle=destination/'lifecycle.json'
     if lifecycle.exists():
@@ -175,7 +175,7 @@ StandardOutput=append:/opennest-qualification-private/native-network.log
 Restart=no
 UNIT
 sudo systemctl daemon-reload
-sudo systemctl set-property --runtime user-17002.slice MemoryMax=10G CPUQuota=400%
+sudo systemctl set-property --runtime user-17002.slice MemoryMax=10G MemoryHigh=9G CPUQuota=400%
 sudo loginctl enable-linger opennest-qualification
 sudo systemctl start user@17002.service
 sudo -u opennest-qualification env XDG_RUNTIME_DIR=/run/user/17002 systemctl --user start dbus.service
