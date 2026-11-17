@@ -11,9 +11,10 @@ Publication is gated by [the native release safety rules](../../docs/release-saf
 The first release independently qualifies its initial baseline; later releases
 qualify an upgrade from the previously published OpenNest version.
 
-The `OpenNest qualification` workflow on a working branch runs only isolated
-startup diagnostics. Its report stays incomplete and it produces no release
-packages or qualification artifact. The full publication matrix runs on `main`.
+The `OpenNest qualification` workflow on a working branch runs isolated baseline
+diagnostics by default; `diagnostic_scope=full` exercises the full native lifecycle.
+Both modes keep the report incomplete and produce no release packages or
+qualification artifact. The full publication matrix runs on `main`.
 
 ## Installing a qualified release
 

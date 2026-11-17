@@ -2,6 +2,12 @@ name: OpenNest qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      diagnostic_scope:
+        description: Diagnostic scope on working branches (main always runs full qualification)
+        type: choice
+        default: baseline
+        options: [baseline, full]
 
 permissions:
   contents: read
@@ -88,7 +94,7 @@ jobs:
           cache: npm
       - name: ${{ github.ref == 'refs/heads/main' && 'Exercise native installation and automatic rollback' || 'Diagnose startup without qualifying a release' }}
         env:
-          OPENNEST_DIAGNOSTIC_STARTUP_ONLY: ${{ github.ref == 'refs/heads/main' && '0' || '1' }}
+          OPENNEST_DIAGNOSTIC_STARTUP_ONLY: ${{ github.ref != 'refs/heads/main' && inputs.diagnostic_scope != 'full' && '1' || '0' }}
           OPENNEST_QUALIFICATION_BASELINE: ${{ needs.source.outputs.baseline }}
           OPENNEST_QUALIFICATION_BASELINE_VERSION: ${{ needs.source.outputs.baseline-version }}
           OPENNEST_QUALIFICATION_BASELINE_KIND: ${{ needs.source.outputs.baseline-kind }}

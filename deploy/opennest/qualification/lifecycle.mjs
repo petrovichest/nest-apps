@@ -1387,7 +1387,9 @@ qualification: try {
     oomEvents: events.oom,
   };
   await writeFile(join(output, "resources.json"), JSON.stringify(report.resources, null, 2) + "\n");
-  report.completed = true;
+  report.completed = process.env.GITHUB_REF === "refs/heads/main";
+  if (!report.completed)
+    report.pending = ["full native diagnostic only; not release qualification"];
   await save();
 } catch (error) {
   report.completed = false;
