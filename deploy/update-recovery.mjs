@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { parseEnv, promisify } from "node:util";
 
 const exec = promisify(execFile);
 const root = resolve(process.env.CODEXNEST_ROOT || join(homedir(), ".local/share/codexnest"));
@@ -100,7 +100,17 @@ async function release(path) {
 async function requireNativeVersion(minimum) {
   if (!minimum) return;
   assert.match(minimum, /^\d+\.\d+\.\d+$/);
-  const { stdout } = await exec(process.env.CODEXNEST_CODEX_BIN || "codex", ["--version"], {
+  // Older installed updaters omit server.env and prepend their own runtime to
+  // PATH. Resolve the application's configured CLI in the candidate hook too.
+  let codexBin = process.env.CODEXNEST_CODEX_BIN;
+  if (!codexBin) {
+    const config = await readFile(configPath, "utf8").catch((error) => {
+      if (error.code === "ENOENT") return "";
+      throw error;
+    });
+    codexBin = parseEnv(config).CODEXNEST_CODEX_BIN || "codex";
+  }
+  const { stdout } = await exec(codexBin, ["--version"], {
     timeout: 5000,
   });
   const installed = /(?:^|\n)codex-cli (\d+\.\d+\.\d+)(?:\s|$)/.exec(stdout)?.[1];
