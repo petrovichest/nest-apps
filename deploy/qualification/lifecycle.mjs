@@ -44,10 +44,10 @@ const candidateProtocol = candidateMetadata.runtimeRecoveryProtocolVersion;
 const baselineMetadata = JSON.parse(
   await readFile(join(input, "baseline-restart-protocol.json"), "utf8"),
 );
+const baselineProtocol =
+  baselineMetadata.runtimeRecoveryProtocolVersion ?? baselineMetadata.recoveryProtocolVersion;
 const legacyBaseline =
-  baselineMetadata.updateAdmissionProtocolVersion !== 1 ||
-  (baselineMetadata.runtimeRecoveryProtocolVersion ?? baselineMetadata.recoveryProtocolVersion) !==
-    candidateProtocol;
+  baselineMetadata.updateAdmissionProtocolVersion !== 1 || baselineProtocol !== candidateProtocol;
 const transition = legacyBaseline
   ? "idle legacy release; active work is refused before replacement"
   : "compatible release; active work survives upgrade and rollback";
@@ -205,6 +205,8 @@ async function ready(version, timeout = report.budgetsMs.ready, observe) {
             recovery: value.recoveryState,
             native: value.appServer?.state,
             cli: value.appServer?.installedVersion,
+            protocol: value.restartProtocolVersion,
+            buildCommit: value.buildCommit,
           }
         : { status: "http-unavailable" };
       const serialized = JSON.stringify(state);
@@ -217,7 +219,8 @@ async function ready(version, timeout = report.budgetsMs.ready, observe) {
         value.transport === "daemon" &&
         value.appServer?.state === "ready" &&
         value.appServer.installedVersion === process.env.NATIVE_VERSION &&
-        value.restartProtocolVersion === (version === baseline.version ? 2 : candidateProtocol)
+        value.restartProtocolVersion ===
+          (version === baseline.version ? baselineProtocol : candidateProtocol)
         ? value
         : null;
     },
