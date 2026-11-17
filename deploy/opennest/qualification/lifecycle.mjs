@@ -234,6 +234,13 @@ async function identity() {
 async function sameIdentity(expected) {
   assert.deepEqual(await identity(), expected, "The actual OpenCode process changed");
 }
+async function apiPid() {
+  const pid = Number(
+    (await systemctl("show", "opennest.service", "--property=MainPID", "--value")).text.trim(),
+  );
+  assert.ok(Number.isSafeInteger(pid) && pid > 1);
+  return pid;
+}
 async function ready(expected = version(baseline), budget = 30000) {
   return until(
     "Native application readiness",
@@ -682,7 +689,7 @@ async function workBundle() {
     { input: `Unsent controlled draft ${marker}`, images: [], annotations: [], goalMode: false },
     "PUT",
   );
-  await api(
+  const questionDraft = await api(
     `/attention/${encodeURIComponent(request.id)}/draft`,
     { answers: { 0: ["Continue"] }, currentQuestionId: "0" },
     "PUT",
@@ -722,6 +729,8 @@ async function workBundle() {
     question: question.id,
     q,
     requestId: request.id,
+    questionDraft,
+    apiPid: await apiPid(),
     approvalThread: approvalThread.id,
     approvalMarker,
     approvalId: originalApproval.id,
@@ -742,10 +751,19 @@ async function resumeWork(bundle) {
     "Unsent conversation draft was lost",
   );
   const question = (await api("/attention")).find((item) => item.id === bundle.requestId);
-  assert.ok(
-    question && question.draft?.answers?.["0"]?.includes("Continue"),
-    "Pending question draft was lost",
+  assert.ok(question, "Original pending native question was lost");
+  const saved = JSON.parse(await readFile(join(state, "ui.json"), "utf8"));
+  assert.deepEqual(
+    saved.userInputDrafts?.[bundle.requestId],
+    bundle.questionDraft,
+    "Persisted pending question draft was lost or changed",
   );
+  if ((await apiPid()) !== bundle.apiPid)
+    assert.deepEqual(
+      question.draft,
+      bundle.questionDraft,
+      "Recovered API did not restore the pending question draft",
+    );
   await api(`/attention/${encodeURIComponent(bundle.requestId)}/respond`, {
     kind: "userInput",
     answers: { 0: ["Continue"] },
