@@ -7,6 +7,16 @@ if (process.argv.includes("--version")) {
   process.exit(0);
 }
 if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(process.env.HTTPS_PROXY || "")) process.exit(2);
+if (process.argv.includes("models")) {
+  process.stdout.write(
+    [
+      "gemini-fixture-medium  Gemini Fixture (Medium)",
+      "gemini-fixture-high    Gemini Fixture (High)",
+      "gemini-fixture-low     Gemini Fixture (Low)",
+    ].join("\n") + "\n",
+  );
+  process.exit(0);
+}
 if (process.argv.includes("/usage")) {
   process.stdout.write(
     JSON.stringify({

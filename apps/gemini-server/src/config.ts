@@ -8,6 +8,13 @@ export type Config = ReturnType<typeof paths> & { token: string };
 export function paths(env = process.env) {
   const configDir = resolve(env.GEMININEST_CONFIG_DIR || join(homedir(), ".config/gemininest"));
   const stateDir = resolve(env.GEMININEST_STATE_DIR || join(homedir(), ".local/state/gemininest"));
+  const dataDir = resolve(
+    env.GEMININEST_DATA_DIR ||
+      (env.GEMININEST_STATE_DIR && !env.XDG_DATA_HOME
+        ? join(stateDir, "data")
+        : join(env.XDG_DATA_HOME || join(homedir(), ".local/share"), "gemininest")),
+  );
+  const envFile = resolve(env.GEMININEST_SERVER_ENV_FILE || join(configDir, "server.env"));
   const runtimeDir = resolve(
     env.GEMININEST_RUNTIME_DIR ||
       join(env.XDG_RUNTIME_DIR || `/run/user/${process.getuid!()}`, "gemininest"),
@@ -27,6 +34,8 @@ export function paths(env = process.env) {
   return {
     configDir,
     stateDir,
+    dataDir,
+    envFile,
     runtimeDir,
     port,
     socket: join(runtimeDir, "daemon.sock"),
@@ -55,7 +64,7 @@ export function paths(env = process.env) {
 }
 
 export async function loadConfig(): Promise<Config> {
-  const envFile = process.env.GEMININEST_SERVER_ENV_FILE || join(paths().configDir, "server.env");
+  const envFile = paths().envFile;
   try {
     process.loadEnvFile(envFile);
   } catch (error) {

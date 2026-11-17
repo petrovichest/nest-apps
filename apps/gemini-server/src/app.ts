@@ -29,6 +29,7 @@ import {
 } from "../../claude-server/src/attachments";
 import { readGitChanges } from "../../claude-server/src/git-changes";
 import { AppManager } from "./app-management";
+import { GeminiCliManager } from "./cli-management";
 import { isAuthorizedBrainArtifactPath, resolveGeminiSessionArtifacts } from "./artifacts";
 import {
   BrowserExtensionError,
@@ -76,12 +77,14 @@ export interface BuildAppOptions {
   voice?: GeminiVoiceService;
   browserTimeouts?: Pick<BrowserExtensionOptions, "disconnectWaitMs" | "toolResponseMs">;
   appManager?: AppManager;
+  cliManager?: GeminiCliManager;
 }
 
 export async function buildApp(engine: Engine, options: BuildAppOptions = {}) {
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024 * 1024, forceCloseConnections: true });
   const { config } = engine;
   const appManager = options.appManager ?? new AppManager(config);
+  const cliManager = options.cliManager ?? new GeminiCliManager(engine);
   const voice =
     options.voice ??
     new GeminiVoiceService({
@@ -249,6 +252,9 @@ export async function buildApp(engine: Engine, options: BuildAppOptions = {}) {
   // Shared client contract; the path keeps the Codex name used by the sidebar.
   app.get("/api/v1/codex/rate-limits", () => engine.refreshRateLimits());
   app.get("/api/v1/settings/gemini", () => engine.account.status());
+  app.get("/api/v1/settings/gemini/cli", () => cliManager.status());
+  app.post("/api/v1/settings/gemini/cli/check", () => cliManager.check());
+  app.post("/api/v1/settings/gemini/cli/update", () => cliManager.update());
   app.put("/api/v1/settings/gemini/proxy", async (req) => {
     const value = text(object(req.body).proxy, "proxy", 4096);
     try {

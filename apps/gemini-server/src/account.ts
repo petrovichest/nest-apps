@@ -27,6 +27,10 @@ export class Account {
     this.data =
       (await readJson<SavedConnection>(join(this.config.configDir, "connection.json"))) ??
       this.data;
+    await this.refreshCliVersion();
+  }
+
+  async refreshCliVersion(): Promise<string | null> {
     const child = spawn(this.config.agyBin, ["--version"], {
       env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: "true" },
       stdio: ["ignore", "pipe", "ignore"],
@@ -50,6 +54,7 @@ export class Account {
         resolve();
       });
     });
+    return this.cliVersion;
   }
 
   status(): GeminiConnectionStatus {
@@ -85,6 +90,7 @@ export class Account {
       this.data.proxy = previous;
       throw error;
     }
+    this.onChange();
     return this.status();
   }
 

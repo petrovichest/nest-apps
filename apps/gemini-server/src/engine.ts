@@ -32,6 +32,7 @@ import { Account } from "./account";
 import { AcpClient, RpcError } from "./acp";
 import type { StoredArtifactRecord } from "./artifacts";
 import type { Config } from "./config";
+import { readGeminiModels } from "./models";
 import { readGeminiUsage } from "./rate-limits";
 import {
   geminiReplyCheck,
@@ -42,6 +43,7 @@ import {
 import type { StoredVoice, VoiceSettings, VoiceTimingSample } from "./voice";
 
 const RATE_LIMITS_POLL_MS = 300_000;
+const MODELS_POLL_MS = 30 * 60_000;
 
 export const capabilities: AppCapabilities = {
   codexManagement: false,
@@ -192,6 +194,8 @@ export interface EngineOptions {
   checkReply?: ReplyCheck;
   readRateLimits?: () => Promise<CodexRateLimitsResponse>;
   pollRateLimits?: boolean;
+  readModels?: (preferredDefaultModelId?: string | null) => Promise<ModelOption[]>;
+  pollModels?: boolean;
 }
 
 /** The daemon owns ACP and durable admissions. The HTTP gateway can restart independently. */
@@ -214,6 +218,12 @@ export class Engine extends EventEmitter {
   private rateLimitsTimer?: NodeJS.Timeout;
   private readonly customReadRateLimits?: () => Promise<CodexRateLimitsResponse>;
   private readonly pollRateLimitsEnabled: boolean;
+  private modelsRequest?: Promise<ModelOption[]>;
+  private modelsTimer?: NodeJS.Timeout;
+  private readonly customReadModels?: (
+    preferredDefaultModelId?: string | null,
+  ) => Promise<ModelOption[]>;
+  private readonly pollModelsEnabled: boolean;
   private browserStatusProvider?: (threadId: string) => BrowserThreadStatus;
   private browserMcpProvider?: (threadId: string) => Array<Record<string, unknown>>;
   private client?: AcpClient;
@@ -250,9 +260,12 @@ export class Engine extends EventEmitter {
     const isTestFake = config.agyBin === "/bin/true";
     this.customReadRateLimits = options.readRateLimits;
     this.pollRateLimitsEnabled = options.pollRateLimits ?? !isTestFake;
+    this.customReadModels = options.readModels;
+    this.pollModelsEnabled = options.pollModels ?? !isTestFake;
     this.account = new Account(config, () => {
       this.emit("account");
       if (this.pollRateLimitsEnabled) this.pollRateLimits();
+      if (this.pollModelsEnabled) this.pollModels();
     });
     this.attachments = new AttachmentStore(join(config.stateDir, "attachments"));
     const resolveEnv = async () => {
@@ -301,6 +314,11 @@ export class Engine extends EventEmitter {
       this.rateLimitsTimer = setInterval(() => this.pollRateLimits(), RATE_LIMITS_POLL_MS);
       this.rateLimitsTimer.unref?.();
       this.pollRateLimits();
+    }
+    if (this.pollModelsEnabled) {
+      this.modelsTimer = setInterval(() => this.pollModels(), MODELS_POLL_MS);
+      this.modelsTimer.unref?.();
+      this.pollModels();
     }
   }
 
@@ -482,14 +500,58 @@ export class Engine extends EventEmitter {
       });
     return this.rateLimitsRequest;
   }
-  private pollRateLimits(): void {
+  pollRateLimits(): void {
     const status = this.account.status();
     if (
       this.closing ||
+      this.account.loggingIn ||
       (!this.customReadRateLimits && (!status.authenticated || !status.proxy.configured))
     )
       return;
     void this.refreshRateLimits().catch(() => undefined);
+  }
+  async readModels(): Promise<ModelOption[]> {
+    const preferredDefault = this.data.models.find((item) => item.isDefault)?.id ?? null;
+    if (this.customReadModels) return this.customReadModels(preferredDefault);
+    if (!this.account.status().authenticated)
+      throw new AppError("unavailable", "Войдите в Google в настройках Gemini.", 503);
+    if (this.connection)
+      return readGeminiModels(this.config, this.connection.env, preferredDefault);
+    const connection = await this.account.connection();
+    try {
+      return await readGeminiModels(this.config, connection.env, preferredDefault);
+    } finally {
+      await connection.close();
+    }
+  }
+  refreshModels(): Promise<ModelOption[]> {
+    if (this.modelsRequest) return this.modelsRequest;
+    if (this.closing)
+      return Promise.reject(new AppError("unavailable", "GeminiNest перезапускается.", 503));
+    this.modelsRequest = this.readModels()
+      .then(async (models) => {
+        if (!models.length || this.closing) return this.data.models;
+        if (JSON.stringify(this.data.models) !== JSON.stringify(models)) {
+          this.data.models = models;
+          await this.save();
+          this.publish({ type: "models.changed", models });
+        }
+        return models;
+      })
+      .finally(() => {
+        this.modelsRequest = undefined;
+      });
+    return this.modelsRequest;
+  }
+  pollModels(): void {
+    const status = this.account.status();
+    if (
+      this.closing ||
+      this.account.loggingIn ||
+      (!this.customReadModels && (!status.authenticated || !status.proxy.configured))
+    )
+      return;
+    void this.refreshModels().catch(() => undefined);
   }
   permissions() {
     return {
@@ -613,6 +675,22 @@ export class Engine extends EventEmitter {
     }
     const now = Date.now();
     const customTitle = Boolean(options?.title?.trim());
+    const overrideModel = options?.model
+      ? this.data.models.find((item) => item.id === options.model)
+      : undefined;
+    const initialSettings: SessionSettings = {
+      collaborationMode: "default",
+      ...this.data.taskDefaults,
+      ...(options?.model ? { model: options.model } : {}),
+    };
+    if (
+      options?.model &&
+      options.model !== this.data.taskDefaults.model &&
+      overrideModel &&
+      overrideModel.reasoningEfforts.length === 0
+    ) {
+      delete initialSettings.reasoningEffort;
+    }
     const summary: ThreadSummary = {
       id,
       projectId,
@@ -629,11 +707,7 @@ export class Engine extends EventEmitter {
       currentTurnId: null,
       queuedMessageCount: 0,
       browserStatus: "disabled",
-      settings: {
-        collaborationMode: "default",
-        ...this.data.taskDefaults,
-        ...(options?.model ? { model: options.model } : {}),
-      },
+      settings: initialSettings,
       relation: { kind: "session", sessionId: id },
       canAcceptDirectInput: true,
     };
@@ -776,32 +850,62 @@ export class Engine extends EventEmitter {
     };
     const values = (option: any): any[] =>
       (option?.options ?? []).flatMap((o: any) => o.options ?? [o]);
-    const models = model
-      ? values(model).map((o) => ({
-          id: o.value,
-          displayName: o.name,
-          description: o.description ?? "",
-          isDefault: o.value === model.currentValue,
-          reasoningEfforts: values(effort).map((e) => ({
-            value: e.value,
-            description: e.name,
-            isDefault: e.value === effort.currentValue,
-          })),
-          serviceTiers: [],
-          supportsPersonality: false,
-        }))
-      : (result.models?.availableModels ?? []).map((m: any) => ({
-          id: m.modelId,
-          displayName: m.name,
-          description: m.description ?? "",
-          isDefault: m.modelId === result.models.currentModelId,
-          reasoningEfforts: [],
-          serviceTiers: [],
-          supportsPersonality: false,
-        }));
+    const existingById = new Map(this.data.models.map((item) => [item.id, item]));
+    const existingDefaultId = this.data.models.find((item) => item.isDefault)?.id ?? null;
+    const effortValues = values(effort);
+    const models: ModelOption[] = model
+      ? values(model).map((o) => {
+          const existing = existingById.get(o.value);
+          const existingDefaultEffort =
+            existing?.reasoningEfforts.find((item) => item.isDefault)?.value ?? null;
+          const preserveDefaultEffort = Boolean(
+            existingDefaultEffort && effortValues.some((e) => e.value === existingDefaultEffort),
+          );
+          const reasoningEfforts =
+            o.value === model.currentValue
+              ? effort
+                ? effortValues.map((e) => ({
+                    value: e.value,
+                    description: e.name,
+                    isDefault: preserveDefaultEffort
+                      ? e.value === existingDefaultEffort
+                      : e.value === effort.currentValue,
+                  }))
+                : []
+              : (existing?.reasoningEfforts ?? []);
+          return {
+            id: o.value,
+            displayName: o.name,
+            description: o.description || existing?.description || "",
+            isDefault: false,
+            reasoningEfforts,
+            serviceTiers: existing?.serviceTiers ?? [],
+            supportsPersonality: existing?.supportsPersonality ?? false,
+          };
+        })
+      : (result.models?.availableModels ?? []).map((m: any) => {
+          const existing = existingById.get(m.modelId);
+          return {
+            id: m.modelId,
+            displayName: m.name,
+            description: m.description || existing?.description || "",
+            isDefault: false,
+            reasoningEfforts: existing?.reasoningEfforts ?? [],
+            serviceTiers: existing?.serviceTiers ?? [],
+            supportsPersonality: existing?.supportsPersonality ?? false,
+          };
+        });
     if (models.length) {
-      this.data.models = models;
-      this.publish({ type: "models.changed", models });
+      const preferredId =
+        existingDefaultId && models.some((item) => item.id === existingDefaultId)
+          ? existingDefaultId
+          : (model?.currentValue ?? result.models?.currentModelId ?? models[0]!.id);
+      const defaultIndex = models.findIndex((item) => item.id === preferredId);
+      models[defaultIndex >= 0 ? defaultIndex : 0]!.isDefault = true;
+      if (JSON.stringify(this.data.models) !== JSON.stringify(models)) {
+        this.data.models = models;
+        this.publish({ type: "models.changed", models });
+      }
     }
   }
 
@@ -824,7 +928,17 @@ export class Engine extends EventEmitter {
           if (patch[key] === null) delete next[key];
           else next[key] = text(patch[key], key, 200);
         }
-      if (this.loaded.has(id)) await this.applySettings(thread, next);
+      const strictEffort =
+        typeof patch.reasoningEffort === "string" && patch.reasoningEffort.length > 0;
+      if (
+        Object.hasOwn(patch, "model") &&
+        !Object.hasOwn(patch, "reasoningEffort") &&
+        next.model &&
+        this.data.models.find((item) => item.id === next.model)?.reasoningEfforts.length === 0
+      ) {
+        delete next.reasoningEffort;
+      }
+      if (this.loaded.has(id)) await this.applySettings(thread, next, strictEffort);
       thread.detail.summary.settings = next;
       await this.save();
       this.changed(id);
@@ -834,17 +948,31 @@ export class Engine extends EventEmitter {
     }
   }
 
-  private async applySettings(thread: StoredThread, settings: SessionSettings) {
+  private async applySettings(
+    thread: StoredThread,
+    settings: SessionSettings,
+    strictEffort = false,
+  ) {
     const client = await this.getClient();
     for (const [key, category] of [
       ["model", "model"],
       ["reasoningEffort", "thought_level"],
     ] as const) {
-      const value = settings[key] ?? thread.defaults?.[key];
+      const value =
+        key === "reasoningEffort"
+          ? (settings.reasoningEffort ??
+            (settings.model && settings.model !== thread.defaults?.model
+              ? undefined
+              : thread.defaults?.reasoningEffort))
+          : (settings.model ?? thread.defaults?.model);
       if (!value) continue;
       const option = thread.options?.find((o) => o.category === category || o.id === category);
       if (option) {
         if (option.currentValue === value) continue;
+        if (key === "reasoningEffort" && !strictEffort) {
+          const allowed = (option.options ?? []).flatMap((o: any) => o.options ?? [o]);
+          if (allowed.length > 0 && !allowed.some((o: any) => o.value === value)) continue;
+        }
         const result = await client.request("session/set_config_option", {
           sessionId: thread.nativeId,
           configId: option.id,
@@ -853,7 +981,8 @@ export class Engine extends EventEmitter {
         this.configure(thread, result);
       } else if (key === "model")
         await client.request("session/set_model", { sessionId: thread.nativeId, modelId: value });
-      else throw new AppError("CLI не предоставляет настройку уровня рассуждений для этой сессии.");
+      else if (strictEffort)
+        throw new AppError("CLI не предоставляет настройку уровня рассуждений для этой сессии.");
     }
   }
 
@@ -1316,10 +1445,13 @@ export class Engine extends EventEmitter {
     this.closing = true;
     if (this.rateLimitsTimer) clearInterval(this.rateLimitsTimer);
     this.rateLimitsTimer = undefined;
+    if (this.modelsTimer) clearInterval(this.modelsTimer);
+    this.modelsTimer = undefined;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
     this.client?.close();
     await this.rateLimitsRequest?.catch(() => undefined);
+    await this.modelsRequest?.catch(() => undefined);
     await this.account.close();
     await this.connection?.close();
     await this.save();

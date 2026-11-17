@@ -102,7 +102,7 @@ export class GeminiVoiceService {
       localUrl: "http://127.0.0.1:8178/inference",
       language: "ru",
       refineLocal: true,
-      refinementModel: "gemini-3-flash",
+      refinementModel: "gemini-3.8-flash",
       openAiModel: "gpt-4o-transcribe",
       openAiApiKey: null,
     });

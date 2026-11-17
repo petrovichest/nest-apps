@@ -35,7 +35,7 @@ Account/proxy changes require idle tasks. Login links expire after ten minutes.
 
 ## Build and install
 
-Requirements: Node 24, Linux systemd user manager, and Antigravity CLI (`agy`) on PATH
+Requirements: Node 24, Linux systemd user manager, and Antigravity CLI (`agy` or `antigravity`) on PATH
 or an absolute `GEMININEST_AGY_BIN`. Native sign-in may require an unlocked desktop
 keyring / D-Bus session. Install the CLI from Google's official distribution.
 
@@ -89,8 +89,20 @@ Delivery receipts acknowledge Nest admission, not exactly-once external tool wor
 The first implementation supports project folders, conversations, streaming text
 and reasoning, tool output, approvals, elicitation forms, attachments, native model
 options, stop, steering, a durable FIFO queue, drafts, read/pin/archive state, and
-Git changes. Model options appear after opening the first native session. Native
-tool configuration, skills and rules continue to be handled by the CLI.
+Git changes. The model catalog is read from `antigravity models` after sign-in, on
+startup and every thirty minutes, without opening a conversation. A failed refresh
+keeps the last saved catalog. Models with several reasoning levels share one model
+entry; models without that setting do not inherit another model's reasoning level.
+Native tool configuration, skills and rules continue to be handled by the CLI.
+
+Managed installations also expose authenticated CLI management endpoints:
+`GET /api/v1/settings/gemini/cli`, `POST /api/v1/settings/gemini/cli/check` and
+`POST /api/v1/settings/gemini/cli/update`. Checks and downloads use the configured
+proxy. Updating requires idle tasks and no Google sign-in in progress; the archive's
+SHA-512 and executable version are verified before installation. The updater keeps
+the CLI under the GeminiNest data directory and saves its path in `server.env`.
+If saving that setting fails, the previous CLI link is restored. These endpoints
+do not add new controls to the web interface.
 
 Nest Team, Goal, Plan, forks, the shared task board, browser extension, full-text
 search, voice and in-app updates are disabled in this initial Gemini build.

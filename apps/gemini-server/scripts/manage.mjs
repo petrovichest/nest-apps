@@ -79,18 +79,28 @@ async function api(route, body) {
 }
 
 async function executable(name) {
-  const candidates = name.includes("/")
+  const names = name.includes("/")
     ? [resolve(name)]
-    : (process.env.PATH || "").split(delimiter).map((dir) => join(dir, name));
+    : [name, ...(name === "agy" ? ["antigravity"] : [])];
+  const candidates = name.includes("/")
+    ? names
+    : [
+        join(root, "runtime/antigravity-current/antigravity"),
+        join(root, "runtime/antigravity-current/agy"),
+        ...(process.env.PATH || "")
+          .split(delimiter)
+          .filter(Boolean)
+          .flatMap((dir) => names.map((bin) => join(dir, bin))),
+      ];
   for (const candidate of candidates) {
     try {
       await access(candidate, 1);
       return await realpath(candidate);
     } catch {
-      /* Next PATH entry. */
+      /* Next candidate. */
     }
   }
-  throw new Error("Install Antigravity CLI (agy) or set GEMININEST_AGY_BIN first.");
+  throw new Error("Install Antigravity CLI (antigravity/agy) or set GEMININEST_AGY_BIN first.");
 }
 
 async function verifyRelease(target) {

@@ -18,7 +18,16 @@ command -v curl >/dev/null
 command -v flock >/dev/null
 node -e 'if(Number(process.versions.node.split(".")[0]) !== 24) throw new Error("Node 24 is required")'
 if [[ -z "${GEMININEST_AGY_BIN:-}" ]]; then
-  command -v agy >/dev/null || { echo 'Install Antigravity CLI from https://antigravity.google/docs/getting-started/ first.' >&2; exit 1; }
+  if [[ -x "$gemininest_root/runtime/antigravity-current/antigravity" ]]; then
+    export GEMININEST_AGY_BIN="$gemininest_root/runtime/antigravity-current/antigravity"
+  elif command -v agy >/dev/null; then
+    :
+  elif command -v antigravity >/dev/null; then
+    export GEMININEST_AGY_BIN="$(command -v antigravity)"
+  else
+    echo 'Install Antigravity CLI from https://antigravity.google/docs/getting-started/ first.' >&2
+    exit 1
+  fi
 fi
 if [[ "$gemininest_ref" == "__GEMININEST_REF__" ]]; then
   gemininest_ref="main"

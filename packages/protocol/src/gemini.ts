@@ -12,3 +12,21 @@ export type GeminiLoginStatus = {
   url: string | null;
   error: string | null;
 };
+
+export type GeminiCliUpdateOperation = "idle" | "checking" | "updating";
+
+export type GeminiCliUpdateResult = "none" | "updated" | "failed";
+
+export type GeminiCliUpdateStatus = {
+  supported: boolean;
+  proxyConfigured: boolean;
+  activeTurnCount: number;
+  cliVersion: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean | null;
+  operation: GeminiCliUpdateOperation;
+  result: GeminiCliUpdateResult;
+  message: string | null;
+  checkedAt: string | null;
+  updatedAt: string | null;
+};
