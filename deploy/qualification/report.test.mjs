@@ -15,6 +15,16 @@ function fixture() {
     cases: requiredCases.all.map((name) => ({
       name,
       status: "passed",
+      ...(name === "busy-upgrade-preserves-work" || name.startsWith("failed-B-automatic-A-")
+        ? {
+            updateResult: "updated",
+            activeRequestCount: 1,
+            queuedRequestCount: 1,
+            managedBackgroundResults: 1,
+            managedBackgroundDeliveries: 1,
+            restoredApproval: true,
+          }
+        : {}),
       ...(name === "actual-native-import-and-metadata-index-rebuild"
         ? {
             nonArchivedSessions: 2000,
@@ -43,6 +53,22 @@ test("accepts a complete native scope", () => {
 });
 
 for (const [name, mutate] of [
+  [
+    "lost active work after automatic rollback",
+    (report) => {
+      report.cases.find(
+        (entry) => entry.name === "failed-B-automatic-A-no-http",
+      ).activeRequestCount = 0;
+    },
+  ],
+  [
+    "lost active work during upgrade",
+    (report) => {
+      report.cases.find(
+        (entry) => entry.name === "busy-upgrade-preserves-work",
+      ).activeRequestCount = 0;
+    },
+  ],
   [
     "another commit",
     (report) => {

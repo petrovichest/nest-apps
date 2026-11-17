@@ -14,6 +14,7 @@
     "apps/*"
   ],
   "overrides": {
+    "picomatch": "https://codeload.github.com/micromatch/picomatch/tar.gz/d705935d4ece5f406df01213330f1a04adad3fe0",
     "tsup": {
       "esbuild": "0.28.1"
     },
@@ -26,6 +27,7 @@
     }
   },
   "scripts": {
+    "audit:security": "node --test deploy/audit-dependencies.test.mjs && node deploy/audit-dependencies.mjs",
     "build": "npm run build --workspaces --if-present && npm run build:claude -w @codexnest/client && npm run build:gemini -w @codexnest/client && npm run build:open -w @codexnest/client",
     "postbuild": "node deploy/update-recovery.mjs install-from-build",
     "dev": "npm run build -w @codexnest/protocol && npm run build -w @nest-apps/kanban && concurrently -k -n server,client -c blue,green \"npm run dev -w @codexnest/server\" \"npm run dev -w @codexnest/client\"",

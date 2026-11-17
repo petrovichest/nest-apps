@@ -41,6 +41,16 @@ const candidateMetadata = JSON.parse(
   await readFile(join(input, "candidate-restart-protocol.json"), "utf8"),
 );
 const candidateProtocol = candidateMetadata.runtimeRecoveryProtocolVersion;
+const baselineMetadata = JSON.parse(
+  await readFile(join(input, "baseline-restart-protocol.json"), "utf8"),
+);
+const legacyBaseline =
+  baselineMetadata.updateAdmissionProtocolVersion !== 1 ||
+  (baselineMetadata.runtimeRecoveryProtocolVersion ?? baselineMetadata.recoveryProtocolVersion) !==
+    candidateProtocol;
+const transition = legacyBaseline
+  ? "idle legacy release; active work is refused before replacement"
+  : "compatible release; active work survives upgrade and rollback";
 const scope = process.env.QUALIFICATION_SCOPE ?? "all";
 assert.ok(["all", "interruption", "clean", "unsupported"].includes(scope));
 const report = {
@@ -65,7 +75,7 @@ const report = {
   originalDaemonRpc: {},
   releaseQualified: false,
   completed: false,
-  legacyTransition: "idle only; busy legacy update is refused with original work intact",
+  legacyTransition: transition,
 };
 let ownerToken;
 let savedThread;
@@ -832,6 +842,29 @@ async function restoreBaseline() {
   });
 }
 
+async function busyUpgrade() {
+  await stage("busy-upgrade-preserves-work", async () => {
+    const work = await holdWork("busy-upgrade");
+    if (legacyBaseline) {
+      return {
+        ...(await rejectUpdate(/Failed to build|preflight|cannot safely recover/i)),
+        ...(await ready(baseline.version)),
+        ...(await finishWork(work)),
+        updateResult: "refused",
+      };
+    }
+    const evidence = {
+      ...(await update("updated")),
+      ...(await ready(candidateVersion)),
+      ...(await finishWork(work)),
+      updateResult: "updated",
+    };
+    await run(cli, ["rollback"]);
+    await ready(baseline.version);
+    return evidence;
+  });
+}
+
 async function transientNativeTimeoutRecovery() {
   await stage("transient-native-timeout-recovers-readiness", async () => {
     const work = await holdWork("transient-native-timeout");
@@ -1038,6 +1071,18 @@ async function qualify() {
       return { ...evidence, ...requestEvidence };
     },
   );
+  if (process.env.QUALIFICATION_BASELINE === "installed" && scope !== "unsupported") {
+    await stage("configured-cli-over-shared-runtime", async () => {
+      const stale = "/opt/stale-native/node_modules/.bin/codex";
+      const path = join(root, "runtime/current/bin/codex");
+      await run("ln", ["-sfn", stale, path]);
+      const shadowed = (await run(path, ["--version"])).trim();
+      const configured = (await run("codex", ["--version"])).trim();
+      assert.equal(shadowed, "codex-cli 0.144.6");
+      assert.equal(configured, `codex-cli ${process.env.NATIVE_VERSION}`);
+      return { shadowed, configured };
+    });
+  }
   if (scope === "unsupported") {
     await stage("unsupported-native-update-refused-with-work-intact", async () => {
       assert.equal(process.env.NATIVE_VERSION, "0.154.0");
@@ -1166,17 +1211,11 @@ async function qualify() {
     return;
   }
   if (scope === "interruption") {
-    await stage("busy-legacy-upgrade-refused-with-work-intact", async () => {
-      const work = await holdWork("busy-legacy-upgrade");
-      return {
-        ...(await rejectUpdate(/Failed to build|preflight|cannot safely recover/i)),
-        ...(await ready(baseline.version)),
-        ...(await finishWork(work)),
-      };
-    });
+    await busyUpgrade();
     for (const point of ["prepared", "pointer", "candidate-recovery", "candidate-confirmation"]) {
       await stage(`old-updater-interrupted-${point}`, async () => {
         const identity = await pidIdentity(true);
+        const work = legacyBaseline ? null : await holdWork(`interrupted-${point}`);
         const oldTarget = await readlink(join(root, "current"));
         const originalCli = await readFile(cli);
         assert.equal(
@@ -1356,8 +1395,9 @@ async function qualify() {
         const recovered = {
           ...(await ready(baseline.version)),
           ...(await assertSurviving(identity, true)),
+          ...(work ? await finishWork(work) : {}),
           ...(await request(savedThread, `restored-${point}`)),
-          transition: "idle legacy release; active work is refused before replacement",
+          transition,
         };
         const fullRecoveryMs = Date.now() - interruptedAt;
         assert.ok(fullRecoveryMs <= report.budgetsMs.rollback);
@@ -1497,14 +1537,7 @@ async function qualify() {
       return { ...recovered, savedWorkRecoveryMs };
     });
   }
-  await stage("busy-legacy-upgrade-refused-with-work-intact", async () => {
-    const work = await holdWork("busy-legacy-upgrade");
-    return {
-      ...(await rejectUpdate(/Failed to build|preflight|cannot safely recover/i)),
-      ...(await ready(baseline.version)),
-      ...(await finishWork(work)),
-    };
-  });
+  await busyUpgrade();
   await stage("installed-old-updater-A-to-B", async () => {
     const identity = await pidIdentity(true);
     return {
@@ -1512,7 +1545,7 @@ async function qualify() {
       ...(await ready(candidateVersion)),
       ...(await assertSurviving(identity, true)),
       ...(await request(savedThread, "upgraded")),
-      transition: "idle legacy release; active work is refused before replacement",
+      transition,
     };
   });
   for (let index = 1; index <= 3; index++) {
@@ -1591,6 +1624,7 @@ async function qualify() {
     await stage(`failed-B-automatic-A-${mode}`, async () => {
       await fault(mode);
       const identity = await pidIdentity(true);
+      const work = legacyBaseline ? null : await holdWork(`failed-${mode}`);
       const delayedBefore = relay.delayedResponseCount("thread/list");
       if (mode === "slow-rpc") relay.hold("thread/list", 145_000, true);
       const updateEvidence = await update(
@@ -1669,8 +1703,9 @@ async function qualify() {
       const recovered = {
         ...(await ready(baseline.version)),
         ...(await assertSurviving(identity, true)),
+        ...(work ? await finishWork(work) : {}),
         ...(await request(savedThread, `rolled-back-${mode}`)),
-        transition: "idle legacy release; active work is refused before replacement",
+        transition,
       };
       const fullRecoveryMs = updateEvidence.recoveryMs + Date.now() - confirmedAt;
       assert.ok(

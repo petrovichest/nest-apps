@@ -27,7 +27,7 @@ jobs:
       - run: npm ci
       - name: Install the managed Team sandbox dependency
         run: sudo apt-get update -qq && sudo apt-get install --yes bubblewrap
-      - run: npm audit --audit-level=high
+      - run: npm run audit:security
       - run: npm run format:check
       - run: npm run lint
       - run: npm run build
@@ -250,6 +250,8 @@ jobs:
             baseline: current
           - codex: "0.169.0"
             baseline: incident
+          - codex: "0.169.0"
+            baseline: installed
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -284,6 +286,7 @@ jobs:
           NATIVE_VERSION: "0.154.0"
           QUALIFICATION_MODE: lifecycle
           QUALIFICATION_SCOPE: unsupported
+          QUALIFICATION_BASELINE: installed
         run: bash deploy/qualification/environment.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

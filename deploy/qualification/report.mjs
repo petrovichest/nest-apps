@@ -5,10 +5,12 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const nativeVersions = ["0.167.0", "0.167.1", "0.167.2", "0.169.0"];
-export const healthyBaseline = "f42edbee78b582bb54c96ab7bfc732286f10a667";
+export const healthyBaseline = "9a22821ee0c0680db853bcbaac3e343ee95f284f";
+export const installedBaseline = "f42edbee78b582bb54c96ab7bfc732286f10a667";
 const incidentBaseline = "fe3c5c858344b5f03c2619250b01d351930c891b";
 const baselineHashes = {
-  [healthyBaseline]: "263410a46f2af777c215463f6754af2d4c06637a963c269ecb0f64805b9b90f1",
+  [healthyBaseline]: "013bc30836a5a2ed68113f13ee4e3495f4f2abcaf38affd24270d074c40f589e",
+  [installedBaseline]: "263410a46f2af777c215463f6754af2d4c06637a963c269ecb0f64805b9b90f1",
   [incidentBaseline]: "0642c7e8a4cfbd5d3cef539d797d7f109cfa0453399b2640830dc02f3745e316",
 };
 export const requiredCases = {
@@ -24,7 +26,7 @@ export const requiredCases = {
   ],
   interruption: [
     "published-installer-A",
-    "busy-legacy-upgrade-refused-with-work-intact",
+    "busy-upgrade-preserves-work",
     ...["prepared", "pointer", "candidate-recovery", "candidate-confirmation"].map(
       (point) => `old-updater-interrupted-${point}`,
     ),
@@ -39,7 +41,7 @@ export const requiredCases = {
     ...["cold-A", "warm-A-idle", "cold-B", "warm-B"].flatMap((name) =>
       [1, 2, 3].map((index) => `${name}-${index}`),
     ),
-    "busy-legacy-upgrade-refused-with-work-intact",
+    "busy-upgrade-preserves-work",
     "installed-old-updater-A-to-B",
     "expired-credentials-on-native-startup",
     "failed-oauth-on-native-startup",
@@ -74,6 +76,39 @@ export function validateScope(report, candidate, native, scope, baseline) {
     assert.equal(entry?.status, "passed", `Missing or failed mandatory case: ${name}`);
   }
   assert.ok(report.cases.every((entry) => entry.status === "passed"));
+  if (["all", "interruption"].includes(scope)) {
+    const busy = report.cases.find((entry) => entry.name === "busy-upgrade-preserves-work");
+    assert.equal(busy.updateResult, baseline === healthyBaseline ? "updated" : "refused");
+    for (const key of [
+      "activeRequestCount",
+      "queuedRequestCount",
+      "managedBackgroundResults",
+      "managedBackgroundDeliveries",
+    ])
+      assert.equal(busy[key], 1, `Busy upgrade did not preserve ${key}`);
+    assert.equal(busy.restoredApproval, true);
+    if (baseline === healthyBaseline) {
+      for (const entry of report.cases.filter(
+        (entry) =>
+          entry.name.startsWith("failed-B-automatic-A-") ||
+          entry.name.startsWith("old-updater-interrupted-"),
+      )) {
+        assert.equal(entry.activeRequestCount, 1, `${entry.name}: active work was not recovered`);
+        assert.equal(entry.queuedRequestCount, 1);
+        assert.equal(entry.restoredApproval, true);
+        assert.equal(entry.managedBackgroundResults, 1);
+        assert.equal(entry.managedBackgroundDeliveries, 1);
+      }
+    }
+    if (scope === "interruption" && baseline === installedBaseline) {
+      const selection = report.cases.find(
+        (entry) => entry.name === "configured-cli-over-shared-runtime",
+      );
+      assert.equal(selection?.status, "passed");
+      assert.equal(selection.shadowed, "codex-cli 0.144.6");
+      assert.equal(selection.configured, `codex-cli ${native}`);
+    }
+  }
   assert.equal(report.fixtureCounters.directModelRequests, 0);
   assert.equal(report.fixtureCounters.directOAuthRequests, 0);
   assert.equal(report.enforcedResources.memoryMaxBytes, 10 * 1024 ** 3);
@@ -128,13 +163,14 @@ async function collect(directory, candidate, installerHash) {
     ["interruption", "0.167.2", "interruption", healthyBaseline],
     ["interruption", "0.169.0", "interruption", healthyBaseline],
     ["interruption", "0.169.0", "interruption", incidentBaseline],
-    ["unsupported-native", "0.154.0", "unsupported", healthyBaseline],
+    ["interruption", "0.169.0", "interruption", installedBaseline],
+    ["unsupported-native", "0.154.0", "unsupported", installedBaseline],
   ];
   for (const [kind, native, scope, baseline] of scopes) {
     const suffix =
       kind === "clean-install"
         ? ""
-        : `-${native}${kind === "interruption" ? `-${baseline === healthyBaseline ? "current" : "incident"}` : ""}`;
+        : `-${native}${kind === "interruption" ? `-${baseline === healthyBaseline ? "current" : baseline === installedBaseline ? "installed" : "incident"}` : ""}`;
     const artifact = `${kind}-diagnostics-${candidate}${suffix}`;
     const report = JSON.parse(await read(artifact, "lifecycle.json"));
     validateScope(report, candidate, native, scope, baseline);
@@ -160,7 +196,7 @@ async function collect(directory, candidate, installerHash) {
     baseline: healthyBaseline,
     nativeVersions,
     minimumNativeVersion: nativeVersions[0],
-    legacyTransition: "idle only; busy updates refused without interrupting work",
+    legacyTransition: "legacy updates idle only; compatible current updates preserve active work",
     qualified: true,
     sourceRun: process.env.GITHUB_RUN_ID,
     evidence,
@@ -185,8 +221,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     assert.equal(result.minimumNativeVersion, nativeVersions[0]);
     assert.equal(result.qualified, true);
     assert.equal(result.sourceRun, process.env.QUALIFIED_RUN_ID);
-    // Five environment scopes contribute two files each; nine lifecycle scopes
+    // Five environment scopes contribute two files each; ten lifecycle scopes
     // contribute five each. This is the collector's complete immutable record.
-    assert.equal(result.evidence.length, 55);
+    assert.equal(result.evidence.length, 60);
   }
 }

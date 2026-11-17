@@ -116,6 +116,9 @@ if [[ "$qualification_mode" == lifecycle ]]; then
   # Reproduce release packaging from immutable source and check published bytes.
   case "${QUALIFICATION_BASELINE:-current}" in
     current)
+      qualification_baseline=9a22821ee0c0680db853bcbaac3e343ee95f284f
+      qualification_baseline_hash=013bc30836a5a2ed68113f13ee4e3495f4f2abcaf38affd24270d074c40f589e ;;
+    installed)
       qualification_baseline=f42edbee78b582bb54c96ab7bfc732286f10a667
       qualification_baseline_hash=263410a46f2af777c215463f6754af2d4c06637a963c269ecb0f64805b9b90f1 ;;
     incident)
@@ -133,6 +136,13 @@ if [[ "$qualification_mode" == lifecycle ]]; then
     "$qualification_baseline_hash" \
     "$RUNNER_TEMP/qualification-install-A.sh" | sha256sum --check --strict
   sudo install -m 0644 "$RUNNER_TEMP/qualification-baseline.json" /qualification-input/baseline.json
+  git -C "$qualification_root" show "$qualification_baseline:deploy/restart-protocol.json" \
+    | sudo tee /qualification-input/baseline-restart-protocol.json >/dev/null
+  if [[ "${QUALIFICATION_BASELINE:-current}" == installed && "$qualification_scope" == interruption ]]; then
+    sudo install -d -m 0755 /opt/stale-native
+    sudo env PATH=/opt/node/bin:/usr/bin:/bin /opt/node/bin/npm install \
+      --prefix /opt/stale-native --ignore-scripts --no-audit --no-fund '@openai/codex@0.144.6'
+  fi
   sudo install -m 0644 "$RUNNER_TEMP/qualification-install-A.sh" /qualification-input/install-A.sh
   sed -e "s/^codexnest_default_version=.*/codexnest_default_version=\"0.1.9-${qualification_sha:0:7}\"/" \
       -e "s/^codexnest_default_ref=.*/codexnest_default_ref=\"$qualification_sha\"/" \
@@ -171,6 +181,7 @@ sudo systemd-run --unit=nest-qualification-driver --wait --pipe \
   --setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/17001/bus \
   --setenv="NATIVE_VERSION=$NATIVE_VERSION" --setenv="QUALIFICATION_MODE=$qualification_mode" \
   --setenv="QUALIFICATION_SCOPE=$qualification_scope" \
+  --setenv="QUALIFICATION_BASELINE=${QUALIFICATION_BASELINE:-current}" \
   --setenv="QUALIFICATION_CGROUP_PATH=/sys/fs/cgroup$qualification_cgroup" \
   /bin/bash /qualification-input/guest.sh
 sudo python3 - "$qualification_output" "$qualification_sha" "$NATIVE_VERSION" <<'PY'

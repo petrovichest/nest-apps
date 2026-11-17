@@ -22,7 +22,7 @@ it is not claimed as a supported large-history startup. Run `43712939488` measur
 cold saved-chat recovery, exceeding the unchanged 60-second limit. The user
 approved the 0.167.0 floor and blocking updates on older CLI versions.
 `QUALIFICATION_MODE=lifecycle` additionally runs `lifecycle.mjs`. It uses the
-published `0.1.9-f42edbe` installer and its installed updater, with the exact
+published `0.1.9-9a22821` installer and its installed updater, with the exact
 candidate Git commit served by a VM-local HTTPS artifact registry. The
 registry changes download inputs, not installer/updater code. The model and OAuth
 services are local fixtures; native RPC, health, systemctl and service units are
@@ -32,10 +32,15 @@ disposable test VM; the mapping is removed during cleanup.
 The pinned published installer is reconstructed with its original packaging
 from immutable source, and must match the SHA-256 of the observed published
 file. Moving the rolling channel cannot silently replace the baseline.
+This baseline was qualified by run `43854923252`; its published installer hash is
+`013bc30836a5a2ed68113f13ee4e3495f4f2abcaf38affd24270d074c40f589e`.
 Interrupted updates additionally run from the incident recovery release
-`0.1.9-fe3c5c8`. Both baseline installers match their observed published hashes.
+`0.1.9-fe3c5c8` and the user's installed `0.1.9-f42edbe`. All three installers
+match their observed published hashes. The installed-release case places a real
+CLI 0.144.6 in the shared Node runtime while the configured CLI remains 0.169.0,
+then requires the unchanged installed updater to complete update and rollback.
 
-Published A reapplies auth on reconnect. Real Native 0.167.2 and 0.169.0
+The older f42edbe/fe3c5c8 baselines reapply auth on reconnect. Real Native 0.167.2 and 0.169.0
 terminate an active turn on that call with `application network permission was
 revoked`, even when its daemon PID survives. A's active replacement is therefore
 unsupported. Recovery protocol 3 requires the legacy transition to be idle;
@@ -43,8 +48,11 @@ the actual old updater must refuse a busy transition and preserve the held
 request, queue, approval and managed result. Legacy warm starts and interrupted
 replacement/rollback diagnostics then use idle A, preserving its PID/history
 and exercising a new saved-chat request after recovery. Candidate warm recovery
-still requires all active work and operation counters. These scopes must not
+still requires all active work and operation counters. These legacy scopes must not
 be reported as qualifying an active rollback into the legacy version.
+The current 9a22821 baseline uses recovery protocol 3 and update admission:
+compatible busy upgrades, interrupted updates and failed-candidate rollbacks
+must preserve active requests, queues, approvals and managed results.
 For an idle rollback, the new CLI supplies the target recovery protocol. The API
 returns private threads' writer leases to the original daemon before replacement,
 without terminating either daemon or exposing internal archive events. Archived
