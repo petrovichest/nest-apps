@@ -628,7 +628,10 @@ async function update(expectedResult, afterRestart) {
   await until(
     "Update entered restart",
     async () => {
-      const raw = await readFile(statusPath, "utf8");
+      const raw = await readFile(statusPath, "utf8").catch((error) => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      });
       if (raw === previousStatus) return false;
       const state = JSON.parse(raw);
       if (state.operation === "idle" && state.result === "failed")
