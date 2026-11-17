@@ -44,10 +44,10 @@ for source in root.glob('command-*.log'):
         sanitized.append(line)
     (destination/source.name).write_text('\n'.join(sanitized[-300:])+'\n')
 PYCOMMANDS
-  sudo journalctl _UID="$qualification_uid" --no-pager -o cat -n 180 \
+  sudo journalctl _UID="$qualification_uid" --no-pager -o short-monotonic -n 180 \
     | python3 -c 'import re,sys; print("\n".join(line for line in sys.stdin.read().splitlines() if not re.search(r"bearer|authorization|access.token|refresh.token|api.key|password",line,re.I)))' \
     | sudo tee "$qualification_output/service-errors.log" >/dev/null || true
-  sudo journalctl -u opennest-qualification-fixture.service --no-pager -o cat -n 100 \
+  sudo journalctl -u opennest-qualification-fixture.service --no-pager -o short-monotonic -n 100 \
     | python3 -c 'import re,sys; print("\n".join(line for line in sys.stdin.read().splitlines() if not re.search(r"bearer|authorization|access.token|refresh.token|api.key|password",line,re.I)))' \
     | sudo tee "$qualification_output/fixture-errors.log" >/dev/null || true
   sudo python3 - <<'PYRESOURCES' || true

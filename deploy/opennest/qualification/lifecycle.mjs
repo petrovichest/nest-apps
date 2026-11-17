@@ -261,7 +261,11 @@ async function ready(expected = version(baseline), budget = 30000) {
     budget,
   );
 }
-async function serviceStartupElapsed(includeNative = false) {
+async function serviceStartupElapsed(
+  includeNative = false,
+  phase = "service-ready-with-work",
+  enforceBudget = true,
+) {
   const started = [];
   for (const unit of includeNative
     ? ["opennest.service", "opennest-daemon.service"]
@@ -274,12 +278,29 @@ async function serviceStartupElapsed(includeNative = false) {
     assert.ok(timestamp > 0 && Number.isFinite(timestamp));
     started.push(timestamp / 1000);
   }
-  const uptimeMs = Number((await readFile("/proc/uptime", "utf8")).split(" ")[0]) * 1000;
-  const elapsed = Math.max(1, Math.ceil(uptimeMs - Math.min(...started)));
-  assert.ok(
-    elapsed <= 30000,
-    "Real service startup/recovery exceeded half its updater health budget",
-  );
+  // systemd's timestamp and hrtime both use CLOCK_MONOTONIC. /proc/uptime
+  // includes suspend time (CLOCK_BOOTTIME), so it is diagnostic only.
+  const monotonicMs = Number(process.hrtime.bigint()) / 1e6;
+  const bootTimeMs = Number((await readFile("/proc/uptime", "utf8")).split(" ")[0]) * 1000;
+  const earliestStartMs = Math.min(...started);
+  assert.ok(monotonicMs >= earliestStartMs, "Service start is outside the monotonic clock domain");
+  const elapsed = Math.max(1, Math.ceil(monotonicMs - earliestStartMs));
+  const measurement = {
+    phase,
+    startedMonotonicMs: started,
+    checkedMonotonicMs: monotonicMs,
+    checkedBootTimeMs: bootTimeMs,
+    bootMinusMonotonicMs: bootTimeMs - monotonicMs,
+    elapsedMs: elapsed,
+  };
+  (report.serviceTimings ??= []).push(measurement);
+  await save();
+  process.stdout.write(`OpenNest service timing: ${JSON.stringify(measurement)}\n`);
+  if (enforceBudget)
+    assert.ok(
+      elapsed <= 30000,
+      `Real service startup/recovery exceeded half its updater health budget: ${elapsed} ms (${phase})`,
+    );
   return elapsed;
 }
 const textOf = (detail) =>
@@ -983,6 +1004,7 @@ async function cleanInstallationB() {
     await install("B");
     token = (await readFile(join(configuration, "token"), "utf8")).trim();
     await ready(version(candidate));
+    const firstReadyMs = await serviceStartupElapsed(true, "candidate-first-ready", false);
     const project = await api("/projects", { path: join(home, "seed-project") });
     firstProject = project;
     const t = await thread(),
@@ -991,7 +1013,8 @@ async function cleanInstallationB() {
     await finish(t.id, marker);
     return {
       actualInstaller: true,
-      readyMs: await serviceStartupElapsed(true),
+      firstReadyMs,
+      readyMs: await serviceStartupElapsed(true, "candidate-ready-with-work"),
       readyVersion: version(candidate),
       nativeIdentity: await identity(),
     };
@@ -1007,6 +1030,7 @@ try {
     await install("A");
     token = (await readFile(join(configuration, "token"), "utf8")).trim();
     await ready();
+    const firstReadyMs = await serviceStartupElapsed(true, "baseline-first-ready", false);
     firstProject = await api("/projects", { path: join(home, "seed-project") });
     seed = await thread();
     const marker = `baseline-seed-${randomUUID()}`;
@@ -1014,7 +1038,8 @@ try {
     await finish(seed.id, marker);
     return {
       actualInstaller: true,
-      readyMs: await serviceStartupElapsed(true),
+      firstReadyMs,
+      readyMs: await serviceStartupElapsed(true, "baseline-ready-with-work"),
       nativeIdentity: await identity(),
       readyVersion: version(baseline),
     };
@@ -1342,6 +1367,7 @@ try {
   await save();
 } catch (error) {
   report.completed = false;
+  report.fixtureCounters = await control().catch(() => report.fixtureCounters);
   await save();
   process.stderr.write(`OpenNest native qualification failed: ${error.message}\n`);
   process.exitCode = 1;
