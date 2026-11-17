@@ -1243,6 +1243,13 @@ async function qualify() {
             ).trim(),
           ),
         );
+        // The compatible busy-upgrade case already built B. This checkpoint
+        // must exercise a fresh build, not the installed updater's cache hit.
+        const cached = join(root, "releases", `v${candidateVersion}`);
+        if (point === "prepared" && (await stat(cached).catch(() => null))) {
+          assert.notEqual(oldTarget, cached);
+          await run("git", ["-C", join(root, "source"), "worktree", "remove", "--force", cached]);
+        }
         const previousStatus = await readFile(statusPath, "utf8").catch(() => "");
         if (point.startsWith("candidate-")) relay.hold("thread/list", 10_000, true);
         if (
