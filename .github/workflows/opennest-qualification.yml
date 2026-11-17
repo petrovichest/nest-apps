@@ -66,11 +66,11 @@ jobs:
             grep -q 'HTTP 404' "$RUNNER_TEMP/channel-error.txt" || { cat "$RUNNER_TEMP/channel-error.txt" >&2; exit 1; }
             prior="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.draft == false and (.tag_name | startswith("opennest-v"))) | .tag_name')"
             test -z "$prior" || { echo 'A public OpenNest version already exists; finish its channel before another first release.' >&2; exit 1; }
-            baseline=2088ee59d442bd0882c7c65d671d8a8f37aa00d6
+            baseline=e0ef856bb54cffdde3d024da80a5f4a8c5affac7
             kind=first-release
-            baseline_version=0.1.9-2088ee5
+            baseline_version=0.1.9-e0ef856
             installer_url=
-            installer_sha=5067427e8523cdb369f669e7c552de3998da1062f279e1acdc820150d125c879
+            installer_sha=4afae345c37aaaffc13127de5465a096a6e8894ce14f4b9869c2018f2ba10710
           fi
           echo "commit=$baseline" >> "$GITHUB_OUTPUT"
           echo "kind=$kind" >> "$GITHUB_OUTPUT"

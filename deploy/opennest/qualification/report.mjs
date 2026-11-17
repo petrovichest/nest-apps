@@ -5,10 +5,10 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { qualifyCandidate } from "../../../apps/open-server/scripts/update.mjs";
 
-export const bootstrapBaseline = "2088ee59d442bd0882c7c65d671d8a8f37aa00d6";
+export const bootstrapBaseline = "e0ef856bb54cffdde3d024da80a5f4a8c5affac7";
 export const nativeVersion = "1.19.5";
 export const bootstrapInstallerSha256 =
-  "5067427e8523cdb369f669e7c552de3998da1062f279e1acdc820150d125c879";
+  "4afae345c37aaaffc13127de5465a096a6e8894ce14f4b9869c2018f2ba10710";
 export const nativeBinarySha256 =
   "7df4e4136301f16589b0f30bf91a61380fca5f8ef22dd36570f5ebe1d4ec802c";
 export const requiredCases = [
