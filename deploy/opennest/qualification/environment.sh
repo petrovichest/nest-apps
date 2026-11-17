@@ -28,6 +28,22 @@ sudo install -d -m 0755 -o "$qualification_uid" -g "$qualification_uid" "$qualif
 ln -s "$qualification_output" "$RUNNER_TEMP/opennest-qualification"
 
 cleanup() {
+  sudo python3 - <<'PYCOMMANDS' || true
+import re
+from pathlib import Path
+root=Path('/opennest-qualification-private')
+destination=Path('/opennest-qualification-output')
+for source in root.glob('command-*.log'):
+    lines=source.read_text(errors='replace').splitlines()
+    sanitized=[]
+    for line in lines:
+        if re.search(r'bearer|authorization|access.token|refresh.token|api.key|password|owner.token',line,re.I):
+            continue
+        line=re.sub(r'(https?://)[^/\s:@]+:[^/\s@]+@',r'\1[redacted]@',line)
+        line=re.sub(r'\b[0-9a-fA-F]{64}\b','[redacted]',line)
+        sanitized.append(line)
+    (destination/source.name).write_text('\n'.join(sanitized[-300:])+'\n')
+PYCOMMANDS
   sudo journalctl _UID="$qualification_uid" --no-pager -o cat -n 180 \
     | python3 -c 'import re,sys; print("\n".join(line for line in sys.stdin.read().splitlines() if not re.search(r"bearer|authorization|access.token|refresh.token|api.key|password",line,re.I)))' \
     | sudo tee "$qualification_output/service-errors.log" >/dev/null || true

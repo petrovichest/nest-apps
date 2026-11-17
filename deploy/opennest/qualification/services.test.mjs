@@ -262,8 +262,31 @@ test("registry runs real smart HTTP Git so the actual installer can shallow-fetc
       (await execute("git", ["-C", checkout, "rev-list", "--count", "FETCH_HEAD"])).stdout.trim(),
       "1",
     );
+    const proxied = join(fixture.root, "git-proxied-checkout");
+    await execute("git", ["init", "-q", proxied]);
+    await execute(
+      "git",
+      [
+        "-C",
+        proxied,
+        "-c",
+        "http.sslCAInfo=" + fixture.certPath,
+        "-c",
+        `http.proxy=http://fixture-user:fixture-proxy-password@127.0.0.1:${fixture.proxyPort}`,
+        "fetch",
+        "--depth=1",
+        `https://github.com:${fixture.registryPort}/petrovichest/nest-apps.git`,
+        commit,
+      ],
+      { env: { ...process.env, NO_PROXY: "127.0.0.1,localhost,::1", no_proxy: "" } },
+    );
+    assert.equal(
+      (await execute("git", ["-C", proxied, "rev-parse", "FETCH_HEAD"])).stdout.trim(),
+      commit,
+    );
     assert.equal((await fixture.state()).gitFailures, 0);
-    assert.ok((await fixture.state()).gitRequests >= 2);
+    assert.ok((await fixture.state()).gitRequests >= 4);
+    assert.ok((await fixture.state()).proxyConnections >= 1);
   } finally {
     await fixture.close();
   }

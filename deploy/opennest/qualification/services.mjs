@@ -465,7 +465,9 @@ export async function createQualificationServices(options) {
     httpServer(async (request, response) => {
       if (request.headers["proxy-authorization"] !== auth) {
         state.proxyDenied++;
-        response.writeHead(407).end();
+        response
+          .writeHead(407, { "proxy-authenticate": 'Basic realm="OpenNest qualification"' })
+          .end();
         return;
       }
       if (state.proxyDown) {
@@ -521,7 +523,9 @@ export async function createQualificationServices(options) {
   proxy.on("connect", (request, client, head) => {
     if (request.headers["proxy-authorization"] !== auth) {
       state.proxyDenied++;
-      client.end("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n");
+      client.end(
+        'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="OpenNest qualification"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
+      );
       return;
     }
     if (state.proxyDown) {
