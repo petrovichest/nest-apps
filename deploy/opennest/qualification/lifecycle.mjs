@@ -1395,6 +1395,7 @@ qualification: try {
   report.completed = false;
   report.fixtureCounters = await control().catch(() => report.fixtureCounters);
   report.failureHealth = await api("/health").catch(() => null);
+  report.failureNativeHealth = await native("/global/health").catch(() => null);
   await save();
   process.stderr.write(`OpenNest native qualification failed: ${error.message}\n`);
   process.exitCode = 1;

@@ -21,7 +21,7 @@ done
 for command in git curl python3 openssl sudo systemctl tar sha256sum node npm; do command -v "$command" >/dev/null; done
 sudo -n true
 sudo apt-get update -qq
-sudo apt-get install --yes bubblewrap
+sudo apt-get install --yes bubblewrap tcpdump
 sudo useradd --create-home --uid "$qualification_uid" --shell /bin/bash opennest-qualification
 sudo install -d -m 0755 "$qualification_input" /opt/opennest-qualification/native
 sudo install -d -m 0700 -o "$qualification_uid" -g "$qualification_uid" "$qualification_private"
@@ -29,6 +29,11 @@ sudo install -d -m 0755 -o "$qualification_uid" -g "$qualification_uid" "$qualif
 ln -s "$qualification_output" "$RUNNER_TEMP/opennest-qualification"
 
 cleanup() {
+  sudo systemctl stop opennest-qualification-nettrace.service >/dev/null 2>&1 || true
+  sudo ss -tnp '( sport = :4097 or dport = :4097 )' \
+    | sudo tee "$qualification_output/native-sockets.txt" >/dev/null || true
+  ps -u "$qualification_uid" -o pid,ppid,etimes,stat,pcpu,pmem,comm,wchan \
+    | sudo tee "$qualification_output/native-processes.txt" >/dev/null || true
   sudo python3 - <<'PYCOMMANDS' || true
 import re
 from pathlib import Path
@@ -36,6 +41,7 @@ root=Path('/opennest-qualification-private')
 destination=Path('/opennest-qualification-output')
 sources=list(root.glob('command-*.log'))
 sources.extend(root.glob('native-http-trace.log'))
+sources.extend(root.glob('native-network.log'))
 sources.extend(Path('/home/opennest-qualification/.local/share/opencode/log').glob('*.log'))
 for source in sources:
     lines=source.read_text(errors='replace').splitlines()
@@ -47,7 +53,7 @@ for source in sources:
         line=re.sub(r'\b[0-9a-fA-F]{64}\b','[redacted]',line)
         sanitized.append(line)
     name=('native-cli-'+source.name) if source.parent != root else source.name
-    limit=5000 if source.name == 'native-http-trace.log' else 300
+    limit=5000 if source.name in ('native-http-trace.log','native-network.log') else 300
     (destination/name).write_text('\n'.join(sanitized[-limit:])+'\n')
 PYCOMMANDS
   sudo journalctl _UID="$qualification_uid" --no-pager -o short-monotonic -n 180 \
@@ -157,12 +163,24 @@ UMask=0077
 ExecStart=/opt/opennest-qualification/node/bin/node /opennest-qualification-input/services.mjs
 Restart=no
 UNIT
+sudo tee /etc/systemd/system/opennest-qualification-nettrace.service >/dev/null <<'UNIT'
+[Unit]
+Description=Disposable OpenNest native TCP metadata
+[Service]
+Slice=user-17002.slice
+UMask=0077
+# Quiet output contains packet lengths/endpoints only, never HTTP payloads.
+ExecStart=/usr/bin/tcpdump -l -q -tt -nn -i lo -Z opennest-qualification tcp port 4097
+StandardOutput=append:/opennest-qualification-private/native-network.log
+Restart=no
+UNIT
 sudo systemctl daemon-reload
 sudo systemctl set-property --runtime user-17002.slice MemoryMax=10G CPUQuota=400%
 sudo loginctl enable-linger opennest-qualification
 sudo systemctl start user@17002.service
 sudo -u opennest-qualification env XDG_RUNTIME_DIR=/run/user/17002 systemctl --user start dbus.service
 sudo systemctl start opennest-qualification-fixture.service
+sudo systemctl start opennest-qualification-nettrace.service
 sudo systemd-run --unit=opennest-qualification-driver --wait --pipe --uid=17002 --gid=17002 \
   --property=Slice=user-17002.slice --property=UMask=0077 \
   --setenv=HOME=/home/opennest-qualification \
