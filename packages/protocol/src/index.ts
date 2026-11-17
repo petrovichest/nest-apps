@@ -793,6 +793,22 @@ export function fastServiceTier(
   return null;
 }
 
+export function canonicalServiceTier(value: unknown): "fast" | "ultrafast" | undefined {
+  if (value === "ultrafast") return "ultrafast";
+  return isFastServiceTier(value) ? "fast" : undefined;
+}
+
+export function modelServiceTier(
+  model: Pick<ModelOption, "serviceTiers"> | undefined,
+  value: unknown,
+): "priority" | "fast" | "ultrafast" | null {
+  const tier = canonicalServiceTier(value);
+  if (tier === "ultrafast") {
+    return model?.serviceTiers.some((option) => option.id === tier) ? tier : null;
+  }
+  return tier === "fast" ? fastServiceTier(model) : null;
+}
+
 export type CollaborationMode = "default" | "plan" | "team";
 
 export type PermissionPreset = "ask" | "auto" | "full-access";
@@ -813,7 +829,7 @@ export type SessionSettings = {
   collaborationMode: CollaborationMode;
   model?: string;
   reasoningEffort?: string;
-  /** Fast mode is stored as "fast"; an absent value uses the standard service tier. */
+  /** "fast" or "ultrafast"; an absent value uses the standard service tier. */
   serviceTier?: string;
   personality?: string;
 };
@@ -821,7 +837,7 @@ export type SessionSettings = {
 export type TaskDefaults = {
   model?: string;
   titleModel?: string;
-  /** Fast mode default for new sessions, stored as "fast" when enabled. */
+  /** Speed for new sessions, stored as "fast" or "ultrafast" when enabled. */
   serviceTier?: string;
   personality?: string;
   /** Reasoning effort preselected for new sessions. */
@@ -837,7 +853,7 @@ export type TaskDefaults = {
 export type UpdateTaskDefaultsRequest = {
   model?: string | null;
   titleModel?: string | null;
-  /** "fast" enables Fast mode; null clears the saved default. */
+  /** "fast" or "ultrafast"; null clears the saved default. */
   serviceTier?: string | null;
   personality?: string | null;
   reasoningEffort?: string | null;
@@ -1568,7 +1584,7 @@ export type UpdateThreadSettingsRequest = {
   collaborationMode?: CollaborationMode;
   model?: string | null;
   reasoningEffort?: string | null;
-  /** "fast" enables Fast mode; null clears the session setting. */
+  /** "fast" or "ultrafast"; null clears the session setting. */
   serviceTier?: string | null;
   personality?: string | null;
 };

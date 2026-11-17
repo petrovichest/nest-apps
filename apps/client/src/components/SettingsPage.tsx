@@ -25,7 +25,7 @@ import type {
   UpdateTaskDefaultsRequest,
   UpdateTranscriptionSettingsRequest,
 } from "@codexnest/protocol";
-import { isFastServiceTier } from "@codexnest/protocol";
+import { canonicalServiceTier, fastServiceTier, modelServiceTier } from "@codexnest/protocol";
 
 import { ApiClientError } from "../api";
 import {
@@ -740,23 +740,31 @@ export function SettingsPage({
               </SettingsRow>
               {application.isCodex && (
                 <SettingsRow
-                  description={t("Ускоряет ответы Codex и увеличивает расход лимитов.")}
-                  label={t("Fast mode по умолчанию")}
-                  labelFor="settings-fast-mode"
+                  description={t("Ускоренные режимы увеличивают расход лимитов.")}
+                  label={t("Скорость по умолчанию")}
+                  labelFor="settings-service-tier"
                 >
-                  <input
-                    id="settings-fast-mode"
-                    type="checkbox"
-                    role="switch"
-                    checked={isFastServiceTier(taskDefaults.serviceTier)}
-                    disabled={taskDefaultsSaving}
+                  <select
+                    id="settings-service-tier"
+                    value={
+                      modelServiceTier(selectedTaskModel, taskDefaults.serviceTier)
+                        ? (canonicalServiceTier(taskDefaults.serviceTier) ?? "")
+                        : ""
+                    }
+                    disabled={!selectedTaskModel || taskDefaultsSaving}
                     onChange={(event) =>
                       setTaskDefaults((current) => ({
                         ...current,
-                        serviceTier: event.target.checked ? "fast" : undefined,
+                        serviceTier: event.target.value || undefined,
                       }))
                     }
-                  />
+                  >
+                    <option value="">{t("Обычная")}</option>
+                    {fastServiceTier(selectedTaskModel) && <option value="fast">Fast</option>}
+                    {modelServiceTier(selectedTaskModel, "ultrafast") && (
+                      <option value="ultrafast">Ultrafast</option>
+                    )}
+                  </select>
                 </SettingsRow>
               )}
               {application.isCodex && (
@@ -1061,7 +1069,8 @@ function TaskModelSelect({
 
 function editableTaskDefaults(value: TaskDefaults): EditableTaskDefaults {
   const next = { ...value };
-  if (!application.isClaude && isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
+  if (!application.isClaude && canonicalServiceTier(next.serviceTier))
+    next.serviceTier = canonicalServiceTier(next.serviceTier);
   else delete next.serviceTier;
   return next;
 }
@@ -1082,6 +1091,8 @@ function taskDefaultsForModel(
     delete next.reasoningEffort;
   }
   if (next.personality && !effectiveModel.supportsPersonality) delete next.personality;
+  if (next.serviceTier === "ultrafast" && !modelServiceTier(effectiveModel, next.serviceTier))
+    delete next.serviceTier;
   return next;
 }
 

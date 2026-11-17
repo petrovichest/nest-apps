@@ -29,7 +29,11 @@ import { flushSync } from "react-dom";
 import { type Components as MarkdownComponents } from "react-markdown";
 import { Link, matchPath, Navigate, useLocation, useNavigate, useParams } from "react-router";
 
-import { DEFAULT_SESSION_SETTINGS, fastServiceTier, isFastServiceTier } from "@codexnest/protocol";
+import {
+  DEFAULT_SESSION_SETTINGS,
+  canonicalServiceTier,
+  modelServiceTier,
+} from "@codexnest/protocol";
 import type {
   ActivityItem,
   GitChangesSummary,
@@ -297,10 +301,8 @@ export function initialSessionSettings(
   const settings = {
     ...DEFAULT_SESSION_SETTINGS,
     ...(explicitModel ? { model: explicitModel.id } : {}),
-    ...(!application.supportsSteering &&
-    isFastServiceTier(taskDefaults?.serviceTier) &&
-    fastServiceTier(model)
-      ? { serviceTier: "fast" }
+    ...(!application.supportsSteering && modelServiceTier(model, taskDefaults?.serviceTier)
+      ? { serviceTier: canonicalServiceTier(taskDefaults?.serviceTier) }
       : {}),
     ...(taskDefaults?.personality && (!model || model.supportsPersonality)
       ? { personality: taskDefaults.personality }
@@ -317,8 +319,8 @@ export function initialSessionSettings(
 
 function clientSessionSettings(value: SessionSettings): ClientSessionSettings {
   const next = { ...value };
-  if (!application.supportsSteering && isFastServiceTier(next.serviceTier))
-    next.serviceTier = "fast";
+  if (!application.supportsSteering && canonicalServiceTier(next.serviceTier))
+    next.serviceTier = canonicalServiceTier(next.serviceTier);
   else delete next.serviceTier;
   return next;
 }
@@ -328,7 +330,8 @@ export function clientSessionSettingsPatch(
 ): UpdateThreadSettingsRequest {
   const next = { ...value };
   if (application.supportsSteering) delete next.serviceTier;
-  else if (isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
+  else if (canonicalServiceTier(next.serviceTier))
+    next.serviceTier = canonicalServiceTier(next.serviceTier);
   else if (next.serviceTier !== null) delete next.serviceTier;
   return next;
 }

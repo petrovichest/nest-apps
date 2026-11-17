@@ -938,6 +938,7 @@ describe("NewSession", () => {
   it.each([
     { defaultTier: undefined, expectedTier: "fast" },
     { defaultTier: "fast", expectedTier: null },
+    { defaultTier: undefined, expectedTier: "ultrafast" },
   ])(
     "applies a pending Fast change to $expectedTier before the first message",
     async ({ defaultTier, expectedTier }) => {
@@ -953,14 +954,24 @@ describe("NewSession", () => {
       const context = mockConnection({
         createProjectThread,
         updateThreadSettings,
-        models: [{ ...model, serviceTiers: [{ id: "priority", displayName: "Fast" }] }],
+        models: [
+          {
+            ...model,
+            serviceTiers: [
+              { id: "priority", displayName: "Fast" },
+              { id: "ultrafast", displayName: "Ultrafast" },
+            ],
+          },
+        ],
         taskDefaults: { serviceTier: defaultTier },
       });
       connection.mockReturnValue(context);
       renderNewSession();
       const textbox = await screen.findByRole("textbox", { name: "Сообщение для Codex" });
       fireEvent.click(screen.getByRole("button", { name: "Модель и уровень рассуждений" }));
-      fireEvent.click(screen.getByRole("switch", { name: /^Fast mode/ }));
+      fireEvent.change(screen.getByRole("combobox", { name: "Скорость" }), {
+        target: { value: expectedTier ?? "" },
+      });
       fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
       expect(updateThreadSettings).not.toHaveBeenCalled();
       fireEvent.change(textbox, { target: { value: "Первое сообщение" } });
@@ -1028,7 +1039,15 @@ describe("NewSession", () => {
       const creation = deferred<{ thread: ThreadSummary }>();
       const createProjectThread = vi.fn().mockReturnValue(creation.promise);
       const context = mockConnection({
-        models: [{ ...model, serviceTiers: [{ id: "priority", displayName: "Fast" }] }],
+        models: [
+          {
+            ...model,
+            serviceTiers: [
+              { id: "priority", displayName: "Fast" },
+              { id: "ultrafast", displayName: "Ultrafast" },
+            ],
+          },
+        ],
         taskDefaults: { serviceTier: defaultTier },
         createProjectThread,
         updateThreadSettings,

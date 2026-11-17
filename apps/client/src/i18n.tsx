@@ -23,6 +23,10 @@ const LEGACY_INSTALLATION_KEYS = [
 ];
 
 const ENGLISH: Record<string, string> = {
+  Скорость: "Speed",
+  "Скорость по умолчанию": "Default speed",
+  Обычная: "Normal",
+  "Ускоренные режимы увеличивают расход лимитов.": "Faster modes increase usage.",
   "Проверьте формат API-ключа.": "Check the API key format.",
   "Проверьте адрес прокси.": "Check the proxy address.",
   "Это приложение подключается к OpenNest": "This application connects to OpenNest",

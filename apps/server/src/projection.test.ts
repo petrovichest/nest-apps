@@ -115,6 +115,75 @@ afterEach(async () =>
   ),
 );
 
+describe("model catalog refresh", () => {
+  it("publishes newly available models without reading history or changing settings", async () => {
+    const { bridge, projection } = await fastSettingsHarness(["priority"]);
+    await projection.sync();
+    const settings = projection.summary("one")?.settings;
+    const page = await bridge.request("model/list", {});
+    const events: ServerEvent[] = [];
+    projection.on("event", (_sequence, event) => events.push(event));
+    const original = bridge.request.getMockImplementation()!;
+    bridge.request.mockImplementation(async (method, params) =>
+      method === "model/list"
+        ? {
+            data: [
+              {
+                ...page.data[0],
+                id: "gpt-6.2-sol",
+                model: "gpt-6.2-sol",
+                displayName: "GPT-6.2-Sol",
+                serviceTiers: [{ id: "ultrafast", name: "Ultrafast" }],
+              },
+            ],
+            nextCursor: null,
+          }
+        : original(method, params),
+    );
+    bridge.request.mockClear();
+    await projection.refreshModels();
+    expect(projection.availableModels).toEqual([
+      expect.objectContaining({
+        id: "gpt-6.2-sol",
+        serviceTiers: [{ id: "ultrafast", displayName: "Ultrafast" }],
+      }),
+    ]);
+    expect(events).toEqual([{ type: "models.changed", models: projection.availableModels }]);
+    expect(projection.summary("one")?.settings).toEqual(settings);
+    expect(bridge.request.mock.calls.map(([method]) => method)).toEqual(["model/list"]);
+    events.length = 0;
+    await projection.refreshModels();
+    expect(events).toEqual([]);
+  });
+
+  it("keeps the last working catalog if the refresh fails", async () => {
+    const { bridge, projection } = await fastSettingsHarness(["priority"]);
+    await projection.sync();
+    const models = projection.availableModels;
+    bridge.request.mockRejectedValueOnce(new Error("catalog unavailable"));
+    await expect(projection.refreshModels()).rejects.toThrow("catalog unavailable");
+    expect(projection.availableModels).toEqual(models);
+  });
+
+  it("ignores an older in-flight response after a newer refresh", async () => {
+    const { bridge, projection } = await fastSettingsHarness(["priority"]);
+    await projection.sync();
+    const page = await bridge.request("model/list", {});
+    let resolveOld!: (value: unknown) => void;
+    bridge.request.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    const old = projection.refreshModels();
+    await projection.refreshModels();
+    resolveOld({ data: [{ ...page.data[0], id: "retired" }], nextCursor: null });
+    await old;
+    expect(projection.availableModels[0].id).toBe("gpt");
+  });
+});
+
 describe("Fast settings", () => {
   it.each([
     { tiers: ["priority"], expected: "fast" },
@@ -175,6 +244,7 @@ describe("Fast settings", () => {
     { tiers: ["fast"], savedTier: "priority" },
     { tiers: [], savedTier: "fast" },
     { tiers: ["priority"], savedTier: undefined },
+    { tiers: ["ultrafast"], savedTier: "ultrafast" },
   ])(
     "rejoins active turns without overwriting saved $savedTier or runtime config",
     async ({ tiers, savedTier }) => {
@@ -200,7 +270,9 @@ describe("Fast settings", () => {
         1,
       );
       expect(resumeConfig).not.toHaveBeenCalled();
-      expect(projection.summary("one")?.settings.serviceTier).toBe(savedTier ? "fast" : undefined);
+      expect(projection.summary("one")?.settings.serviceTier).toBe(
+        savedTier === "ultrafast" ? "ultrafast" : savedTier ? "fast" : undefined,
+      );
     },
   );
 
@@ -276,6 +348,7 @@ describe("Fast settings", () => {
     { tiers: ["fast"], savedTier: "priority", expected: "fast" },
     { tiers: [], savedTier: "fast", expected: null },
     { tiers: ["priority"], savedTier: undefined, expected: null },
+    { tiers: ["ultrafast"], savedTier: "ultrafast", expected: "ultrafast" },
   ])(
     "restores idle loaded sessions using saved $savedTier and advertised $tiers as $expected",
     async ({ tiers, savedTier, expected }) => {

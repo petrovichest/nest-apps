@@ -19,9 +19,9 @@ const defaultModel: ModelOption = {
   supportsPersonality: false,
 };
 
-describe("Fast session settings", () => {
-  it.each(["fast", "priority"])(
-    "toggles Fast with a %s catalogue and marks the model button",
+describe("Session speed settings", () => {
+  it.each(["fast", "priority", "ultrafast"])(
+    "selects a supported %s tier and marks the model button",
     (tier) => {
       const onChange = vi.fn();
       render(
@@ -33,13 +33,14 @@ describe("Fast session settings", () => {
       const opener = screen.getByRole("button", { name: "Модель и уровень рассуждений" });
       expect(opener).not.toHaveTextContent("Fast");
       fireEvent.click(opener);
-      const fast = screen.getByRole("switch", { name: /^Fast mode/ });
-      expect(fast).toHaveAttribute("aria-checked", "false");
-      fireEvent.click(fast);
-      expect(onChange).toHaveBeenLastCalledWith({ serviceTier: "fast" });
-      expect(fast).toHaveAttribute("aria-checked", "true");
-      expect(opener).toHaveTextContent("Fast");
-      fireEvent.click(fast);
+      const speed = screen.getByRole("combobox", { name: "Скорость" });
+      const selected = tier === "ultrafast" ? "ultrafast" : "fast";
+      expect(speed).toHaveValue("");
+      fireEvent.change(speed, { target: { value: selected } });
+      expect(onChange).toHaveBeenLastCalledWith({ serviceTier: selected });
+      expect(speed).toHaveValue(selected);
+      expect(opener).toHaveTextContent(tier === "ultrafast" ? "Ultrafast" : "Fast");
+      fireEvent.change(speed, { target: { value: "" } });
       expect(onChange).toHaveBeenLastCalledWith({ serviceTier: null });
       expect(opener).not.toHaveTextContent("Fast");
     },
@@ -60,20 +61,48 @@ describe("Fast session settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Модель и уровень рассуждений" }));
     fireEvent.click(screen.getByRole("radio", { name: "Other" }));
     expect(onChange).toHaveBeenLastCalledWith({ model: "other", serviceTier: null });
-    expect(screen.getByRole("switch", { name: /^Fast mode/ })).toBeDisabled();
-    expect(screen.getByRole("switch", { name: /^Fast mode/ })).toHaveAttribute(
-      "aria-checked",
-      "false",
+    expect(screen.getByRole("combobox", { name: "Скорость" })).toHaveValue("");
+    expect(screen.queryByRole("option", { name: "Fast" })).not.toBeInTheDocument();
+  });
+
+  it("clears Ultrafast instead of substituting Fast when the next model lacks support", () => {
+    const onChange = vi.fn();
+    render(
+      <Harness
+        initialSettings={{ collaborationMode: "default", serviceTier: "ultrafast" }}
+        models={[
+          {
+            ...defaultModel,
+            serviceTiers: [
+              { id: "priority", displayName: "Fast" },
+              { id: "ultrafast", displayName: "Ultrafast" },
+            ],
+          },
+          {
+            ...defaultModel,
+            id: "astra",
+            displayName: "Astra",
+            isDefault: false,
+            serviceTiers: [{ id: "priority", displayName: "Fast" }],
+          },
+        ]}
+        onChange={onChange}
+      />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Модель и уровень рассуждений" }));
+    expect(screen.getByRole("combobox", { name: "Скорость" })).toHaveValue("ultrafast");
+    fireEvent.click(screen.getByRole("radio", { name: "Astra" }));
+    expect(onChange).toHaveBeenLastCalledWith({ model: "astra", serviceTier: null });
+    expect(screen.getByRole("combobox", { name: "Скорость" })).toHaveValue("");
+    expect(screen.queryByRole("option", { name: "Ultrafast" })).not.toBeInTheDocument();
   });
 
   it("disables Fast with missing support and during a response", () => {
     const onChange = vi.fn();
     const view = render(<Harness models={[defaultModel]} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "Модель и уровень рассуждений" }));
-    const fast = screen.getByRole("switch", { name: /^Fast mode/ });
-    expect(fast).toBeDisabled();
-    fireEvent.click(fast);
+    const speed = screen.getByRole("combobox", { name: "Скорость" });
+    expect(screen.queryByRole("option", { name: "Fast" })).not.toBeInTheDocument();
     expect(onChange).not.toHaveBeenCalled();
     view.rerender(
       <Harness
@@ -82,9 +111,8 @@ describe("Fast session settings", () => {
         onChange={onChange}
       />,
     );
-    expect(fast).toBeDisabled();
+    expect(speed).toBeDisabled();
     expect(screen.getByRole("button", { name: "Модель и уровень рассуждений" })).toBeDisabled();
-    fireEvent.click(fast);
     expect(onChange).not.toHaveBeenCalled();
   });
 });

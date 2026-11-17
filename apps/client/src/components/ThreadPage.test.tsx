@@ -275,25 +275,28 @@ describe("initialSessionSettings", () => {
     });
   });
 
-  it.each(["fast", "priority"])("inherits Fast for a model advertising %s", (tier) => {
-    const model: ModelOption = {
-      id: "gpt",
-      displayName: "GPT",
-      description: "",
-      isDefault: true,
-      reasoningEfforts: [],
-      serviceTiers: [{ id: tier, displayName: "Fast" }],
-      supportsPersonality: false,
-    };
-    expect(initialSessionSettings(undefined, [model], { serviceTier: tier })).toEqual({
-      ...DEFAULT_SESSION_SETTINGS,
-      serviceTier: "fast",
-    });
-    expect(initialSessionSettings(undefined, [model], { serviceTier: "legacy-tier" })).toEqual(
-      DEFAULT_SESSION_SETTINGS,
-    );
-    expect(initialSessionSettings(undefined, [model], {})).toEqual(DEFAULT_SESSION_SETTINGS);
-  });
+  it.each(["fast", "priority", "ultrafast"])(
+    "inherits speed for a model advertising %s",
+    (tier) => {
+      const model: ModelOption = {
+        id: "gpt",
+        displayName: "GPT",
+        description: "",
+        isDefault: true,
+        reasoningEfforts: [],
+        serviceTiers: [{ id: tier, displayName: "Fast" }],
+        supportsPersonality: false,
+      };
+      expect(initialSessionSettings(undefined, [model], { serviceTier: tier })).toEqual({
+        ...DEFAULT_SESSION_SETTINGS,
+        serviceTier: tier === "ultrafast" ? "ultrafast" : "fast",
+      });
+      expect(initialSessionSettings(undefined, [model], { serviceTier: "legacy-tier" })).toEqual(
+        DEFAULT_SESSION_SETTINGS,
+      );
+      expect(initialSessionSettings(undefined, [model], {})).toEqual(DEFAULT_SESSION_SETTINGS);
+    },
+  );
 
   it("falls back from a stale model without carrying unsupported dependent defaults", () => {
     const staleModel: ModelOption = {

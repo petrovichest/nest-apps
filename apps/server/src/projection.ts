@@ -2,8 +2,8 @@ import { isAccountFailure } from "./codex-accounts";
 import {
   appendUserInputRecordings,
   asyncQuestionReplyMessageId,
-  fastServiceTier,
-  isFastServiceTier,
+  canonicalServiceTier,
+  modelServiceTier,
   pastedText,
 } from "@codexnest/protocol";
 import { createHash, randomUUID } from "node:crypto";
@@ -144,6 +144,7 @@ export class AppProjection extends EventEmitter {
   private readonly removedThreads = new Set<string>();
   private missingThreadCleanup?: (threadId: string) => Promise<void> | void;
   private models: ModelOption[] = [];
+  private modelRefreshRevision = 0;
   private rateLimits: CodexRateLimitsState = {
     limits: null,
     updatedAt: null,
@@ -180,6 +181,7 @@ export class AppProjection extends EventEmitter {
       this.threads.set(threadId, cachedThreadFromSessionSnapshot(threadId, meta.sessionSnapshot));
     }
     bridge.on("state", (state) => {
+      this.modelRefreshRevision++;
       if (state !== "ready") {
         for (const cached of this.threads.values()) cached.thread.canAcceptDirectInput = null;
         if (this.loadedRecoveryTimer) clearTimeout(this.loadedRecoveryTimer);
@@ -334,6 +336,15 @@ export class AppProjection extends EventEmitter {
     return structuredClone(this.models);
   }
 
+  async refreshModels(): Promise<void> {
+    const revision = ++this.modelRefreshRevision;
+    const models = await this.listAllModels();
+    if (revision !== this.modelRefreshRevision || this.bridge.state !== "ready") return;
+    if (isDeepStrictEqual(models, this.models)) return;
+    this.models = models;
+    this.publish({ type: "models.changed", models });
+  }
+
   get newSessionSettings(): SessionSettings {
     const state = this.store.view();
     const defaults = state.taskDefaults ?? {};
@@ -345,8 +356,8 @@ export class AppProjection extends EventEmitter {
     const settings: SessionSettings = {
       ...DEFAULT_SESSION_SETTINGS,
       ...(explicitModel ? { model: explicitModel.id } : {}),
-      ...(isFastServiceTier(defaults.serviceTier) && fastServiceTier(model)
-        ? { serviceTier: "fast" }
+      ...(modelServiceTier(model, defaults.serviceTier)
+        ? { serviceTier: canonicalServiceTier(defaults.serviceTier) }
         : {}),
       ...(defaults.personality && (!model || model.supportsPersonality)
         ? { personality: defaults.personality }
@@ -1289,7 +1300,8 @@ export class AppProjection extends EventEmitter {
 
   async setTaskDefaults(taskDefaults: TaskDefaults): Promise<void> {
     const normalized = { ...taskDefaults };
-    if (isFastServiceTier(normalized.serviceTier)) normalized.serviceTier = "fast";
+    const serviceTier = canonicalServiceTier(normalized.serviceTier);
+    if (serviceTier) normalized.serviceTier = serviceTier;
     else delete normalized.serviceTier;
     await this.store.update((state) => {
       if (Object.keys(normalized).length) state.taskDefaults = normalized;
@@ -2695,7 +2707,7 @@ export class AppProjection extends EventEmitter {
               ? {}
               : {
                   ...this.threadResumeConfigProvider(thread.id),
-                  serviceTier: isFastServiceTier(serviceTier) ? fastServiceTier(model) : null,
+                  serviceTier: modelServiceTier(model, serviceTier),
                 }),
           },
           30_000,
@@ -4632,7 +4644,9 @@ function sessionSettings(settings?: SessionSettings): SessionSettings {
     ...(settings?.reasoningEffort === undefined
       ? {}
       : { reasoningEffort: settings.reasoningEffort }),
-    ...(isFastServiceTier(settings?.serviceTier) ? { serviceTier: "fast" } : {}),
+    ...(canonicalServiceTier(settings?.serviceTier)
+      ? { serviceTier: canonicalServiceTier(settings?.serviceTier) }
+      : {}),
     ...(settings?.personality === undefined ? {} : { personality: settings.personality }),
   };
 }

@@ -1,6 +1,6 @@
 import {
-  fastServiceTier,
-  isFastServiceTier,
+  canonicalServiceTier,
+  modelServiceTier,
   mergeProjectDraft,
   pastedText,
   trimPastedMessage,
@@ -3743,6 +3743,21 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   let rateLimitsGeneration = 0;
   let rateLimitsClosed = false;
   let rateLimitsTimer: NodeJS.Timeout | undefined;
+  let modelCatalogTimer: NodeJS.Timeout | undefined;
+  const refreshModelCatalog = () => {
+    if (
+      rateLimitsClosed ||
+      (lifecycle && lifecycle.state !== "ready") ||
+      bridge.state !== "ready" ||
+      bridge.accountSwitching ||
+      bridge.accountLoginRequired ||
+      !projection.lastSyncedAt
+    )
+      return;
+    void projection.refreshModels().catch((error: unknown) => {
+      app.log.warn({ err: safeError(error) }, "Failed to refresh Codex models");
+    });
+  };
   const refreshRateLimits = (): Promise<CodexRateLimitsResponse> => {
     if (rateLimitsRequest) return rateLimitsRequest;
     if (rateLimitsClosed) return Promise.reject(new BridgeUnavailableError(bridge.state));
@@ -3816,6 +3831,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     });
   };
   const accountSelectionHandler = () => {
+    refreshModelCatalog();
     rateLimitsGeneration++;
     rateLimitsRequest = undefined;
     const status = codexAccounts!.status();
@@ -3847,6 +3863,8 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   app.addHook("onReady", async () => {
     bridge.on("state", rateLimitsBridgeStateHandler);
     codexAccounts?.on("selected", accountSelectionHandler);
+    modelCatalogTimer = setInterval(refreshModelCatalog, 300_000);
+    modelCatalogTimer.unref();
     if (!codexAccounts) {
       rateLimitsTimer = setInterval(pollRateLimits, 300_000);
       rateLimitsTimer.unref();
@@ -3857,6 +3875,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     rateLimitsClosed = true;
     rateLimitsGeneration++;
     clearInterval(rateLimitsTimer);
+    clearInterval(modelCatalogTimer);
     bridge.off("state", rateLimitsBridgeStateHandler);
     codexAccounts?.off("selected", accountSelectionHandler);
   });
@@ -3995,7 +4014,9 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   });
 
   app.post("/api/v1/settings/codex/check", async (): Promise<CodexManagementStatus> => {
-    return requireCodexManager(codexManager).check();
+    const status = await requireCodexManager(codexManager).check();
+    await projection.refreshModels();
+    return status;
   });
 
   app.put<{ Body: UpdateCodexProxyRequest }>(
@@ -6895,13 +6916,12 @@ async function startQueuedTeamTasks(
           queued.resolvedReasoningEffort,
           parent.settings.reasoningEffort,
         ]),
-        resolvedServiceTier: isFastServiceTier(
+        resolvedServiceTier: modelServiceTier(
+          model,
           queued.resolvedServiceTier === undefined
             ? parent.settings.serviceTier
             : queued.resolvedServiceTier,
-        )
-          ? fastServiceTier(model)
-          : null,
+        ),
       };
       await store.update((state) => {
         const task = state.threadMeta[parentThreadId]?.teamOrchestration?.tasks[queued.id];
@@ -8757,7 +8777,7 @@ function managedChildTurnSettings(
     task?.resolvedServiceTier === undefined ? settings.serviceTier : task.resolvedServiceTier;
   return compact({
     model: model.id,
-    serviceTier: isFastServiceTier(serviceTier) ? fastServiceTier(model) : null,
+    serviceTier: modelServiceTier(model, serviceTier),
     effort,
     personality: settings.personality,
     additionalContext: {
@@ -8792,7 +8812,7 @@ function managedChildResumeSettings(
     task?.resolvedServiceTier === undefined ? settings.serviceTier : task.resolvedServiceTier;
   return compact({
     model: model.id,
-    serviceTier: isFastServiceTier(serviceTier) ? fastServiceTier(model) : null,
+    serviceTier: modelServiceTier(model, serviceTier),
     personality: settings.personality,
   });
 }
@@ -8953,9 +8973,7 @@ function requireAppManager(manager: AppManager | undefined): AppManager {
 }
 
 function sessionServiceTier(settings: SessionSettings, models: ModelOption[]): string | null {
-  return isFastServiceTier(settings.serviceTier)
-    ? fastServiceTier(effectiveModel(settings, models))
-    : null;
+  return modelServiceTier(effectiveModel(settings, models), settings.serviceTier);
 }
 
 function threadSettings(
@@ -9873,14 +9891,17 @@ function mergeSettings(
   models: ModelOption[],
 ): SessionSettings {
   const next = applySettingsPatch(current, patch);
-  if (isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
+  const serviceTier = canonicalServiceTier(next.serviceTier);
+  if (serviceTier) next.serviceTier = serviceTier;
   else delete next.serviceTier;
   const model = effectiveModel(next, models);
   if (!model) throw new ProjectValidationError("Unknown model");
 
-  if (next.serviceTier && !fastServiceTier(model)) {
-    if (isFastServiceTier(patch.serviceTier)) {
-      throw new ProjectValidationError("Fast mode is not supported by the selected model");
+  if (next.serviceTier && !modelServiceTier(model, next.serviceTier)) {
+    if (canonicalServiceTier(patch.serviceTier)) {
+      throw new ProjectValidationError(
+        `${next.serviceTier === "ultrafast" ? "Ultrafast" : "Fast"} mode is not supported by the selected model`,
+      );
     }
     delete next.serviceTier;
   }
@@ -9916,7 +9937,7 @@ function applySettingsPatch(
       UpdateThreadSettingsRequest[keyof UpdateThreadSettingsRequest],
     ]
   >) {
-    if (key === "serviceTier" && value !== null && !isFastServiceTier(value)) continue;
+    if (key === "serviceTier" && value !== null && !canonicalServiceTier(value)) continue;
     if (value === null) delete next[key as keyof SessionSettings];
     else if (value !== undefined) Object.assign(next, { [key]: value });
   }
@@ -9958,10 +9979,12 @@ function mergeTaskDefaults(
   models: ModelOption[],
 ): TaskDefaults {
   const next = { ...current };
-  if (isFastServiceTier(next.serviceTier)) next.serviceTier = "fast";
+  const serviceTier = canonicalServiceTier(next.serviceTier);
+  if (serviceTier) next.serviceTier = serviceTier;
   else delete next.serviceTier;
   if (patch.serviceTier === null) delete next.serviceTier;
-  else if (isFastServiceTier(patch.serviceTier)) next.serviceTier = "fast";
+  else if (canonicalServiceTier(patch.serviceTier))
+    next.serviceTier = canonicalServiceTier(patch.serviceTier);
   if (patch.model !== undefined) {
     const model = validateTaskDefaultModel(patch.model, models);
     if (model) next.model = model;
@@ -9986,6 +10009,12 @@ function mergeTaskDefaults(
     (next.model ? models.find((candidate) => candidate.id === next.model) : undefined) ??
     models.find((candidate) => candidate.isDefault) ??
     models[0];
+  if (next.serviceTier === "ultrafast" && model && !modelServiceTier(model, next.serviceTier)) {
+    if (patch.serviceTier === "ultrafast") {
+      throw new ProjectValidationError("Ultrafast mode is not supported by the selected model");
+    }
+    if (patch.model !== undefined) delete next.serviceTier;
+  }
   if (
     next.reasoningEffort &&
     !model?.reasoningEfforts.some((option) => option.value === next.reasoningEffort)
