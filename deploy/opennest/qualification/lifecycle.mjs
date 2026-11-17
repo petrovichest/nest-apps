@@ -31,6 +31,7 @@ assert.equal(
 );
 const candidate = (await readFile(join(input, "candidate-sha"), "utf8")).trim(),
   baseline = (await readFile(join(input, "baseline-sha"), "utf8")).trim();
+const baselineDiagnostic = process.env.OPENNEST_DIAGNOSTIC_STARTUP_ONLY === "1";
 for (const value of [candidate, baseline]) assert.match(value, /^[0-9a-f]{40}$/);
 const version = (sha) =>
   sha === baseline && process.env.OPENNEST_QUALIFICATION_BASELINE_VERSION
@@ -1044,13 +1045,16 @@ qualification: try {
       readyVersion: version(baseline),
     };
   });
-  await mkdir(join(units, "opennest.service.d"), { recursive: true });
-  await writeFile(
-    join(units, "opennest.service.d/10-native-http-trace.conf"),
-    `[Service]\nEnvironment="NODE_OPTIONS=--import=${join(input, "native-http-trace.mjs")}"\nEnvironment="OPENNEST_QUALIFICATION_NATIVE_TRACE=${join(privateRoot, "native-http-trace.log")}"\n`,
-    { mode: 0o600 },
-  );
-  await systemctl("daemon-reload");
+  report.fixtureCounterSnapshots = { baselineInstall: await control() };
+  if (baselineDiagnostic) {
+    await mkdir(join(units, "opennest.service.d"), { recursive: true });
+    await writeFile(
+      join(units, "opennest.service.d/10-native-http-trace.conf"),
+      `[Service]\nEnvironment="NODE_OPTIONS=--import=${join(input, "native-http-trace.mjs")}"\nEnvironment="OPENNEST_QUALIFICATION_NATIVE_TRACE=${join(privateRoot, "native-http-trace.log")}"\n`,
+      { mode: 0o600 },
+    );
+    await systemctl("daemon-reload");
+  }
   await systemctl("stop", "opennest.service", "opennest-daemon.service");
   await run(
     "python3",
@@ -1074,16 +1078,20 @@ qualification: try {
     await ready();
     return { readyMs: await serviceStartupElapsed(true, "seeded-history-startup") };
   });
-  if (process.env.OPENNEST_DIAGNOSTIC_STARTUP_ONLY === "1") {
-    report.pending = ["startup diagnostic only; full qualification not run"];
-    await save();
-    break qualification;
-  }
   for (const directory of profile.projects) await api("/projects", { path: directory });
   await sampleHistory();
   await coldWarm("A", version(baseline));
   await stage("baseline-native-history-integrity", nativeHistoryIntegrity);
   report.baseline.healthy = report.baseline.independentlyQualified = true;
+  if (baselineDiagnostic) {
+    report.fixtureCounters = await control();
+    report.fixtureCounterSnapshots.baselineDiagnostic = report.fixtureCounters;
+    assert.equal(report.fixtureCounters.directModelRequests, 0);
+    assert.equal(report.fixtureCounters.unexpectedExternalRequests, 0);
+    report.pending = ["baseline diagnostic only; full qualification not run"];
+    await save();
+    break qualification;
+  }
   await snapshotA();
   await resetA();
   await stage("live-daemon-reconnect", async () => {
