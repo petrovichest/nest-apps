@@ -1021,7 +1021,7 @@ async function cleanInstallationB() {
   });
 }
 
-try {
+qualification: try {
   await save();
   relay = await new NativeRelay(relayControlToken).listen();
   await until("Controlled external services", () => control());
@@ -1044,6 +1044,13 @@ try {
       readyVersion: version(baseline),
     };
   });
+  await mkdir(join(units, "opennest.service.d"), { recursive: true });
+  await writeFile(
+    join(units, "opennest.service.d/10-native-http-trace.conf"),
+    `[Service]\nEnvironment="NODE_OPTIONS=--import=${join(input, "native-http-trace.mjs")}"\nEnvironment="OPENNEST_QUALIFICATION_NATIVE_TRACE=${join(privateRoot, "native-http-trace.log")}"\n`,
+    { mode: 0o600 },
+  );
+  await systemctl("daemon-reload");
   await systemctl("stop", "opennest.service", "opennest-daemon.service");
   await run(
     "python3",
@@ -1062,8 +1069,16 @@ try {
   );
   profile = JSON.parse(await readFile(join(output, "history-profile.json"), "utf8"));
   report.workload = { ...profile, projects: profile.projectCount };
-  await systemctl("start", "opennest-daemon.service", "opennest.service");
-  await ready();
+  await stage("seeded-history-startup", async () => {
+    await systemctl("start", "opennest-daemon.service", "opennest.service");
+    await ready();
+    return { readyMs: await serviceStartupElapsed(true, "seeded-history-startup") };
+  });
+  if (process.env.OPENNEST_DIAGNOSTIC_STARTUP_ONLY === "1") {
+    report.pending = ["startup diagnostic only; full qualification not run"];
+    await save();
+    break qualification;
+  }
   for (const directory of profile.projects) await api("/projects", { path: directory });
   await sampleHistory();
   await coldWarm("A", version(baseline));
@@ -1368,6 +1383,7 @@ try {
 } catch (error) {
   report.completed = false;
   report.fixtureCounters = await control().catch(() => report.fixtureCounters);
+  report.failureHealth = await api("/health").catch(() => null);
   await save();
   process.stderr.write(`OpenNest native qualification failed: ${error.message}\n`);
   process.exitCode = 1;

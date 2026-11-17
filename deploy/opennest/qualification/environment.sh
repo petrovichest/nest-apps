@@ -6,6 +6,7 @@ set -euo pipefail
 [[ "$(id -un)" == runner && "$(cat /proc/1/comm)" == systemd ]]
 [[ "${OPENNEST_QUALIFICATION_BASELINE:-}" =~ ^[0-9a-f]{40}$ ]]
 [[ -n "${RUNNER_TEMP:-}" && -n "${GITHUB_RUN_ID:-}" ]]
+[[ "${OPENNEST_DIAGNOSTIC_STARTUP_ONLY:-0}" == 0 || ( "${OPENNEST_DIAGNOSTIC_STARTUP_ONLY:-0}" == 1 && "${GITHUB_REF:-}" == refs/heads/* && "${GITHUB_REF:-}" != refs/heads/main ) ]]
 qualification_source="$(git rev-parse --show-toplevel)"
 qualification_candidate="$(git rev-parse HEAD)"
 qualification_uid=17002
@@ -33,16 +34,21 @@ import re
 from pathlib import Path
 root=Path('/opennest-qualification-private')
 destination=Path('/opennest-qualification-output')
-for source in root.glob('command-*.log'):
+sources=list(root.glob('command-*.log'))
+sources.extend(root.glob('native-http-trace.log'))
+sources.extend(Path('/home/opennest-qualification/.local/share/opencode/log').glob('*.log'))
+for source in sources:
     lines=source.read_text(errors='replace').splitlines()
     sanitized=[]
     for line in lines:
-        if re.search(r'bearer|authorization|access.token|refresh.token|api.key|password|owner.token',line,re.I):
+        if re.search(r'bearer|authorization|access.token|refresh.token|api.?key|password|owner.token|prompt|messages|input=',line,re.I):
             continue
         line=re.sub(r'(https?://)[^/\s:@]+:[^/\s@]+@',r'\1[redacted]@',line)
         line=re.sub(r'\b[0-9a-fA-F]{64}\b','[redacted]',line)
         sanitized.append(line)
-    (destination/source.name).write_text('\n'.join(sanitized[-300:])+'\n')
+    name=('native-cli-'+source.name) if source.parent != root else source.name
+    limit=5000 if source.name == 'native-http-trace.log' else 300
+    (destination/name).write_text('\n'.join(sanitized[-limit:])+'\n')
 PYCOMMANDS
   sudo journalctl _UID="$qualification_uid" --no-pager -o short-monotonic -n 180 \
     | python3 -c 'import re,sys; print("\n".join(line for line in sys.stdin.read().splitlines() if not re.search(r"bearer|authorization|access.token|refresh.token|api.key|password",line,re.I)))' \
@@ -94,7 +100,7 @@ qualification_node="$(readlink -f "$(command -v node)")"
 qualification_node_root="$(dirname "$(dirname "$qualification_node")")"
 sudo cp -a "$qualification_node_root" /opt/opennest-qualification/node
 sudo chmod -R a+rX /opt/opennest-qualification/node
-for file in environment.sh guest.sh lifecycle.mjs native-relay.mjs fault-entry.mjs history.py services.mjs; do
+for file in environment.sh guest.sh lifecycle.mjs native-relay.mjs native-http-trace.mjs fault-entry.mjs history.py services.mjs; do
   sudo install -m 0644 "$qualification_source/deploy/opennest/qualification/$file" "$qualification_input/$file"
 done
 git -C "$qualification_source" cat-file -e "$OPENNEST_QUALIFICATION_BASELINE^{commit}"
@@ -172,5 +178,7 @@ sudo systemd-run --unit=opennest-qualification-driver --wait --pipe --uid=17002 
   --setenv=GIT_SSL_CAINFO=/opennest-qualification-private/ca.pem \
   --setenv="OPENNEST_QUALIFICATION_BASELINE_KIND=${OPENNEST_QUALIFICATION_BASELINE_KIND:?}" \
   --setenv="OPENNEST_QUALIFICATION_BASELINE_VERSION=${OPENNEST_QUALIFICATION_BASELINE_VERSION:?}" \
+  --setenv="OPENNEST_DIAGNOSTIC_STARTUP_ONLY=${OPENNEST_DIAGNOSTIC_STARTUP_ONLY:-0}" \
+  --setenv="GITHUB_REF=${GITHUB_REF:?}" \
   --setenv="GITHUB_RUN_ID=$GITHUB_RUN_ID" --setenv=GITHUB_ACTIONS=true \
   /bin/bash /opennest-qualification-input/guest.sh

@@ -11,6 +11,10 @@ Publication is gated by [the native release safety rules](../../docs/release-saf
 The first release independently qualifies its initial baseline; later releases
 qualify an upgrade from the previously published OpenNest version.
 
+The `OpenNest qualification` workflow on a working branch runs only isolated
+startup diagnostics. Its report stays incomplete and it produces no release
+packages or qualification artifact. The full publication matrix runs on `main`.
+
 ## Installing a qualified release
 
 The published backend supports Linux **x86_64**, Node.js **24**, and OpenCode
