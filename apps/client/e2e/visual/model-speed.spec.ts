@@ -44,7 +44,9 @@ for (const theme of ["light", "dark"] as const) {
         await installVisualFixture(page, { theme, snapshot: seed });
         await page.route("http://127.0.0.1:4310/**", (route) => route.abort());
         let socket: WebSocketRoute | undefined;
+        let connections = 0;
         await page.routeWebSocket("wss://codexnest.visual/api/v1/events", (ws) => {
+          connections++;
           socket = ws;
           ws.onMessage((message) => {
             if (JSON.parse(String(message)).type === "authenticate")
@@ -86,11 +88,12 @@ for (const theme of ["light", "dark"] as const) {
           JSON.stringify({
             type: "event",
             sequence,
-            version: { instanceId: seed.instanceId, sequence: seed.sequence + 1 },
+            version: { instanceId: seed.instanceId, sequence },
             event: { type: "models.changed", models: [sol, astra] },
           }),
         );
         await page.getByRole("radio", { name: sol.displayName, exact: true }).click();
+        expect(connections).toBe(1);
         const speed = page.getByRole("combobox", {
           name: language === "ru" ? "Скорость" : "Speed",
           exact: true,
