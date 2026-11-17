@@ -451,9 +451,11 @@ async function nativeHistoryIntegrity() {
   };
 }
 async function checkpoint() {
+  // Full SQLite constraints and history hashes are verified by history("verify").
+  // Before a cold start only flush the stopped native writer's committed WAL.
   await run("python3", [
     "-c",
-    "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);assert c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0]==0;assert c.execute('PRAGMA quick_check').fetchone()[0]=='ok';c.close()",
+    "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);assert c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0]==0;c.close()",
     database,
   ]);
 }
