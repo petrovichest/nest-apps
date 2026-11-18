@@ -63,6 +63,16 @@ describe("OpenNest app update controls", () => {
     await expect(f.manager.update()).rejects.toMatchObject({ statusCode: 409 });
     expect(f.calls.every((call) => call.args.includes("check-update"))).toBe(true);
   });
+  it("shares one release check across overlapping requests and checks afresh afterwards", async () => {
+    const f = await fixture();
+    const [background, manual] = await Promise.all([f.manager.check(), f.manager.check()]);
+    expect(manual).toEqual(background);
+    expect(f.calls).toHaveLength(1);
+
+    f.offer();
+    await expect(f.manager.check()).resolves.toMatchObject({ updateAvailable: true });
+    expect(f.calls).toHaveLength(2);
+  });
   it("queues only the updater service after checking a qualified candidate and persists admission", async () => {
     const f = await fixture();
     f.offer();

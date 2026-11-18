@@ -25,6 +25,7 @@ const results = new Set(["none", "updated", "rolled_back", "failed"]);
 /** The updater owns API replacement; the separately managed native process survives. */
 export class AppManager {
   private forceQueued = false;
+  private checkInFlight: Promise<AppUpdateStatus> | null = null;
   constructor(
     private readonly config: Config,
     private readonly run: Runner = execute,
@@ -85,7 +86,13 @@ export class AppManager {
       throw new AppError("conflict", "Обновление OpenNest уже выполняется.", 409);
     return status;
   }
-  async check() {
+  check(): Promise<AppUpdateStatus> {
+    // A background check and a button press can overlap. The CLI rejects a second lock holder.
+    return (this.checkInFlight ??= this.checkRelease().finally(() => {
+      this.checkInFlight = null;
+    }));
+  }
+  private async checkRelease() {
     await this.available();
     try {
       await this.run(
@@ -99,7 +106,7 @@ export class AppManager {
     }
   }
   async update() {
-    const checked = await this.check();
+    const checked = await this.checkRelease();
     if (!checked.updateAvailable || !checked.latestVersion)
       throw new AppError("conflict", "Проверенного обновления OpenNest сейчас нет.", 409);
     const queued: AppUpdateStatus = {
