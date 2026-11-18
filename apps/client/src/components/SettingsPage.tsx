@@ -56,6 +56,7 @@ import { WorkspaceHeader } from "./WorkspaceHeader";
 import { RecoverySettingsCard } from "./RecoverySettingsCard";
 import { SettingsGroup, SettingsRow } from "./SettingsPresentation";
 import { SkillsSettingsCard } from "./SkillsSettingsCard";
+import { TaskModelPicker } from "./TaskModelPicker";
 import { TypographySettings } from "./TypographySettings";
 
 export type SidebarSide = "left" | "right";
@@ -656,56 +657,28 @@ export function SettingsPage({
               title={t("Новые задачи")}
               onSubmit={saveTaskDefaults}
             >
-              <SettingsRow
+              <TaskModelSetting
                 description={t("Модель, которая будет выбрана для новых сессий.")}
                 label={t("Модель сессии")}
-                labelFor="settings-session-model"
-              >
-                <select
-                  disabled={!defaultModel || taskDefaultsSaving}
-                  id="settings-session-model"
-                  value={taskDefaults.model ?? ""}
-                  onChange={(event) =>
-                    setTaskDefaults((current) =>
-                      taskDefaultsForModel(
-                        {
-                          ...current,
-                          model: event.target.value || undefined,
-                        },
-                        models,
-                      ),
-                    )
-                  }
-                >
-                  <option value="">{t("По умолчанию")}</option>
-                  {taskDefaults.model &&
-                    !models.some((model) => model.id === taskDefaults.model) && (
-                      <option value={taskDefaults.model}>
-                        {taskDefaults.model} — {t("Недоступна")}
-                      </option>
-                    )}
-                  {models.map((model) => (
-                    <option value={model.id} key={model.id}>
-                      {model.displayName}
-                    </option>
-                  ))}
-                </select>
-              </SettingsRow>
-              <SettingsRow
+                id="settings-session-model"
+                disabled={!defaultModel || taskDefaultsSaving}
+                models={models}
+                value={taskDefaults.model}
+                onChange={(model) =>
+                  setTaskDefaults((current) => taskDefaultsForModel({ ...current, model }, models))
+                }
+              />
+              <TaskModelSetting
                 description={t("Модель для автоматических названий сессий.")}
                 label="Title model"
-                labelFor="settings-title-model"
-              >
-                <TaskModelSelect
-                  disabled={!defaultModel || taskDefaultsSaving}
-                  id="settings-title-model"
-                  models={models}
-                  value={taskDefaults.titleModel}
-                  onChange={(titleModel) =>
-                    setTaskDefaults((current) => ({ ...current, titleModel }))
-                  }
-                />
-              </SettingsRow>
+                id="settings-title-model"
+                disabled={!defaultModel || taskDefaultsSaving}
+                models={models}
+                value={taskDefaults.titleModel}
+                onChange={(titleModel) =>
+                  setTaskDefaults((current) => ({ ...current, titleModel }))
+                }
+              />
               <SettingsRow
                 description={t("Уровень reasoning, выбранный для новых сессий.")}
                 label={t("Reasoning по умолчанию")}
@@ -812,42 +785,34 @@ export function SettingsPage({
                       }
                     />
                   </SettingsRow>
-                  <SettingsRow
+                  <TaskModelSetting
                     description={t(
                       "Модель, которая классифицирует задачи доски. По умолчанию — самая быстрая.",
                     )}
                     label={t("Модель классификации")}
-                    labelFor="settings-classification-model"
-                  >
-                    <TaskModelSelect
-                      disabled={
-                        !defaultModel || taskDefaultsSaving || taskDefaults.classifyTasks === false
-                      }
-                      id="settings-classification-model"
-                      models={models}
-                      value={taskDefaults.classificationModel}
-                      onChange={(classificationModel) =>
-                        setTaskDefaults((current) => ({ ...current, classificationModel }))
-                      }
-                    />
-                  </SettingsRow>
-                  <SettingsRow
+                    id="settings-classification-model"
+                    disabled={
+                      !defaultModel || taskDefaultsSaving || taskDefaults.classifyTasks === false
+                    }
+                    models={models}
+                    value={taskDefaults.classificationModel}
+                    onChange={(classificationModel) =>
+                      setTaskDefaults((current) => ({ ...current, classificationModel }))
+                    }
+                  />
+                  <TaskModelSetting
                     description={t(
                       "Читает последний ответ задачи доски: ждёт ли агент оператора и опубликовал ли работу. По умолчанию — самая быстрая модель.",
                     )}
                     label={t("Модель проверки задач")}
-                    labelFor="settings-reply-check-model"
-                  >
-                    <TaskModelSelect
-                      disabled={!defaultModel || taskDefaultsSaving}
-                      id="settings-reply-check-model"
-                      models={models}
-                      value={taskDefaults.replyCheckModel}
-                      onChange={(replyCheckModel) =>
-                        setTaskDefaults((current) => ({ ...current, replyCheckModel }))
-                      }
-                    />
-                  </SettingsRow>
+                    id="settings-reply-check-model"
+                    disabled={!defaultModel || taskDefaultsSaving}
+                    models={models}
+                    value={taskDefaults.replyCheckModel}
+                    onChange={(replyCheckModel) =>
+                      setTaskDefaults((current) => ({ ...current, replyCheckModel }))
+                    }
+                  />
                 </>
               )}
               {taskDefaultsError && (
@@ -1022,40 +987,61 @@ export function SettingsPage({
   );
 }
 
-/** A model chosen in settings; the empty choice keeps the application's default. */
-function TaskModelSelect({
+/** The empty choice keeps the application's default. */
+function TaskModelSetting({
+  description,
   disabled,
   id,
+  label,
   models,
-  value,
+  value = "",
   onChange,
 }: {
+  description: string;
   disabled: boolean;
   id: string;
+  label: string;
   models: ModelOption[];
   value: string | undefined;
   onChange(value: string | undefined): void;
 }) {
   const { t } = useI18n();
+  const options = [{ value: "", label: t("По умолчанию") }];
+  if (value && !models.some((model) => model.id === value)) {
+    options.push({ value, label: `${value} — ${t("Недоступна")}` });
+  }
+  for (const model of models) options.push({ value: model.id, label: model.displayName });
+
+  function choose(next: string) {
+    onChange(next || undefined);
+  }
+
   return (
-    <select
-      disabled={disabled}
-      id={id}
-      value={value ?? ""}
-      onChange={(event) => onChange(event.target.value || undefined)}
-    >
-      <option value="">{t("По умолчанию")}</option>
-      {value && !models.some((model) => model.id === value) && (
-        <option value={value}>
-          {value} — {t("Недоступна")}
-        </option>
+    <SettingsRow description={description} label={label} labelFor={id}>
+      {application.isOpen ? (
+        <TaskModelPicker
+          disabled={disabled}
+          id={id}
+          label={label}
+          options={options}
+          value={value}
+          onChange={choose}
+        />
+      ) : (
+        <select
+          disabled={disabled}
+          id={id}
+          value={value}
+          onChange={(event) => choose(event.currentTarget.value)}
+        >
+          {options.map((option) => (
+            <option value={option.value} key={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       )}
-      {models.map((model) => (
-        <option value={model.id} key={model.id}>
-          {model.displayName}
-        </option>
-      ))}
-    </select>
+    </SettingsRow>
   );
 }
 

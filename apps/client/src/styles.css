@@ -1531,6 +1531,106 @@
   font-weight: var(--weight-regular);
 }
 
+.task-model-trigger {
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+  padding: 9px 12px 9px 16px;
+  background: var(--color-surface);
+  box-shadow: var(--sidebar-surface-shadow);
+  color: var(--color-ink-strong);
+  font-size: var(--text-input);
+  text-align: left;
+}
+
+.task-model-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-model-trigger > svg {
+  flex: 0 0 auto;
+  color: var(--color-muted-strong);
+}
+
+.task-model-trigger:focus-visible:not(:disabled) {
+  box-shadow: var(--field-focus-shadow);
+}
+
+.task-model-dropdown {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  overflow: hidden;
+  border-radius: var(--chat-radius-card);
+  background: var(--color-floating);
+  box-shadow: var(--sidebar-panel-shadow);
+}
+
+.task-model-search {
+  flex: 0 0 auto;
+}
+
+.task-model-results {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.task-model-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 36px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--chat-radius-control);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.task-model-option > svg {
+  flex: 0 0 auto;
+}
+
+.task-model-option[aria-selected="true"] {
+  font-weight: var(--weight-medium);
+}
+
+.task-model-option[data-highlighted] {
+  background: var(--sidebar-control-active);
+}
+
+@media (hover: hover) {
+  .task-model-option:hover {
+    background: var(--sidebar-control-active);
+  }
+}
+
+@media (pointer: coarse) {
+  .task-model-option {
+    min-height: 44px;
+  }
+}
+
+@media (forced-colors: active) {
+  .task-model-option[data-highlighted] {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+}
+
+.task-model-empty {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  color: var(--color-muted);
+}
+
 .skills-settings-controls {
   width: 100%;
   display: flex;
@@ -1543,13 +1643,13 @@
   flex: 1;
 }
 
-.skills-settings-search {
+:is(.skills-settings-search, .task-model-search) {
   position: relative;
   display: flex;
   align-items: center;
 }
 
-.skills-settings-search svg {
+:is(.skills-settings-search, .task-model-search) svg {
   position: absolute;
   left: 11px;
   z-index: 1;
@@ -1558,7 +1658,7 @@
   pointer-events: none;
 }
 
-.skills-settings-search input {
+:is(.skills-settings-search, .task-model-search) input {
   width: 100%;
   padding-left: 34px;
 }

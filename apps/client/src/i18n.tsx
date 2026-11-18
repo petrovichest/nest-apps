@@ -243,6 +243,8 @@ const ENGLISH: Record<string, string> = {
   "Лимит недоступен": "Quota unavailable",
   "Остаток лимитов": "Quota remaining",
   "Модель сессии": "Session model",
+  "Поиск моделей": "Search models",
+  "Модели не найдены": "No models found",
   Войти: "Sign in",
   "Автоматическое переключение": "Automatic account switching",
   "Авторизовано аккаунтов: {{count}}": "Signed-in accounts: {{count}}",

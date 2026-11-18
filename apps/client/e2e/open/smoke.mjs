@@ -124,6 +124,38 @@ try {
     await page.evaluate(() => JSON.stringify(localStorage).includes("sk-or-browser-fixture")),
     false,
   );
+  const initialDefaults = (await api("/api/v1/snapshot")).taskDefaults;
+  const newTasks = page.getByRole("form", { name: "Новые задачи" });
+  const modelFields = [
+    ["Модель сессии", "gEmInI"],
+    ["Title model", "google/gemini-2.5-pro"],
+    ["Модель классификации", "gemini"],
+    ["Модель проверки задач", "gemini"],
+  ];
+  for (const [label, query] of modelFields) {
+    const field = newTasks.getByRole("button", { name: label, exact: true });
+    await field.click();
+    const search = page.getByRole("combobox", { name: "Поиск моделей" });
+    await expect(search).toBeFocused();
+    await search.fill(query);
+    const options = page.getByRole("listbox", { name: label, exact: true }).getByRole("option");
+    await expect(options).toHaveText(["Gemini 2.5 Pro"]);
+    await search.press("Enter");
+    await expect(field).toBeFocused();
+    await expect(field).toHaveText("Gemini 2.5 Pro");
+  }
+  assert.deepEqual((await api("/api/v1/snapshot")).taskDefaults, initialDefaults);
+  const saveDefaults = newTasks.getByRole("button", { name: "Сохранить настройки новых задач" });
+  await saveDefaults.click();
+  await expect(saveDefaults).toBeDisabled();
+  const gemini = "openrouter/google/gemini-2.5-pro";
+  assert.deepEqual((await api("/api/v1/snapshot")).taskDefaults, {
+    ...initialDefaults,
+    model: gemini,
+    titleModel: gemini,
+    classificationModel: gemini,
+    replyCheckModel: gemini,
+  });
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: join(images, "settings-desktop.png"), animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
