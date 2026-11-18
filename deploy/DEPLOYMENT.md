@@ -394,7 +394,6 @@ accept-all certificate handler). Android-клиент доверяет сист�
 | `CODEXNEST_CODEX_PROXY_ENV_FILE` | Приватный env-файл proxy для wrapper              | `~/.config/codex/app-server.env`              |
 | `CODEXNEST_SERVER_ENV_FILE`      | Env-файл, обновляемый серверными настройками      | `~/.config/codexnest/server.env`              |
 | `CODEXNEST_CODEX_TRANSPORT`      | `daemon` сохраняет активные turn при рестарте     | `stdio`                                       |
-| `CODEXNEST_CODEX_USE_SHARED_DAEMON` | Использовать один существующий Codex daemon и его аккаунт, без отдельных процессов аккаунтов | `false` |
 | `CODEXNEST_CLIENT_DIST`          | Собранный браузерный интерфейс                    | `apps/client/dist` относительно рабочей папки |
 | `CODEXNEST_UPDATE_CHANNEL`       | Канал обновлений: `rolling` или `stable`          | `rolling`                                     |
 | `CODEXNEST_LOG_LEVEL`            | Уровень логов Fastify                             | `info`                                        |

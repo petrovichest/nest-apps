@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const nativeVersions = ["0.167.0", "0.167.1", "0.167.2", "0.169.0"];
+export const nativeVersions = ["0.167.0", "0.167.1", "0.167.2", "0.169.0", "0.170.0"];
 export const healthyBaseline = "9a22821ee0c0680db853bcbaac3e343ee95f284f";
 export const installedBaseline = "f42edbee78b582bb54c96ab7bfc732286f10a667";
 const incidentBaseline = "fe3c5c858344b5f03c2619250b01d351930c891b";
