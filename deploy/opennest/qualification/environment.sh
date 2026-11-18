@@ -135,6 +135,17 @@ for kind in A B; do
 done
 printf '%s\n' "$qualification_candidate" | sudo tee "$qualification_input/candidate-sha" >/dev/null
 printf '%s\n' "$OPENNEST_QUALIFICATION_BASELINE" | sudo tee "$qualification_input/baseline-sha" >/dev/null
+# Install the exact non-registry dependency into the local HTTPS fixture.
+picomatch_archive="$(node -p 'require("./package-lock.json").packages["node_modules/picomatch"].resolved')"
+if [[ "$picomatch_archive" == https://codeload.github.com/micromatch/picomatch/tar.gz/* ]]; then
+  picomatch_commit="${picomatch_archive##*/}"
+  [[ "$picomatch_commit" =~ ^[0-9a-f]{40}$ ]]
+  picomatch_integrity="$(node -p 'require("./package-lock.json").packages["node_modules/picomatch"].integrity')"
+  curl -fsSL --proto '=https' --proto-redir '=https' --retry 2 --max-time 60 --max-filesize 1048576 \
+    "$picomatch_archive" -o "$RUNNER_TEMP/opennest-picomatch.tgz"
+  [[ "$picomatch_integrity" == "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/opennest-picomatch.tgz" | openssl base64 -A)" ]]
+  sudo install -m 0644 "$RUNNER_TEMP/opennest-picomatch.tgz" "$qualification_input/picomatch-$picomatch_commit.tgz"
+fi
 sudo chmod -R a+rX "$qualification_input"
 
 sudo openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=OpenNest disposable qualification CA' \
@@ -143,13 +154,13 @@ sudo openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=OpenNest dispo
 sudo openssl req -newkey rsa:2048 -nodes -subj '/CN=github.com' \
   -keyout "$qualification_private/fixture-key.pem" -out "$qualification_private/fixture.csr" > /dev/null 2>&1
 printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' \
-  'extendedKeyUsage=serverAuth' 'subjectAltName=DNS:github.com,DNS:model.openrouter.fixture,DNS:openrouter.ai,IP:127.0.0.2' \
+  'extendedKeyUsage=serverAuth' 'subjectAltName=DNS:github.com,DNS:codeload.github.com,DNS:model.openrouter.fixture,DNS:openrouter.ai,IP:127.0.0.2' \
   | sudo tee "$qualification_private/certificate-extensions" >/dev/null
 sudo openssl x509 -req -in "$qualification_private/fixture.csr" -CA "$qualification_private/ca.pem" -CAkey "$qualification_private/ca-key.pem" \
   -CAcreateserial -out "$qualification_private/fixture-cert.pem" -days 2 -extfile "$qualification_private/certificate-extensions" > /dev/null 2>&1
 sudo install -m 0644 "$qualification_private/ca.pem" /usr/local/share/ca-certificates/opennest-qualification.crt
 sudo update-ca-certificates >/dev/null
-printf '\n127.0.0.2 github.com model.openrouter.fixture openrouter.ai # opennest-qualification\n' | sudo tee -a /etc/hosts >/dev/null
+printf '\n127.0.0.2 github.com codeload.github.com model.openrouter.fixture openrouter.ai # opennest-qualification\n' | sudo tee -a /etc/hosts >/dev/null
 sudo chown -R "$qualification_uid:$qualification_uid" "$qualification_private" "$qualification_output"
 printf 'OpenNest synthetic qualification fixture v1\n' | sudo tee "$qualification_home/.opennest-qualification" >/dev/null
 sudo chown "$qualification_uid:$qualification_uid" "$qualification_home/.opennest-qualification"

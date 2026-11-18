@@ -417,6 +417,27 @@ export async function createQualificationServices(options) {
       try {
         const target = new URL(request.url, "https://github.com"),
           path = target.pathname;
+        if (request.headers.host?.split(":")[0] === "codeload.github.com") {
+          const commit = /^\/micromatch\/picomatch\/tar\.gz\/([0-9a-f]{40})$/.exec(path)?.[1];
+          const archive =
+            commit && request.method === "GET"
+              ? await readFile(join(inputDirectory, `picomatch-${commit}.tgz`)).catch((error) => {
+                  if (error.code !== "ENOENT") throw error;
+                  return null;
+                })
+              : null;
+          if (!archive) {
+            json(response, 404, {});
+            return;
+          }
+          state.registryRequests[path] = (state.registryRequests[path] || 0) + 1;
+          response.writeHead(200, {
+            "content-type": "application/octet-stream",
+            "content-length": archive.length,
+          });
+          response.end(archive);
+          return;
+        }
         if (
           (request.method === "GET" && path === "/petrovichest/nest-apps.git/info/refs") ||
           (request.method === "POST" && path === "/petrovichest/nest-apps.git/git-upload-pack")
@@ -545,7 +566,8 @@ export async function createQualificationServices(options) {
         Number(target.port) === modelPort) ||
       (target.hostname === "openrouter.ai" && Number(target.port || 80) === 443);
     const registryTarget =
-      target.hostname === "github.com" && Number(target.port || 80) === registryPort;
+      ["github.com", "codeload.github.com"].includes(target.hostname) &&
+      Number(target.port || 80) === registryPort;
     const publicRegistry =
       ["registry.npmjs.org", "registry.npmjs.com"].includes(target.hostname) &&
       Number(target.port || 80) === 443;

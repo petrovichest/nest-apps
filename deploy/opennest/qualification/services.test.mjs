@@ -34,7 +34,7 @@ async function makeFixture() {
     "-subj",
     "/CN=model.openrouter.fixture",
     "-addext",
-    "subjectAltName=DNS:model.openrouter.fixture,DNS:github.com,IP:127.0.0.2",
+    "subjectAltName=DNS:model.openrouter.fixture,DNS:github.com,DNS:codeload.github.com,IP:127.0.0.2",
     "-keyout",
     key,
     "-out",
@@ -205,6 +205,42 @@ test("registry serves exact private artifacts and rejects paths outside fixture 
         .end();
     });
     assert.equal(content, "exact qualified bytes\n");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("the proxy serves only the staged picomatch archive on codeload", async () => {
+  const fixture = await makeFixture();
+  try {
+    const commit = "a".repeat(40);
+    const archive = "fixture dependency archive";
+    await writeFile(join(fixture.inputDirectory, `picomatch-${commit}.tgz`), archive);
+    const url = `https://codeload.github.com:${fixture.registryPort}`;
+    const flags = [
+      "--fail",
+      "--silent",
+      "--show-error",
+      "--noproxy",
+      "",
+      "--proxy",
+      `http://fixture-user:fixture-proxy-password@127.0.0.1:${fixture.proxyPort}`,
+      "--cacert",
+      fixture.certPath,
+    ];
+    const result = await execute("curl", [
+      ...flags,
+      `${url}/micromatch/picomatch/tar.gz/${commit}`,
+    ]);
+    assert.equal(result.stdout, archive);
+    await assert.rejects(execute("curl", [...flags, `${url}/other/repository/tar.gz/${commit}`]), {
+      code: 22,
+    });
+    await assert.rejects(
+      execute("curl", [...flags, `${url}/micromatch/picomatch/tar.gz/${"b".repeat(40)}`]),
+      { code: 22 },
+    );
+    assert.equal((await fixture.state()).unexpectedExternalRequests, 0);
   } finally {
     await fixture.close();
   }
