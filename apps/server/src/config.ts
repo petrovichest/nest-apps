@@ -17,6 +17,7 @@ export interface AppConfig {
   codexProxyEnvFile: string;
   serverEnvFile: string;
   codexTransport: "stdio" | "daemon";
+  codexUseSharedDaemon?: boolean;
   allowedOrigins: Set<string>;
   /** Sites allowed to show CodexNest inside an iframe (the floating embed window). */
   embedOrigins: string[];
@@ -106,6 +107,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     serverEnvFile:
       env("CODEXNEST_SERVER_ENV_FILE") ?? resolve(homedir(), ".config/codexnest/server.env"),
     codexTransport,
+    codexUseSharedDaemon: envBoolean("CODEXNEST_CODEX_USE_SHARED_DAEMON", false),
     allowedOrigins: new Set([
       "http://localhost",
       ...(env("CODEXNEST_ALLOWED_ORIGINS") ?? "http://127.0.0.1:4310,http://localhost:5173")

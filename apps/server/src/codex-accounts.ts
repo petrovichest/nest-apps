@@ -1439,6 +1439,21 @@ function validId(value: unknown): value is string {
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
   );
 }
+export async function assertSharedDaemonAccountSafety(stateDir: string): Promise<void> {
+  const registry = await readJson<Registry>(join(stateDir, "codex-accounts.json"));
+  if (registry === undefined) return;
+  if (
+    registry?.version !== 1 ||
+    !Array.isArray(registry.accounts) ||
+    registry.accounts.some((account) => !account.native || account.credentialId) ||
+    Object.values(registry.threadOwners ?? {}).some((owner) => owner !== "native")
+  ) {
+    throw new Error(
+      "Shared daemon mode requires all saved accounts and chats to use the native daemon",
+    );
+  }
+}
+
 async function readJson<T>(path: string): Promise<T | undefined> {
   try {
     return JSON.parse(await readFile(path, "utf8")) as T;

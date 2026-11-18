@@ -394,6 +394,7 @@ accept-all certificate handler). Android-клиент доверяет сист�
 | `CODEXNEST_CODEX_PROXY_ENV_FILE` | Приватный env-файл proxy для wrapper              | `~/.config/codex/app-server.env`              |
 | `CODEXNEST_SERVER_ENV_FILE`      | Env-файл, обновляемый серверными настройками      | `~/.config/codexnest/server.env`              |
 | `CODEXNEST_CODEX_TRANSPORT`      | `daemon` сохраняет активные turn при рестарте     | `stdio`                                       |
+| `CODEXNEST_CODEX_USE_SHARED_DAEMON` | Использовать один существующий Codex daemon и его аккаунт, без отдельных процессов аккаунтов | `false` |
 | `CODEXNEST_CLIENT_DIST`          | Собранный браузерный интерфейс                    | `apps/client/dist` относительно рабочей папки |
 | `CODEXNEST_UPDATE_CHANNEL`       | Канал обновлений: `rolling` или `stable`          | `rolling`                                     |
 | `CODEXNEST_LOG_LEVEL`            | Уровень логов Fastify                             | `info`                                        |
@@ -405,6 +406,11 @@ accept-all certificate handler). Android-клиент доверяет сист�
 | `CODEXNEST_STT_REFINE_LOCAL`     | Улучшать локальный текст через Codex              | `true`                                        |
 | `CODEXNEST_STT_REFINEMENT_MODEL` | Модель улучшения локального текста                | `gpt-5.6-luna`                                |
 | `CODEXNEST_STT_TIMEOUT_MS`       | Timeout одного распознавания                      | `600000`                                      |
+
+Установите `CODEXNEST_CODEX_USE_SHARED_DAEMON=true`, если CodexNest подключается к
+существующему daemon другого системного пользователя через настроенный доступ к
+Unix-сокету. Требуется `CODEXNEST_CODEX_TRANSPORT=daemon`. Проверка запуска
+отклоняет сохранённые независимые аккаунты и чаты, закреплённые за их процессами.
 
 ### Встраивание плавающим окном
 

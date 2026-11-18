@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CodexAccounts, type AccountProcess, type CodexAccountsOptions } from "./codex-accounts";
+import {
+  assertSharedDaemonAccountSafety,
+  CodexAccounts,
+  type AccountProcess,
+  type CodexAccountsOptions,
+} from "./codex-accounts";
 import type { CodexBridge } from "./codex/bridge";
 import { AccountRuntimePool } from "./account-runtime";
 import { parseClaudeProxy, type ClaudeProxyInput } from "@codexnest/protocol";
@@ -27,6 +32,26 @@ const proxy: ClaudeProxyInput = {
   protocol: "socks5",
   value: "socks5://user:secret@proxy.example.test:1080",
 };
+
+describe("shared daemon mode", () => {
+  it("accepts native accounts and refuses to reroute account-owned chats", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codexnest-shared-daemon-"));
+    directories.push(root);
+    await expect(assertSharedDaemonAccountSafety(root)).resolves.toBeUndefined();
+    const path = join(root, "codex-accounts.json");
+    const registry = {
+      version: 1,
+      accounts: [{ native: true }],
+      threadOwners: { chat: "native" },
+    };
+    await writeFile(path, JSON.stringify(registry));
+    await expect(assertSharedDaemonAccountSafety(root)).resolves.toBeUndefined();
+    await writeFile(path, JSON.stringify({ ...registry, threadOwners: { chat: "worker" } }));
+    await expect(assertSharedDaemonAccountSafety(root)).rejects.toThrow("saved accounts and chats");
+    await writeFile(path, JSON.stringify({ ...registry, accounts: [{ native: false }] }));
+    await expect(assertSharedDaemonAccountSafety(root)).rejects.toThrow("saved accounts and chats");
+  });
+});
 
 describe("CodexAccounts", () => {
   it.each(["none", "credentials", "proxy", "other-account"])(

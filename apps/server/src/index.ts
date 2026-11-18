@@ -11,7 +11,7 @@ import { AppManager } from "./app-management";
 import { CodexBridge } from "./codex/bridge";
 import { connectUnixWebSocket, type JsonlProcess } from "./codex/transport";
 import { CodexManager } from "./codex-management";
-import { CodexAccounts } from "./codex-accounts";
+import { assertSharedDaemonAccountSafety, CodexAccounts } from "./codex-accounts";
 import { childProcessEnvironment, loadConfig, SERVER_VERSION } from "./config";
 import { safeError } from "./logging";
 import { AppProjection } from "./projection";
@@ -70,26 +70,35 @@ const lifecycle = new RuntimeLifecycle({
     : {}),
 });
 await lifecycle.initialize();
-const codexAccounts = new CodexAccounts(bridge, {
-  stateDir: dirname(config.statePath),
-  codexHome: resolve(process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex")),
-  codexBin: config.codexBin,
-  proxyEnvFile: config.codexProxyEnvFile,
-  serverEnvFile: config.serverEnvFile,
-  managedInstall: config.managedInstall,
-  workAllowed: () => !lifecycle.updatePending,
-  activeTurnCount: () =>
-    projection.snapshot().threads.filter((thread) => thread.currentTurnId !== null).length,
-});
-await codexAccounts.initialize();
-projection.setCodexAccounts(codexAccounts.status());
-codexAccounts.on("changed", (status) => {
-  projection.setCodexAccounts(status);
-  const selected = status.accounts.find(
-    (account: { id: string }) => account.id === status.currentAccountId,
-  );
-  if (selected) projection.setCodexRateLimits(selected.rateLimits);
-});
+if (config.codexUseSharedDaemon) {
+  if (config.codexTransport !== "daemon")
+    throw new Error("CODEXNEST_CODEX_USE_SHARED_DAEMON requires daemon transport");
+  await assertSharedDaemonAccountSafety(dirname(config.statePath));
+}
+const codexAccounts = config.codexUseSharedDaemon
+  ? undefined
+  : new CodexAccounts(bridge, {
+      stateDir: dirname(config.statePath),
+      codexHome: resolve(process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex")),
+      codexBin: config.codexBin,
+      proxyEnvFile: config.codexProxyEnvFile,
+      serverEnvFile: config.serverEnvFile,
+      managedInstall: config.managedInstall,
+      workAllowed: () => !lifecycle.updatePending,
+      activeTurnCount: () =>
+        projection.snapshot().threads.filter((thread) => thread.currentTurnId !== null).length,
+    });
+if (codexAccounts) {
+  await codexAccounts.initialize();
+  projection.setCodexAccounts(codexAccounts.status());
+  codexAccounts.on("changed", (status) => {
+    projection.setCodexAccounts(status);
+    const selected = status.accounts.find(
+      (account: { id: string }) => account.id === status.currentAccountId,
+    );
+    if (selected) projection.setCodexRateLimits(selected.rateLimits);
+  });
+}
 const threadTitles = new ThreadTitleGenerator(bridge);
 const transcriptRefiner = new TranscriptRefiner(bridge);
 const transcription = new TranscriptionService({
@@ -147,8 +156,7 @@ bridge.on("protocolError", (error: Error) => {
 bridge.on("state", (state, detail: unknown) => {
   if (state === "ready") {
     lifecycle.syncing();
-    void codexAccounts
-      .restore()
+    void (codexAccounts?.restore() ?? Promise.resolve())
       .catch((error: Error) => {
         process.stderr.write(`CodexNest account needs attention (${error.name})\n`);
       })
@@ -197,7 +205,7 @@ function shutdown(): Promise<void> {
       await store.flushed().catch(() => undefined);
     }
     bridge.stop();
-    await codexAccounts.close();
+    await codexAccounts?.close();
     await lifecycle.close();
   })();
   return shutdownPromise;
