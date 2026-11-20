@@ -2,11 +2,21 @@ import type { ActivityItem, TurnView } from "@codexnest/protocol";
 import { fileURLToPath } from "node:url";
 import { basename } from "node:path";
 
+export type NativeTokens = {
+  total?: number;
+  input?: number;
+  output?: number;
+  reasoning?: number;
+  cache?: { read?: number; write?: number };
+};
+
 export type NativePart = {
   id: string;
   messageID?: string;
   sessionID?: string;
   type: string;
+  cost?: number;
+  tokens?: NativeTokens;
   text?: string;
   url?: string;
   mime?: string;
@@ -43,13 +53,8 @@ export type NativeMessage = {
     modelID?: string;
     providerID?: string;
     summary?: boolean;
-    tokens?: {
-      total?: number;
-      input?: number;
-      output?: number;
-      reasoning?: number;
-      cache?: { read?: number; write?: number };
-    };
+    cost?: number;
+    tokens?: NativeTokens;
     time?: { created?: number; completed?: number };
     error?: unknown;
   };

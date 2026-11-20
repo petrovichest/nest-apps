@@ -453,3 +453,148 @@ describe("OpenNest API boundaries", () => {
     });
   });
 });
+
+describe("session cost", () => {
+  const usage = (
+    engine: Engine,
+    sessionID: string,
+    id: string,
+    cost: number | undefined,
+    tokens?: Record<string, unknown>,
+  ) =>
+    engine.onNativeEvent({
+      type: "message.updated",
+      properties: {
+        sessionID,
+        info: {
+          id,
+          sessionID,
+          role: "assistant",
+          providerID: "openrouter",
+          modelID: "vendor/test",
+          time: { created: 1 },
+          ...(cost === undefined ? {} : { cost }),
+          ...(tokens ? { tokens } : {}),
+        },
+      },
+    });
+
+  it("hides the total until the first usage and sums billed assistant costs", async () => {
+    const { engine, thread } = await setup();
+    expect(engine.summary(thread.id).costUsage).toBeUndefined();
+    await usage(engine, thread.id, "assistant_1", 0.5);
+    expect(engine.summary(thread.id).costUsage).toEqual({ usd: 0.5, estimated: false });
+    await usage(engine, thread.id, "assistant_2", 1.25);
+    expect(engine.summary(thread.id).costUsage).toEqual({ usd: 1.75, estimated: false });
+  });
+
+  it("shows zero for a free model once usage is reported", async () => {
+    const { engine, thread } = await setup();
+    await usage(engine, thread.id, "assistant_free", 0);
+    expect(engine.summary(thread.id).costUsage).toEqual({ usd: 0, estimated: false });
+  });
+
+  it("never lets the total decrease when native history shrinks", async () => {
+    const { engine, thread, native } = await setup();
+    await usage(engine, thread.id, "assistant_1", 2);
+    native.messages.set(thread.id, []);
+    await engine.refreshThread(thread.id);
+    expect(engine.summary(thread.id).costUsage).toEqual({ usd: 2, estimated: false });
+  });
+
+  it("estimates a missing billed cost from the provider price table", async () => {
+    const { engine, thread } = await setup();
+    await usage(engine, thread.id, "assistant_estimated", undefined, {
+      input: 1_000_000,
+      output: 1_000_000,
+    });
+    expect(engine.summary(thread.id).costUsage).toEqual({ usd: 3, estimated: true });
+  });
+
+  it("includes native subagent sessions in the parent total and republishes it", async () => {
+    const { engine, thread, project } = await setup();
+    await usage(engine, thread.id, "assistant_parent", 0.5);
+    const published = vi.spyOn(engine, "publish");
+    await engine.onNativeEvent({
+      type: "session.created",
+      properties: {
+        info: {
+          id: "ses_native_child",
+          directory: project.path,
+          title: "Explore",
+          parentID: thread.id,
+          time: { created: 1, updated: 1 },
+        },
+      },
+    });
+    await usage(engine, "ses_native_child", "assistant_child", 0.25);
+    expect(engine.summary(thread.id).costUsage).toEqual({ usd: 0.75, estimated: false });
+    expect(engine.summary("ses_native_child").costUsage).toEqual({
+      usd: 0.25,
+      estimated: false,
+    });
+    expect(published).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.upserted",
+        thread: expect.objectContaining({
+          id: thread.id,
+          costUsage: { usd: 0.75, estimated: false },
+        }),
+      }),
+    );
+  });
+
+  it("starts a fork at zero by discounting the copied history", async () => {
+    const { engine, thread, native } = await setup();
+    native.sessions.get(thread.id)!.cost = 2;
+    native.messages.set(thread.id, [
+      {
+        info: { id: "user", role: "user", time: { created: 1 } },
+        parts: [{ id: "user_part", type: "text", text: "hello" }],
+      },
+      {
+        info: {
+          id: "assistant",
+          role: "assistant",
+          parentID: "user",
+          cost: 2,
+          time: { created: 2 },
+        },
+        parts: [{ id: "reply_part", type: "text", text: "Hello" }],
+      },
+    ]);
+    await engine.refreshThread(thread.id);
+    expect(engine.summary(thread.id).costUsage).toEqual({ usd: 2, estimated: false });
+    const forked = await engine.fork(thread.id);
+    expect(forked.costUsage).toEqual({ usd: 0, estimated: false });
+    await usage(engine, forked.id, "assistant_new", 0.4);
+    expect(engine.summary(forked.id).costUsage).toEqual({
+      usd: expect.closeTo(0.4, 10),
+      estimated: false,
+    });
+  });
+
+  it("keeps the persisted total across a restart", async () => {
+    const { engine, thread, native, config } = await setup();
+    await usage(engine, thread.id, "assistant_1", 1.5);
+    await engine.save();
+    await engine.close();
+    const restored = new Engine(config, { native: native.client() });
+    cleanups.push(() => restored.close());
+    await restored.initialize({ watch: false });
+    await restored.reconcile();
+    expect(restored.summary(thread.id).costUsage).toEqual({ usd: 1.5, estimated: false });
+  });
+
+  it("remembers zero-cost usage across a restart", async () => {
+    const { engine, thread, native, config } = await setup();
+    await usage(engine, thread.id, "assistant_free", 0);
+    await engine.save();
+    await engine.close();
+    const restored = new Engine(config, { native: native.client() });
+    cleanups.push(() => restored.close());
+    await restored.initialize({ watch: false });
+    await restored.reconcile();
+    expect(restored.summary(thread.id).costUsage).toEqual({ usd: 0, estimated: false });
+  });
+});

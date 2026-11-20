@@ -32,7 +32,7 @@ import { pastedText, serializePastedMessage, validPastedText } from "@codexnest/
 import { readJson, writeJsonAtomic } from "../../claude-server/src/io";
 import { SUPPORTED_OPENCODE_VERSION, type Config } from "./config";
 import { OpenCodeClient, type OpenCodeEvent } from "./opencode";
-import { projectTurns, type NativeMessage, type NativePart } from "./projection";
+import { projectTurns, type NativeMessage, type NativePart, type NativeTokens } from "./projection";
 import { AttachmentStore, appendAttachmentContext } from "../../claude-server/src/attachments";
 import type { StoredVoice, VoiceSettings, VoiceTimingSample } from "./voice";
 import { publishArtifact } from "./artifacts";
@@ -114,6 +114,8 @@ type NativeSession = {
   title?: string;
   directory?: string;
   parentID?: string;
+  /** Billed session total reported by OpenCode (USD). Older SDK types omit it. */
+  cost?: number;
   time?: { created?: number; updated?: number; archived?: number };
 };
 type Receipt = {
@@ -127,6 +129,16 @@ export type StoredThread = {
   draft: ThreadDraft | null;
   queue: QueuedMessage[];
   receipts: Record<string, Receipt>;
+  /** Native parent session for subagents created outside OpenNest's managed tasks. */
+  parentThreadId?: string;
+  /** Highest cost ever observed, so history compaction can never make the total shrink. */
+  costHighWaterUsd?: number;
+  /** Cost copied into a fork that must not count towards the new session's spend. */
+  costBaselineUsd?: number;
+  /** Last billed session total reported by the native runtime. */
+  nativeCostUsd?: number;
+  /** Whether usage was ever observed, so a zero-cost free model still shows a total. */
+  costUsageSeen?: boolean;
   outcome?: "completed" | "failed" | "interrupted";
   goal?: ThreadGoal;
   teamOrchestration?: Record<string, unknown>;
@@ -193,6 +205,14 @@ export class Engine extends EventEmitter {
     args: Record<string, unknown>,
   ) => Promise<unknown>;
   private nativeModelCapabilities = new Map<string, { images: boolean }>();
+  /** USD per one million tokens, keyed by both native and protocol model IDs. */
+  private modelPrices = new Map<
+    string,
+    { input: number; output: number; cacheRead: number; cacheWrite: number }
+  >();
+  /** Direct (own messages) cost per thread, already adjusted for fork baselines. */
+  private directCosts = new Map<string, { usd: number; estimated: boolean; hasUsage: boolean }>();
+  private costSaveAt = 0;
   private helpers = new Set<string>();
   private enabledCapabilities = { ...capabilities };
   private controller = new AbortController();
@@ -446,6 +466,9 @@ export class Engine extends EventEmitter {
       currentTurnId: this.busy.has(id) ? thread.summary.currentTurnId : null,
       queuedMessageCount: thread.queue.length,
     };
+    // Compute on demand so summaries stay correct after restarts and lazy history loads.
+    const costUsage = this.costUsage(id);
+    if (costUsage) summary.costUsage = costUsage;
     return this.workflowHooks.decorateSummary?.(id, summary) ?? summary;
   }
   detail(id: string): ThreadDetail {
@@ -509,8 +532,18 @@ export class Engine extends EventEmitter {
       );
   }
   private importSession(session: NativeSession, cwd: string) {
-    if (this.data.threads[session.id]) return;
+    const existing = this.data.threads[session.id];
+    if (existing) {
+      // Native subagents created by OpenCode are flat sessions; keep their ancestry so the
+      // parent's cost can include them.
+      if (!existing.parentThreadId && session.parentID) existing.parentThreadId = session.parentID;
+      const nativeCost = finiteAmount(session.cost);
+      if (nativeCost !== null) existing.nativeCostUsd = nativeCost;
+      this.refreshDirectCost(session.id);
+      return;
+    }
     const now = Date.now();
+    const nativeCost = finiteAmount(session.cost);
     this.data.threads[session.id] = {
       summary: {
         id: session.id,
@@ -538,6 +571,8 @@ export class Engine extends EventEmitter {
       draft: null,
       queue: [],
       receipts: {},
+      ...(session.parentID ? { parentThreadId: session.parentID } : {}),
+      ...(nativeCost !== null ? { nativeCostUsd: nativeCost } : {}),
     };
   }
   async addProject(path: string, displayName?: string) {
@@ -605,7 +640,8 @@ export class Engine extends EventEmitter {
       stored.permissionVersion = this.data.permissionVersion;
       stored.summary.projectId = project.id;
       stored.summary.settings = { ...stored.summary.settings, ...options.settings };
-      if (options.parentThreadId)
+      if (options.parentThreadId) {
+        stored.parentThreadId = options.parentThreadId;
         stored.summary.relation = {
           kind: "subagent",
           sessionId: session.id,
@@ -613,6 +649,7 @@ export class Engine extends EventEmitter {
           nickname: null,
           role: null,
         };
+      }
       if (draft?.files?.length) {
         const validated = await this.attachments.validate(projectId, draft.files);
         const copied = [];
@@ -789,6 +826,7 @@ export class Engine extends EventEmitter {
             name?: string;
             variants?: Record<string, unknown>;
             capabilities?: { input?: { image?: boolean } };
+            cost?: unknown;
           }
         >;
       }>;
@@ -802,6 +840,17 @@ export class Engine extends EventEmitter {
         { images: model.capabilities?.input?.image === true },
       ]),
     );
+    const prices = new Map<
+      string,
+      { input: number; output: number; cacheRead: number; cacheWrite: number }
+    >();
+    for (const [id, model] of Object.entries(provider?.models ?? {})) {
+      const price = parseModelPrice(model.cost);
+      if (!price) continue;
+      prices.set(id, price);
+      prices.set(`openrouter/${id}`, price);
+    }
+    this.modelPrices = prices;
     this.models = Object.entries(provider?.models ?? {}).map(([id, model]) => ({
       id: `openrouter/${id}`,
       displayName: model.name || id,
@@ -888,6 +937,7 @@ export class Engine extends EventEmitter {
         }
     }
     this.live.set(id, messages);
+    this.refreshCost(id);
     // Native SSE has no replay boundary tied to a history snapshot. Buffered
     // deltas for these parts may already be represented in the fetched text.
     // Keep absolute part updates, suppress ambiguous deltas, fetch once at idle.
@@ -1297,6 +1347,7 @@ export class Engine extends EventEmitter {
         if (thread) {
           if (session.title) thread.summary.title = session.title;
           if (session.time?.updated) thread.summary.updatedAt = session.time.updated;
+          this.refreshCost(session.id);
           await this.save();
           this.changed(session.id);
         }
@@ -1339,6 +1390,7 @@ export class Engine extends EventEmitter {
       if (properties.info.role === "assistant" && properties.info.error) thread.outcome = "failed";
       if (properties.info.role === "assistant" && properties.info.tokens)
         await this.workflowHooks.onUsage?.(id);
+      if (properties.info.role === "assistant") this.refreshCost(id);
     } else if (event.type === "message.part.updated" && properties.part?.id) {
       let part = properties.part as NativePart;
       const message = messages.find((m) => m.info.id === part.messageID);
@@ -1364,6 +1416,7 @@ export class Engine extends EventEmitter {
           if (index === -1) message.parts.push(part);
           else message.parts[index] = part;
         }
+        if (part.type === "step-finish") this.refreshCost(id);
       }
     } else if (event.type === "message.part.delta") {
       const part = messages
@@ -1910,6 +1963,19 @@ export class Engine extends EventEmitter {
         { directory: source.summary.cwd },
       );
       this.live.set(session.id, copied);
+      // Native fork copies assistant messages with their billed cost intact. Treat that copied
+      // prefix as a baseline so the new session starts at zero.
+      const forkThread = this.thread(session.id);
+      const copiedCost = copied.reduce((sum, message) => {
+        if (message.info.role !== "assistant") return sum;
+        return sum + (finiteAmount(message.info.cost) ?? 0);
+      }, 0);
+      forkThread.costBaselineUsd = Math.max(copiedCost, finiteAmount(session.cost) ?? 0);
+      forkThread.costHighWaterUsd = 0;
+      forkThread.nativeCostUsd = forkThread.costBaselineUsd;
+      forkThread.parentThreadId = undefined;
+      this.directCosts.delete(session.id);
+      this.refreshCost(session.id);
       for (let index = 0; index < copied.length; index++) {
         const before = original[index],
           after = copied[index];
@@ -1952,4 +2018,191 @@ export class Engine extends EventEmitter {
     await this.saveTail;
     // OpenCode belongs to a separate native service and deliberately survives this API.
   }
+
+  private displayedDirectCost(id: string): {
+    usd: number;
+    estimated: boolean;
+    hasUsage: boolean;
+  } {
+    const raw = this.messageCost(id);
+    const baseline = this.data.threads[id]?.costBaselineUsd ?? 0;
+    return { ...raw, usd: Math.max(0, raw.usd - baseline) };
+  }
+
+  /** Cost of the thread's own assistant messages, or the native session total as a fallback. */
+  private messageCost(id: string): { usd: number; estimated: boolean; hasUsage: boolean } {
+    const messages = this.live.get(id);
+    if (messages) {
+      let usd = 0;
+      let estimated = false;
+      let hasUsage = false;
+      for (const message of messages) {
+        if (message.info.role !== "assistant") continue;
+        const billed = finiteAmount(message.info.cost);
+        if (billed !== null) {
+          usd += billed;
+          hasUsage = true;
+          continue;
+        }
+        const stepCosts = message.parts
+          .map((part) => (part.type === "step-finish" ? finiteAmount(part.cost) : null))
+          .filter((cost): cost is number => cost !== null);
+        if (stepCosts.length) {
+          usd += stepCosts.reduce((sum, cost) => sum + cost, 0);
+          hasUsage = true;
+          continue;
+        }
+        if (!message.info.tokens) continue;
+        hasUsage = true;
+        const price = this.modelPrice(message.info.modelID);
+        if (!price) {
+          estimated = true;
+          continue;
+        }
+        usd += estimateTokensCost(message.info.tokens, price);
+        estimated = true;
+      }
+      if (hasUsage) return { usd, estimated, hasUsage };
+    }
+    const native = finiteAmount(this.data.threads[id]?.nativeCostUsd);
+    if (native !== null) return { usd: native, estimated: false, hasUsage: true };
+    return { usd: 0, estimated: false, hasUsage: false };
+  }
+
+  private modelPrice(modelID: string | undefined) {
+    if (!modelID) return null;
+    return (
+      this.modelPrices.get(modelID) ??
+      this.modelPrices.get(`openrouter/${modelID}`) ??
+      (modelID.startsWith("openrouter/")
+        ? (this.modelPrices.get(modelID.slice("openrouter/".length)) ?? null)
+        : null)
+    );
+  }
+
+  /** Refreshes one thread's monotonic direct cost and reports whether it changed. */
+  private refreshDirectCost(id: string): boolean {
+    const thread = this.data.threads[id];
+    if (!thread) return false;
+    const direct = this.displayedDirectCost(id);
+    const previous = this.directCosts.get(id);
+    let raised = false;
+    if (direct.hasUsage && direct.usd > (thread.costHighWaterUsd ?? 0)) {
+      thread.costHighWaterUsd = direct.usd;
+      raised = true;
+    }
+    if (direct.hasUsage && !thread.costUsageSeen) {
+      thread.costUsageSeen = true;
+      raised = true;
+    }
+    const hasUsage = direct.hasUsage || thread.costUsageSeen === true;
+    const usd = Math.max(thread.costHighWaterUsd ?? 0, direct.usd);
+    const next = { usd, estimated: direct.estimated, hasUsage };
+    const changed =
+      !previous ||
+      previous.usd !== next.usd ||
+      previous.estimated !== next.estimated ||
+      previous.hasUsage !== next.hasUsage;
+    this.directCosts.set(id, next);
+    if (raised) this.persistCostsSoon();
+    return changed;
+  }
+
+  private persistCostsSoon() {
+    const now = Date.now();
+    if (now - this.costSaveAt < 5_000) return;
+    this.costSaveAt = now;
+    void this.save().catch(() => undefined);
+  }
+
+  private costAncestors(id: string): string[] {
+    const ancestors: string[] = [];
+    const seen = new Set([id]);
+    let parent = this.data.threads[id]?.parentThreadId;
+    while (parent && !seen.has(parent) && this.data.threads[parent]) {
+      ancestors.push(parent);
+      seen.add(parent);
+      parent = this.data.threads[parent]!.parentThreadId;
+    }
+    return ancestors;
+  }
+
+  /** Recomputes a thread's cost and republishes every ancestor whose subtree total may move. */
+  private refreshCost(id: string) {
+    if (!this.data.threads[id]) return;
+    this.refreshDirectCost(id);
+    for (const ancestor of this.costAncestors(id)) {
+      this.refreshDirectCost(ancestor);
+      this.changed(ancestor);
+    }
+  }
+
+  private subtreeCost(
+    id: string,
+    seen = new Set<string>(),
+  ): { usd: number; estimated: boolean; hasUsage: boolean } {
+    if (seen.has(id)) return { usd: 0, estimated: false, hasUsage: false };
+    seen.add(id);
+    if (!this.directCosts.has(id)) this.refreshDirectCost(id);
+    const own = this.directCosts.get(id) ?? {
+      usd: 0,
+      estimated: false,
+      hasUsage: false,
+    };
+    let usd = own.hasUsage ? own.usd : 0;
+    let estimated = own.estimated;
+    let hasUsage = own.hasUsage;
+    for (const child of Object.values(this.data.threads)) {
+      if (child.parentThreadId !== id) continue;
+      const cost = this.subtreeCost(child.summary.id, seen);
+      usd += cost.usd;
+      estimated ||= cost.estimated;
+      hasUsage ||= cost.hasUsage;
+    }
+    return { usd, estimated, hasUsage };
+  }
+
+  private costUsage(id: string): ThreadSummary["costUsage"] {
+    const cost = this.subtreeCost(id);
+    return cost.hasUsage ? { usd: cost.usd, estimated: cost.estimated } : undefined;
+  }
+}
+
+function finiteAmount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Native `/provider` reports USD per one million tokens in snake_case. */
+function parseModelPrice(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const cost = value as Record<string, unknown>;
+  const cache =
+    cost.cache && typeof cost.cache === "object" ? (cost.cache as Record<string, unknown>) : {};
+  const price = {
+    input: finiteAmount(cost.input) ?? 0,
+    output: finiteAmount(cost.output) ?? 0,
+    cacheRead: finiteAmount(cache.read ?? cost.cache_read) ?? 0,
+    cacheWrite: finiteAmount(cache.write ?? cost.cache_write) ?? 0,
+  };
+  return Object.values(price).some((rate) => rate > 0) ? price : null;
+}
+
+function estimateTokensCost(
+  tokens: NativeTokens,
+  price: { input: number; output: number; cacheRead: number; cacheWrite: number },
+): number {
+  const amount = (value: unknown) => finiteAmount(value) ?? 0;
+  const cacheRead = amount(tokens.cache?.read);
+  const cacheWrite = amount(tokens.cache?.write);
+  const reasoning = amount(tokens.reasoning);
+  const input = Math.max(0, amount(tokens.input) - cacheRead - cacheWrite);
+  const output = Math.max(0, amount(tokens.output) - reasoning);
+  return (
+    (input * price.input +
+      output * price.output +
+      cacheRead * price.cacheRead +
+      cacheWrite * price.cacheWrite +
+      reasoning * price.output) /
+    1_000_000
+  );
 }

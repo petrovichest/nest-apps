@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   Project,
   SessionSettings,
+  ThreadSummary,
   TranscriptionConfigResponse,
   UpdateThreadSettingsRequest,
 } from "@codexnest/protocol";
@@ -14,6 +15,7 @@ import {
   type ComposerImage,
   type ComposerSubmitIntent,
   type ComposerTranscriptionStatus,
+  formatSessionCost,
 } from "./Composer";
 import type { PendingAnnotation } from "../annotations";
 
@@ -843,6 +845,28 @@ describe("Composer", () => {
 
     view.rerender(<Harness hasSupplementalContent />);
     expect(screen.getByRole("button", { name: "Отправить" })).toBeEnabled();
+  });
+
+  describe("session cost", () => {
+    it.each([
+      [12.4, false, "$12.40"],
+      [3, false, "$3.00"],
+      [0.043, false, "$0.043"],
+      [0.0042, false, "$0.0042"],
+      [0, false, "$0.00"],
+      [0.043, true, "≈ $0.043"],
+    ])("formats %s usd (%s estimated) as %s", (usd, estimated, expected) => {
+      expect(formatSessionCost({ usd, estimated })).toBe(expected);
+    });
+
+    it("stays hidden until the first usage and follows summary updates", () => {
+      const view = render(<Harness />);
+      expect(screen.queryByLabelText(/^Стоимость сессии/)).toBeNull();
+      view.rerender(<Harness costUsage={{ usd: 0.043, estimated: true }} />);
+      expect(screen.getByLabelText("Стоимость сессии: ≈ $0.043")).toHaveTextContent("≈ $0.043");
+      view.rerender(<Harness costUsage={{ usd: 1.75, estimated: false }} />);
+      expect(screen.getByLabelText("Стоимость сессии: $1.75")).toHaveTextContent("$1.75");
+    });
   });
 
   describe("file attachments", () => {
@@ -1899,6 +1923,7 @@ function Harness({
   settingsBusy = false,
   settingsDisabled = false,
   children,
+  costUsage,
   cwd,
   goalMode = false,
   hasSupplementalContent = false,
@@ -1929,6 +1954,7 @@ function Harness({
   settingsBusy?: boolean;
   settingsDisabled?: boolean;
   children?: ReactNode;
+  costUsage?: ThreadSummary["costUsage"];
   cwd?: string;
   goalMode?: boolean;
   hasSupplementalContent?: boolean;
@@ -2001,6 +2027,7 @@ function Harness({
       preserveRecordingOnSessionChange={preserveRecordingOnSessionChange}
       voiceInputLocked={voiceInputLocked}
       transcriptionStatus={transcriptionStatus}
+      costUsage={costUsage}
       sessionIdentity={sessionIdentity}
       error={null}
       hasSupplementalContent={hasSupplementalContent}

@@ -133,6 +133,7 @@ export function Composer({
   busy,
   inputUnavailable = false,
   contextUsage,
+  costUsage,
   contextCompacting = false,
   onCompactContext,
   running = false,
@@ -197,6 +198,8 @@ export function Composer({
   inputUnavailable?: boolean;
   /** Context fill of an existing session; the meter stays hidden without it. */
   contextUsage?: ThreadSummary["contextUsage"];
+  /** Money spent by this session and its subagents; hidden until the first usage report. */
+  costUsage?: ThreadSummary["costUsage"];
   contextCompacting?: boolean;
   onCompactContext?(): void;
   running?: boolean;
@@ -1974,6 +1977,19 @@ export function Composer({
                 onGoalUpdate={onGoalUpdate}
                 onGoalClear={onGoalClear}
               />
+              {costUsage && (
+                <span
+                  className="setting-control session-cost"
+                  aria-label={t("Стоимость сессии: {{amount}}", {
+                    amount: formatSessionCost(costUsage),
+                  })}
+                  title={t("Стоимость сессии: {{amount}}", {
+                    amount: formatSessionCost(costUsage),
+                  })}
+                >
+                  <span className="session-cost-value">{formatSessionCost(costUsage)}</span>
+                </span>
+              )}
               {contextUsage && onCompactContext && (
                 <ContextMeter
                   usage={contextUsage}
@@ -2109,6 +2125,16 @@ export function Composer({
       </div>
     </form>
   );
+}
+
+export function formatSessionCost(usage: NonNullable<ThreadSummary["costUsage"]>): string {
+  const usd = Number.isFinite(usage.usd) && usage.usd > 0 ? usage.usd : 0;
+  const digits = usd === 0 || usd >= 1 ? 2 : usd >= 0.01 ? 3 : 4;
+  const amount = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(usd);
+  return `${usage.estimated ? "≈ " : ""}$${amount}`;
 }
 
 function readImage(file: File): Promise<string> {
