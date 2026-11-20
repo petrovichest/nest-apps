@@ -17,3 +17,11 @@ export type OpenProxyStatus = {
 
 export type UpdateOpenProxyRequest = { proxy: string | null };
 export type OpenProxyTestResult = { ok: boolean; message: string };
+
+export type OpenRouterEndpoint = {
+  slug: string;
+  provider: string;
+  inputPrice: number;
+  outputPrice: number;
+  retention: "zero" | "safety" | "unknown";
+};

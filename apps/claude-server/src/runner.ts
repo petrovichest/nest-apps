@@ -1,3 +1,4 @@
+import { validOpenRouterSlug } from "./openrouter-gateway";
 import { createHash, randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
 import { chmod, mkdir, readFile, realpath, stat, unlink } from "node:fs/promises";
@@ -31,7 +32,7 @@ export interface RunnerTransport extends EventEmitter {
   readonly model?: string;
   readonly permissionMode?: ClaudePermissionMode;
   readonly livePermissionMode?: boolean;
-  setModel?(model: string): Promise<void>;
+  setModel?(model: string, endpoint?: string | null): Promise<void>;
   setPermissionMode?(mode: ClaudePermissionMode): Promise<void>;
 }
 
@@ -414,6 +415,15 @@ export class SessionRunner {
       throw new RunnerError("conflict", "Session is not running");
     }
     const model = method === "setModel" ? text(params.model, "model") : undefined;
+    let endpoint: string | null | undefined;
+    if (method === "setModel" && params.endpoint !== undefined) {
+      if (
+        !this.descriptor.openRouter ||
+        (params.endpoint !== null && !validOpenRouterSlug(params.endpoint))
+      )
+        throw new RunnerError("invalid_request", "Invalid OpenRouter endpoint");
+      endpoint = params.endpoint as string | null;
+    }
     const permissionMode =
       method === "setPermissionMode"
         ? (text(params.permissionMode, "permissionMode") as ClaudePermissionMode)
@@ -491,8 +501,10 @@ export class SessionRunner {
         this.pending.clear();
         this.setState("interrupted");
       } else {
-        if (method === "setModel") await this.transport.setModel!(model!);
-        else {
+        if (method === "setModel") {
+          if (endpoint === undefined) await this.transport.setModel!(model!);
+          else await this.transport.setModel!(model!, endpoint);
+        } else {
           await this.transport.setPermissionMode!(permissionMode!);
           if (permissionMode === "bypassPermissions") {
             for (const pending of [...this.pending.values()])

@@ -1,3 +1,4 @@
+import { validOpenRouterSlug } from "./openrouter-gateway";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, realpath, stat } from "node:fs/promises";
@@ -179,7 +180,10 @@ export class UiService extends EventEmitter {
     readonly checkReply?: ReplyCheck,
   ) {
     super();
-    this.store = new UiStore(manager.config.stateDir);
+    this.store = new UiStore(
+      manager.config.stateDir,
+      manager.config.openRouter ? "manual" : undefined,
+    );
     this.attachments = new AttachmentStore(join(manager.config.stateDir, "attachments"));
   }
   async initialize(
@@ -391,6 +395,7 @@ export class UiService extends EventEmitter {
     return project;
   }
   modelOptions(): ModelOption[] {
+    if (this.manager.config.openRouter) return this.manager.config.openRouter.models;
     return this.store.data.models.map((model) => ({
       id: model.value,
       displayName: model.displayName,
@@ -609,10 +614,10 @@ export class UiService extends EventEmitter {
   }
   snapshot(): AppSnapshot {
     return {
-      provider: "claude",
+      provider: this.manager.config.openRouter ? "open" : "claude",
       capabilities: {
         codexManagement: false,
-        rateLimits: true,
+        rateLimits: !this.manager.config.openRouter,
         plan: true,
         team: false,
         goal: false,
@@ -623,7 +628,7 @@ export class UiService extends EventEmitter {
         skills: true,
         gitChanges: true,
         artifacts: false,
-        appUpdates: true,
+        appUpdates: !this.manager.config.openRouter,
         reasoningEffort: true,
       },
       instanceId: this.instanceId,
@@ -901,6 +906,7 @@ export class UiService extends EventEmitter {
             });
             if (["failed", "closed"].includes(owner.state)) await this.settleStoppedTurn(id, owner);
             if (
+              !this.manager.config.openRouter &&
               owner.supportedModels?.length &&
               !isDeepStrictEqual(this.store.data.models, owner.supportedModels)
             )
@@ -1885,6 +1891,7 @@ export class UiService extends EventEmitter {
           : descriptor || thread.nativeHistory || this.views.get(id)?.turns().length
             ? await this.manager.send(id, message.id, prompt, content, {
                 model: thread.settings.model,
+                endpoint: thread.settings.openRouterEndpoint,
                 effort: thread.settings.reasoningEffort,
                 permissionMode: this.permissionMode(id),
               })
@@ -1894,6 +1901,7 @@ export class UiService extends EventEmitter {
                 cwd: thread.cwd,
                 prompt,
                 model: thread.settings.model,
+                endpoint: thread.settings.openRouterEndpoint,
                 effort: thread.settings.reasoningEffort,
                 permissionMode: this.permissionMode(id),
                 ...content,
@@ -2001,7 +2009,9 @@ export class UiService extends EventEmitter {
   }
   async settings(id: string, patch: Partial<SessionSettings>): Promise<ThreadSummary> {
     patch = { ...patch };
-    if (patch.model === null) patch.model = "default";
+    if (patch.model === null)
+      patch.model =
+        this.manager.config.openRouter?.models.find((item) => item.isDefault)?.id ?? "default";
     if (patch.reasoningEffort === null) patch.reasoningEffort = undefined;
     const thread = this.thread(id);
     if (thread.subagent)
@@ -2021,14 +2031,49 @@ export class UiService extends EventEmitter {
       patch.reasoningEffort !== thread.settings.reasoningEffort
     )
       throw new AppError("conflict", "Effort can be selected before the first message", 409);
-    if (descriptor && patch.model && patch.model !== thread.settings.model) {
+    const openRouter = this.manager.config.openRouter;
+    const priorModel =
+      thread.settings.model ?? openRouter?.models.find((item) => item.isDefault)?.id;
+    const nextModel = patch.model ?? priorModel;
+    if (
+      patch.openRouterEndpoint !== undefined &&
+      (!openRouter ||
+        (patch.openRouterEndpoint !== null && !validOpenRouterSlug(patch.openRouterEndpoint)))
+    )
+      throw new AppError("invalid_request", "Invalid OpenRouter endpoint");
+    if (openRouter && nextModel !== priorModel && patch.openRouterEndpoint === undefined)
+      patch.openRouterEndpoint = null;
+    const nextEndpoint =
+      patch.openRouterEndpoint === undefined
+        ? (thread.settings.openRouterEndpoint ?? null)
+        : patch.openRouterEndpoint;
+    const endpointChanged =
+      patch.openRouterEndpoint !== undefined &&
+      patch.openRouterEndpoint !== (thread.settings.openRouterEndpoint ?? null);
+    if (
+      descriptor &&
+      nextModel &&
+      ((patch.model && patch.model !== thread.settings.model) || endpointChanged)
+    ) {
       if (!owner?.capabilities?.setModel)
         throw new AppError("conflict", "This owner cannot change its model", 409);
-      await this.manager.command(id, "setModel", { requestId: randomUUID(), model: patch.model });
-      owner.model = patch.model;
+      await this.manager.command(id, "setModel", {
+        requestId: randomUUID(),
+        model: nextModel,
+        ...(openRouter ? { endpoint: nextEndpoint } : {}),
+      });
+      owner.model = nextModel;
       await writeJsonAtomic(join(this.manager.config.stateDir, "sessions", id, "descriptor.json"), {
         ...descriptor,
-        model: patch.model,
+        model: nextModel,
+        ...(openRouter
+          ? {
+              openRouter: {
+                keyFile: openRouter.keyFile,
+                ...(nextEndpoint ? { endpoint: { model: nextModel, slug: nextEndpoint } } : {}),
+              },
+            }
+          : {}),
       });
     }
     await this.store.update((data) => {

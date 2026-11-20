@@ -779,6 +779,7 @@ export type ModelOption = {
     displayName: string;
   }>;
   supportsPersonality: boolean;
+  openRouter?: { developer: string; inputPrice: number; outputPrice: number };
 };
 
 export function isFastServiceTier(value: unknown): boolean {
@@ -812,6 +813,7 @@ export type UpdateGlobalPermissionSettingsRequest = {
 export type SessionSettings = {
   collaborationMode: CollaborationMode;
   model?: string;
+  openRouterEndpoint?: string | null;
   reasoningEffort?: string;
   /** Fast mode is stored as "fast"; an absent value uses the standard service tier. */
   serviceTier?: string;
@@ -1567,6 +1569,7 @@ export type UpdateQueuedMessageRequest = PastedText & {
 export type UpdateThreadSettingsRequest = {
   collaborationMode?: CollaborationMode;
   model?: string | null;
+  openRouterEndpoint?: string | null;
   reasoningEffort?: string | null;
   /** "fast" enables Fast mode; null clears the session setting. */
   serviceTier?: string | null;

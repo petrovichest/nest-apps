@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "tsup src/index.ts src/native.ts src/plugin.ts --format esm --platform node --target node24 --sourcemap --out-dir dist --clean --no-splitting",
+    "build": "tsup src/index.ts src/native.ts src/plugin.ts src/claude-runner.ts --format esm --platform node --target node24 --sourcemap --out-dir dist --clean --no-splitting",
     "dev": "npm run build && node dist/index.js",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -1,3 +1,6 @@
+import { readOpenRouterKey } from "./openrouter-gateway";
+import { writeJsonAtomic } from "./io";
+import type { OpenConnectionStatus } from "@codexnest/protocol";
 import { timingSafeEqual } from "node:crypto";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
@@ -125,16 +128,52 @@ export async function buildApp(
   });
   app.get("/api/v1/health", async () => ({
     status: "ok",
-    app: "claudenest",
-    provider: "claude",
+    app: manager.config.openRouter ? "opennest" : "claudenest",
+    provider: manager.config.openRouter ? "open" : "claude",
     serverVersion: manager.config.version ?? "0.1.0",
     runnerProtocolVersion: 1,
     recoveryState: manager.accepting ? "ready" : "draining",
     releasePath: manager.config.releasePath,
     restartProtocolVersion: 1,
     transport: "daemon",
-    appServer: { state: "ready", installedVersion: null, message: null },
+    appServer: {
+      state: "ready",
+      installedVersion: manager.config.openRouter?.runtimeVersion ?? null,
+      message: null,
+    },
   }));
+  const openRouter = manager.config.openRouter;
+  if (openRouter) {
+    if (ui) app.get("/api/v1/snapshot", () => ui.snapshot());
+    const status = async (): Promise<OpenConnectionStatus> => ({
+      runtime: "ready",
+      runtimeVersion: openRouter.runtimeVersion,
+      provider: "openrouter",
+      apiKeyConfigured: await readOpenRouterKey(openRouter.keyFile).then(
+        () => true,
+        () => false,
+      ),
+      message: null,
+    });
+    app.get("/api/v1/settings/open", status);
+    app.post("/api/v1/settings/open/test", status);
+    app.put("/api/v1/settings/open", async (request) => {
+      const key = record(request.body).apiKey;
+      if (typeof key !== "string" || key.length > 256 || !/^sk-or-[a-zA-Z0-9_-]+$/.test(key))
+        throw new AppError("invalid_request", "Invalid OpenRouter key");
+      await writeJsonAtomic(openRouter.keyFile, key);
+      return status();
+    });
+    app.get<{ Querystring: { model?: string } }>(
+      "/api/v1/openrouter/endpoints",
+      async (request) => {
+        const model = request.query.model;
+        if (!model || !openRouter.models.some((option) => option.id === model))
+          throw new AppError("invalid_request", "Model is not in the OpenRouter catalog");
+        return openRouter.endpoints(model);
+      },
+    );
+  }
   const appManager = new AppManager(manager.config);
   if (manager.accounts) await registerAccountRoutes(app, manager.accounts);
   app.get("/api/v1/settings/app", () => appManager.status());

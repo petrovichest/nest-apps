@@ -10,6 +10,14 @@ export interface OpenRouterConnection {
   endpoint?: { model: string; slug: string };
 }
 
+export function validOpenRouterSlug(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[a-z0-9-]+(?:\/[a-z0-9-]+){0,3}$/.test(value) &&
+    value.length <= 160
+  );
+}
+
 const messages = "/api/v1/messages";
 const countTokens = "/api/v1/messages/count_tokens";
 const requestLimit = 32 * 1024 * 1024;
@@ -23,14 +31,16 @@ class GatewayError extends Error {
   }
 }
 
-async function readKey(path: string): Promise<string> {
+export async function readOpenRouterKey(path: string): Promise<string> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const metadata = await file.stat();
     if (!metadata.isFile() || metadata.mode & 0o077 || metadata.size > 4096)
       throw new Error("OpenRouter key must be in a private regular file");
-    const key = (await file.readFile("utf8")).trim();
-    if (!/^[a-zA-Z0-9_-]+$/.test(key)) throw new Error("Invalid OpenRouter key");
+    const content = (await file.readFile("utf8")).trim();
+    const key: unknown = content.startsWith('"') ? JSON.parse(content) : content;
+    if (typeof key !== "string" || !/^[a-zA-Z0-9_-]+$/.test(key))
+      throw new Error("Invalid OpenRouter key");
     return key;
   } finally {
     await file.close();
@@ -81,7 +91,8 @@ export async function startOpenRouterGateway(
   options: OpenRouterConnection,
   env: NodeJS.ProcessEnv,
 ) {
-  const key = await readKey(options.keyFile);
+  const key = await readOpenRouterKey(options.keyFile);
+  let endpoint = options.endpoint;
   const token = randomBytes(32).toString("hex");
   const authorization = Buffer.from(`Bearer ${token}`);
   const agent = new Agent({ keepAlive: true, proxyEnv: env });
@@ -95,7 +106,7 @@ export async function startOpenRouterGateway(
       throw new GatewayError(404, "Unknown model gateway endpoint");
     const payload = await readRequest(incoming);
     const data = JSON.stringify(
-      target.pathname === messages ? routeOpenRouterMessage(payload, options.endpoint) : payload,
+      target.pathname === messages ? routeOpenRouterMessage(payload, endpoint) : payload,
     );
     const headers: Record<string, string | number> = {
       authorization: `Bearer ${key}`,
@@ -161,6 +172,9 @@ export async function startOpenRouterGateway(
   return {
     url: `http://127.0.0.1:${port}/api`,
     token,
+    setEndpoint(next?: OpenRouterConnection["endpoint"]) {
+      endpoint = next;
+    },
     async close() {
       agent.destroy();
       await new Promise<void>((resolve) => {

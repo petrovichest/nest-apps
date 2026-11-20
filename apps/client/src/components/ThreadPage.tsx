@@ -1131,12 +1131,15 @@ export function ThreadPage({
     },
     [],
   );
+  const supportsForks = state.snapshot?.capabilities?.forks ?? application.capabilities.forks;
+  const supportsGoal = state.snapshot?.capabilities?.goal ?? application.capabilities.goal;
+  const supportsTeam = state.snapshot?.capabilities?.team ?? application.capabilities.team;
   const completedTurnForkActions = useMemo(() => {
     const actions = new Map<
       string,
       { responseId: string; action: { disabled: boolean; onFork(opener?: HTMLElement): void } }
     >();
-    if (isSubagent || !application.capabilities.forks) return actions;
+    if (isSubagent || !supportsForks) return actions;
     for (const turn of detail?.turns ?? []) {
       const responseId = findForkResponseId(turn);
       if (!responseId) continue;
@@ -1149,7 +1152,7 @@ export function ThreadPage({
       });
     }
     return actions;
-  }, [detail?.turns, forkFromTurnEvent, isSubagent]);
+  }, [detail?.turns, forkFromTurnEvent, isSubagent, supportsForks]);
   const latestAnnotatableId = useMemo(
     () => findLatestAnnotatable(detail, summary?.currentTurnId ?? null),
     [detail, summary?.currentTurnId],
@@ -2518,12 +2521,7 @@ export function ThreadPage({
   }, [flushComposerDraftEvent]);
 
   useEffect(() => {
-    if (
-      !application.capabilities.goal ||
-      !threadId ||
-      isSubagent ||
-      createdInWorkspaceRef.current === threadId
-    ) {
+    if (!supportsGoal || !threadId || isSubagent || createdInWorkspaceRef.current === threadId) {
       return;
     }
     const request = api.readGoal?.(threadId);
@@ -2531,7 +2529,7 @@ export function ThreadPage({
     void request
       .then((value) => dispatch({ type: "goal", threadId, goal: value }))
       .catch(() => undefined);
-  }, [api, dispatch, isSubagent, threadId]);
+  }, [api, dispatch, isSubagent, supportsGoal, threadId]);
 
   useEffect(() => {
     const notice = (location.state as { notice?: unknown } | null)?.notice;
@@ -4633,7 +4631,7 @@ export function ThreadPage({
                                           >
                                             {t("Да, реализуй этот план")}
                                           </button>
-                                          {application.capabilities.goal && (
+                                          {supportsGoal && (
                                             <button
                                               className="implement-plan goal"
                                               disabled={planAcceptanceDisabled}
@@ -4645,7 +4643,7 @@ export function ThreadPage({
                                               {t("Запустить в режиме цели")}
                                             </button>
                                           )}
-                                          {application.capabilities.team && (
+                                          {supportsTeam && (
                                             <button
                                               className="implement-plan orchestrator"
                                               disabled={planAcceptanceDisabled}

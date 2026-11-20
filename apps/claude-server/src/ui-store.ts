@@ -129,7 +129,8 @@ export class UiStore {
   private current = initial();
   private writing: Promise<unknown> = Promise.resolve();
   readonly path: string;
-  constructor(stateDir: string) {
+  constructor(stateDir: string, permissionMode?: ClaudePermissionMode) {
+    if (permissionMode) this.current.permissionMode = permissionMode;
     this.path = join(stateDir, "ui.json");
   }
   get data(): UiData {

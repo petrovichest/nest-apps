@@ -1,3 +1,4 @@
+import type { ModelOption, OpenRouterEndpoint } from "@codexnest/protocol";
 import { access, chmod, mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -22,6 +23,12 @@ export interface Config {
   clientDist?: string;
   version?: string;
   managedInstall?: boolean;
+  openRouter?: {
+    keyFile: string;
+    runtimeVersion: string;
+    models: ModelOption[];
+    endpoints(model: string): Promise<OpenRouterEndpoint[]>;
+  };
 }
 
 export async function executablePath(name: string): Promise<string> {

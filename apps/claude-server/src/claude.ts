@@ -150,6 +150,7 @@ export class ClaudeProcess extends EventEmitter {
       this.options.sessionId,
     ];
     if (this.options.model) args.push("--model", this.options.model);
+    if (this.options.openRouter) args.push("--setting-sources", "");
     if (this.options.effort) args.push("--effort", this.options.effort);
     if (this.options.noSessionPersistence) args.push("--no-session-persistence");
     if (this.options.mcpConfigPath) args.push("--mcp-config", this.options.mcpConfigPath);
@@ -245,9 +246,11 @@ export class ClaudeProcess extends EventEmitter {
     });
   }
 
-  async setModel(model: string): Promise<void> {
+  async setModel(model: string, endpoint?: string | null): Promise<void> {
     this.assertReady();
     await this.control({ subtype: "set_model", model });
+    if (endpoint !== undefined)
+      this.openRouterGateway?.setEndpoint(endpoint ? { model, slug: endpoint } : undefined);
     this.model = model;
   }
 

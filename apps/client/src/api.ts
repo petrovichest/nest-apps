@@ -27,6 +27,7 @@ import type {
   HealthResponse,
   GeminiConnectionStatus,
   OpenConnectionStatus,
+  OpenRouterEndpoint,
   OpenProxyStatus,
   OpenProxyTestResult,
   MarkReadRequest,
@@ -333,6 +334,10 @@ export class ApiClient {
     return this.request(`/api/v1/settings/codex/accounts/logins/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
+  }
+
+  readOpenRouterEndpoints(model: string): Promise<OpenRouterEndpoint[]> {
+    return this.request(`/api/v1/openrouter/endpoints?${new URLSearchParams({ model })}`);
   }
 
   readOpenConnection(): Promise<OpenConnectionStatus> {

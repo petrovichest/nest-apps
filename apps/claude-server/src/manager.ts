@@ -33,7 +33,10 @@ export interface SessionLauncher {
 }
 
 export class SystemdLauncher implements SessionLauncher {
-  constructor(private readonly envFile: string) {}
+  constructor(
+    private readonly envFile: string,
+    private readonly unitPrefix = "claudenest-session",
+  ) {}
   async available(): Promise<void> {
     try {
       await exec("systemctl", ["--user", "show", "-p", "Version"], { timeout: 5_000 });
@@ -52,7 +55,7 @@ export class SystemdLauncher implements SessionLauncher {
         [
           "--user",
           "show",
-          `claudenest-session-${sessionId}.service`,
+          `${this.unitPrefix}-${sessionId}.service`,
           "-p",
           "ActiveState",
           "--value",
@@ -65,7 +68,7 @@ export class SystemdLauncher implements SessionLauncher {
     }
   }
   private async cleanFailedUnit(sessionId: string): Promise<void> {
-    const unit = `claudenest-session-${sessionId}.service`;
+    const unit = `${this.unitPrefix}-${sessionId}.service`;
     const { stdout } = await exec(
       "systemctl",
       ["--user", "show", unit, "-p", "ActiveState", "-p", "ControlGroup"],
@@ -96,7 +99,7 @@ export class SystemdLauncher implements SessionLauncher {
     await exec("systemctl", ["--user", "reset-failed", unit], { timeout: 5_000 });
   }
   async stop(sessionId: string): Promise<void> {
-    const unit = `claudenest-session-${sessionId}.service`;
+    const unit = `${this.unitPrefix}-${sessionId}.service`;
     // Native interruption already had its grace period. Target this unit only.
     try {
       await exec("systemctl", ["--user", "stop", "--no-block", unit], { timeout: 5_000 });
@@ -133,7 +136,7 @@ export class SystemdLauncher implements SessionLauncher {
           "--collect",
           "--quiet",
           "--service-type=exec",
-          `--unit=claudenest-session-${descriptor.sessionId}`,
+          `--unit=${this.unitPrefix}-${descriptor.sessionId}`,
           "--property=Restart=no",
           "--property=KillMode=control-group",
           "--property=UMask=0077",
@@ -157,6 +160,7 @@ export class SystemdLauncher implements SessionLauncher {
 
 type LaunchIntent = { sessionId: string; requestId: string; fingerprint: string };
 type CreateSession = {
+  endpoint?: string | null;
   sessionId: string;
   requestId: string;
   cwd: string;
@@ -180,7 +184,10 @@ export class SessionManager {
   private lease?: NodeJS.Timeout;
   constructor(
     readonly config: Config,
-    readonly launcher: SessionLauncher = new SystemdLauncher(config.serverEnvFile),
+    readonly launcher: SessionLauncher = new SystemdLauncher(
+      config.serverEnvFile,
+      config.openRouter ? "opennest-claude-session" : undefined,
+    ),
     readonly accounts?: ClaudeAccounts,
   ) {}
 
@@ -318,12 +325,20 @@ export class SessionManager {
     effort?: string,
     permissionMode?: ClaudePermissionMode,
     account?: ClaudeLaunchAccount,
+    endpoint?: string | null,
   ): Promise<RunnerDescriptor> {
     const canonicalCwd = await realpath(cwd).catch(() => {
       throw new AppError("invalid_request", "Project directory does not exist");
     });
     if (!(await stat(canonicalCwd)).isDirectory())
       throw new AppError("invalid_request", "Project path must be a directory");
+    const openRouter = this.config.openRouter;
+    if (openRouter) {
+      model ??= openRouter.models.find((item) => item.isDefault)?.id;
+      if (!openRouter.models.some((item) => item.id === model))
+        throw new AppError("invalid_request", "Model is not in the OpenRouter catalog");
+      permissionMode ??= "manual";
+    }
     const selected = account ?? (await this.accounts?.launchAccount());
     const browser = this.browserLaunch?.(id);
     let browserDescriptor: RunnerDescriptor["browser"];
@@ -341,6 +356,14 @@ export class SessionManager {
       releasePath: this.config.releasePath,
       runnerPath: this.config.runnerPath,
       configDir: selected?.configDir ?? this.config.configDir,
+      ...(openRouter
+        ? {
+            openRouter: {
+              keyFile: openRouter.keyFile,
+              ...(endpoint && model ? { endpoint: { model, slug: endpoint } } : {}),
+            },
+          }
+        : {}),
       ...(selected
         ? {
             accountId: selected.accountId,
@@ -410,6 +433,8 @@ export class SessionManager {
         input.model,
         input.effort,
         input.permissionMode,
+        undefined,
+        input.endpoint,
       );
       const fingerprint = createHash("sha256")
         .update(
@@ -417,6 +442,7 @@ export class SessionManager {
             cwd: descriptor.cwd,
             prompt: input.prompt,
             model: input.model ?? null,
+            ...(input.endpoint ? { endpoint: input.endpoint } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
             ...(input.files?.length ? { files: input.files } : {}),
@@ -490,7 +516,12 @@ export class SessionManager {
     requestId: string,
     prompt: string,
     content?: { files?: RunnerAttachment[]; images?: RunnerAttachment[] },
-    launch?: { model?: string; effort?: string; permissionMode?: ClaudePermissionMode },
+    launch?: {
+      model?: string;
+      effort?: string;
+      permissionMode?: ClaudePermissionMode;
+      endpoint?: string | null;
+    },
   ): Promise<unknown> {
     this.assertAccepting();
     assertUuid(id, "sessionId");
@@ -524,6 +555,8 @@ export class SessionManager {
             launch?.model ?? previous?.model,
             launch?.effort ?? previous?.effort,
             launch?.permissionMode ?? previous?.permissionMode,
+            undefined,
+            launch?.endpoint === undefined ? previous?.openRouter?.endpoint?.slug : launch.endpoint,
           ),
         );
       }
