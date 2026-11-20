@@ -15,6 +15,15 @@ import { join } from "node:path";
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 const commitId = (value) => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
 const checksum = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+const openCodeVersion = "1.19.5";
+const claudeVersion = "2.1.289";
+
+function runtimeVersion(runtime) {
+  if (runtime === undefined || runtime === "opencode") return openCodeVersion;
+  if (runtime === "claude") return claudeVersion;
+  throw new Error("Unsupported OpenNest runtime");
+}
+
 const requiredScopes = [
   "clean-install",
   "large-history-cold",
@@ -53,11 +62,13 @@ export function manifestCandidate(value) {
     throw new Error("Invalid Nest Apps release manifest");
   const application = value.applications?.opennest;
   if (!application || !application.qualification) return null;
+  if (application.runtime !== undefined) runtimeVersion(application.runtime);
   return {
     version: value.version,
     commit: value.commit,
     installer: artifact(application.installer),
     qualification: artifact(application.qualification),
+    ...(application.runtime === undefined ? {} : { runtime: application.runtime }),
   };
 }
 
@@ -84,6 +95,14 @@ export function qualifyCandidate(candidate, report, baseline, nativeVersion) {
   )
     throw new Error("OpenNest candidate lacks matching native lifecycle qualification");
   const scopes = report.scopes;
+  if (
+    candidate.runtime === "claude" &&
+    (report.runtime !== "claude" ||
+      !report.nativeVersions.includes(claudeVersion) ||
+      !Array.isArray(scopes) ||
+      !scopes.some((scope) => scope.name === "runtime-transition" && scope.result === "passed"))
+  )
+    throw new Error("OpenNest lacks Claude Code transition qualification");
   if (
     !Array.isArray(scopes) ||
     requiredScopes.some(
@@ -228,12 +247,34 @@ export function createUpdater({
       health.appServer?.state !== "ready"
     )
       throw new Error("The installed OpenNest baseline is not ready");
-    const binary = config.OPENNEST_OPENCODE_BIN;
-    const version = (
+    const oldRuntime = config.OPENNEST_RUNTIME;
+    const version = runtimeVersion(oldRuntime);
+    const binary =
+      oldRuntime === "claude"
+        ? config.OPENNEST_CLAUDE_BIN || "claude"
+        : config.OPENNEST_OPENCODE_BIN;
+    const actual = (
       await run(binary, ["--version"], { timeout: 15_000, env: { ...env, ...config } })
-    ).stdout.trim();
-    if (version !== "1.19.5" || health.appServer.installedVersion !== version)
+    ).stdout
+      .trim()
+      .split(/\s+/)[0];
+    if (actual !== version || health.appServer.installedVersion !== version)
       throw new Error("The native runtime is unsupported for this OpenNest updater");
+    if (oldRuntime === "claude" && proposed.runtime !== "claude")
+      throw new Error("A release for OpenCode cannot replace the active Claude Code runtime");
+    if (proposed.runtime === "claude" && oldRuntime !== "claude") {
+      const claude = config.OPENNEST_CLAUDE_BIN || "claude";
+      const claimed = (
+        await run(claude, ["--version"], {
+          timeout: 15_000,
+          env: { ...env, ...config },
+        })
+      ).stdout
+        .trim()
+        .split(/\s+/)[0];
+      if (claimed !== claudeVersion)
+        throw new Error("Install the qualified Claude Code version before switching runtimes");
+    }
     const reportBytes = await download(proposed.qualification.url);
     if (sha(reportBytes) !== proposed.qualification.sha256)
       throw new Error("OpenNest qualification checksum does not match");
@@ -363,9 +404,11 @@ export function createUpdater({
     if (sha(packaged) !== value.installer.sha256)
       throw new Error("Qualified installer does not match the candidate source packaging");
   }
-  async function setRelease(target, version) {
+  async function setRelease(target, version, runtime) {
     const config = await configuration();
     const values = { ...config, OPENNEST_RELEASE_PATH: target, OPENNEST_VERSION: version };
+    if (runtime === undefined) delete values.OPENNEST_RUNTIME;
+    else values.OPENNEST_RUNTIME = runtime;
     await atomic(
       location.env,
       Object.entries(values)
@@ -381,24 +424,24 @@ export function createUpdater({
     );
     await control(["daemon-reload"]);
   }
-  const nativeReady = (health, version) =>
+  const nativeReady = (health, version, runtime) =>
     health?.app === "opennest" &&
     health.provider === "open" &&
     health.status === "ok" &&
     health.serverVersion === version &&
     health.restartProtocolVersion === 1 &&
     health.appServer?.state === "ready" &&
-    health.appServer.installedVersion === "1.19.5";
-  const healthy = (health, version) =>
-    nativeReady(health, version) && health.recoveryState === "ready";
-  async function waitHealthy(version, nativePid) {
+    health.appServer.installedVersion === runtimeVersion(runtime);
+  const healthy = (health, version, runtime) =>
+    nativeReady(health, version, runtime) && health.recoveryState === "ready";
+  async function waitHealthy(version, nativePid, runtime) {
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       if ((await nativeIdentity()) !== nativePid)
         throw new Error("The surviving native process changed during API replacement");
       try {
         const health = await api("health");
-        if (healthy(health, version)) return;
+        if (healthy(health, version, runtime)) return;
       } catch {
         /* The API is still reconnecting to the same native owner. */
       }
@@ -423,7 +466,8 @@ export function createUpdater({
       transaction.schemaVersion !== 1 ||
       !commitId(transaction.previousCommit) ||
       !commitId(transaction.candidateCommit) ||
-      !Number.isSafeInteger(transaction.nativePid)
+      !Number.isSafeInteger(transaction.nativePid) ||
+      ![undefined, "opencode", "claude"].includes(transaction.previousRuntime)
     )
       throw new Error("Invalid OpenNest update recovery metadata");
     const previous = await verifyRelease(transaction.previousRelease);
@@ -436,11 +480,12 @@ export function createUpdater({
       pointer === previous.release &&
       config.OPENNEST_RELEASE_PATH === previous.release &&
       config.OPENNEST_VERSION === transaction.previousVersion &&
+      config.OPENNEST_RUNTIME === transaction.previousRuntime &&
       (await nativeIdentity()) === transaction.nativePid
     ) {
       const health = await api("health").catch(() => null);
       if (
-        nativeReady(health, transaction.previousVersion) &&
+        nativeReady(health, transaction.previousVersion, transaction.previousRuntime) &&
         ["ready", "draining"].includes(health.recoveryState)
       ) {
         // Preparation can fail while A is still healthy (for example a temporary
@@ -449,7 +494,7 @@ export function createUpdater({
         await api("internal/restart/resume", {});
         if (
           (await nativeIdentity()) !== transaction.nativePid ||
-          !healthy(await api("health"), transaction.previousVersion)
+          !healthy(await api("health"), transaction.previousVersion, transaction.previousRuntime)
         )
           throw new Error("The unchanged OpenNest baseline did not remain ready");
         await writeStatus(
@@ -461,9 +506,13 @@ export function createUpdater({
         return "unchanged";
       }
     }
-    await setRelease(previous.release, transaction.previousVersion);
+    await setRelease(previous.release, transaction.previousVersion, transaction.previousRuntime);
     await control(["restart", "opennest.service"]);
-    await waitHealthy(transaction.previousVersion, transaction.nativePid);
+    await waitHealthy(
+      transaction.previousVersion,
+      transaction.nativePid,
+      transaction.previousRuntime,
+    );
     await api("internal/restart/resume", {});
     await writeStatus(
       "idle",
@@ -528,19 +577,31 @@ export function createUpdater({
           schemaVersion: 1,
           previousRelease: before.release,
           previousVersion: config.OPENNEST_VERSION,
+          previousRuntime: config.OPENNEST_RUNTIME,
           previousCommit: before.commit,
           candidateRelease: target,
           candidateCommit: next.commit,
           nativePid,
         }) + "\n",
       );
-      const preparation = await api("internal/restart/prepare", { supportedRunnerProtocols: [1] });
+      const preparation = await api("internal/restart/prepare", {
+        supportedRunnerProtocols: [1],
+        ...(next.runtime === "claude" && config.OPENNEST_RUNTIME !== "claude"
+          ? { targetRuntime: "claude" }
+          : {}),
+      });
       if (!preparation.ready || !preparation.supportedRunnerProtocols?.includes(1))
         throw new Error("Installed OpenNest refused the recovery protocol");
+      if (
+        next.runtime === "claude" &&
+        config.OPENNEST_RUNTIME !== "claude" &&
+        (preparation.activeTurnCount !== 0 || preparation.pendingWorkCount !== 0)
+      )
+        throw new Error("Finish active OpenCode sessions before switching runtimes");
       await writeStatus("switching", "none", "Переключаем только API OpenNest.", next);
-      await setRelease(target, next.version);
+      await setRelease(target, next.version, next.runtime ?? config.OPENNEST_RUNTIME);
       await control(["restart", "opennest.service"]);
-      await waitHealthy(next.version, nativePid);
+      await waitHealthy(next.version, nativePid, next.runtime ?? config.OPENNEST_RUNTIME);
       await api("internal/restart/resume", {});
       await writeStatus("idle", "updated", "OpenNest обновлён; native-процесс сохранён.", next);
       await rm(transactionPath);

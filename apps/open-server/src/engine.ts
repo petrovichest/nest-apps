@@ -1931,11 +1931,25 @@ export class Engine extends EventEmitter {
       return this.summary(session.id);
     });
   }
-  async prepareRestart() {
+  async prepareRestart(targetRuntime?: "claude") {
+    const checkpoint = async () => {
+      this.accepting = false;
+      await this.save();
+      const pendingWorkCount = Object.values(this.data.threads).reduce(
+        (count, thread) => count + thread.queue.length,
+        this.requests.size,
+      );
+      return {
+        ready: true,
+        supportedRunnerProtocols: [1],
+        activeTurnCount: this.busy.size,
+        pendingWorkCount,
+      };
+    };
+    if (targetRuntime === "claude") return this.withIdleNative(checkpoint);
     this.accepting = false;
     await this.operationTail;
-    await this.save();
-    return { ready: true, supportedRunnerProtocols: [1], activeTurnCount: this.busy.size };
+    return checkpoint();
   }
   resumeAccepting() {
     this.accepting = true;

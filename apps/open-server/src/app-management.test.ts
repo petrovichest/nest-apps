@@ -79,10 +79,8 @@ describe("OpenNest app update controls", () => {
     const status = await f.manager.update();
     expect(status.operation).toBe("preparing");
     expect(f.calls.at(-1)?.args).toEqual([
-      "--user",
-      "start",
-      "--no-block",
-      "opennest-update.service",
+      join(f.config.releasePath, "apps/open-server/scripts/manage.mjs"),
+      "update",
     ]);
     const saved = JSON.parse(
       await readFile(join(f.config.stateDir, "update.json"), "utf8"),
