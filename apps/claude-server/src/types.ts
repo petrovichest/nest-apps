@@ -1,3 +1,4 @@
+import type { OpenRouterConnection } from "./openrouter-gateway.js";
 import { createHash } from "node:crypto";
 import type { ParsedClaudeProxy } from "@codexnest/protocol";
 import type { NativeQuotaFailure } from "./quota-recovery";
@@ -40,6 +41,7 @@ export interface RunnerDescriptor {
   defaultConfig?: boolean;
   accountId?: string;
   proxy?: ParsedClaudeProxy | null;
+  openRouter?: OpenRouterConnection;
   /** Associates a replacement owner with its durable continuation command. */
   quotaRecoveryId?: string;
   socketPath: string;

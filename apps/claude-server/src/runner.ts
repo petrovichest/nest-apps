@@ -145,6 +145,7 @@ export class SessionRunner {
           resume: descriptor.resume,
           env: { CLAUDE_CONFIG_DIR: descriptor.defaultConfig ? undefined : descriptor.configDir },
           proxy: descriptor.proxy,
+          openRouter: descriptor.openRouter,
           ...(descriptor.model ? { model: descriptor.model } : {}),
           ...(descriptor.effort ? { effort: descriptor.effort } : {}),
           ...(descriptor.permissionMode ? { permissionMode: descriptor.permissionMode } : {}),

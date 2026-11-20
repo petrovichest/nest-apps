@@ -1,3 +1,4 @@
+import { startOpenRouterGateway, type OpenRouterConnection } from "./openrouter-gateway.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -42,6 +43,7 @@ export interface ClaudeProcessOptions {
   env?: NodeJS.ProcessEnv;
   /** Undefined preserves legacy inherited connection settings; null explicitly selects direct. */
   proxy?: ParsedClaudeProxy | null;
+  openRouter?: OpenRouterConnection;
   proxyEnvironment?: typeof createClaudeProxyEnvironment;
   spawnProcess?: typeof spawn;
 }
@@ -55,6 +57,7 @@ export class ClaudeProcess extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
   private startPromise?: Promise<void>;
   private stopPromise?: Promise<void>;
+  private openRouterGateway?: Awaited<ReturnType<typeof startOpenRouterGateway>>;
   private proxyConnection?: ClaudeProxyEnvironment;
   private initialized = false;
   private exited = false;
@@ -102,6 +105,28 @@ export class ClaudeProcess extends EventEmitter {
       );
       env = this.proxyConnection.env;
     }
+    if (this.options.openRouter) {
+      try {
+        this.openRouterGateway = await startOpenRouterGateway(this.options.openRouter, env);
+        env = {
+          ...env,
+          ANTHROPIC_BASE_URL: this.openRouterGateway.url,
+          ANTHROPIC_AUTH_TOKEN: this.openRouterGateway.token,
+          ANTHROPIC_API_KEY: "",
+          CLAUDE_CODE_OAUTH_TOKEN: undefined,
+          CLAUDE_CODE_USE_BEDROCK: undefined,
+          CLAUDE_CODE_USE_VERTEX: undefined,
+          CLAUDE_CODE_USE_FOUNDRY: undefined,
+          ANTHROPIC_CUSTOM_HEADERS: undefined,
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+          NO_PROXY: [env.NO_PROXY ?? env.no_proxy, "127.0.0.1"].filter(Boolean).join(","),
+        };
+        delete env.no_proxy;
+      } catch (error) {
+        await this.closeConnections();
+        throw error;
+      }
+    }
     // CLI session authentication and normal project/user settings stay inherited.
     delete env.CLAUDECODE;
     const args = [
@@ -138,7 +163,7 @@ export class ClaudeProcess extends EventEmitter {
         stdio: ["pipe", "pipe", "pipe"],
       }) as ChildProcessWithoutNullStreams;
     } catch {
-      await this.closeProxy();
+      await this.closeConnections();
       throw new Error("Could not start installed Claude CLI");
     }
     const child = this.child;
@@ -159,7 +184,7 @@ export class ClaudeProcess extends EventEmitter {
       this.initialized = false;
       this.rejectControls(new Error("Claude CLI exited before its control response"));
       this.requests.clear();
-      void this.closeProxy();
+      void this.closeConnections();
       this.emit("exit", { code, signal });
     });
     // spawn errors have no exit event, but always have close.
@@ -167,7 +192,7 @@ export class ClaudeProcess extends EventEmitter {
       this.exited = true;
       this.initialized = false;
       this.rejectControls(new Error("Claude CLI closed before its control response"));
-      void this.closeProxy();
+      void this.closeConnections();
     });
     try {
       const metadata = await this.control(
@@ -203,7 +228,7 @@ export class ClaudeProcess extends EventEmitter {
     } catch (error) {
       child.stdin.end();
       if (!this.exited) child.kill("SIGTERM");
-      await this.closeProxy();
+      await this.closeConnections();
       throw error;
     }
   }
@@ -266,7 +291,7 @@ export class ClaudeProcess extends EventEmitter {
 
   private async stopOnce(): Promise<void> {
     const child = this.child;
-    if (!child || this.exited) return this.closeProxy();
+    if (!child || this.exited) return this.closeConnections();
     // End stdin only after interrupt has cancelled any outstanding host prompts.
     if (this.initialized && !this.failed) {
       try {
@@ -276,18 +301,21 @@ export class ClaudeProcess extends EventEmitter {
       }
     }
     child.stdin.end();
-    if (await this.waitForExit(STOP_GRACE_MS)) return this.closeProxy();
+    if (await this.waitForExit(STOP_GRACE_MS)) return this.closeConnections();
     child.kill("SIGTERM");
-    if (await this.waitForExit(STOP_GRACE_MS)) return this.closeProxy();
+    if (await this.waitForExit(STOP_GRACE_MS)) return this.closeConnections();
     child.kill("SIGKILL");
     await this.waitForExit(STOP_GRACE_MS);
-    await this.closeProxy();
+    await this.closeConnections();
     if (!this.exited) throw new Error("Claude CLI did not exit after stop");
   }
 
-  private async closeProxy(): Promise<void> {
+  private async closeConnections(): Promise<void> {
     const connection = this.proxyConnection;
+    const gateway = this.openRouterGateway;
     this.proxyConnection = undefined;
+    this.openRouterGateway = undefined;
+    await gateway?.close().catch(() => undefined);
     await connection?.close().catch(() => undefined);
   }
 
