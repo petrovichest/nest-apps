@@ -5142,6 +5142,31 @@ button.composer-card-filter:active {
   initial-value: 0deg;
 }
 
+.session-cost {
+  cursor: default;
+  gap: 0;
+  padding-inline: var(--space-2);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.composer-toolbar .setting-control.session-cost,
+.composer-toolbar .setting-control.session-cost:hover,
+.composer-toolbar .setting-control.session-cost:active {
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-cost-value {
+  overflow: hidden;
+  color: var(--muted-strong);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .context-meter {
   --context-color: var(--text);
   --context-size: 15px;

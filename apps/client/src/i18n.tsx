@@ -1399,6 +1399,7 @@ const ENGLISH: Record<string, string> = {
   "Сжать контекст": "Compact the context",
   "Заполненность контекста неизвестна": "Context usage is unknown",
   "Контекст заполнен на {{percent}}%": "Context is {{percent}}% full",
+  "Стоимость сессии: {{amount}}": "Session cost: {{amount}}",
   "Не удалось сжать контекст": "Could not compact the context",
   "Сообщение для Codex": "Message for Codex",
   "Следующее изображение": "Next image",

@@ -338,6 +338,11 @@ export type ThreadSummary = {
    * compaction and the next report; the field is absent while nothing has been reported.
    */
   contextUsage?: { usedTokens: number | null; windowTokens: number };
+  /**
+   * Money spent by this thread and its subagent sessions. `estimated` is true when the provider
+   * did not report a billed cost and the figure was derived from the model price table.
+   */
+  costUsage?: { usd: number; estimated: boolean };
 };
 
 export type ThreadSearchScope = "titles" | "messages";

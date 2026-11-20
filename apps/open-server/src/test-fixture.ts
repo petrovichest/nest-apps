@@ -12,7 +12,14 @@ export class NativeFixture {
   calls: Call[] = [];
   sessions = new Map<
     string,
-    { id: string; directory: string; title: string; time: { created: number; updated: number } }
+    {
+      id: string;
+      directory: string;
+      title: string;
+      parentID?: string;
+      cost?: number;
+      time: { created: number; updated: number };
+    }
   >();
   messages = new Map<string, NativeMessage[]>();
   statuses = new Map<string, Record<string, { type: string }>>();
@@ -48,6 +55,7 @@ export class NativeFixture {
                 name: "Test model",
                 variants: { low: {}, high: {} },
                 capabilities: { input: { image: this.supportsImages } },
+                cost: { input: 1, output: 2, cache: { read: 0.1, write: 1.25 } },
               },
             },
           },

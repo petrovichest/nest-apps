@@ -4854,6 +4854,7 @@ export function ThreadPage({
                 ? undefined
                 : workspaceSummary.contextUsage
             }
+            costUsage={workspaceSummary.costUsage}
             contextCompacting={compactRequested}
             onCompactContext={() => void compactContext()}
             autoFocus={
