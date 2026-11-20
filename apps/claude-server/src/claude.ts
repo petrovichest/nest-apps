@@ -248,7 +248,8 @@ export class ClaudeProcess extends EventEmitter {
 
   async setModel(model: string, endpoint?: string | null): Promise<void> {
     this.assertReady();
-    await this.control({ subtype: "set_model", model });
+    if (!this.openRouterGateway || model !== this.model)
+      await this.control({ subtype: "set_model", model });
     if (endpoint !== undefined)
       this.openRouterGateway?.setEndpoint(endpoint ? { model, slug: endpoint } : undefined);
     this.model = model;

@@ -1777,6 +1777,16 @@ export class UiService extends EventEmitter {
     }
     if (owner?.state === "interrupted" && owner.awaitingResult) return;
     const idle = owner && ["idle", "interrupted", "failed", "closed"].includes(owner.state);
+    const requestedModel = this.manager.config.openRouter
+      ? (this.thread(id).settings.model ??
+        this.manager.config.openRouter.models.find((item) => item.isDefault)?.id)
+      : undefined;
+    const requestedEndpoint = this.thread(id).settings.openRouterEndpoint;
+    const openRouterConnectionChanged =
+      requestedModel !== undefined &&
+      ((owner?.model ?? descriptor?.model) !== requestedModel ||
+        (requestedEndpoint !== undefined &&
+          (descriptor?.openRouter?.endpoint?.slug ?? null) !== requestedEndpoint));
     const currentAccountId = this.manager.accounts?.status().currentAccountId;
     const selectedAccount =
       idle && currentAccountId ? await this.manager.accounts?.launchAccount() : undefined;
@@ -1816,6 +1826,7 @@ export class UiService extends EventEmitter {
         owner.releasePath !== this.manager.config.releasePath ||
         !owner.capabilities?.steer ||
         browserChanged ||
+        openRouterConnectionChanged ||
         accountConnectionChanged ||
         (currentAccountId && ownerAccountId && currentAccountId !== ownerAccountId))
     ) {
@@ -2050,8 +2061,18 @@ export class UiService extends EventEmitter {
     const endpointChanged =
       patch.openRouterEndpoint !== undefined &&
       patch.openRouterEndpoint !== (thread.settings.openRouterEndpoint ?? null);
+    const restartForModel =
+      openRouter && nextModel !== (owner?.model ?? descriptor?.model ?? priorModel);
+    if (
+      restartForModel &&
+      owner &&
+      (!["idle", "closed", "interrupted", "failed"].includes(owner.state) || owner.awaitingResult)
+    )
+      throw new AppError("conflict", "The model can change only while the session is idle", 409);
     if (
       descriptor &&
+      !restartForModel &&
+      (!openRouter || (owner && owner.state !== "closed")) &&
       nextModel &&
       ((patch.model && patch.model !== thread.settings.model) || endpointChanged)
     ) {
