@@ -173,7 +173,8 @@ export function createManager({ env = process.env, run = execute, fetcher = fetc
           health.serverVersion === config.OPENNEST_VERSION &&
           health.restartProtocolVersion === 1 &&
           health.appServer?.state === "ready" &&
-          health.appServer.installedVersion === nativeVersion
+          health.appServer.installedVersion ===
+            (config.OPENNEST_RUNTIME === "claude" ? "2.1.289" : nativeVersion)
         )
           return;
       } catch {
@@ -298,6 +299,16 @@ export function createManager({ env = process.env, run = execute, fetcher = fetc
     const node = await realpath(env.OPENNEST_NODE_BIN || process.execPath);
     const { stdout: nodeVersion } = await run(node, ["--version"], { timeout: 15_000 });
     if (!/^v24\./.test(nodeVersion.trim())) throw new Error("OpenNest requires Node.js 24");
+    const runtimeMode = env.OPENNEST_RUNTIME;
+    if (runtimeMode !== undefined && runtimeMode !== "opencode" && runtimeMode !== "claude")
+      throw new Error("Unsupported OpenNest runtime");
+    const claudeBin = env.OPENNEST_CLAUDE_BIN || "claude";
+    if (runtimeMode === "claude") {
+      const { stdout } = await run(claudeBin, ["--version"], { timeout: 15_000 });
+      if (stdout.trim().split(/\s+/)[0] !== "2.1.289")
+        throw new Error("OpenNest requires Claude Code 2.1.289");
+      await access(join(release, "apps/open-server/dist/claude-runner.js"));
+    }
     const state = resolve(
       env.OPENNEST_STATE_DIR ||
         join(env.XDG_STATE_HOME || join(location.home, ".local/state"), "opennest"),
@@ -336,6 +347,8 @@ export function createManager({ env = process.env, run = execute, fetcher = fetc
         OPENNEST_RELEASE_PATH: release,
         OPENNEST_VERSION: env.OPENNEST_VERSION || `0.1.9-${commit.slice(0, 7)}`,
         OPENNEST_MANAGED_INSTALL: "1",
+        ...(runtimeMode ? { OPENNEST_RUNTIME: runtimeMode } : {}),
+        ...(runtimeMode === "claude" ? { OPENNEST_CLAUDE_BIN: claudeBin } : {}),
         OPENNEST_PORT: String(apiPort),
         OPENNEST_HOST: env.OPENNEST_HOST || "127.0.0.1",
         OPENNEST_NATIVE_URL: native.origin,

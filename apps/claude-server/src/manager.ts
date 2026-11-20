@@ -358,6 +358,7 @@ export class SessionManager {
       configDir: selected?.configDir ?? this.config.configDir,
       ...(openRouter
         ? {
+            proxy: openRouter.proxy,
             openRouter: {
               keyFile: openRouter.keyFile,
               ...(endpoint && model ? { endpoint: { model, slug: endpoint } } : {}),

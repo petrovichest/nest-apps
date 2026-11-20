@@ -136,11 +136,80 @@ export async function createQualificationServices(options) {
       if (!responses.size) held.delete(marker);
     });
   }
+  const claudeModel = "deepseek/deepseek-v4.1-flash-1017";
+  function claudeReply(response, marker) {
+    const events = [
+      {
+        type: "message_start",
+        message: {
+          id: `msg_${marker}`,
+          type: "message",
+          role: "assistant",
+          model: claudeModel,
+          content: [],
+          stop_sequence: null,
+          stop_reason: null,
+          usage: { input_tokens: 42, output_tokens: 0 },
+        },
+      },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: marker } },
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { output_tokens: 6 },
+      },
+      { type: "message_stop" },
+    ];
+    response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
+    for (const event of events)
+      response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    response.end();
+  }
   const model = capture(
     httpsServer(tls, async (request, response) => {
       try {
         if (request.method === "GET" && request.url === "/fixture/health") {
           json(response, 200, { fixture: "model", tls: true });
+          return;
+        }
+        const path = new URL(request.url, "https://fixture").pathname;
+        if (request.method === "GET" && path === "/api/v1/models") {
+          if (!proxiedOrigins.has(request.socket.remotePort)) state.directModelRequests++;
+          json(response, 200, {
+            data: [
+              {
+                id: claudeModel,
+                name: "DeepSeek V4.1 Flash 1017",
+                created: 1,
+                pricing: { prompt: "0", completion: "0" },
+                supported_parameters: ["tools"],
+              },
+            ],
+          });
+          return;
+        }
+        if (request.method === "POST" && path === "/api/v1/messages") {
+          if (proxiedOrigins.has(request.socket.remotePort)) state.proxiedModelRequests++;
+          else state.directModelRequests++;
+          const credentials = /^Bearer (.+)$/.exec(request.headers.authorization || "")?.[1];
+          assert.ok(acceptedAuthKeys.has(credentials), "Unexpected Claude fixture authorization");
+          const payload = await body(request, 64 * 1024 * 1024);
+          assert.equal(payload.model, claudeModel);
+          assert.equal(payload.provider?.data_collection, "deny");
+          if (payload.provider?.only) {
+            assert.deepEqual(payload.provider.only, ["fixture-claude/us"]);
+            assert.equal(payload.provider.allow_fallbacks, false);
+          }
+          const marker = JSON.stringify(payload.messages)
+            .match(/QUALIFICATION_CLAUDE:([A-Za-z0-9_-]+)/g)
+            ?.at(-1)
+            ?.split(":")
+            .at(-1);
+          assert.ok(marker, "Missing Claude fixture request marker");
+          state.requests[marker] = (state.requests[marker] || 0) + 1;
+          claudeReply(response, marker);
           return;
         }
         if (

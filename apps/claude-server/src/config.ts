@@ -1,4 +1,4 @@
-import type { ModelOption, OpenRouterEndpoint } from "@codexnest/protocol";
+import type { ModelOption, OpenRouterEndpoint, ParsedClaudeProxy } from "@codexnest/protocol";
 import { access, chmod, mkdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -25,6 +25,7 @@ export interface Config {
   managedInstall?: boolean;
   openRouter?: {
     keyFile: string;
+    proxy?: ParsedClaudeProxy;
     runtimeVersion: string;
     models: ModelOption[];
     endpoints(model: string): Promise<OpenRouterEndpoint[]>;

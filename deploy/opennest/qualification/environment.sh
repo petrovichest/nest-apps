@@ -106,7 +106,12 @@ qualification_node="$(readlink -f "$(command -v node)")"
 qualification_node_root="$(dirname "$(dirname "$qualification_node")")"
 sudo cp -a "$qualification_node_root" /opt/opennest-qualification/node
 sudo chmod -R a+rX /opt/opennest-qualification/node
-for file in environment.sh guest.sh lifecycle.mjs native-relay.mjs native-http-trace.mjs fault-entry.mjs history.py services.mjs; do
+sudo env PATH=/opt/opennest-qualification/node/bin:/usr/bin:/bin /opt/opennest-qualification/node/bin/npm install \
+  --prefix /opt/opennest-qualification/claude --ignore-scripts --no-audit --no-fund @anthropic-ai/claude-code@2.1.289
+sudo /opt/opennest-qualification/node/bin/node /opt/opennest-qualification/claude/node_modules/@anthropic-ai/claude-code/install.cjs
+/opt/opennest-qualification/claude/node_modules/.bin/claude --version | grep -E '^2\.1\.289([[:space:]]|$)'
+
+for file in environment.sh guest.sh lifecycle.mjs native-relay.mjs native-http-trace.mjs fault-entry.mjs history.py services.mjs claude-history.py; do
   sudo install -m 0644 "$qualification_source/deploy/opennest/qualification/$file" "$qualification_input/$file"
 done
 git -C "$qualification_source" cat-file -e "$OPENNEST_QUALIFICATION_BASELINE^{commit}"
@@ -201,6 +206,7 @@ sudo systemd-run --unit=opennest-qualification-driver --wait --pipe --uid=17002 
   --setenv=XDG_CACHE_HOME=/home/opennest-qualification/.cache \
   --setenv=XDG_RUNTIME_DIR=/run/user/17002 --setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/17002/bus \
   --setenv=PATH=/home/opennest-qualification/.local/bin:/opt/opennest-qualification/node/bin:/usr/local/bin:/usr/bin:/bin \
+  --setenv=OPENNEST_CLAUDE_BIN=/opt/opennest-qualification/claude/node_modules/.bin/claude \
   --setenv=OPENNEST_OPENCODE_BIN=/opt/opennest-qualification/native/opencode \
   --setenv=NODE_EXTRA_CA_CERTS=/opennest-qualification-private/ca.pem \
   --setenv=CURL_CA_BUNDLE=/opennest-qualification-private/ca.pem \

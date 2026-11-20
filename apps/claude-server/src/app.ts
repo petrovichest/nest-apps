@@ -1,6 +1,10 @@
 import { readOpenRouterKey } from "./openrouter-gateway";
 import { writeJsonAtomic } from "./io";
-import type { OpenConnectionStatus } from "@codexnest/protocol";
+import type {
+  OpenConnectionStatus,
+  OpenProxyStatus,
+  OpenProxyTestResult,
+} from "@codexnest/protocol";
 import { timingSafeEqual } from "node:crypto";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
@@ -42,6 +46,14 @@ export async function buildApp(
   manager: SessionManager,
   ui?: UiService,
   browserTimeouts: Pick<BrowserExtensionOptions, "disconnectWaitMs" | "toolResponseMs"> = {},
+  updates: Pick<AppManager, "status" | "check" | "update" | "forceRestart"> = new AppManager(
+    manager.config,
+  ),
+  proxy?: {
+    status(): OpenProxyStatus;
+    setProxy(value: string | null): Promise<OpenProxyStatus>;
+    testProxy(): Promise<OpenProxyTestResult>;
+  },
 ) {
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024 * 1024, forceCloseConnections: true });
   await app.register(cors, {
@@ -174,13 +186,19 @@ export async function buildApp(
       },
     );
   }
-  const appManager = new AppManager(manager.config);
+  if (proxy) {
+    app.get("/api/v1/settings/open/proxy", () => proxy.status());
+    app.put("/api/v1/settings/open/proxy", (request) =>
+      proxy.setProxy(record(request.body).proxy as string | null),
+    );
+    app.post("/api/v1/settings/open/proxy/test", () => proxy.testProxy());
+  }
   if (manager.accounts) await registerAccountRoutes(app, manager.accounts);
-  app.get("/api/v1/settings/app", () => appManager.status());
-  app.post("/api/v1/settings/app/check", () => appManager.check());
-  app.post("/api/v1/settings/app/update", () => appManager.update());
+  app.get("/api/v1/settings/app", () => updates.status());
+  app.post("/api/v1/settings/app/check", () => updates.check());
+  app.post("/api/v1/settings/app/update", () => updates.update());
   app.post("/api/v1/settings/app/force-restart", async (_request, reply) =>
-    reply.code(202).send(await appManager.forceRestart()),
+    reply.code(202).send(await updates.forceRestart()),
   );
   app.get<{ Querystring: { cwd?: string } }>("/api/v1/sessions", async (request) => ({
     sessions: await manager.list(request.query.cwd),
@@ -242,7 +260,8 @@ export async function buildApp(
       !body.supportedRunnerProtocols.every(Number.isInteger)
     )
       throw new AppError("invalid_request", "supportedRunnerProtocols must be an integer array");
-    return manager.prepare(body.supportedRunnerProtocols);
+    const preparation = await manager.prepare(body.supportedRunnerProtocols);
+    return manager.config.openRouter ? { ...preparation, ready: true } : preparation;
   });
   app.post("/api/v1/internal/restart/resume", async () => {
     manager.resume();

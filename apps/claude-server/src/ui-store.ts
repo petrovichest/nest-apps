@@ -136,11 +136,12 @@ export class UiStore {
   get data(): UiData {
     return this.current;
   }
-  async initialize(): Promise<void> {
+  async initialize(seed?: () => Promise<Pick<UiData, "projects" | "uiLanguage">>): Promise<void> {
     const saved = await readJson<UiData>(this.path);
     if (saved && saved.version !== 1)
       throw new AppError("conflict", "Unsupported ClaudeNest metadata version", 409);
     if (saved) this.current = { ...initial(), ...saved };
+    else if (seed) this.current = { ...this.current, ...(await seed()) };
   }
   update<T>(operation: (data: UiData) => T | Promise<T>): Promise<T> {
     const task = this.writing

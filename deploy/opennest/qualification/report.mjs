@@ -144,6 +144,42 @@ export function validateLifecycle(report, candidate, baseline, installerSha256) 
   return report;
 }
 
+const claudeVersion = "2.1.289";
+export function validateClaudeLifecycle(lifecycle) {
+  const evidence = lifecycle.claude;
+  assert.equal(evidence?.version, claudeVersion);
+  assert.ok(Number.isSafeInteger(evidence.workload?.nonArchivedSessions));
+  assert.ok(evidence.workload.nonArchivedSessions >= 2000);
+  assert.ok(evidence.workload.archivedSessions >= 50);
+  assert.ok(evidence.workload.childTranscripts >= 20);
+  assert.ok(Number.isSafeInteger(evidence.workload.historyBytes));
+  assert.ok(evidence.workload.historyBytes >= 3 * 1024 ** 3);
+  measured(evidence.rollbackMs, 420000);
+  const cases = new Map(lifecycle.cases.map((entry) => [entry.name, entry]));
+  const check = (name) => {
+    const value = cases.get(name);
+    assert.equal(value?.status, "passed", `Missing exact Claude evidence: ${name}`);
+    return value;
+  };
+  assert.equal(check("claude-clean-install").freshNativeWork, true);
+  assert.equal(check("claude-installed-updater-transition").sameOldNative, true);
+  assert.equal(check("claude-installed-updater-transition").nativeWork, true);
+  assert.equal(check("claude-failed-transition-rolls-back").sameNative, true);
+  assert.equal(check("claude-failed-transition-rolls-back").resumedOldSession, true);
+  check("claude-refuses-active-legacy-work");
+  for (const mode of ["cold", "warm"]) {
+    assert.equal(evidence[mode]?.length, 3);
+    for (const [index, result] of evidence[mode].entries()) {
+      assert.equal(result.result, "passed");
+      measured(result.durationMs, 30000);
+      const run = check(`claude-${mode}-${index + 1}`);
+      assert.equal(run.nativeWork, true);
+      assert.equal(run.ownerPreserved, mode === "warm");
+    }
+  }
+  return evidence;
+}
+
 export function validatePublishedReport(
   report,
   candidate,
@@ -182,13 +218,20 @@ export function validatePublishedReport(
   assert.equal(report.workflow.conclusion, "success");
   assert.equal(report.workflow.headSha, candidate);
   assert.ok(Number.isSafeInteger(report.workflow.runId) && report.workflow.runId > 0);
-  assert.deepEqual(report.nativeVersions, [nativeVersion]);
+  if (report.runtime === "claude") {
+    assert.deepEqual(report.nativeVersions, [nativeVersion, claudeVersion]);
+    validateClaudeLifecycle(lifecycle);
+  } else {
+    assert.equal(report.runtime, undefined);
+    assert.deepEqual(report.nativeVersions, [nativeVersion]);
+  }
   assert.equal(report.restartProtocolVersion, 1);
   qualifyCandidate(
     {
       version: `0.1.9-${candidate.slice(0, 7)}`,
       commit: candidate,
       installer: { sha256: installerSha256 },
+      ...(report.runtime ? { runtime: report.runtime } : {}),
     },
     report,
     report.baseline,
@@ -211,6 +254,7 @@ export async function collect(directory, candidate, installerSha256, runId) {
   };
   const lifecycle = JSON.parse(await read("lifecycle.json"));
   validateLifecycle(lifecycle, candidate, lifecycle.baseline.commit, installerSha256);
+  validateClaudeLifecycle(lifecycle);
   assert.equal((await read("candidate-installer-sha256.txt")).split(/\s/)[0], installerSha256);
   assert.equal(
     (await read("baseline-installer-sha256.txt")).split(/\s/)[0],
@@ -229,7 +273,8 @@ export async function collect(directory, candidate, installerSha256, runId) {
     baselineKind: lifecycle.baseline.kind,
     installerSha256,
     restartProtocolVersion: 1,
-    nativeVersions: [nativeVersion],
+    runtime: "claude",
+    nativeVersions: [nativeVersion, claudeVersion],
     workload: lifecycle.workload,
     budgets: { startupMs: 30000, rollbackMs: 420000 },
     runs: { cold: lifecycle.runs.coldB, warm: lifecycle.runs.warmB },
@@ -242,6 +287,7 @@ export async function collect(directory, candidate, installerSha256, runId) {
       "failed-update-rollback",
       "retry-after-failure",
       "active-work",
+      "runtime-transition",
     ].map((name) => ({ name, result: "passed" })),
     workflow: {
       event: "workflow_dispatch",

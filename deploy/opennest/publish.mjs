@@ -149,12 +149,14 @@ const assets = [
   "qualification.json",
 ].map((name) => join(evidence, name));
 const base = `https://github.com/${repository}/releases/download/${tag}`;
+assert.equal(report.runtime, "claude", "The update requires qualified Claude transition evidence");
 const manifest = {
   schemaVersion: 1,
   version,
   commit: candidate,
   applications: {
     opennest: {
+      runtime: "claude",
       installer: { url: `${base}/install-opennest.sh`, sha256: installerHash },
       qualification: {
         url: `${base}/qualification.json`,

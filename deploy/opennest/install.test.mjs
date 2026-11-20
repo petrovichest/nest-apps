@@ -51,6 +51,7 @@ async function fixture(t) {
     XDG_CONFIG_HOME: join(home, ".config"),
     XDG_DATA_HOME: join(home, ".local/share"),
     OPENNEST_CONFIG_DIR: join(home, ".config/opennest"),
+    OPENNEST_RUNTIME: "opencode",
     OPENNEST_OPENCODE_BIN: join(bin, "opencode"),
     OPENNEST_REPOSITORY_URL: repository,
   };

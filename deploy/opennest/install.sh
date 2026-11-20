@@ -35,6 +35,12 @@ node -e 'if(Number(process.versions.node.split(".")[0]) !== 24) throw new Error(
 opennest_native="${OPENNEST_OPENCODE_BIN:-opencode}"
 command -v "$opennest_native" >/dev/null || { echo 'Install OpenCode 1.19.5 or set OPENNEST_OPENCODE_BIN first.' >&2; exit 1; }
 [[ "$("$opennest_native" --version)" == 1.19.5 ]] || { echo 'OpenNest requires OpenCode 1.19.5.' >&2; exit 1; }
+export OPENNEST_RUNTIME="${OPENNEST_RUNTIME:-claude}"
+if [[ "$OPENNEST_RUNTIME" == claude ]]; then
+  opennest_claude="${OPENNEST_CLAUDE_BIN:-claude}"
+  command -v "$opennest_claude" >/dev/null || { echo 'Install Claude Code 2.1.289 or set OPENNEST_CLAUDE_BIN.' >&2; exit 1; }
+  [[ "$("$opennest_claude" --version)" =~ ^2\.1\.289([[:space:]]|$) ]] || { echo 'OpenNest requires Claude Code 2.1.289.' >&2; exit 1; }
+fi
 mkdir -p "$opennest_config_root"
 chmod 0700 "$opennest_config_root"
 exec 9>"$opennest_config_root/installation.lock"

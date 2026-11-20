@@ -187,9 +187,13 @@ export class UiService extends EventEmitter {
     this.attachments = new AttachmentStore(join(manager.config.stateDir, "attachments"));
   }
   async initialize(
-    options: { probeModels?: boolean; pollRateLimits?: boolean } = {},
+    options: {
+      probeModels?: boolean;
+      pollRateLimits?: boolean;
+      seed?: Parameters<UiStore["initialize"]>[0];
+    } = {},
   ): Promise<void> {
-    await this.store.initialize();
+    await this.store.initialize(options.seed);
     if (this.manager.accounts) {
       this.manager.accounts.on("changed", this.accountsChanged);
       this.accountsChanged(this.manager.accounts.status());
@@ -628,7 +632,7 @@ export class UiService extends EventEmitter {
         skills: true,
         gitChanges: true,
         artifacts: false,
-        appUpdates: !this.manager.config.openRouter,
+        appUpdates: !this.manager.config.openRouter || this.manager.config.managedInstall === true,
         reasoningEffort: true,
       },
       instanceId: this.instanceId,
@@ -1786,7 +1790,8 @@ export class UiService extends EventEmitter {
       requestedModel !== undefined &&
       ((owner?.model ?? descriptor?.model) !== requestedModel ||
         (requestedEndpoint !== undefined &&
-          (descriptor?.openRouter?.endpoint?.slug ?? null) !== requestedEndpoint));
+          (descriptor?.openRouter?.endpoint?.slug ?? null) !== requestedEndpoint) ||
+        descriptor?.proxy?.url !== this.manager.config.openRouter?.proxy?.url);
     const currentAccountId = this.manager.accounts?.status().currentAccountId;
     const selectedAccount =
       idle && currentAccountId ? await this.manager.accounts?.launchAccount() : undefined;

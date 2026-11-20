@@ -242,7 +242,7 @@ async function apiPid() {
   assert.ok(Number.isSafeInteger(pid) && pid > 1);
   return pid;
 }
-async function ready(expected = version(baseline), budget = 30000) {
+async function ready(expected = version(baseline), budget = 30000, runtime = "1.19.5") {
   return until(
     "Native application readiness",
     async () => {
@@ -255,7 +255,7 @@ async function ready(expected = version(baseline), budget = 30000) {
         health.recoveryState === "ready" &&
         health.restartProtocolVersion === 1 &&
         health.appServer?.state === "ready" &&
-        health.appServer.installedVersion === "1.19.5" &&
+        health.appServer.installedVersion === runtime &&
         health
       );
     },
@@ -467,6 +467,7 @@ async function install(label, { allowFailure = false, extra = {} } = {}) {
       OPENNEST_REPOSITORY_URL: "https://github.com/petrovichest/nest-apps.git",
       OPENNEST_OPENCODE_BIN: process.env.OPENNEST_OPENCODE_BIN,
       OPENNEST_NODE_BIN: process.execPath,
+      OPENNEST_RUNTIME: "opencode",
       OPENNEST_UPDATE_MANIFEST_URL:
         "https://github.com/petrovichest/nest-apps/releases/download/qualification/OpenNest-latest.json",
       ...extra,
@@ -619,7 +620,7 @@ async function resetA() {
   await systemctl("start", "opennest-daemon.service", "opennest.service");
   await ready();
 }
-async function authorizeCandidate(overrides = {}) {
+async function authorizeCandidate(overrides = {}, runtime = undefined) {
   const bytes = await readFile(join(input, "install-B.sh")),
     installerPath = "/petrovichest/nest-apps/releases/download/qualification/OpenNest-install.sh",
     qualificationPath =
@@ -668,6 +669,11 @@ async function authorizeCandidate(overrides = {}) {
     },
     ...overrides,
   };
+  if (runtime === "claude") {
+    provisional.runtime = "claude";
+    provisional.nativeVersions = ["1.19.5", "2.1.289"];
+    provisional.scopes.push({ name: "runtime-transition", result: "passed" });
+  }
   const reportBytes = JSON.stringify(provisional) + "\n",
     path = join(privateRoot, "fixture-updater-admission.json");
   await writeFile(path, reportBytes, { mode: 0o600 });
@@ -677,6 +683,7 @@ async function authorizeCandidate(overrides = {}) {
     commit: candidate,
     applications: {
       opennest: {
+        ...(runtime ? { runtime } : {}),
         installer: { url: `https://github.com${installerPath}`, sha256: sha(bytes) },
         qualification: { url: `https://github.com${qualificationPath}`, sha256: sha(reportBytes) },
       },
@@ -959,7 +966,7 @@ async function failedUpdate(mode, interrupt = false) {
     authPreserved: true,
   };
 }
-async function cleanInstallationB() {
+async function removeFixtureInstallation() {
   await systemctl("stop", "opennest-update.service", "opennest.service", "opennest-daemon.service");
   await checkpoint();
   // Independent empty-install cases run after all history/state preservation
@@ -983,6 +990,9 @@ async function cleanInstallationB() {
   ])
     await rm(join(units, name), { recursive: true, force: true });
   await systemctl("daemon-reload");
+}
+async function cleanInstallationB() {
+  await removeFixtureInstallation();
   await prepareNative();
   await stage("failed-clean-install-retry", async () => {
     const failed = await install("B", {
@@ -1022,6 +1032,161 @@ async function cleanInstallationB() {
       readyVersion: version(candidate),
       nativeIdentity: await identity(),
     };
+  });
+}
+
+const claudeVersion = "2.1.289";
+async function claudeTurn(id, marker) {
+  await api(`/threads/${id}/turns`, {
+    input: `QUALIFICATION_CLAUDE:${marker}`,
+    clientMessageId: randomUUID(),
+  });
+  await finish(id, marker);
+  await until(
+    "Claude turn left no active work",
+    async () => !(await api(`/threads/${id}`)).summary.currentTurnId,
+  );
+  assert.equal((await control()).requests[marker], 1, "Claude turn was dispatched twice");
+}
+
+async function createClaudeFixtureChat() {
+  const project = await api("/projects", { path: join(home, "seed-project") });
+  const { thread: t } = await api(`/projects/${project.id}/threads`, {
+    clientCreationId: randomUUID(),
+  });
+  await api("/settings/open", { apiKey: "sk-or-fixture-claude" }, "PUT");
+  await control({ acceptedAuthKeys: ["fixture-openrouter-key-1", "sk-or-fixture-claude"] });
+  await api(`/threads/${t.id}/settings`, { openRouterEndpoint: "fixture-claude/us" }, "PATCH");
+  await claudeTurn(t.id, `claude-start-${randomUUID()}`);
+  return t.id;
+}
+
+async function stopClaudeFixtureOwner(id) {
+  await systemctl("stop", `opennest-claude-session-${id}.service`);
+}
+
+async function qualifyClaudeTransition() {
+  const exactBinary = process.env.OPENNEST_CLAUDE_BIN;
+  assert.equal((await run(exactBinary, ["--version"])).text.trim().split(/\s+/)[0], claudeVersion);
+  report.claude = { version: claudeVersion, cold: [], warm: [] };
+  await resetA();
+  await writeConfiguration({ ...(await configurationValues()), OPENNEST_CLAUDE_BIN: exactBinary });
+  await authorizeCandidate({}, "claude");
+  await stage("claude-refuses-active-legacy-work", async () => {
+    const before = await apiPid();
+    const active = await workBundle();
+    await updater();
+    await until(
+      "Active legacy work blocks the transition",
+      async () => (await updateStatus()).result === "failed",
+    );
+    assert.equal(await apiPid(), before);
+    return resumeWork(active);
+  });
+  await resetA();
+  await writeConfiguration({ ...(await configurationValues()), OPENNEST_CLAUDE_BIN: exactBinary });
+  await authorizeCandidate({}, "claude");
+  await stage("claude-failed-transition-rolls-back", async () => {
+    const before = await identity();
+    const oldThread = await thread();
+    const original = `pre-claude-${randomUUID()}`;
+    await send(oldThread.id, "REQUEST", original);
+    await finish(oldThread.id, original);
+    await writeFile(join(privateRoot, "fault.json"), '{"mode":"wrong-version"}\n', { mode: 0o600 });
+    const started = Date.now();
+    await updater();
+    await until(
+      "Claude failure restored the old API",
+      async () => (await updateStatus()).result === "rolled_back",
+      420000,
+    );
+    assert.ok(await exists(join(privateRoot, "candidate-entered")));
+    await ready();
+    assert.equal((await configurationValues()).OPENNEST_RUNTIME, undefined);
+    await sameIdentity(before);
+    const after = `after-claude-failure-${randomUUID()}`;
+    await send(oldThread.id, "REQUEST", after);
+    const detail = await finish(oldThread.id, after);
+    assert.ok(textOf(detail).includes(original));
+    report.claude.rollbackMs = Date.now() - started;
+    assert.ok(report.claude.rollbackMs <= 420000);
+    return { sameNative: true, resumedOldSession: true, rollbackMs: report.claude.rollbackMs };
+  });
+  let userThread;
+  await stage("claude-installed-updater-transition", async () => {
+    const before = await identity();
+    await writeFile(join(privateRoot, "fault.json"), '{"mode":"none"}\n', { mode: 0o600 });
+    await updater();
+    await until(
+      "Installed updater enabled Claude Code",
+      async () => (await updateStatus()).result === "updated",
+      900000,
+    );
+    await ready(version(candidate), 30000, claudeVersion);
+    assert.equal((await configurationValues()).OPENNEST_RUNTIME, "claude");
+    await sameIdentity(before);
+    assert.ok((await api("/snapshot")).projects.some((project) => project.id === firstProject.id));
+    userThread = await createClaudeFixtureChat();
+    return { candidateReady: true, sameOldNative: true, nativeWork: true };
+  });
+  try {
+    const helper = join(input, "claude-history.py");
+    await systemctl("stop", "opennest.service");
+    report.claude.workload = JSON.parse(
+      (await run("python3", [helper, "seed"], { timeout: 300000 })).text,
+    );
+    for (let index = 1; index <= 3; index++) {
+      for (const mode of ["cold", "warm"]) {
+        await stage(`claude-${mode}-${index}`, async () => {
+          const unit = `opennest-claude-session-${userThread}.service`;
+          if (mode === "cold") {
+            await stopClaudeFixtureOwner(userThread);
+            await systemctl("stop", "opennest.service");
+            await run("python3", [helper, "evict"], { timeout: 300000 });
+          }
+          const before =
+            mode === "warm"
+              ? (await systemctl("show", unit, "--property=MainPID", "--value")).text
+              : null;
+          const started = Date.now();
+          await systemctl(mode === "warm" ? "restart" : "start", "opennest.service");
+          await ready(version(candidate), 30000 - (Date.now() - started), claudeVersion);
+          const threads = (await api("/snapshot")).threads;
+          assert.ok(
+            threads.filter((thread) => !thread.archived).length >=
+              report.claude.workload.nonArchivedSessions,
+          );
+          assert.ok(
+            threads.filter((thread) => thread.archived).length >=
+              report.claude.workload.archivedSessions,
+          );
+          if (before !== null) {
+            assert.notEqual(Number(before.trim()), 0);
+            assert.equal(
+              (await systemctl("show", unit, "--property=MainPID", "--value")).text,
+              before,
+            );
+          }
+          await claudeTurn(userThread, `claude-${mode}-${randomUUID()}`);
+          const durationMs = Date.now() - started;
+          assert.ok(durationMs > 0 && durationMs <= 30000);
+          report.claude[mode].push({ durationMs, result: "passed" });
+          return { readyMs: durationMs, nativeWork: true, ownerPreserved: before !== null };
+        });
+      }
+    }
+  } finally {
+    if (userThread) await stopClaudeFixtureOwner(userThread);
+  }
+  await removeFixtureInstallation();
+  await prepareNative();
+  await stage("claude-clean-install", async () => {
+    await install("B", { extra: { OPENNEST_RUNTIME: "claude", OPENNEST_CLAUDE_BIN: exactBinary } });
+    token = (await readFile(join(configuration, "token"), "utf8")).trim();
+    await ready(version(candidate), 30000, claudeVersion);
+    const id = await createClaudeFixtureChat();
+    await stopClaudeFixtureOwner(id);
+    return { installer: true, freshNativeWork: true };
   });
 }
 
@@ -1367,6 +1532,7 @@ qualification: try {
   });
   await coldWarm("B", version(candidate));
   await stage("native-history-integrity", nativeHistoryIntegrity);
+  await qualifyClaudeTransition();
   await cleanInstallationB();
   report.fixtureCounters = await control();
   assert.equal(report.fixtureCounters.directModelRequests, 0);

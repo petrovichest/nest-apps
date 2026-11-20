@@ -121,7 +121,9 @@ export class ClaudeProcess extends EventEmitter {
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
           NO_PROXY: [env.NO_PROXY ?? env.no_proxy, "127.0.0.1"].filter(Boolean).join(","),
         };
-        delete env.no_proxy;
+        for (const key of Object.keys(env)) {
+          if (/^(?:https?|all)_proxy$/i.test(key) || key === "no_proxy") delete env[key];
+        }
       } catch (error) {
         await this.closeConnections();
         throw error;
