@@ -20,8 +20,10 @@ export async function registerClaudeKanban(
   ui: UiService,
   voice?: Pick<ClaudeVoiceService, "transcribe">,
 ): Promise<void> {
+  const { openRouter, stateDir } = ui.manager.config;
+  const provider = openRouter ? "open" : "claude";
   const service = new KanbanService({
-    provider: "claude",
+    provider,
     classifies: () => ui.store.data.taskDefaults.classifyTasks !== false,
     ...(voice
       ? {
@@ -29,22 +31,29 @@ export async function registerClaudeKanban(
             voice.transcribe(audio, contentType, undefined, { audioDurationMs: durationMs }),
         }
       : {}),
-    ...((process.env.NODE_ENV === "test" || process.env.VITEST) && !process.env.KANBAN_DATA_DIR
-      ? { dataDir: join(dirname(ui.store.path), "kanban") }
-      : {}),
+    ...(openRouter
+      ? { dataDir: join(stateDir, "kanban") }
+      : (process.env.NODE_ENV === "test" || process.env.VITEST) && !process.env.KANBAN_DATA_DIR
+        ? { dataDir: join(dirname(ui.store.path), "kanban") }
+        : {}),
     adapter: {
       available: () => ui.manager.accepting,
       async launch(job) {
         const project = ui.store.data.projects.find((item) => item.path === job.projectPath);
         if (!project) throw new Error("Project not found");
+        const configured = ui.store.data.taskDefaults.classificationModel;
+        const classifyModel = openRouter
+          ? (
+              openRouter.models.find((model) => model.id === configured) ??
+              openRouter.models.find((model) => model.isDefault)
+            )?.id
+          : (configured ?? "haiku");
         const { thread } = await ui.createThread(project.id, job.id, undefined, {
           cwd: job.cwd,
           title: job.title,
           // Task classification is a short routine step: unless settings choose a model, run it
           // on the fastest, cheapest one.
-          ...(job.kind === "classify"
-            ? { model: ui.store.data.taskDefaults.classificationModel ?? "haiku" }
-            : {}),
+          ...(job.kind === "classify" ? { model: classifyModel } : {}),
         });
         // Settings chosen in the task field, applied like a new session's before its first message.
         if (job.settings)
@@ -89,7 +98,7 @@ export async function registerClaudeKanban(
       },
     },
   });
-  registerKanbanRoutes(app, service, (id) => ui.project(id).path, "claude");
+  registerKanbanRoutes(app, service, (id) => ui.project(id).path, provider);
   const observe = (frame: ServerFrame) => {
     if (frame.type === "event" && frame.event.type === "thread.upserted") {
       void service
@@ -98,7 +107,14 @@ export async function registerClaudeKanban(
     }
   };
   ui.on("frame", observe);
-  app.addHook("onReady", () => service.initialize());
+  app.addHook("onReady", async () => {
+    if (openRouter)
+      await service.importOpenNestBoards(
+        ui.store.data.projects.map((project) => project.path),
+        (threadId) => Object.hasOwn(ui.store.data.threads, threadId),
+      );
+    await service.initialize();
+  });
   app.addHook("onClose", async () => {
     ui.off("frame", observe);
     await service.close();

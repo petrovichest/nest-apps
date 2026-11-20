@@ -25,6 +25,7 @@ jobs:
     outputs:
       baseline: ${{ steps.baseline.outputs.commit }}
       baseline-kind: ${{ steps.baseline.outputs.kind }}
+      baseline-runtime: ${{ steps.baseline.outputs.runtime }}
       baseline-version: ${{ steps.baseline.outputs.version }}
       baseline-installer-url: ${{ steps.baseline.outputs.installer-url }}
       baseline-installer-sha256: ${{ steps.baseline.outputs.installer-sha256 }}
@@ -66,6 +67,7 @@ jobs:
             gh release download "$channel" -R "$GITHUB_REPOSITORY" -p OpenNest-latest.json -D "$RUNNER_TEMP/published-opennest"
             kind=published
             baseline_version="$(jq -er '.version' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
+            runtime="$(jq -er '.applications.opennest.runtime // "opencode" | select(. == "opencode" or . == "claude")' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
             installer_url="$(jq -er '.applications.opennest.installer.url' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
             installer_sha="$(jq -er '.applications.opennest.installer.sha256 | select(test("^[0-9a-f]{64}$"))' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
             baseline="$(jq -er '.commit | select(test("^[0-9a-f]{40}$"))' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
@@ -75,12 +77,14 @@ jobs:
             test -z "$prior" || { echo 'A public OpenNest version already exists; finish its channel before another first release.' >&2; exit 1; }
             baseline=7b742ce0ad920f8b247c4295365be7057948a905
             kind=first-release
+            runtime=opencode
             baseline_version=0.1.9-7b742ce
             installer_url=
             installer_sha=192393d039b10982cdead831cd53c5662402d4149f3bfeea28b618bb9ac4bb71
           fi
           echo "commit=$baseline" >> "$GITHUB_OUTPUT"
           echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "runtime=$runtime" >> "$GITHUB_OUTPUT"
           echo "version=$baseline_version" >> "$GITHUB_OUTPUT"
           echo "installer-url=$installer_url" >> "$GITHUB_OUTPUT"
           echo "installer-sha256=$installer_sha" >> "$GITHUB_OUTPUT"
@@ -105,6 +109,7 @@ jobs:
           OPENNEST_QUALIFICATION_BASELINE: ${{ needs.source.outputs.baseline }}
           OPENNEST_QUALIFICATION_BASELINE_VERSION: ${{ needs.source.outputs.baseline-version }}
           OPENNEST_QUALIFICATION_BASELINE_KIND: ${{ needs.source.outputs.baseline-kind }}
+          OPENNEST_QUALIFICATION_BASELINE_RUNTIME: ${{ needs.source.outputs.baseline-runtime }}
           OPENNEST_QUALIFICATION_BASELINE_INSTALLER_URL: ${{ needs.source.outputs.baseline-installer-url }}
           OPENNEST_QUALIFICATION_BASELINE_INSTALLER_SHA256: ${{ needs.source.outputs.baseline-installer-sha256 }}
         run: bash deploy/opennest/qualification/environment.sh

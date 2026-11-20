@@ -25,8 +25,9 @@ import { UiService } from "./ui-service";
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
+  vi.unstubAllEnvs();
 });
-async function fixture(configure?: (manager: SessionManager) => Promise<void>) {
+async function fixture(configure?: (manager: SessionManager, ui: UiService) => Promise<void>) {
   const directory = await mkdtemp("/tmp/claude-ui-http-");
   const clientDist = join(directory, "client");
   await mkdir(clientDist);
@@ -73,7 +74,7 @@ async function fixture(configure?: (manager: SessionManager) => Promise<void>) {
   } as unknown as SessionManager;
   const ui = new UiService(manager);
   await ui.initialize({ probeModels: false });
-  await configure?.(manager);
+  await configure?.(manager, ui);
   const app = await buildApp(manager, ui);
   await app.ready();
   cleanup.push(async () => {
@@ -207,6 +208,90 @@ describe("project boards", () => {
         )?.settings,
       ).toEqual({ collaborationMode: "default", model: "sonnet" }),
     );
+  });
+
+  it("separates the OpenNest board and classifies with its OpenRouter model", async () => {
+    const shared = await mkdtemp("/tmp/shared-kanban-");
+    cleanup.push(() => rm(shared, { recursive: true, force: true }));
+    vi.stubEnv("KANBAN_DATA_DIR", shared);
+    const claude = await fixture();
+    const { project, id: claudeThread } = await claude.reserve();
+    const sharedUrl = `/api/v1/projects/${project.id}/kanban`;
+    const newCard = (state: Awaited<ReturnType<typeof fixture>>, url: string, payload: object) =>
+      state.app.inject({
+        method: "POST",
+        url: `${url}/cards`,
+        headers: state.headers,
+        payload: { clientCreationId: randomUUID(), ...payload },
+      });
+    expect(
+      (await newCard(claude, sharedUrl, { description: "ClaudeNest task", threadId: claudeThread }))
+        .statusCode,
+    ).toBe(200);
+    const model = "deepseek/flash";
+    let openProject!: Project;
+    let initialSharedBoard: unknown;
+    const open = await fixture(async (manager, ui) => {
+      manager.config.openRouter = {
+        keyFile: join(manager.config.stateDir, "openrouter-key.json"),
+        runtimeVersion: "2.1.289",
+        endpoints: async () => [],
+        models: [
+          {
+            id: model,
+            displayName: "Flash",
+            description: "",
+            isDefault: true,
+            reasoningEfforts: [],
+            serviceTiers: [],
+            supportsPersonality: false,
+          },
+        ],
+      };
+      openProject = await ui.createProject(project.path);
+      const { thread } = await ui.createThread(openProject.id, randomUUID());
+      const previous = await newCard(claude, sharedUrl, {
+        description: "Previous OpenNest task",
+        threadId: thread.id,
+      });
+      expect(previous.statusCode).toBe(200);
+      await vi.waitFor(async () => {
+        const board = (await claude.app.inject({ url: sharedUrl, headers: claude.headers })).json();
+        expect(
+          board.runs.find((run: { threadId: string }) => run.threadId === thread.id)?.status,
+        ).toBe("waiting");
+        initialSharedBoard = board;
+      });
+      await ui.store.update((data) => {
+        data.taskDefaults.classificationModel = "haiku";
+      });
+      (manager as { accepting: boolean }).accepting = true;
+    });
+    const privateUrl = `/api/v1/projects/${openProject.id}/kanban`;
+    const own = await open.app.inject({ url: privateUrl, headers: open.headers });
+    expect(own.statusCode).toBe(200);
+    expect(own.json().cards.map((card: { title: string }) => card.title)).toEqual([
+      "Previous OpenNest task",
+    ]);
+    expect(own.json().runs).toEqual([
+      expect.objectContaining({ provider: "open", kind: "execute" }),
+    ]);
+    const added = await newCard(open, privateUrl, { description: "Classify in OpenNest" });
+    expect(added.statusCode).toBe(200);
+    expect(added.json().runs).toContainEqual(
+      expect.objectContaining({ provider: "open", kind: "classify" }),
+    );
+    await vi.waitFor(() =>
+      expect(
+        Object.values(open.ui.store.data.threads).find((thread) =>
+          thread.title?.startsWith("classify:"),
+        )?.settings.model,
+      ).toBe(model),
+    );
+    expect((await claude.app.inject({ url: sharedUrl, headers: claude.headers })).json()).toEqual(
+      initialSharedBoard,
+    );
+    expect(claude.operations).toEqual([]);
   });
 
   it("leaves a new board task ready, without a classifier, when classification is off", async () => {

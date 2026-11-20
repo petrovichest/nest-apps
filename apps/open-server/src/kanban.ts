@@ -16,9 +16,7 @@ export async function registerOpenKanban(
     classifies: () => engine.data.taskDefaults.classifyTasks !== false,
     transcribe: (audio, contentType, durationMs) =>
       voice.transcribe(audio, contentType, undefined, { audioDurationMs: durationMs }),
-    ...((process.env.NODE_ENV === "test" || process.env.VITEST) && !process.env.KANBAN_DATA_DIR
-      ? { dataDir: join(engine.config.stateDir, "kanban") }
-      : {}),
+    dataDir: join(engine.config.stateDir, "kanban"),
     adapter: {
       available: () => engine.canAcceptWork(),
       async launch(job) {
@@ -88,7 +86,10 @@ export async function registerOpenKanban(
         .catch(() => undefined);
   };
   engine.on("frame", observe);
-  app.addHook("onReady", () => service.initialize());
+  app.addHook("onReady", async () => {
+    await service.importOpenNestBoards(engine.data.projects.map((project) => project.path));
+    await service.initialize();
+  });
   app.addHook("onClose", async () => {
     engine.off("frame", observe);
     await service.close();

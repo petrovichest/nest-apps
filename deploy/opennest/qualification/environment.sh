@@ -212,6 +212,7 @@ sudo systemd-run --unit=opennest-qualification-driver --wait --pipe --uid=17002 
   --setenv=CURL_CA_BUNDLE=/opennest-qualification-private/ca.pem \
   --setenv=GIT_SSL_CAINFO=/opennest-qualification-private/ca.pem \
   --setenv="OPENNEST_QUALIFICATION_BASELINE_KIND=${OPENNEST_QUALIFICATION_BASELINE_KIND:?}" \
+  --setenv="OPENNEST_QUALIFICATION_BASELINE_RUNTIME=${OPENNEST_QUALIFICATION_BASELINE_RUNTIME:?}" \
   --setenv="OPENNEST_QUALIFICATION_BASELINE_VERSION=${OPENNEST_QUALIFICATION_BASELINE_VERSION:?}" \
   --setenv="OPENNEST_DIAGNOSTIC_STARTUP_ONLY=${OPENNEST_DIAGNOSTIC_STARTUP_ONLY:-0}" \
   --setenv="GITHUB_REF=${GITHUB_REF:?}" \

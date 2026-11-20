@@ -1,7 +1,7 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type {
   KanbanAudioInput,
   CreateKanbanCardRequest,
@@ -318,6 +318,91 @@ export class KanbanService {
   private classificationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   constructor(private readonly options: KanbanServiceOptions) {
     this.store = new KanbanStore(options.dataDir);
+  }
+  /** Recover only OpenNest's own work from the board formerly shared by the applications. */
+  async importOpenNestBoards(
+    projects: string[],
+    ownsThread?: (threadId: string) => boolean,
+  ): Promise<void> {
+    const shared = new KanbanStore();
+    if (resolve(shared.directory) === resolve(this.store.directory)) return;
+    await this.store.initialize();
+    for (const project of projects) {
+      const identity = await this.store.identity(project).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      if (!identity) continue;
+      const { id } = identity;
+      await this.store.withLock(id, async () => {
+        if (await this.store.readById(id)) return;
+        const legacy = await shared.readById(id);
+        if (!legacy) return;
+        const { board } = legacy;
+        const ownRuns = board.runs.filter((run) => {
+          if (!ownsThread) return run.provider === "open";
+          const threadId = run.threadId ?? legacy.runs[run.id]?.resumeThreadId;
+          return Boolean(threadId && ownsThread(threadId));
+        });
+        const cardIds = new Set(ownRuns.flatMap((run) => run.cardIds));
+        if (!ownsThread)
+          for (const card of board.cards)
+            if (
+              legacy.cards[card.id]?.settings?.provider === "open" ||
+              card.voice?.provider === "open"
+            )
+              cardIds.add(card.id);
+        board.cards = board.cards.filter((card) => cardIds.has(card.id));
+        if (!board.cards.length) return;
+
+        // Previous classifiers used a capability for the shared directory. Keep their results
+        // and let unfinished classifications be retried with a new, private capability.
+        board.runs = ownRuns.filter((run) => run.kind !== "classify" || !active(run));
+        for (const run of board.runs) run.provider = "open";
+        const runIds = new Set(board.runs.map((run) => run.id));
+        const copy = async (kind: "images" | "voice", file: string) => {
+          if (file !== basename(file) || file === "." || file === "..")
+            throw new KanbanError("invalid_state", "Invalid legacy board attachment", 500);
+          const target = join(this.store.directory, kind, id, file);
+          await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+          await copyFile(join(shared.directory, kind, id, file), target).catch((error: unknown) => {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          });
+        };
+        for (const card of board.cards) {
+          const runtime = legacy.cards[card.id];
+          if (runtime?.settings) runtime.settings.provider = "open";
+          if (card.voice && runtime?.voice) {
+            await copy("voice", card.id);
+            card.voice.provider = "open";
+            if (card.voice.status === "transcribing") card.voice.status = "failed";
+          }
+          for (const image of [...cardImages(card), ...(runtime?.voice?.images ?? [])])
+            await copy("images", image.file);
+          if (card.classification === "pending" && !card.voice && !runtime?.awaitsText) {
+            card.classification = "failed";
+            card.error = "Task classification did not finish; retry classification";
+          }
+        }
+        for (const run of board.runs)
+          for (const image of legacy.runs[run.id]?.images ?? []) await copy("images", image.file);
+        const keep = <T>(
+          entries: Record<string, T>,
+          predicate: (key: string, value: T) => boolean,
+        ) =>
+          Object.fromEntries(
+            Object.entries(entries).filter(([key, value]) => predicate(key, value)),
+          );
+        legacy.cards = keep(legacy.cards, (key) => cardIds.has(key));
+        legacy.runs = keep(legacy.runs, (key) => runIds.has(key));
+        legacy.creations = keep(legacy.creations, (_key, value) => cardIds.has(value.cardId));
+        legacy.actions = keep(
+          legacy.actions,
+          (_key, value) => value.runIds.length > 0 && value.runIds.every((run) => runIds.has(run)),
+        );
+        await atomicJson(join(this.store.boardsDirectory, `${id}.json`), legacy);
+      });
+    }
   }
   async initialize(): Promise<void> {
     await this.store.initialize();

@@ -167,6 +167,18 @@ export function validateClaudeLifecycle(lifecycle) {
   assert.equal(check("claude-failed-transition-rolls-back").sameNative, true);
   assert.equal(check("claude-failed-transition-rolls-back").resumedOldSession, true);
   check("claude-refuses-active-legacy-work");
+  if (lifecycle.baseline.runtime === "claude") {
+    const upgrade = check("claude-published-upgrade");
+    assert.equal(upgrade.sameOwner, true);
+    assert.equal(upgrade.workResumed, true);
+    assert.equal(upgrade.privateBoard, true);
+    measured(upgrade.readyMs, 30000);
+    measured(upgrade.totalRecoveryMs, 420000);
+    assert.ok(upgrade.workload.nonArchivedSessions >= 2000);
+    assert.ok(upgrade.workload.archivedSessions >= 50);
+    assert.ok(upgrade.workload.childTranscripts >= 20);
+    assert.ok(upgrade.workload.historyBytes >= 3 * 1024 ** 3);
+  }
   for (const mode of ["cold", "warm"]) {
     assert.equal(evidence[mode]?.length, 3);
     for (const [index, result] of evidence[mode].entries()) {
@@ -208,6 +220,11 @@ export function validatePublishedReport(
   else {
     assert.ok(baselineManifest?.applications?.opennest);
     assert.equal(baselineManifest.commit, report.baseline, "Published OpenNest baseline moved");
+    assert.equal(
+      lifecycle.baseline.runtime ?? "opencode",
+      baselineManifest.applications.opennest.runtime ?? "opencode",
+      "Published OpenNest baseline runtime differs from the tested runtime",
+    );
     assert.equal(
       baselineManifest.applications.opennest.installer.sha256,
       lifecycle.baseline.installerSha256,
@@ -305,7 +322,12 @@ export async function collect(directory, candidate, installerSha256, runId) {
     lifecycle.baseline.kind === "published"
       ? {
           commit: lifecycle.baseline.commit,
-          applications: { opennest: { installer: { sha256: lifecycle.baseline.installerSha256 } } },
+          applications: {
+            opennest: {
+              installer: { sha256: lifecycle.baseline.installerSha256 },
+              runtime: lifecycle.baseline.runtime,
+            },
+          },
         }
       : null,
   );

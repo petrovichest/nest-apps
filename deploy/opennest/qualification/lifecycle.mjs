@@ -14,7 +14,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { NativeRelay } from "./native-relay.mjs";
 
@@ -32,6 +32,8 @@ assert.equal(
 const candidate = (await readFile(join(input, "candidate-sha"), "utf8")).trim(),
   baseline = (await readFile(join(input, "baseline-sha"), "utf8")).trim();
 const baselineDiagnostic = process.env.OPENNEST_DIAGNOSTIC_STARTUP_ONLY === "1";
+const baselineRuntime = process.env.OPENNEST_QUALIFICATION_BASELINE_RUNTIME ?? "opencode";
+assert.ok(["opencode", "claude"].includes(baselineRuntime));
 for (const value of [candidate, baseline]) assert.match(value, /^[0-9a-f]{40}$/);
 const version = (sha) =>
   sha === baseline && process.env.OPENNEST_QUALIFICATION_BASELINE_VERSION
@@ -52,6 +54,7 @@ const report = {
   baseline: {
     commit: baseline,
     kind: process.env.OPENNEST_QUALIFICATION_BASELINE_KIND || "first-release",
+    runtime: baselineRuntime,
     healthy: false,
     independentlyQualified: false,
     installerSha256: (await readFile(join(output, "baseline-installer-sha256.txt"), "utf8")).split(
@@ -1190,6 +1193,163 @@ async function qualifyClaudeTransition() {
   });
 }
 
+async function qualifyPublishedClaudeUpgrade() {
+  await removeFixtureInstallation();
+  await prepareNative();
+  await install("A", {
+    extra: { OPENNEST_RUNTIME: "claude", OPENNEST_CLAUDE_BIN: process.env.OPENNEST_CLAUDE_BIN },
+  });
+  token = (await readFile(join(configuration, "token"), "utf8")).trim();
+  await ready(version(baseline), 30000, claudeVersion);
+  const id = await createClaudeFixtureChat();
+  const owner = async () =>
+    Number(
+      (
+        await systemctl(
+          "show",
+          `opennest-claude-session-${id}.service`,
+          "--property=MainPID",
+          "--value",
+        )
+      ).text.trim(),
+    );
+  const oldOwner = await owner();
+  const oldNative = await identity();
+  assert.ok(oldOwner > 1);
+  try {
+    await stage("claude-published-upgrade", async () => {
+      const marker = `published-claude-${randomUUID()}`;
+      await claudeTurn(id, marker);
+      const project = (await api("/snapshot")).projects.find(
+        (item) => item.path === join(home, "seed-project"),
+      );
+      assert.ok(project);
+      const boardPath = `/projects/${project.id}/kanban`;
+      await api("/settings/task-defaults", { classifyTasks: false }, "PUT");
+      const board = await api(`${boardPath}/cards`, {
+        description: "OpenNest session card",
+        threadId: id,
+        clientCreationId: randomUUID(),
+      });
+      const boardFile = join(home, ".local/share/nest-apps/kanban/boards", `${board.id}.json`);
+      const privateFile = join(state, "claude/kanban/boards", `${board.id}.json`);
+      if (await exists(privateFile)) {
+        const sibling = JSON.parse(await readFile(privateFile, "utf8"));
+        sibling.board.cards[0].title = "Shared card without an OpenNest session";
+        sibling.board.runs[0].provider = "claude";
+        sibling.board.runs[0].threadId = randomUUID();
+        await mkdir(dirname(boardFile), { recursive: true });
+        await writeFile(boardFile, JSON.stringify(sibling), { mode: 0o600 });
+      } else {
+        const shared = await api(`${boardPath}/cards`, {
+          description: "Shared card without an OpenNest session",
+          clientCreationId: randomUUID(),
+        });
+        assert.equal(shared.cards.length, 2);
+      }
+      await systemctl("stop", "opennest.service");
+      const workload = JSON.parse(
+        (await run("python3", [join(input, "claude-history.py"), "seed"], { timeout: 300000 }))
+          .text,
+      );
+      const verifyOpenNestHistory = async () => {
+        const rows = (await api("/snapshot")).threads;
+        assert.ok(rows.filter((row) => !row.archived).length >= workload.nonArchivedSessions);
+        assert.ok(rows.filter((row) => row.archived).length >= workload.archivedSessions);
+      };
+      await systemctl("start", "opennest.service");
+      await ready(version(baseline), 30000, claudeVersion);
+      await verifyOpenNestHistory();
+      assert.equal(await owner(), oldOwner);
+
+      const dropIn = join(units, "opennest.service.d");
+      await mkdir(dropIn, { recursive: true });
+      await writeFile(
+        join(dropIn, "qualification.conf"),
+        `[Service]\nExecStart=\nExecStart=${process.execPath} ${join(input, "fault-entry.mjs")}\n`,
+        { mode: 0o600 },
+      );
+      await systemctl("daemon-reload");
+      await authorizeCandidate({}, "claude");
+      await rm(join(privateRoot, "candidate-entered"), { force: true });
+      await writeFile(join(privateRoot, "fault.json"), '{"mode":"wrong-version"}\n', {
+        mode: 0o600,
+      });
+      const started = Date.now();
+      await updater();
+      await until(
+        "Published Claude runtime restored automatically",
+        async () => (await updateStatus()).result === "rolled_back",
+        420000,
+      );
+      assert.ok(await exists(join(privateRoot, "candidate-entered")));
+      await ready(version(baseline), 30000, claudeVersion);
+      const readyMs = await serviceStartupElapsed(false, "published-claude-rollback");
+      assert.equal(await owner(), oldOwner);
+      await sameIdentity(oldNative);
+      await verifyOpenNestHistory();
+      await claudeTurn(id, `after-claude-rollback-${randomUUID()}`);
+      assert.ok(textOf(await api(`/threads/${id}`)).includes(marker));
+      const totalRecoveryMs = Date.now() - started;
+      assert.ok(totalRecoveryMs <= 420000);
+
+      await writeFile(join(privateRoot, "fault.json"), '{"mode":"none"}\n', { mode: 0o600 });
+      await updater();
+      await until(
+        "Retry upgraded the installed Claude runtime",
+        async () => (await updateStatus()).result === "updated",
+        900000,
+      );
+      await ready(version(candidate), 30000, claudeVersion);
+      assert.equal(await owner(), oldOwner);
+      await sameIdentity(oldNative);
+      await verifyOpenNestHistory();
+      const sharedBefore = sha(await readFile(boardFile));
+      assert.deepEqual(
+        (await api(boardPath)).cards.map(({ title }) => title),
+        ["OpenNest session card"],
+      );
+      assert.ok((await api(boardPath)).runs.every((entry) => entry.provider === "open"));
+      await claudeTurn(id, `after-claude-upgrade-${randomUUID()}`);
+      assert.ok(textOf(await api(`/threads/${id}`)).includes(marker));
+      await api("/settings/task-defaults", { classifyTasks: true }, "PUT");
+      const classifierMarker = `isolated-board-${randomUUID()}`;
+      await api(`${boardPath}/cards`, {
+        description: `QUALIFICATION_CLAUDE:${classifierMarker}`,
+        clientCreationId: randomUUID(),
+      });
+      const classifier = await until(
+        "Classifier used the private OpenNest OpenRouter runtime",
+        async () => {
+          if (!(await control()).requests[classifierMarker]) return false;
+          return (await api(boardPath)).runs.find(
+            (entry) => entry.kind === "classify" && entry.threadId,
+          );
+        },
+      );
+      assert.equal(classifier.provider, "open");
+      await finish(classifier.threadId, classifierMarker);
+      assert.equal((await control()).requests[classifierMarker], 1);
+      await stopClaudeFixtureOwner(classifier.threadId);
+      assert.equal(
+        sha(await readFile(boardFile)),
+        sharedBefore,
+        "OpenNest wrote into the shared board",
+      );
+      return {
+        readyMs,
+        totalRecoveryMs,
+        sameOwner: true,
+        workResumed: true,
+        privateBoard: true,
+        workload,
+      };
+    });
+  } finally {
+    await stopClaudeFixtureOwner(id);
+  }
+}
+
 qualification: try {
   await save();
   relay = await new NativeRelay(relayControlToken).listen();
@@ -1533,6 +1693,7 @@ qualification: try {
   await coldWarm("B", version(candidate));
   await stage("native-history-integrity", nativeHistoryIntegrity);
   await qualifyClaudeTransition();
+  if (baselineRuntime === "claude") await qualifyPublishedClaudeUpgrade();
   await cleanInstallationB();
   report.fixtureCounters = await control();
   assert.equal(report.fixtureCounters.directModelRequests, 0);

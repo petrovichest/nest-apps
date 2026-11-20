@@ -142,6 +142,11 @@ Boards, queued work and agent receipts live in
 same value. State is written atomically under interprocess locks. Restarting an
 application preserves cards and queued continuations.
 
+OpenNest keeps boards in its own state directory, including when it runs Claude
+Code. On upgrade it copies cards associated with its own sessions into its private
+board. Card and session history already on the shared board stays there. A pending
+classification that used the shared board can be retried in OpenNest.
+
 Session links use the current hostname with the default application ports
 (`4310` for CodexNest and `4311` for ClaudeNest). Reverse proxies and custom ports
 can override the sibling application addresses with `KANBAN_CODEX_URL` and

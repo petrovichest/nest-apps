@@ -190,7 +190,7 @@ await writeFile(
 const notes = join(root, "notes.md");
 await writeFile(
   notes,
-  `OpenNest ${version}\n\nOpenCode + OpenRouter. Exact source: ${candidate}.\n\nRequirements: Linux x86_64, Node.js 24, npm, Git, flock, bubblewrap and OpenCode 1.19.5.\n\nInstall:\n\n\`\`\`sh\ncurl -fsSL https://github.com/${repository}/releases/download/${tag}/install-opennest.sh | bash\n\`\`\`\n\nOpen http://127.0.0.1:4313. The owner token is stored in ~/.config/opennest/token.\n\nThe API, state, browser extension and Android package are independent from the other Nest apps. Signed APK and extension are attached.\n\nQualification: https://github.com/${repository}/actions/runs/${runId}. Includes real install, representative native history, cold/warm startup and automatic rollback preserving the native process and work.\n`,
+  `OpenNest ${version}\n\nOpenNest runs Claude Code through OpenRouter and uses its own project boards and classifier. Source commit ${candidate}.\n\n### Fresh installation\n\nRequirements include Linux x86_64, Node.js 24, npm, Git, flock, bubblewrap, OpenCode 1.19.5 and Claude Code 2.1.289.\n\n\`\`\`sh\ncurl -fsSL https://github.com/${repository}/releases/download/${tag}/install-opennest.sh | bash\n\`\`\`\n\nOpen http://127.0.0.1:4313. The owner token is stored in ~/.config/opennest/token. The signed Android package and browser extension are attached.\n\nThe native qualification covers installation, a large session history and automatic rollback with preserved work. [Qualification run](https://github.com/${repository}/actions/runs/${runId})\n`,
 );
 async function tagTarget(name) {
   let object;
