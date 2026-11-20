@@ -820,7 +820,9 @@ describe("KanbanBoard", () => {
       "/threads/session-one",
     );
     expect(within(panel).queryByRole("button", { name: "Запустить агента" })).toBeNull();
-    fireEvent.keyDown(document, { key: "Escape" });
+    const title = within(panel).getByRole("heading", { name: "Task one" });
+    await waitFor(() => expect(title).toHaveFocus());
+    fireEvent.keyDown(title, { key: "Escape" });
     expect(screen.queryByRole("complementary")).toBeNull();
   });
 
