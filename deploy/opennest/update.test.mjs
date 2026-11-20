@@ -144,6 +144,11 @@ async function fixture(t) {
     calls.push({ command, args });
     if (command === "curl") {
       const url = args.at(-1);
+      if (!nextRuntime && url.includes("/opennest-claude-latest/"))
+        throw Object.assign(new Error("Claude channel is not published"), {
+          code: 22,
+          stderr: "curl: (22) error: 404",
+        });
       return {
         stdout: url.endsWith("OpenNest-latest.json")
           ? JSON.stringify(legacy ? { schemaVersion: 1, version, commit: B } : offered())
