@@ -1091,6 +1091,7 @@ async function qualifyClaudeTransition() {
   await authorizeCandidate({}, "claude");
   await stage("claude-failed-transition-rolls-back", async () => {
     const before = await identity();
+    const previousRuntime = (await configurationValues()).OPENNEST_RUNTIME;
     const oldThread = await thread();
     const original = `pre-claude-${randomUUID()}`;
     await send(oldThread.id, "REQUEST", original);
@@ -1105,7 +1106,7 @@ async function qualifyClaudeTransition() {
     );
     assert.ok(await exists(join(privateRoot, "candidate-entered")));
     await ready();
-    assert.equal((await configurationValues()).OPENNEST_RUNTIME, undefined);
+    assert.equal((await configurationValues()).OPENNEST_RUNTIME, previousRuntime);
     await sameIdentity(before);
     const after = `after-claude-failure-${randomUUID()}`;
     await send(oldThread.id, "REQUEST", after);
