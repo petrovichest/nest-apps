@@ -58,6 +58,15 @@ function draft(input: unknown): ThreadDraft {
   };
 }
 
+function recordTargetRuntime(body: unknown): "claude" | undefined {
+  return body &&
+    typeof body === "object" &&
+    "targetRuntime" in body &&
+    body.targetRuntime === "claude"
+    ? "claude"
+    : undefined;
+}
+
 export async function buildApp(engine: Engine) {
   const { config } = engine;
   const appManager = new AppManager(config);
@@ -256,7 +265,9 @@ export async function buildApp(engine: Engine) {
     engine.publish({ type: "uiLanguage.changed", language });
     return { language };
   });
-  app.post("/api/v1/internal/restart/prepare", () => engine.prepareRestart());
+  app.post("/api/v1/internal/restart/prepare", (request) =>
+    engine.prepareRestart(recordTargetRuntime(request.body)),
+  );
   app.post("/api/v1/internal/restart/resume", () => {
     engine.resumeAccepting();
     return { resumed: true };

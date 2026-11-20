@@ -123,20 +123,37 @@ async function fixture(t) {
     changeNative = false,
     pid = 4242,
     legacy = false,
-    nativeVersion = "1.19.5";
+    nativeVersion = "1.19.5",
+    nextRuntime,
+    pendingWorkCount = 0;
+  const evidence = () =>
+    nextRuntime
+      ? {
+          ...report(),
+          runtime: nextRuntime,
+          nativeVersions: ["1.19.5", "2.1.289"],
+          scopes: [...report().scopes, { name: "runtime-transition", result: "passed" }],
+        }
+      : report();
+  const offered = () => {
+    const publication = manifest(evidence());
+    if (nextRuntime) publication.applications.opennest.runtime = nextRuntime;
+    return publication;
+  };
   const run = async (command, args) => {
     calls.push({ command, args });
     if (command === "curl") {
       const url = args.at(-1);
       return {
         stdout: url.endsWith("OpenNest-latest.json")
-          ? JSON.stringify(legacy ? { schemaVersion: 1, version, commit: B } : manifest())
+          ? JSON.stringify(legacy ? { schemaVersion: 1, version, commit: B } : offered())
           : url.endsWith("opennest-qualification.json")
-            ? JSON.stringify(report())
+            ? JSON.stringify(evidence())
             : installer,
         stderr: "",
       };
     }
+    if (command === "claude") return { stdout: "2.1.289 (Claude Code)\n", stderr: "" };
     if (command === "/fixture/opencode") return { stdout: nativeVersion + "\n", stderr: "" };
     if (command === "systemctl" && args.includes("MainPID"))
       return { stdout: String(pid), stderr: "" };
@@ -173,10 +190,14 @@ async function fixture(t) {
           recoveryState: apiAccepting ? "ready" : "draining",
           serverVersion: (await configuration()).OPENNEST_VERSION,
           restartProtocolVersion: 1,
-          appServer: { state: "ready", installedVersion: "1.19.5" },
+          appServer: {
+            state: "ready",
+            installedVersion:
+              (await configuration()).OPENNEST_RUNTIME === "claude" ? "2.1.289" : "1.19.5",
+          },
         }
       : route.endsWith("prepare")
-        ? { ready: true, supportedRunnerProtocols: [1] }
+        ? { ready: true, supportedRunnerProtocols: [1], activeTurnCount: 0, pendingWorkCount }
         : { resumed: true };
   };
   const updater = createUpdater({
@@ -210,6 +231,10 @@ async function fixture(t) {
     },
     legacy: () => {
       legacy = true;
+    },
+    transition: (pending = 0) => {
+      nextRuntime = "claude";
+      pendingWorkCount = pending;
     },
     unsupportedNative: () => {
       nativeVersion = "1.20.0";
@@ -341,4 +366,45 @@ test("checkpoint refusal preserves the running healthy baseline and native owner
   assert.equal(status.result, "failed");
   assert.match(status.message, /до переключения/);
   await assert.rejects(readFile(join(f.root, "update-transaction.json")), { code: "ENOENT" });
+});
+
+test("Claude transition requires distinct exact qualification", () => {
+  const value = manifest();
+  value.applications.opennest.runtime = "claude";
+  const candidate = manifestCandidate(value);
+  assert.throws(
+    () => qualifyCandidate(candidate, report(), A, "1.19.5"),
+    /transition qualification/,
+  );
+});
+
+test("Claude transition starts the new API while preserving OpenCode", async (t) => {
+  const f = await fixture(t);
+  f.transition();
+  await f.updater.updateWorker();
+  assert.equal((await f.configuration()).OPENNEST_RUNTIME, "claude");
+  assert.equal(await realpath(join(f.root, "current")), f.target);
+  assert.equal(f.nativePid(), 4242);
+});
+
+test("failed Claude transition restores the previous mode and original OpenCode", async (t) => {
+  const f = await fixture(t);
+  f.transition();
+  f.fail();
+  await assert.rejects(f.updater.updateWorker(), /previous ready version was restored/);
+  assert.equal((await f.configuration()).OPENNEST_RUNTIME, undefined);
+  assert.equal(await realpath(join(f.root, "current")), f.previous);
+  assert.equal(f.nativePid(), 4242);
+  assert.equal(f.healthStates.at(-1), "ready");
+});
+
+test("Claude transition leaves a queued OpenCode task with the unchanged API", async (t) => {
+  const f = await fixture(t);
+  f.transition(1);
+  const pid = f.apiPid();
+  await assert.rejects(f.updater.updateWorker(), /stopped before switching/);
+  assert.equal(await realpath(join(f.root, "current")), f.previous);
+  assert.equal(f.apiPid(), pid);
+  assert.equal(f.nativePid(), 4242);
+  assert.equal(f.healthStates.at(-1), "ready");
 });

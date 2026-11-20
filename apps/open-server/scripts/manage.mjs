@@ -455,7 +455,31 @@ export function createManager({ env = process.env, run = execute, fetcher = fetc
     setup,
     ...updater,
     async queueUpdate() {
-      await configuration();
+      const configured = await configuration();
+      const current = await verifyRelease(join(location.root, "current"));
+      if (configured.OPENNEST_RELEASE_PATH !== current.release)
+        throw new Error("OpenNest is already switching releases");
+      const units = serviceUnits({
+        configuration: location.env,
+        release: current.release,
+        node: configured.OPENNEST_NODE_BIN,
+        home: location.home,
+      });
+      const updaterUnits = ["opennest-update.service", "opennest-recovery.service"];
+      const changes = [];
+      for (const unit of updaterUnits) {
+        const path = join(location.units, unit);
+        if ((await readFile(path, "utf8")) !== units[unit]) changes.push(unit);
+      }
+      if (changes.length) {
+        for (const unit of updaterUnits) {
+          const { stdout } = await systemctl(["show", "--property=ActiveState", "--value", unit]);
+          if (!["inactive", "failed"].includes(stdout.trim()))
+            throw new Error("An OpenNest update or recovery is already active");
+        }
+        for (const unit of changes) await atomicFile(join(location.units, unit), units[unit]);
+        await systemctl(["daemon-reload"]);
+      }
       await systemctl(["start", "--no-block", "opennest-update.service"]);
     },
     async start() {

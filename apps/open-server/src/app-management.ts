@@ -118,9 +118,11 @@ export class AppManager {
     };
     await writeJsonAtomic(join(this.config.stateDir, "update.json"), queued);
     try {
-      await this.run("systemctl", ["--user", "start", "--no-block", "opennest-update.service"], {
-        timeout: 10_000,
-      });
+      await this.run(
+        this.config.nodeBin,
+        [join(this.config.releasePath, "apps/open-server/scripts/manage.mjs"), "update"],
+        { timeout: 30_000 },
+      );
     } catch {
       await writeJsonAtomic(join(this.config.stateDir, "update.json"), {
         ...queued,
