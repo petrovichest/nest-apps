@@ -17,6 +17,9 @@ const commitId = (value) => typeof value === "string" && /^[0-9a-f]{40}$/.test(v
 const checksum = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 const openCodeVersion = "1.19.5";
 const claudeVersion = "2.1.289";
+const legacyChannel =
+  "https://github.com/petrovichest/nest-apps/releases/download/opennest-latest/OpenNest-latest.json";
+const claudeChannel = legacyChannel.replace("/opennest-latest/", "/opennest-claude-latest/");
 
 function runtimeVersion(runtime) {
   if (runtime === undefined || runtime === "opencode") return openCodeVersion;
@@ -222,11 +225,25 @@ export function createUpdater({
   }
   async function candidate() {
     const config = await configuration();
-    const raw = await download(
-      config.OPENNEST_UPDATE_MANIFEST_URL ||
-        env.OPENNEST_UPDATE_MANIFEST_URL ||
-        "https://github.com/petrovichest/nest-apps/releases/download/opennest-latest/OpenNest-latest.json",
-    );
+    const configured =
+      config.OPENNEST_UPDATE_MANIFEST_URL || env.OPENNEST_UPDATE_MANIFEST_URL || legacyChannel;
+    let raw;
+    let fromClaudeChannel = false;
+    if (configured !== legacyChannel) raw = await download(configured);
+    else {
+      try {
+        raw = await download(claudeChannel);
+        fromClaudeChannel = true;
+      } catch (error) {
+        if (
+          config.OPENNEST_RUNTIME === "claude" ||
+          error.code !== 22 ||
+          !/\b404\b/.test(error.stderr ?? "")
+        )
+          throw error;
+        raw = await download(legacyChannel);
+      }
+    }
     let manifest;
     try {
       manifest = JSON.parse(raw);
@@ -234,6 +251,8 @@ export function createUpdater({
       throw new Error("Invalid release metadata");
     }
     const proposed = manifestCandidate(manifest);
+    if (fromClaudeChannel && proposed?.runtime !== "claude")
+      throw new Error("The Claude update channel requires a Claude Code release");
     if (!proposed) return null;
     const current = await currentRelease();
     const health = await api("health");
