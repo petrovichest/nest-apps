@@ -17,7 +17,8 @@ assert.match(candidate, /^[0-9a-f]{40}$/);
 assert.match(runId, /^[1-9][0-9]*$/);
 const version = `0.1.9-${candidate.slice(0, 7)}`;
 const tag = `opennest-v${version}`;
-const channel = "opennest-latest";
+const channel = "opennest-claude-latest";
+const legacyChannel = "opennest-latest";
 const root = join(process.env.RUNNER_TEMP, "qualified-opennest-publication");
 await mkdir(root, { recursive: true });
 const gh = async (args) => (await execute("gh", args, { maxBuffer: 8 * 1024 * 1024 })).stdout;
@@ -63,10 +64,12 @@ const hash = async (path) =>
 const installerHash = await hash(join(evidence, "install-opennest.sh"));
 const report = JSON.parse(await readFile(join(evidence, "qualification.json"), "utf8"));
 const current = await release(channel);
+const baselineChannel = current && !current.draft ? channel : legacyChannel;
+const baselineRelease = baselineChannel === channel ? current : await release(legacyChannel);
 const publications = JSON.parse(
   await gh(["api", `repos/${repository}/releases?per_page=100`, "--paginate", "--slurp"]),
 ).flat();
-if (!current || current.draft) {
+if (!baselineRelease || baselineRelease.draft) {
   const other = publications.find(
     (value) => !value.draft && value.tag_name.startsWith("opennest-v") && value.tag_name !== tag,
   );
@@ -78,12 +81,12 @@ if (!current || current.draft) {
 }
 
 let baselineManifest = null;
-if (current && !current.draft) {
+if (baselineRelease && !baselineRelease.draft) {
   const previous = join(root, "previous");
   await gh([
     "release",
     "download",
-    channel,
+    baselineChannel,
     "-R",
     repository,
     "-p",
@@ -279,12 +282,12 @@ if (publicationRecovery) {
     current?.id ?? null,
     "OpenNest channel changed during publication",
   );
-  if (current && !current.draft) {
+  if (baselineRelease && !baselineRelease.draft) {
     const recheck = join(root, "recheck");
     await gh([
       "release",
       "download",
-      channel,
+      baselineChannel,
       "-R",
       repository,
       "-p",
@@ -297,7 +300,8 @@ if (publicationRecovery) {
       baselineManifest,
       "Healthy baseline changed",
     );
-  } else if (!current) {
+  }
+  if (!current) {
     await gh([
       "release",
       "create",
@@ -309,7 +313,7 @@ if (publicationRecovery) {
       "--target",
       candidate,
       "--title",
-      "OpenNest update channel",
+      "OpenNest Claude Code update channel",
       "--notes",
       `Current qualified release: https://github.com/${repository}/releases/tag/${tag}`,
     ]);

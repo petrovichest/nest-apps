@@ -54,9 +54,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/opennest-latest" > "$RUNNER_TEMP/channel.json" 2> "$RUNNER_TEMP/channel-error.txt"; then
+          channel=opennest-claude-latest
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$channel" > "$RUNNER_TEMP/channel.json" 2> "$RUNNER_TEMP/channel-error.txt"; then
+            if jq -e '.draft == true' "$RUNNER_TEMP/channel.json" > /dev/null; then channel=opennest-latest; fi
+          else
+            grep -q 'HTTP 404' "$RUNNER_TEMP/channel-error.txt" || { cat "$RUNNER_TEMP/channel-error.txt" >&2; exit 1; }
+            channel=opennest-latest
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$channel" > "$RUNNER_TEMP/channel.json" 2> "$RUNNER_TEMP/channel-error.txt"; then
             jq -e '.draft == false' "$RUNNER_TEMP/channel.json"
-            gh release download opennest-latest -R "$GITHUB_REPOSITORY" -p OpenNest-latest.json -D "$RUNNER_TEMP/published-opennest"
+            gh release download "$channel" -R "$GITHUB_REPOSITORY" -p OpenNest-latest.json -D "$RUNNER_TEMP/published-opennest"
             kind=published
             baseline_version="$(jq -er '.version' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
             installer_url="$(jq -er '.applications.opennest.installer.url' "$RUNNER_TEMP/published-opennest/OpenNest-latest.json")"
