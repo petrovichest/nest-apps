@@ -37,7 +37,7 @@ export async function registerGeminiKanban(
           cwd: job.cwd,
           title: job.title,
           ...(job.kind === "classify"
-            ? { model: engine.data.taskDefaults.classificationModel ?? "gemini-3-flash" }
+            ? { model: engine.data.taskDefaults.classificationModel ?? "gemini-3.8-flash" }
             : {}),
         });
         if (job.settings) {

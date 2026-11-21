@@ -272,4 +272,165 @@ describe("Gemini session ownership", () => {
     await engine.settings(thread.id, { model: null });
     expect(fake.model).toBe("gemini");
   });
+
+  it("refreshes models on startup, preserves per-model efforts across singleton sessions, and allows helper threads without thought_level", async () => {
+    const root = await mkdtemp(join(tmpdir(), "gemininest-models-engine-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const config = {
+      ...paths({
+        GEMININEST_CONFIG_DIR: join(root, "config"),
+        GEMININEST_STATE_DIR: join(root, "state"),
+        GEMININEST_RUNTIME_DIR: join(root, "run"),
+        GEMININEST_AGY_BIN: "/bin/true",
+      }),
+      token: "t".repeat(48),
+    };
+    await writeJsonAtomic(join(config.configDir, "connection.json"), {
+      proxy: "http://unused.example:3128",
+      authenticated: true,
+    });
+
+    const catalog = [
+      {
+        id: "gemini-4-carbon",
+        displayName: "Gemini 4 Carbon",
+        description: "",
+        isDefault: true,
+        reasoningEfforts: [
+          { value: "low", description: "Low", isDefault: false },
+          { value: "medium", description: "Medium", isDefault: true },
+          { value: "high", description: "High", isDefault: false },
+        ],
+        serviceTiers: [],
+        supportsPersonality: false,
+      },
+      {
+        id: "gemini-4-hydrogen",
+        displayName: "Gemini 4 Hydrogen",
+        description: "",
+        isDefault: false,
+        reasoningEfforts: [
+          { value: "low", description: "Low", isDefault: false },
+          { value: "medium", description: "Medium", isDefault: false },
+          { value: "high", description: "High", isDefault: true },
+          { value: "xhigh", description: "XHigh", isDefault: false },
+        ],
+        serviceTiers: [],
+        supportsPersonality: false,
+      },
+      {
+        id: "gpt-oss-120b-medium",
+        displayName: "GPT-OSS 120B (Medium)",
+        description: "",
+        isDefault: false,
+        reasoningEfforts: [],
+        serviceTiers: [],
+        supportsPersonality: false,
+      },
+    ];
+
+    class MultiModelAcp extends EventEmitter {
+      onRequest!: AcpClient["onRequest"];
+      calls: Array<{ method: string; params: any }> = [];
+      pending: Array<{ resolve(value: any): void; reject(error: Error): void }> = [];
+      currentModel = "gemini-4-carbon";
+      currentEffort = "medium";
+      async start() {
+        return { protocolVersion: 1 };
+      }
+      private configOptions() {
+        const modelOption = {
+          id: "model",
+          category: "model",
+          currentValue: this.currentModel,
+          options: [
+            { value: "gemini-4-carbon", name: "Gemini 4 Carbon" },
+            { value: "gemini-4-hydrogen", name: "Gemini 4 Hydrogen" },
+            { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+          ],
+        };
+        if (this.currentModel === "gpt-oss-120b-medium") {
+          return [modelOption];
+        }
+        return [
+          modelOption,
+          {
+            id: "thought_level",
+            category: "thought_level",
+            currentValue: this.currentEffort,
+            options: [
+              { value: "low", name: "Low" },
+              { value: "medium", name: "Medium" },
+              { value: "high", name: "High" },
+            ],
+          },
+        ];
+      }
+      request(method: string, params: any): Promise<any> {
+        this.calls.push({ method, params });
+        if (method === "session/prompt")
+          return new Promise((resolve, reject) => this.pending.push({ resolve, reject }));
+        if (method === "session/set_config_option") {
+          if (params.configId === "model") this.currentModel = params.value;
+          if (params.configId === "thought_level") this.currentEffort = params.value;
+          return Promise.resolve({ configOptions: this.configOptions() });
+        }
+        return Promise.resolve({
+          sessionId: `native-${this.calls.length}`,
+          configOptions: this.configOptions(),
+        });
+      }
+      notify() {}
+      close() {
+        this.emit("disconnected");
+      }
+    }
+
+    const fake = new MultiModelAcp();
+    const engine = new Engine(config, () => fake as unknown as AcpClient, {
+      pollModels: true,
+      readModels: async () => structuredClone(catalog),
+    });
+    await engine.initialize();
+    cleanups.push(() => engine.close());
+
+    await vi.waitFor(() => expect(engine.snapshot().models).toHaveLength(3));
+    expect(fake.calls).toHaveLength(0);
+
+    engine.data.taskDefaults = { model: "gemini-4-carbon", reasoningEffort: "high" };
+    const project = await engine.addProject(root);
+    const { thread: classifyThread } = await engine.createThread(
+      project.id,
+      "classify:card-1",
+      undefined,
+      {
+        title: "Классификация",
+        model: "gpt-oss-120b-medium",
+      },
+    );
+    expect(classifyThread.settings.reasoningEffort).toBeUndefined();
+
+    await engine.send(classifyThread.id, { input: "classify task", clientMessageId: "c1" });
+    fake.pending[0]!.resolve({ stopReason: "end_turn" });
+    await vi.waitFor(() =>
+      expect(engine.detail(classifyThread.id).summary.state).toBe("completed"),
+    );
+
+    // Singleton session must not wipe Hydrogen's xhigh or hijack global isDefault
+    const afterSingleton = engine.snapshot().models;
+    expect(afterSingleton.find((item) => item.isDefault)?.id).toBe("gemini-4-carbon");
+    expect(
+      afterSingleton
+        .find((item) => item.id === "gemini-4-hydrogen")
+        ?.reasoningEfforts.map((e) => e.value),
+    ).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(
+      afterSingleton.find((item) => item.id === "gpt-oss-120b-medium")?.reasoningEfforts,
+    ).toEqual([]);
+
+    // Explicit reasoningEffort patch on a model without thought_level still rejects
+    await expect(engine.settings(classifyThread.id, { reasoningEffort: "high" })).rejects.toThrow(
+      "уровня рассуждений",
+    );
+  });
 });

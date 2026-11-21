@@ -20,6 +20,8 @@ import {
   BROWSER_TOOL_RESULT_CHUNK_BYTES,
   BROWSER_TOOL_NAMES,
   bearerHeader,
+  canonicalServiceTier,
+  modelServiceTier,
   fastServiceTier,
   isFastServiceTier,
   mergeProjectDraft,
@@ -49,6 +51,28 @@ describe("Fast service tiers", () => {
       expected,
     );
   });
+
+  it.each([
+    {
+      requested: "ultrafast",
+      tiers: ["priority", "ultrafast"],
+      saved: "ultrafast",
+      wire: "ultrafast",
+    },
+    { requested: "ultrafast", tiers: ["priority"], saved: "ultrafast", wire: null },
+    { requested: "priority", tiers: ["priority", "ultrafast"], saved: "fast", wire: "priority" },
+    { requested: "fast", tiers: ["ultrafast"], saved: "fast", wire: null },
+    { requested: null, tiers: ["ultrafast"], saved: undefined, wire: null },
+    { requested: "unknown", tiers: ["unknown"], saved: undefined, wire: null },
+  ])(
+    "preserves $requested separately from other speed modes with $tiers",
+    ({ requested, tiers, saved, wire }) => {
+      expect(canonicalServiceTier(requested)).toBe(saved);
+      expect(
+        modelServiceTier({ serviceTiers: tiers.map((id) => ({ id, displayName: id })) }, requested),
+      ).toBe(wire);
+    },
+  );
 
   it("treats an absent model as unsupported", () => {
     expect(fastServiceTier(undefined)).toBeNull();

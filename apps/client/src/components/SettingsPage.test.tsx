@@ -505,11 +505,11 @@ describe("SettingsPage", () => {
     expect(onSwitchServer).toHaveBeenCalledOnce();
   });
 
-  it("stores Fast independently of model support alongside other defaults", async () => {
+  it.each(["fast", "ultrafast"])("saves supported %s alongside other defaults", async (tier) => {
     const updateTaskDefaults = vi.fn().mockResolvedValue({
       model: "gpt",
       titleModel: "gpt",
-      serviceTier: "fast",
+      serviceTier: tier,
       personality: "friendly",
     });
     connection.mockReturnValue({
@@ -533,7 +533,10 @@ describe("SettingsPage", () => {
               description: "",
               isDefault: true,
               reasoningEfforts: [],
-              serviceTiers: [],
+              serviceTiers: [
+                { id: "priority", displayName: "Fast" },
+                { id: "ultrafast", displayName: "Ultrafast" },
+              ],
               supportsPersonality: true,
             },
           ],
@@ -550,10 +553,10 @@ describe("SettingsPage", () => {
       target: { value: "gpt" },
     });
     expect(screen.queryByRole("combobox", { name: "Service tier" })).not.toBeInTheDocument();
-    const fastToggle = screen.getByRole("switch", { name: "Fast mode по умолчанию" });
-    expect(fastToggle).toBeEnabled();
-    expect(fastToggle).not.toBeChecked();
-    fireEvent.click(fastToggle);
+    const speed = screen.getByRole("combobox", { name: "Скорость по умолчанию" });
+    expect(speed).toBeEnabled();
+    expect(speed).toHaveValue("");
+    fireEvent.change(speed, { target: { value: tier } });
     fireEvent.change(screen.getByRole("combobox", { name: "Personality" }), {
       target: { value: "friendly" },
     });
@@ -563,7 +566,7 @@ describe("SettingsPage", () => {
       expect(updateTaskDefaults).toHaveBeenCalledWith({
         model: "gpt",
         titleModel: "gpt",
-        serviceTier: "fast",
+        serviceTier: tier,
         personality: "friendly",
       }),
     );
@@ -639,6 +642,7 @@ describe("SettingsPage", () => {
               displayName: "GPT",
               isDefault: true,
               reasoningEfforts: [{ value: "medium" }, { value: "high" }],
+              serviceTiers: [],
             },
           ],
         },
@@ -684,8 +688,14 @@ describe("SettingsPage", () => {
               displayName: "GPT",
               isDefault: true,
               reasoningEfforts: [{ value: "high" }],
+              serviceTiers: [],
             },
-            { id: "other", displayName: "Other", reasoningEfforts: [{ value: "low" }] },
+            {
+              id: "other",
+              displayName: "Other",
+              reasoningEfforts: [{ value: "low" }],
+              serviceTiers: [],
+            },
           ],
         },
       },
@@ -721,26 +731,52 @@ describe("SettingsPage", () => {
     };
     connection.mockReturnValue({
       api,
-      state: { snapshot: { taskDefaults: { serviceTier: "priority" }, models: [] } },
+      state: {
+        snapshot: {
+          taskDefaults: { serviceTier: "priority" },
+          models: [
+            {
+              id: "gpt",
+              displayName: "GPT",
+              isDefault: true,
+              reasoningEfforts: [],
+              serviceTiers: [{ id: "priority", displayName: "Fast" }],
+            },
+          ],
+        },
+      },
     });
     renderPage();
     openSection("Codex");
-    const fastToggle = screen.getByRole("switch", { name: "Fast mode по умолчанию" });
-    expect(fastToggle).toBeChecked();
-    expect(fastToggle).toBeEnabled();
+    const speed = screen.getByRole("combobox", { name: "Скорость по умолчанию" });
+    expect(speed).toHaveValue("fast");
+    expect(speed).toBeEnabled();
     expect(screen.getByRole("button", { name: "Сохранить настройки новых задач" })).toBeDisabled();
-    fireEvent.click(fastToggle);
+    fireEvent.change(speed, { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Сохранить настройки новых задач" }));
     await waitFor(() => expect(updateTaskDefaults).toHaveBeenCalledWith({ serviceTier: null }));
-    expect(fastToggle).not.toBeChecked();
+    expect(speed).toHaveValue("");
 
     connection.mockReturnValue({
       api,
-      state: { snapshot: { taskDefaults: { serviceTier: "fast" }, models: [] } },
+      state: {
+        snapshot: {
+          taskDefaults: { serviceTier: "fast" },
+          models: [
+            {
+              id: "gpt",
+              displayName: "GPT",
+              isDefault: true,
+              reasoningEfforts: [],
+              serviceTiers: [{ id: "priority", displayName: "Fast" }],
+            },
+          ],
+        },
+      },
     });
     openSection("Приложение");
     openSection("Codex");
-    expect(fastToggle).toBeChecked();
+    expect(speed).toHaveValue("fast");
   });
 
   it("ignores a legacy service-tier default while preserving other stale and unsaved values", async () => {

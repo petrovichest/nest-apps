@@ -4485,6 +4485,11 @@ button.message-file:hover:not(:disabled) {
   font-weight: var(--weight-regular);
 }
 
+.model-speed-description {
+  color: var(--muted);
+  font-size: var(--text-small);
+}
+
 .model-settings-option > svg {
   width: 16px;
   height: 16px;

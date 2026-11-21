@@ -9,7 +9,7 @@ import type {
   UpdateThreadGoalRequest,
   UpdateThreadSettingsRequest,
 } from "@codexnest/protocol";
-import { fastServiceTier, isFastServiceTier } from "@codexnest/protocol";
+import { canonicalServiceTier, fastServiceTier, modelServiceTier } from "@codexnest/protocol";
 
 import { useConnection } from "../connection";
 import { useI18n, type Translate } from "../i18n";
@@ -54,7 +54,12 @@ export function SettingsPicker({
   const modelDisplayName = model ? compactModelName(model.displayName) : t("Модель");
   const defaultEffort = model?.reasoningEfforts.find((option) => option.isDefault)?.value;
   const effortDisplayName = value.reasoningEffort ?? defaultEffort ?? t("По умолчанию");
-  const fastEnabled = application.isCodex && isFastServiceTier(value.serviceTier);
+  const speed =
+    application.isCodex && modelServiceTier(model, value.serviceTier)
+      ? (canonicalServiceTier(value.serviceTier) ?? "")
+      : "";
+  const fastEnabled = speed !== "";
+  const speedLabel = speed === "ultrafast" ? "Ultrafast" : "Fast";
 
   return (
     <div className="settings-picker">
@@ -66,7 +71,7 @@ export function SettingsPicker({
         aria-expanded={modelPopupOpen}
         className="setting-control model-toggle"
         disabled={disabled || !models.length}
-        title={`${modelDisplayName} · ${effortDisplayName}${fastEnabled ? " · Fast" : ""}`}
+        title={`${modelDisplayName} · ${effortDisplayName}${fastEnabled ? ` · ${speedLabel}` : ""}`}
         onClick={(event) => {
           const activeElement = event.currentTarget.ownerDocument.activeElement;
           modelPopupOpenerRef.current =
@@ -79,7 +84,7 @@ export function SettingsPicker({
       >
         <ModelIcon />
         <span>{modelDisplayName}</span>
-        {fastEnabled && <small className="model-fast-badge">Fast</small>}
+        {fastEnabled && <small className="model-fast-badge">{speedLabel}</small>}
       </button>
       {modelPopupOpen && (
         <ModelSettingsPopup
@@ -93,11 +98,11 @@ export function SettingsPicker({
           defaultEffort={defaultEffort}
           disabled={disabled}
           effortDisabled={effortDisabled}
-          fastEnabled={fastEnabled}
+          serviceTier={speed}
           opener={modelPopupOpenerRef.current}
           onModelChange={changeModel}
           onEffortChange={(reasoningEffort) => onChange({ reasoningEffort })}
-          onFastChange={(enabled) => onChange({ serviceTier: enabled ? "fast" : null })}
+          onServiceTierChange={(serviceTier) => onChange({ serviceTier: serviceTier || null })}
           onClose={closeModelPopup}
         />
       )}
@@ -222,7 +227,8 @@ export function SettingsPicker({
         nextModel?.reasoningEfforts.find((option) => option.isDefault)?.value ?? null;
     }
     if (value.personality && !nextModel?.supportsPersonality) patch.personality = null;
-    if (fastEnabled && !fastServiceTier(nextModel)) patch.serviceTier = null;
+    if (canonicalServiceTier(value.serviceTier) && !modelServiceTier(nextModel, value.serviceTier))
+      patch.serviceTier = null;
     onChange(patch);
   }
 }
@@ -256,11 +262,11 @@ function ModelSettingsPopup({
   defaultEffort,
   disabled,
   effortDisabled,
-  fastEnabled,
+  serviceTier,
   opener,
   onModelChange,
   onEffortChange,
-  onFastChange,
+  onServiceTierChange,
   onClose,
 }: {
   models: ModelOption[];
@@ -273,11 +279,11 @@ function ModelSettingsPopup({
   defaultEffort: string | undefined;
   disabled: boolean;
   effortDisabled: boolean;
-  fastEnabled: boolean;
+  serviceTier: string;
   opener: HTMLElement | null;
   onModelChange(modelId: string | null): void;
   onEffortChange(reasoningEffort: string | null): void;
-  onFastChange(enabled: boolean): void;
+  onServiceTierChange(value: string): void;
   onClose(): void;
 }) {
   const { language, t } = useI18n();
@@ -463,23 +469,24 @@ function ModelSettingsPopup({
         )}
       {application.isCodex && (
         <section className="model-settings-section">
-          <button
-            type="button"
-            role="switch"
-            aria-checked={fastEnabled}
-            className={`model-settings-option${fastEnabled ? " active" : ""}`}
-            disabled={disabled || !fastServiceTier(model)}
-            onClick={() => onFastChange(!fastEnabled)}
+          <h3>
+            <label htmlFor="model-service-tier">{t("Скорость")}</label>
+          </h3>
+          <select
+            id="model-service-tier"
+            disabled={disabled || !model}
+            value={serviceTier}
+            onChange={(event) => onServiceTierChange(event.target.value)}
           >
-            <span>
-              <strong>Fast mode</strong>
-              <small>{t("Ускоряет ответы Codex и увеличивает расход лимитов.")}</small>
-              {!fastServiceTier(model) && (
-                <small>{t("Fast mode недоступен для этой модели.")}</small>
-              )}
-            </span>
-            <CheckIcon />
-          </button>
+            <option value="">{t("Обычная")}</option>
+            {fastServiceTier(model) && <option value="fast">Fast</option>}
+            {model?.serviceTiers.some((tier) => tier.id === "ultrafast") && (
+              <option value="ultrafast">Ultrafast</option>
+            )}
+          </select>
+          <small className="model-speed-description">
+            {t("Ускоренные режимы увеличивают расход лимитов.")}
+          </small>
         </section>
       )}
     </Dialog>

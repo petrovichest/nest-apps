@@ -5,11 +5,11 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const nativeVersions = ["0.167.0", "0.167.1", "0.167.2", "0.169.0", "0.170.0"];
-export const healthyBaseline = "9a22821ee0c0680db853bcbaac3e343ee95f284f";
+export const healthyBaseline = "5779121e2e58ad4b73a8cacda22d704a619137ec";
 export const installedBaseline = "f42edbee78b582bb54c96ab7bfc732286f10a667";
 const incidentBaseline = "fe3c5c858344b5f03c2619250b01d351930c891b";
 const baselineHashes = {
-  [healthyBaseline]: "013bc30836a5a2ed68113f13ee4e3495f4f2abcaf38affd24270d074c40f589e",
+  [healthyBaseline]: "98869c3475a265637ea876d63c6bb3a769f2e641fdc66f7923e51810d5aa6a86",
   [installedBaseline]: "263410a46f2af777c215463f6754af2d4c06637a963c269ecb0f64805b9b90f1",
   [incidentBaseline]: "0642c7e8a4cfbd5d3cef539d797d7f109cfa0453399b2640830dc02f3745e316",
 };
@@ -140,6 +140,17 @@ export function validateScope(report, candidate, native, scope, baseline) {
   }
 }
 
+const environmentNativeVersions = ["0.154.0", ...nativeVersions];
+const lifecycleScopes = [
+  ...nativeVersions.map((native) => ["lifecycle", native, "all", healthyBaseline]),
+  ["clean-install", "0.169.0", "clean", healthyBaseline],
+  ["interruption", "0.167.2", "interruption", healthyBaseline],
+  ["interruption", "0.169.0", "interruption", healthyBaseline],
+  ["interruption", "0.169.0", "interruption", incidentBaseline],
+  ["interruption", "0.169.0", "interruption", installedBaseline],
+  ["unsupported-native", "0.154.0", "unsupported", installedBaseline],
+];
+
 async function collect(directory, candidate, installerHash) {
   const evidence = [];
   const read = async (artifact, file) => {
@@ -147,7 +158,7 @@ async function collect(directory, candidate, installerHash) {
     evidence.push({ artifact, file, sha256: createHash("sha256").update(bytes).digest("hex") });
     return bytes.toString();
   };
-  for (const native of ["0.154.0", ...nativeVersions]) {
+  for (const native of environmentNativeVersions) {
     const artifact = `release-environment-${candidate}-${native}`;
     const environment = JSON.parse(await read(artifact, "environment.json"));
     assert.equal(environment.phase, "environment-only");
@@ -157,16 +168,7 @@ async function collect(directory, candidate, installerHash) {
     assert.equal(version.cliVersion, native);
     assert.equal(version.appServerVersion, native);
   }
-  const scopes = [
-    ...nativeVersions.map((native) => ["lifecycle", native, "all", healthyBaseline]),
-    ["clean-install", "0.169.0", "clean", healthyBaseline],
-    ["interruption", "0.167.2", "interruption", healthyBaseline],
-    ["interruption", "0.169.0", "interruption", healthyBaseline],
-    ["interruption", "0.169.0", "interruption", incidentBaseline],
-    ["interruption", "0.169.0", "interruption", installedBaseline],
-    ["unsupported-native", "0.154.0", "unsupported", installedBaseline],
-  ];
-  for (const [kind, native, scope, baseline] of scopes) {
+  for (const [kind, native, scope, baseline] of lifecycleScopes) {
     const suffix =
       kind === "clean-install"
         ? ""
@@ -221,8 +223,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     assert.equal(result.minimumNativeVersion, nativeVersions[0]);
     assert.equal(result.qualified, true);
     assert.equal(result.sourceRun, process.env.QUALIFIED_RUN_ID);
-    // Five environment scopes contribute two files each; ten lifecycle scopes
-    // contribute five each. This is the collector's complete immutable record.
-    assert.equal(result.evidence.length, 60);
+    assert.equal(
+      result.evidence.length,
+      environmentNativeVersions.length * 2 + lifecycleScopes.length * 5,
+    );
   }
 }

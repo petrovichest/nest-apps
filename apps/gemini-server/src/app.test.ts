@@ -494,6 +494,19 @@ it("supports full-text search, skills, brain artifacts, voice transcriptions, ka
   expect(appStatus.statusCode).toBe(200);
   expect(appStatus.json().supported).toBe(true);
 
+  const cliStatus = await app.inject({
+    method: "GET",
+    url: "/api/v1/settings/gemini/cli",
+    headers,
+  });
+  expect(cliStatus.statusCode).toBe(200);
+  expect(cliStatus.json()).toMatchObject({
+    supported: true,
+    proxyConfigured: true,
+    cliVersion: "1.5.3-fixture",
+    operation: "idle",
+  });
+
   const prep = await app.inject({
     method: "POST",
     url: "/api/v1/internal/restart/prepare",

@@ -116,8 +116,8 @@ if [[ "$qualification_mode" == lifecycle ]]; then
   # Reproduce release packaging from immutable source and check published bytes.
   case "${QUALIFICATION_BASELINE:-current}" in
     current)
-      qualification_baseline=9a22821ee0c0680db853bcbaac3e343ee95f284f
-      qualification_baseline_hash=013bc30836a5a2ed68113f13ee4e3495f4f2abcaf38affd24270d074c40f589e ;;
+      qualification_baseline=5779121e2e58ad4b73a8cacda22d704a619137ec
+      qualification_baseline_hash=98869c3475a265637ea876d63c6bb3a769f2e641fdc66f7923e51810d5aa6a86 ;;
     installed)
       qualification_baseline=f42edbee78b582bb54c96ab7bfc732286f10a667
       qualification_baseline_hash=263410a46f2af777c215463f6754af2d4c06637a963c269ecb0f64805b9b90f1 ;;

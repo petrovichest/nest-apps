@@ -1,4 +1,8 @@
-import { isFastServiceTier, validPastedText, type MessagePresentation } from "@codexnest/protocol";
+import {
+  canonicalServiceTier,
+  validPastedText,
+  type MessagePresentation,
+} from "@codexnest/protocol";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { constants as fsConstants } from "node:fs";
@@ -2310,7 +2314,8 @@ function isThreadDraftAnnotation(value: unknown): boolean {
 }
 
 function normalizeServiceTier(value: Record<string, unknown>): void {
-  if (isFastServiceTier(value.serviceTier)) value.serviceTier = "fast";
+  const tier = canonicalServiceTier(value.serviceTier);
+  if (tier) value.serviceTier = tier;
   else delete value.serviceTier;
 }
 
