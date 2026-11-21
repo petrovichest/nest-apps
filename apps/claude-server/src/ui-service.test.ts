@@ -827,6 +827,98 @@ describe("Claude UI durable session facade", () => {
     await expect.poll(() => service.summary(id).contextUsage?.usedTokens).toBeNull();
     expect(service.summary(id).contextUsage?.windowTokens).toBe(400_000);
   });
+  it("reports estimated cumulative session cost from native usage, including subagents", async () => {
+    const { manager, config, directory, start } = await fixture();
+    config.openRouter = {
+      keyFile: join(config.stateDir, "openrouter-key.json"),
+      runtimeVersion: "2.1.289",
+      endpoints: async () => [],
+      models: [
+        {
+          id: "deepseek/flash",
+          displayName: "Flash",
+          description: "",
+          isDefault: true,
+          reasoningEfforts: [],
+          serviceTiers: [],
+          supportsPersonality: false,
+          openRouter: {
+            developer: "deepseek",
+            inputPrice: 1,
+            outputPrice: 2,
+            cacheReadPrice: 0.1,
+            cacheWritePrice: 1.25,
+          },
+        },
+      ],
+    };
+    const id = randomUUID(),
+      projectRoot = join(config.configDir, "projects", "test-project"),
+      subagents = join(projectRoot, id, "subagents");
+    await mkdir(subagents, { recursive: true });
+    const user = { type: "user", uuid: randomUUID(), message: { content: "Go" } };
+    const launch = {
+      type: "assistant",
+      uuid: randomUUID(),
+      timestamp: 20,
+      message: {
+        id: "launch",
+        content: [
+          {
+            type: "tool_use",
+            id: "agent-tool",
+            name: "Agent",
+            input: { description: "Inspect repo", subagent_type: "Explore", prompt: "Look" },
+          },
+        ],
+      },
+    };
+    const answer = (messageId: string, usage: Record<string, number>) => ({
+      type: "assistant",
+      uuid: messageId,
+      timestamp: 30,
+      message: {
+        id: messageId,
+        model: "deepseek/flash",
+        content: [{ type: "text", text: messageId }],
+        usage,
+      },
+    });
+    const mainUsage = {
+      input_tokens: 1_000,
+      cache_creation_input_tokens: 2_000,
+      cache_read_input_tokens: 3_000,
+      output_tokens: 4_000,
+    };
+    await writeFile(
+      join(projectRoot, `${id}.jsonl`),
+      [user, launch, answer("main-1", mainUsage)].map((entry) => JSON.stringify(entry)).join("\n"),
+    );
+    await writeFile(
+      join(subagents, "agent-a1.meta.json"),
+      JSON.stringify({ agentType: "Explore", toolUseId: "agent-tool" }),
+    );
+    await writeFile(
+      join(subagents, "agent-a1.jsonl"),
+      JSON.stringify(answer("child-1", { input_tokens: 500, output_tokens: 100 })),
+    );
+    manager.owners.set(id, snapshot(id, directory));
+    const service = await start();
+    // Attaching the session backfills usage from its transcript and its subagents.
+    const detail = await service.detail(id);
+    expect(detail.summary.costUsage?.estimated).toBe(true);
+    expect(detail.summary.costUsage?.usd).toBeCloseTo(0.0125, 10);
+    expect(service.summary(subagentThreadId(id, "agent-tool")).costUsage?.usd).toBeCloseTo(
+      0.0007,
+      10,
+    );
+    manager.emit(id, "native", answer("main-2", { input_tokens: 100_000 }));
+    await expect.poll(() => service.summary(id).costUsage?.usd).toBeCloseTo(0.1125, 10);
+    // The transcript repeats this message for each content block; it must not bill twice.
+    manager.emit(id, "native", answer("main-1", mainUsage));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(service.summary(id).costUsage?.usd).toBeCloseTo(0.1125, 10);
+  });
   it("relaunches an idle owner at the next message after its browser binding changes", async () => {
     const { manager, start, reserve } = await fixture();
     manager.accepting = true;

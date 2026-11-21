@@ -97,6 +97,15 @@ const PLAN_FILE = /[\\/]\.claude[\\/]plans[\\/][^\\/]+\.md$/;
 const STRUCTURED_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite", "AskUserQuestion"]);
 const SUBAGENT_TOOLS = new Set(["Agent", "Task"]);
 
+/** Token usage one model reported for this conversation; cached input is billed separately. */
+export interface ModelUsage {
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
 export type SubagentStatus = "running" | "completed" | "failed" | "interrupted";
 export interface SubagentLaunch {
   toolUseId: string;
@@ -146,6 +155,11 @@ export class NativeView {
   private contextTokens?: number | null;
   /** The model's window, reported by a finished turn; absent until one has been seen. */
   private contextWindow?: number;
+  /** Cumulative billable tokens per model, deduplicated across repeated transcript entries. */
+  private readonly usageByModel = new Map<string, Omit<ModelUsage, "model">>();
+  /** Highest usage seen for each native message; one message appears in several entries. */
+  private readonly usageByMessage = new Map<string, Omit<ModelUsage, "model">>();
+  private usageRevision = 0;
   private interruptedTurns: Record<string, number> = {};
 
   constructor(
@@ -160,7 +174,7 @@ export class NativeView {
     this.quotaContinuations.add(id);
   }
 
-  /** Follows how full the context is: the latest answer's size, a compaction, the reported window. */
+  /** Follows how full the context is and accumulates what each answer billed. */
   private trackContext(event: Json): void {
     if (event.type === "assistant" && object(event.message) && object(event.message.usage)) {
       if (event.message.model === "<synthetic>") return;
@@ -174,6 +188,7 @@ export class NativeView {
       ])
         if (typeof usage[key] === "number" && usage[key] > 0) used += usage[key];
       if (used > 0) this.contextTokens = used;
+      this.trackUsage(event.message, usage);
     } else if (event.type === "system" && event.subtype === "compact_boundary") {
       // The CLI's own post-compaction count leaves out the system prompt and tools, which the
       // next answer's usage includes; the size is unknown until that answer arrives.
@@ -190,6 +205,68 @@ export class NativeView {
       const window = own?.window ?? Math.max(0, ...windows.map((item) => item.window));
       if (window > 0) this.contextWindow = window;
     }
+  }
+
+  /**
+   * Adds what a message billed exactly once. Transcript writes repeat an assistant
+   * message for each content block with identical usage, so only growth over the
+   * message's previous report counts as new tokens.
+   */
+  private trackUsage(message: Json, usage: Json): void {
+    const id = string(message.id);
+    if (!id) return;
+    const amount = (key: string) => {
+      const value = usage[key];
+      return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+    };
+    const next = {
+      input: amount("input_tokens"),
+      output: amount("output_tokens"),
+      cacheRead: amount("cache_read_input_tokens"),
+      cacheWrite: amount("cache_creation_input_tokens"),
+    };
+    const model =
+      (typeof message.model === "string" && message.model !== "<synthetic>"
+        ? message.model
+        : undefined) ??
+      this.effectiveModel ??
+      "";
+    const previous = this.usageByMessage.get(id);
+    const delta = {
+      input: Math.max(0, next.input - (previous?.input ?? 0)),
+      output: Math.max(0, next.output - (previous?.output ?? 0)),
+      cacheRead: Math.max(0, next.cacheRead - (previous?.cacheRead ?? 0)),
+      cacheWrite: Math.max(0, next.cacheWrite - (previous?.cacheWrite ?? 0)),
+    };
+    if (!delta.input && !delta.output && !delta.cacheRead && !delta.cacheWrite) return;
+    // Repeated entries can arrive out of order; keep the highest report for each field.
+    this.usageByMessage.set(id, {
+      input: Math.max(next.input, previous?.input ?? 0),
+      output: Math.max(next.output, previous?.output ?? 0),
+      cacheRead: Math.max(next.cacheRead, previous?.cacheRead ?? 0),
+      cacheWrite: Math.max(next.cacheWrite, previous?.cacheWrite ?? 0),
+    });
+    const total = this.usageByModel.get(model) ?? {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    };
+    total.input += delta.input;
+    total.output += delta.output;
+    total.cacheRead += delta.cacheRead;
+    total.cacheWrite += delta.cacheWrite;
+    this.usageByModel.set(model, total);
+    this.usageRevision++;
+  }
+
+  /** Cumulative token usage this conversation reported, including subagents of a parent view. */
+  get usage(): ModelUsage[] {
+    return [...this.usageByModel].map(([model, usage]) => ({ model, ...usage }));
+  }
+  /** Changes whenever billable usage grows; lets callers republish only when cost may move. */
+  get usageVersion(): number {
+    return this.usageRevision;
   }
 
   /** Events that belong to another conversation than the one this view renders. */
@@ -450,6 +527,9 @@ export class NativeView {
     this.effectiveModel = undefined;
     this.contextTokens = undefined;
     this.contextWindow = undefined;
+    this.usageByModel.clear();
+    this.usageByMessage.clear();
+    this.usageRevision++;
     for (let index = 0; index <= events.length; index++) {
       for (const { turn, item } of inputs.get(index) ?? [])
         this.apply({

@@ -16,12 +16,26 @@ const families = new Set([
   "z-ai",
 ]);
 
+interface CatalogPricing {
+  prompt: string;
+  completion: string;
+  input_cache_read?: string | null;
+  input_cache_write?: string | null;
+}
+
 interface CatalogModel {
   id: string;
   name: string;
   created: number;
-  pricing: { prompt: string; completion: string };
+  pricing: CatalogPricing;
   supported_parameters: string[];
+}
+
+/** OpenRouter publishes per-token USD rates as decimal strings, or null when unpublished. */
+function perMillion(value: unknown): number | undefined {
+  if (typeof value !== "string" || value === "") return undefined;
+  const rate = Number(value);
+  return Number.isFinite(rate) && rate >= 0 ? rate * 1_000_000 : undefined;
 }
 
 export function modelCatalogOptions(data: CatalogModel[]): ModelOption[] {
@@ -49,20 +63,26 @@ export function modelCatalogOptions(data: CatalogModel[]): ModelOption[] {
       selected.add(id);
       return true;
     })
-    .map(({ id, name, pricing }) => ({
-      id,
-      displayName: name.replace(/^[^:]+: /, ""),
-      description: "",
-      isDefault: id === defaultModel,
-      reasoningEfforts: [],
-      serviceTiers: [],
-      supportsPersonality: false,
-      openRouter: {
-        developer: id.split("/")[0]!,
-        inputPrice: Number(pricing.prompt) * 1_000_000,
-        outputPrice: Number(pricing.completion) * 1_000_000,
-      },
-    }));
+    .map(({ id, name, pricing }) => {
+      const cacheReadPrice = perMillion(pricing.input_cache_read),
+        cacheWritePrice = perMillion(pricing.input_cache_write);
+      return {
+        id,
+        displayName: name.replace(/^[^:]+: /, ""),
+        description: "",
+        isDefault: id === defaultModel,
+        reasoningEfforts: [],
+        serviceTiers: [],
+        supportsPersonality: false,
+        openRouter: {
+          developer: id.split("/")[0]!,
+          inputPrice: Number(pricing.prompt) * 1_000_000,
+          outputPrice: Number(pricing.completion) * 1_000_000,
+          ...(cacheReadPrice !== undefined ? { cacheReadPrice } : {}),
+          ...(cacheWritePrice !== undefined ? { cacheWritePrice } : {}),
+        },
+      };
+    });
   if (!options.some(({ isDefault }) => isDefault))
     throw new Error("The configured OpenNest default model is unavailable in the catalog");
   return options.sort((a, b) => Number(b.isDefault) - Number(a.isDefault));

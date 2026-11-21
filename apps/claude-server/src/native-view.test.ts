@@ -118,6 +118,49 @@ describe("native Claude view", () => {
     view.reset([]);
     expect(view.context).toBeUndefined();
   });
+  it("counts billable tokens once per message and keeps them per model", () => {
+    const view = new NativeView("session", "/project");
+    const answer = (id: string, usage: Record<string, number>, model = "deepseek/flash") => ({
+      type: "assistant",
+      uuid: `uuid-${id}-${Object.values(usage).join("-")}`,
+      message: { id, model, content: [{ type: "text", text: id }], usage },
+    });
+    view.apply(user);
+    view.apply(
+      answer("one", {
+        input_tokens: 100,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+        output_tokens: 40,
+      }),
+    );
+    expect(view.usage).toEqual([
+      { model: "deepseek/flash", input: 100, output: 40, cacheRead: 30, cacheWrite: 20 },
+    ]);
+    // Transcript writes repeat the same API message once per content block.
+    view.apply(
+      answer("one", {
+        input_tokens: 100,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+        output_tokens: 40,
+      }),
+    );
+    // A partial repeat never lowers the recorded amount.
+    view.apply(answer("one", { input_tokens: 100 }));
+    expect(view.usage).toEqual([
+      { model: "deepseek/flash", input: 100, output: 40, cacheRead: 30, cacheWrite: 20 },
+    ]);
+    // Sidechain usage belongs to the subagent, not to this conversation.
+    view.apply({ ...answer("child", { input_tokens: 900 }), parent_tool_use_id: "tool" });
+    view.apply(answer("two", { input_tokens: 7, output_tokens: 3 }, "openai/other"));
+    expect(view.usage).toEqual([
+      { model: "deepseek/flash", input: 100, output: 40, cacheRead: 30, cacheWrite: 20 },
+      { model: "openai/other", input: 7, output: 3, cacheRead: 0, cacheWrite: 0 },
+    ]);
+    view.reset([]);
+    expect(view.usage).toEqual([]);
+  });
   it("keeps the actual model when a quota error reports a synthetic model", () => {
     const view = new NativeView("session", "/project");
     view.apply(user);

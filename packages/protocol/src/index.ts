@@ -784,7 +784,14 @@ export type ModelOption = {
     displayName: string;
   }>;
   supportsPersonality: boolean;
-  openRouter?: { developer: string; inputPrice: number; outputPrice: number };
+  /** USD per million tokens, from OpenRouter. Cache rates are absent when unpublished. */
+  openRouter?: {
+    developer: string;
+    inputPrice: number;
+    outputPrice: number;
+    cacheReadPrice?: number;
+    cacheWritePrice?: number;
+  };
 };
 
 export function isFastServiceTier(value: unknown): boolean {

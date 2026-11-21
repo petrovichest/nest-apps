@@ -137,6 +137,11 @@ export class UiService extends EventEmitter {
   private stops = new Map<string, Promise<void>>();
   private permissionUpdates = new Map<string, Promise<void>>();
   private approving = new Set<string>();
+  /** Highest known subtree cost per thread; keeps the shown amount monotonic. */
+  private readonly costHighWater = new Map<
+    string,
+    { usd: number; estimated: boolean; seen: boolean }
+  >();
   /** Bumped whenever the effective permission mode of any session may change. */
   private permissionEpoch = 0;
   private creations = new Map<
@@ -449,7 +454,7 @@ export class UiService extends EventEmitter {
                         : last
                           ? "completed"
                           : "idle";
-    return {
+    const summary: ThreadSummary = {
       id,
       projectId: thread.projectId,
       title: thread.title,
@@ -505,6 +510,8 @@ export class UiService extends EventEmitter {
       },
       ...this.contextUsage(view, [thread.settings.model, owner?.model, view?.model]),
     };
+    this.addCostUsage(summary, id);
+    return summary;
   }
   /** The window comes from a finished turn; without one the model name and the size decide. */
   private contextUsage(
@@ -521,6 +528,67 @@ export class UiService extends EventEmitter {
         windowTokens: context.window ?? (million ? 1_000_000 : 200_000),
       },
     };
+  }
+  /** Prices come from the OpenRouter catalog; the Claude CLI reports tokens, not USD. */
+  private modelPrice(model: string): ModelOption["openRouter"] | undefined {
+    const options = this.modelOptions(),
+      normalized = model.replace(/\[1m\]$/i, ""),
+      bare = normalized.startsWith("openrouter/")
+        ? normalized.slice("openrouter/".length)
+        : normalized;
+    return (
+      options.find((option) => option.id === model)?.openRouter ??
+      options.find((option) => option.id === normalized || option.id === bare)?.openRouter
+    );
+  }
+  /** Estimated cost of the tokens this view billed, or none when no model price is known. */
+  private directCost(id: string): { usd: number; estimated: boolean; hasUsage: boolean } {
+    let usd = 0,
+      billed = false;
+    for (const entry of this.views.get(id)?.usage ?? []) {
+      if (!entry.input && !entry.output && !entry.cacheRead && !entry.cacheWrite) continue;
+      const price = this.modelPrice(entry.model);
+      if (!price) continue;
+      billed = true;
+      // A model that publishes no cache rate handles cached input at its prompt rate.
+      usd +=
+        (entry.input * price.inputPrice +
+          entry.output * price.outputPrice +
+          entry.cacheRead * (price.cacheReadPrice ?? price.inputPrice) +
+          entry.cacheWrite * (price.cacheWritePrice ?? price.inputPrice)) /
+        1_000_000;
+    }
+    return { usd, estimated: billed, hasUsage: billed };
+  }
+  /** A session's own cost plus every native subagent it launched. */
+  private subtreeCost(
+    id: string,
+    seen = new Set<string>(),
+  ): { usd: number; estimated: boolean; hasUsage: boolean } {
+    if (seen.has(id)) return { usd: 0, estimated: false, hasUsage: false };
+    seen.add(id);
+    const own = this.directCost(id);
+    let usd = own.usd,
+      estimated = own.estimated,
+      hasUsage = own.hasUsage;
+    for (const child of Object.values(this.store.data.threads)) {
+      if (child.subagent?.parentId !== id) continue;
+      const cost = this.subtreeCost(child.id, seen);
+      usd += cost.usd;
+      estimated ||= cost.estimated;
+      hasUsage ||= cost.hasUsage;
+    }
+    return { usd, estimated, hasUsage };
+  }
+  /** Adds the monotonic subtree cost once any priced usage has been observed. */
+  private addCostUsage(summary: ThreadSummary, id: string): void {
+    const cost = this.subtreeCost(id),
+      previous = this.costHighWater.get(id);
+    if (!cost.hasUsage && previous?.seen !== true) return;
+    const usd = Math.max(cost.usd, previous?.usd ?? 0),
+      estimated = previous && previous.usd >= cost.usd ? previous.estimated : cost.estimated;
+    this.costHighWater.set(id, { usd, estimated, seen: true });
+    summary.costUsage = { usd, estimated };
   }
   private subagentLaunch(thread: UiThread): SubagentLaunch | undefined {
     const subagent = thread.subagent;
@@ -541,7 +609,7 @@ export class UiService extends EventEmitter {
   private subagentSummary(thread: UiThread): ThreadSummary {
     const subagent = thread.subagent!,
       view = this.views.get(thread.id);
-    return {
+    const summary: ThreadSummary = {
       id: thread.id,
       projectId: thread.projectId,
       title: thread.title,
@@ -568,6 +636,8 @@ export class UiService extends EventEmitter {
       canAcceptDirectInput: false,
       codexSettings: { model: view?.model ?? null, reasoningEffort: null },
     };
+    this.addCostUsage(summary, thread.id);
+    return summary;
   }
   /** Registers native subagents launched by a session as read-only child threads. */
   private async syncSubagents(parentId: string): Promise<void> {
@@ -607,13 +677,17 @@ export class UiService extends EventEmitter {
       this.publish({ type: "thread.upserted", thread: this.summary(launch.threadId) });
     }
   }
-  /** Rebuilds open subagent views after their parent owner replayed its events. */
-  private async reloadSubagentViews(parentId: string): Promise<void> {
-    for (const [id, thread] of Object.entries(this.store.data.threads)) {
-      if (thread.subagent?.parentId !== parentId || !this.views.has(id)) continue;
-      this.views.delete(id);
-      for (const turn of (await this.view(id)).turns())
-        this.publish({ type: "turn.replaced", threadId: id, turn });
+  /**
+   * Loads every registered subagent so the parent's cost covers its native subtree.
+   * Open subagent views replay their turns to connected clients as before.
+   */
+  private async loadSubagentViews(parentId: string): Promise<void> {
+    for (const thread of Object.values(this.store.data.threads)) {
+      if (thread.subagent?.parentId !== parentId) continue;
+      const open = this.views.has(thread.id);
+      this.views.delete(thread.id);
+      for (const turn of (await this.view(thread.id)).turns())
+        if (open) this.publish({ type: "turn.replaced", threadId: thread.id, turn });
     }
   }
   snapshot(): AppSnapshot {
@@ -850,6 +924,7 @@ export class UiService extends EventEmitter {
     view.reset(history?.messages ?? [], { interruptedTurns: thread.interruptedTurns });
     this.views.set(id, view);
     await this.syncSubagents(id);
+    await this.loadSubagentViews(id);
     return view;
   }
   async detail(id: string): Promise<ThreadDetail> {
@@ -921,7 +996,7 @@ export class UiService extends EventEmitter {
             for (const turn of view.turns())
               this.publish({ type: "turn.replaced", threadId: id, turn });
             await this.syncSubagents(id);
-            await this.reloadSubagentViews(id);
+            await this.loadSubagentViews(id);
             for (const attention of this.attention().filter((item) => item.threadId === id))
               this.publish({ type: "attention.upserted", attention });
             this.publish({ type: "thread.upserted", thread: this.summary(id) });
@@ -978,14 +1053,27 @@ export class UiService extends EventEmitter {
         evidence.push(...this.quotaEvidence([native]));
         this.quotaEvents.set(id, evidence.slice(-50));
       }
-      if (childToolUseId)
-        for (const update of this.views.get(subagentThreadId(id, childToolUseId))?.apply(native) ??
-          [])
-          this.publish(update);
+      const usageBefore = view.usageVersion;
+      if (childToolUseId) {
+        const childId = subagentThreadId(id, childToolUseId);
+        // Cost and status stay live even if the user never opened the subagent thread.
+        let childView = this.views.get(childId);
+        const loaded = !childView && Boolean(this.store.data.threads[childId]);
+        if (loaded) childView = await this.view(childId);
+        const childUsageBefore = childView?.usageVersion;
+        for (const update of childView?.apply(native) ?? []) this.publish(update);
+        if (childView && (loaded || childView.usageVersion !== childUsageBefore)) {
+          this.publish({ type: "thread.upserted", thread: this.summary(childId) });
+          this.publish({ type: "thread.upserted", thread: this.summary(id) });
+        }
+      }
       const contextBefore = view.context?.used;
       for (const update of view.apply(native)) this.publish(update);
       if (native.type !== "stream_event") await this.syncSubagents(id);
-      if (view.context?.used !== contextBefore && native.type !== "result")
+      if (
+        (view.context?.used !== contextBefore || view.usageVersion !== usageBefore) &&
+        native.type !== "result"
+      )
         this.publish({ type: "thread.upserted", thread: this.summary(id) });
       if (native.type === "result" && isMainNativeEvent(native)) {
         const failure = nativeQuotaFailure(this.quotaEvents.get(id) ?? []);
