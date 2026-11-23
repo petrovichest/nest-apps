@@ -120,7 +120,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        codex: ["0.154.0", "0.167.0", "0.167.1", "0.167.2", "0.169.0", "0.171.0"]
+        codex: ["0.171.0"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -162,7 +162,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        codex: ["0.154.0", "0.167.0", "0.167.1", "0.167.2", "0.169.0", "0.170.0", "0.171.0"]
+        codex: ["0.154.0", "0.170.0", "0.171.0"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -194,7 +194,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        codex: ["0.167.0", "0.167.1", "0.167.2", "0.169.0", "0.170.0", "0.171.0"]
+        codex: ["0.171.0"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -225,7 +225,7 @@ jobs:
           persist-credentials: false
       - name: Install the exact candidate into an empty isolated HOME
         env:
-          NATIVE_VERSION: "0.169.0"
+          NATIVE_VERSION: "0.171.0"
           QUALIFICATION_MODE: lifecycle
           QUALIFICATION_SCOPE: clean
         run: bash deploy/qualification/environment.sh
@@ -233,7 +233,7 @@ jobs:
         if: always()
         with:
           name: clean-install-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ runner.temp }}/qualification-lifecycle-0.169.0/
+          path: ${{ runner.temp }}/qualification-lifecycle-0.171.0/
           if-no-files-found: error
 
   release-interruption-diagnostics:
@@ -244,13 +244,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - codex: "0.167.2"
+          - codex: "0.171.0"
             baseline: current
-          - codex: "0.169.0"
-            baseline: current
-          - codex: "0.169.0"
+          - codex: "0.171.0"
             baseline: incident
-          - codex: "0.169.0"
+          - codex: "0.171.0"
             baseline: installed
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -276,6 +274,14 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - codex: "0.154.0"
+            baseline: installed
+          - codex: "0.170.0"
+            baseline: current
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -283,16 +289,16 @@ jobs:
           persist-credentials: false
       - name: Refuse the old native runtime before switching the installed release
         env:
-          NATIVE_VERSION: "0.154.0"
+          NATIVE_VERSION: ${{ matrix.codex }}
           QUALIFICATION_MODE: lifecycle
           QUALIFICATION_SCOPE: unsupported
-          QUALIFICATION_BASELINE: installed
+          QUALIFICATION_BASELINE: ${{ matrix.baseline }}
         run: bash deploy/qualification/environment.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: unsupported-native-diagnostics-${{ github.sha }}-0.154.0
-          path: ${{ runner.temp }}/qualification-lifecycle-0.154.0/
+          name: unsupported-native-diagnostics-${{ github.sha }}-${{ matrix.codex }}
+          path: ${{ runner.temp }}/qualification-lifecycle-${{ matrix.codex }}/
           if-no-files-found: error
 
   release-report:
@@ -357,6 +363,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_TYPE" != tag || { echo '::error::Version-tag installer packaging needs its own native qualification; only rolling packaging is qualified here.'; exit 1; }
+          required_native="$(node -p "require('./deploy/restart-protocol.json').minimumNativeVersion")"
+          latest_native="$(gh api repos/openai/codex/releases/latest --jq .tag_name)"
+          test "$latest_native" = "rust-v$required_native" || { echo "::error::Requalify with the latest stable Codex CLI ($latest_native)."; exit 1; }
           qualified_run="$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --event workflow_dispatch --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
           test -n "$qualified_run" || { echo '::error::No complete successful native matrix for this exact commit.'; exit 1; }
           gh run download "$qualified_run" -R "$GITHUB_REPOSITORY" -n "qualified-release-$GITHUB_SHA" -D "$RUNNER_TEMP/qualified-release"
@@ -570,7 +579,8 @@ jobs:
           printf 'CodexNest and ClaudeNest from verified commit `%s`.\n\nCodexNest: `curl -fsSL https://github.com/%s/releases/download/%s/install.sh | bash`\n\nClaudeNest: `curl -fsSL https://github.com/%s/releases/download/%s/install-claudenest.sh | bash`\n\nThe installers build the server and web client from this exact commit.\n' \
             "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$tag" "$GITHUB_REPOSITORY" "$tag" > release/notes.md
           printf '\nGeminiNest (Google AI Ultra through Antigravity ACP): `curl -fsSL https://github.com/%s/releases/download/%s/install-gemininest.sh | bash`\n' "$GITHUB_REPOSITORY" "$tag" >> release/notes.md
-          printf '\nCodexNest requires Codex CLI 0.167.0 or newer. Older CLI updates are refused before switching the installed application.\n' >> release/notes.md
+          required_native="$(node -p "require('./deploy/restart-protocol.json').minimumNativeVersion")"
+          printf '\nCodexNest is qualified with stable Codex CLI %s. Older CLI versions must be upgraded before updating CodexNest.\n' "$required_native" >> release/notes.md
           if [[ "$GITHUB_REF_TYPE" != tag ]]; then
             release_assets+=(release/CodexNest-latest.apk release/ClaudeNest-latest.apk release/GeminiNest-latest.apk)
             printf '\nThe signed CodexNest, ClaudeNest and GeminiNest Android APKs and the CodexNest, ClaudeNest and GeminiNest Chrome extensions are built from the same verified commit.\n' >> release/notes.md

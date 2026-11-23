@@ -7,8 +7,8 @@ function fixture() {
   return {
     schemaVersion: 1,
     candidate,
-    native: "0.169.0",
-    minimumNativeVersion: "0.167.0",
+    native: "0.171.0",
+    minimumNativeVersion: "0.171.0",
     baseline: { commit: healthyBaseline },
     scope: "all",
     completed: true,
@@ -49,7 +49,7 @@ function fixture() {
 }
 
 test("accepts a complete native scope", () => {
-  validateScope(fixture(), candidate, "0.169.0", "all", healthyBaseline);
+  validateScope(fixture(), candidate, "0.171.0", "all", healthyBaseline);
 });
 
 for (const [name, mutate] of [
@@ -133,6 +133,6 @@ for (const [name, mutate] of [
   test(`refuses qualification with ${name}`, () => {
     const report = fixture();
     mutate(report);
-    assert.throws(() => validateScope(report, candidate, "0.169.0", "all", healthyBaseline));
+    assert.throws(() => validateScope(report, candidate, "0.171.0", "all", healthyBaseline));
   });
 }
