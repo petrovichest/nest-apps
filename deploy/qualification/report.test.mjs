@@ -27,11 +27,11 @@ function fixture() {
         : {}),
       ...(name === "actual-native-import-and-metadata-index-rebuild"
         ? {
-            nonArchivedSessions: 2000,
+            nonArchivedSessions: 2200,
             archivedSessions: 40,
             nestedSessions: 8,
             longSessions: 8,
-            bytes: 3 * 1024 ** 3,
+            bytes: 12 * 1024 ** 3,
             sparseFiles: false,
           }
         : {}),

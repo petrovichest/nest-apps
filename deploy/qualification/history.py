@@ -15,6 +15,7 @@ HOME = Path('/home/nest-qualification')
 NATIVE = HOME / '.codex'
 PRIVATE = Path('/qualification-private')
 OUTPUT = Path('/qualification-output')
+MIN_HISTORY_BYTES = 12 * 1024 ** 3
 
 
 def digest(path):
@@ -53,8 +54,9 @@ def create(seed_id):
     turn_rows = [row for row in seed if row['type'] != 'session_meta']
     assert any(row.get('payload', {}).get('role') == 'user' for row in turn_rows)
     assert any(row.get('payload', {}).get('role') == 'assistant' for row in turn_rows)
-    profiles = {'live': 2000, 'archived': 40, 'nested': 8}
-    expected_bytes = 3 * 1024 ** 3
+    profiles = {'live': 2200, 'archived': 40, 'nested': 8}
+    live_end = profiles['live']
+    archive_end = live_end + profiles['archived']
     manifests = []
     parent_id = str(uuid.uuid4())
     uuid_pattern = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
@@ -62,7 +64,7 @@ def create(seed_id):
                   if row.get('payload', {}).get('type') in ('task_started', 'turn_started')}
     assert len(seed_turns) == 1, 'Expected one completed canonical seed turn'
     for index in range(sum(profiles.values())):
-        kind = 'live' if index < 2000 else 'archived' if index < 2040 else 'nested'
+        kind = 'live' if index < live_end else 'archived' if index < archive_end else 'nested'
         identity = parent_id if index == 0 else str(uuid.uuid4())
         timestamp = (datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
                      + datetime.timedelta(minutes=index))
@@ -97,7 +99,7 @@ def create(seed_id):
             meta['payload']['multi_agent_version'] = 'v1'
         # Genuine user/assistant records, derived from the running binary's schema.
         # Several sessions are deliberately much longer than the common profile.
-        turns = 200 if index < 8 else 28
+        turns = 200 if index < 8 else 36
         with path.open('w') as stream:
             stream.write(json.dumps(meta) + '\n')
             ordinal = min((row['ordinal'] for row in turn_rows
@@ -149,7 +151,7 @@ def create(seed_id):
         manifests.append({'id': identity, 'kind': kind, 'path': str(path),
                           'bytes': path.stat().st_size, 'sha256': digest(path), 'turns': turns})
     total = sum(row['bytes'] for row in manifests)
-    assert total >= expected_bytes, f'Meaningful history too small: {total}'
+    assert total >= MIN_HISTORY_BYTES, f'Meaningful history too small: {total}'
     (PRIVATE / 'history-manifest.json').write_text(json.dumps(manifests))
     (OUTPUT / 'history-profile.json').write_text(json.dumps({
         'nonArchivedSessions': profiles['live'] + profiles['nested'],
@@ -172,7 +174,7 @@ def freeze():
         assert path.is_file(), 'Native-imported canonical history missing'
         row['bytes'], row['sha256'] = path.stat().st_size, digest(path)
     total = sum(row['bytes'] for row in manifests)
-    assert total >= 3 * 1024 ** 3, 'Native-canonicalized workload below mandatory 3 GiB'
+    assert total >= MIN_HISTORY_BYTES, 'Native-canonicalized workload below mandatory 12 GiB'
     assert (NATIVE / 'thread_history_1.sqlite').is_file(), 'Native history projection missing'
     # The driver stopped every real app-server after materialization. Keep the
     # paginated history view and goals/queues; they are not the session index.

@@ -15,7 +15,7 @@ an additional OS image or APT packages.
 
 The default mode checks the exact pinned native package and actual daemon.
 Application support starts at CLI 0.167.0. Full lifecycle qualification covers
-0.167.0, 0.167.1, 0.167.2 and 0.169.0. Native 0.154.0 retains network compatibility
+0.167.0, 0.167.1, 0.167.2, 0.169.0, 0.170.0 and 0.171.0. Native 0.154.0 retains network compatibility
 probes and a mandatory real installed-updater refusal with active work intact;
 it is not claimed as a supported large-history startup. Run `43712939488` measured
 31 minutes for its fixture construction, then 62 seconds for baseline A's first
@@ -60,8 +60,8 @@ chats stay archived. A selected account/credential generation or connection that
 the old version cannot recover refuses downgrade before any pointer switch.
 
 The lifecycle diagnostic exercises installation, real saved-chat requests,
-rebuilding the native index from at least 2000 nonarchived synthetic sessions and
-3 GiB of valid history, three cold and warm runs, A → B, active requests/queues,
+rebuilding the native index from at least 2200 nonarchived synthetic sessions and
+12 GiB of valid history, three cold and warm runs, A → B, active requests/queues,
 pending command approvals and managed background results, and automatic A → B → A
 after a wrong health version or failure to start HTTP.
 Separate real refusal cases cover an unavailable native connection, failed Git

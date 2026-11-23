@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const nativeVersions = ["0.167.0", "0.167.1", "0.167.2", "0.169.0", "0.170.0"];
+export const nativeVersions = ["0.167.0", "0.167.1", "0.167.2", "0.169.0", "0.170.0", "0.171.0"];
 export const healthyBaseline = "5779121e2e58ad4b73a8cacda22d704a619137ec";
 export const installedBaseline = "f42edbee78b582bb54c96ab7bfc732286f10a667";
 const incidentBaseline = "fe3c5c858344b5f03c2619250b01d351930c891b";
@@ -129,9 +129,9 @@ export function validateScope(report, candidate, native, scope, baseline) {
     const history = report.cases.find(
       (entry) => entry.name === "actual-native-import-and-metadata-index-rebuild",
     );
-    assert.ok(history.nonArchivedSessions >= 2000 && history.archivedSessions > 0);
+    assert.ok(history.nonArchivedSessions >= 2200 && history.archivedSessions > 0);
     assert.ok(history.nestedSessions > 0 && history.longSessions > 0);
-    assert.ok(history.bytes >= 3 * 1024 ** 3 && history.sparseFiles === false);
+    assert.ok(history.bytes >= 12 * 1024 ** 3 && history.sparseFiles === false);
   }
   for (const entry of report.cases) {
     for (const key of ["savedWorkRecoveryMs", "totalRecoveryMs", "readyMs"])
