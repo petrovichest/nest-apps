@@ -691,6 +691,8 @@ exec '${root}/runtime/current/bin/node' '${root}/current/apps/server/dist/index.
 
 async function rejectUpdate(expectedMessage) {
   const active = await readlink(join(root, "current"));
+  // The installed guard can pin a rollback alias to the same physical release.
+  const rollbackTarget = (link) => (link === join(root, "current") ? active : link);
   const previous = await readlink(join(root, "previous")).catch((error) => {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -735,12 +737,13 @@ async function rejectUpdate(expectedMessage) {
     report.budgetsMs.build,
   );
   assert.equal(await readlink(join(root, "current")), active, "Rejected update changed current");
+  const previousAfter = await readlink(join(root, "previous")).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
   assert.equal(
-    await readlink(join(root, "previous")).catch((error) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    }),
-    previous,
+    rollbackTarget(previousAfter),
+    rollbackTarget(previous),
     "Rejected update replaced rollback",
   );
   return { updateStatus: rejected.result, activeAndRollbackTargetsPreserved: true };
@@ -1095,6 +1098,8 @@ async function qualify() {
       const held = `unsupported-held-${randomUUID()}`;
       const queued = `unsupported-queued-${randomUUID()}`;
       const identity = await pidIdentity(true);
+      const appPid = await systemctl("show", "codexnest.service", "-p", "MainPID", "--value");
+      assert.ok(Number(appPid) > 0, "Expected a running application before the refusal");
       await api(`/threads/${savedThread}/turns`, {
         input: `QUALIFICATION_HOLD:${held}`,
         clientMessageId: randomUUID(),
@@ -1121,6 +1126,11 @@ async function qualify() {
       assert.ok(
         journal.includes(`Codex CLI >= ${candidateMetadata.minimumNativeVersion} is required`),
         "Refusal did not exercise the native version gate",
+      );
+      assert.equal(
+        await systemctl("show", "codexnest.service", "-p", "MainPID", "--value"),
+        appPid,
+        "Refused update restarted the application",
       );
       assert.equal((await control()).oauthGeneration, before.oauthGeneration);
       const state = await control();
