@@ -2417,7 +2417,7 @@ describe("Activity", () => {
     expect(screen.queryByLabelText("Технические детали")).toBeNull();
   });
 
-  it("downloads task file links once and leaves other links unchanged", async () => {
+  it("downloads task file links once and opens external web links separately", async () => {
     const api = threadApi();
     let resolveTicket: ((ticket: { downloadUrl: string; expiresAt: number }) => void) | undefined;
     api.createDownload.mockImplementationOnce(
@@ -2443,7 +2443,11 @@ describe("Activity", () => {
               text: [
                 "[Скачать APK](/work/project/build/app-debug.apk)",
                 "[Внешняя ссылка](https://example.com/file.apk)",
+                "[Ссылка на локальную сеть](http://192.168.2.228:8785/)",
+                "[Ссылка без протокола](//example.com/)",
                 "[Раздел приложения](/settings)",
+                `[Абсолютная внутренняя ссылка](${window.location.origin}/settings)`,
+                "[Якорь](#results)",
               ].join("\n\n"),
               images: [],
               timestamp: 2,
@@ -2470,14 +2474,25 @@ describe("Activity", () => {
       ),
     );
     expect(fileLink).toHaveAttribute("aria-busy", "false");
-    expect(screen.getByRole("link", { name: "Внешняя ссылка" })).toHaveAttribute(
-      "href",
-      "https://example.com/file.apk",
-    );
-    expect(screen.getByRole("link", { name: "Раздел приложения" })).toHaveAttribute(
-      "href",
-      "/settings",
-    );
+    for (const [name, href] of [
+      ["Внешняя ссылка", "https://example.com/file.apk"],
+      ["Ссылка на локальную сеть", "http://192.168.2.228:8785/"],
+      ["Ссылка без протокола", "//example.com/"],
+    ]) {
+      const link = screen.getByRole("link", { name });
+      expect(link).toHaveAttribute("href", href);
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    }
+    for (const [name, href] of [
+      ["Раздел приложения", "/settings"],
+      ["Абсолютная внутренняя ссылка", `${window.location.origin}/settings`],
+      ["Якорь", "#results"],
+    ]) {
+      const link = screen.getByRole("link", { name });
+      expect(link).toHaveAttribute("href", href);
+      expect(link).not.toHaveAttribute("target");
+    }
   });
 
   it.each(["/work/project/artifacts/chart.png", "/tmp/chart.png"])(

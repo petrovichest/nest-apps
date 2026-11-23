@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 import { onBeforeAppReload } from "../app-reload";
 import { application } from "../application";
 import { useTypography } from "../typography";
@@ -5420,7 +5421,8 @@ function MarkdownLink({
         {children}
       </GalleryImageLink>
     );
-  const path = cwd ? localDownloadPath(href, cwd) : null;
+  const opensSeparately = !Capacitor.isNativePlatform() && isExternalHttpLink(href);
+  const path = cwd && !opensSeparately ? localDownloadPath(href, cwd) : null;
   const artifact = path ? artifactDescriptor(path) : null;
   return path && artifact && onOpenArtifact ? (
     <PreviewLink
@@ -5437,10 +5439,28 @@ function MarkdownLink({
       {children}
     </DownloadLink>
   ) : (
-    <a href={href} title={title}>
+    <a
+      href={href}
+      title={title}
+      target={opensSeparately ? "_blank" : undefined}
+      rel={opensSeparately ? "noopener noreferrer" : undefined}
+    >
       {children}
     </a>
   );
+}
+
+function isExternalHttpLink(href: string | undefined): boolean {
+  if (!href) return false;
+  try {
+    const url = new URL(href, document.baseURI);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.origin !== window.location.origin
+    );
+  } catch {
+    return false;
+  }
 }
 
 function MarkdownImageContent(props: {
