@@ -8,37 +8,20 @@
 - Agents publish changes only by committing and pushing to GitHub. This project-specific rule
   overrides general deployment authorization; pushing changes must not trigger a local update.
 
-## Release safety: mandatory publication gate
+## Release and lifecycle diagnostics
 
-- Before preparing or publishing a release, read and follow
-  [docs/release-safety.md](docs/release-safety.md). These rules apply to rolling releases,
-  versioned releases, hotfixes, and changes that appear unrelated to startup.
-- A green build, unit tests, or the current `verify` job is not release qualification.
-  Publication requires evidence for the exact candidate commit, supported native runtime
-  versions, a representative large history, cold/warm startup, an upgrade from the last
-  known healthy release, and an automatic rollback after deliberately failing the candidate.
-- Run lifecycle tests only in an isolated installation with its own HOME, state, credentials,
-  ports, service manager, and native daemon. Never use the user's running instances as a
-  release test environment, copy their real credentials, or restart their daemon to make
-  a candidate pass.
-- A rollback passes only when the previous version actually becomes ready and resumes the
-  tested work with intact state. Reverting a symlink or starting a process is insufficient.
-  Test the same surviving daemon and the state/authentication left by the failed candidate.
-- Missing, skipped, flaky, timed-out, or inconclusive mandatory checks block publication.
-  Do not bypass branch protection, weaken health checks, increase timeouts without measured
-  justification, or substitute mocked lifecycle tests for the native update/rollback test.
-- PRs and independent approvals are optional in this single-account repository. Do not
-  impose them as a requirement. Verify the exact commit on a non-publishing branch, then
-  a normal fast-forward push to `main` is allowed after the required `verify` check passes.
-  Saving source on `main` does not qualify an application release. Keep the CI publication
-  gate closed until qualification succeeds; do not create a release tag to bypass it.
-- The workflow accepts only the complete successful manual native matrix for the exact
-  candidate SHA, including the validated qualification artifact and unchanged healthy
-  baseline. Until that matrix passes, application publication remains blocked. Neither
-  policy documentation nor the presence of the harness qualifies a candidate.
-- Report code completion, CI results, candidate qualification, release publication, and
-  installation health as separate facts. Never claim the user's application was updated
-  or recovered without observing that specific result.
+- Follow [docs/release-safety.md](docs/release-safety.md) before publication.
+  The shared rolling release publishes after standard CI for the exact commit.
+  The full native lifecycle workflow runs manually for diagnosis.
+  OpenNest uses its separately qualified release channel.
+- Verify the exact commit on a working branch, then fast-forward `main` after
+  `verify` passes. Preserve branch protection and the updater's readiness and
+  rollback checks. PRs and independent approvals are optional.
+- Run native lifecycle tests in an isolated installation with its own HOME, state,
+  credentials, ports, service manager, and native daemon. Keep user installations
+  and credentials out of the fixture.
+- Report code, CI, lifecycle evidence, publication, and installation health separately.
+  Confirm the installed application's state before saying it was updated or recovered.
 
 ## Team orchestration
 

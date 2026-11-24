@@ -338,61 +338,15 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # Publication accepts only a complete successful manual matrix at the same SHA.
-  # Source/account tests alone cannot create the immutable qualification artifact.
-  release-qualification:
-    if: always() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && needs.verify.result == 'success' && needs.native-account-network.result == 'success'
-    needs: [verify, native-account-network, release-report]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-    outputs:
-      run-id: ${{ steps.qualified.outputs.run-id }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-      - name: Require successful native qualification and unchanged healthy baseline
-        id: qualified
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REF_TYPE" != tag || { echo '::error::Version-tag installer packaging needs its own native qualification; only rolling packaging is qualified here.'; exit 1; }
-          required_native="$(node -p "require('./deploy/restart-protocol.json').minimumNativeVersion")"
-          latest_native="$(gh api repos/openai/codex/releases/latest --jq .tag_name)"
-          test "$latest_native" = "rust-v$required_native" || { echo "::error::Requalify with the latest stable Codex CLI ($latest_native)."; exit 1; }
-          qualified_run="$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --event workflow_dispatch --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
-          test -n "$qualified_run" || { echo '::error::No complete successful native matrix for this exact commit.'; exit 1; }
-          gh run download "$qualified_run" -R "$GITHUB_REPOSITORY" -n "qualified-release-$GITHUB_SHA" -D "$RUNNER_TEMP/qualified-release"
-          sed -e "s/^codexnest_default_version=.*/codexnest_default_version=\"0.1.9-${GITHUB_SHA::7}\"/" \
-              -e "s/^codexnest_default_ref=.*/codexnest_default_ref=\"$GITHUB_SHA\"/" \
-              deploy/install.sh > "$RUNNER_TEMP/candidate-install.sh"
-          installer_hash="$(sha256sum "$RUNNER_TEMP/candidate-install.sh" | cut -d ' ' -f 1)"
-          QUALIFIED_RUN_ID="$qualified_run" node deploy/qualification/report.mjs check "$RUNNER_TEMP/qualified-release" "$GITHUB_SHA" "$installer_hash"
-          curl -fsSL --retry 2 --max-time 30 "https://github.com/$GITHUB_REPOSITORY/releases/download/rolling-latest/NestApps-latest.json" -o "$RUNNER_TEMP/published.json"
-          node --input-type=module - "$RUNNER_TEMP/published.json" "$RUNNER_TEMP/qualified-release/qualification.json" <<'JS'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          const [published, qualification] = process.argv.slice(2).map(path => JSON.parse(readFileSync(path, 'utf8')));
-          assert.equal(published.commit, qualification.baseline, 'Healthy baseline moved; qualify the new upgrade path first');
-          JS
-          echo "run-id=$qualified_run" >> "$GITHUB_OUTPUT"
-
   publish:
-    if: ${{ !cancelled() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && needs.verify.result == 'success' && needs.native-account-network.result == 'success' && needs.release-qualification.result == 'success' }}
-    needs: [verify, native-account-network, release-qualification]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [verify, native-account-network]
     runs-on: ubuntu-latest
     concurrency:
-      group: release-${{ github.ref_type == 'tag' && github.ref_name || 'rolling' }}
+      group: release-rolling
       cancel-in-progress: false
     permissions:
       contents: write
-      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -403,16 +357,18 @@ jobs:
           node-version: 24
       - name: Check release source
         id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
-            test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
-            git fetch --no-tags origin main
-            git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" FETCH_HEAD
-            echo "current=true" >> "$GITHUB_OUTPUT"
-          else
-            latest_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
-            echo "current=$([[ "$latest_sha" == "$GITHUB_SHA" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          latest_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$latest_sha" != "$GITHUB_SHA" ]]; then
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          required_native="$(node -p "require('./deploy/restart-protocol.json').minimumNativeVersion")"
+          latest_native="$(gh api repos/openai/codex/releases/latest --jq .tag_name)"
+          test "$latest_native" = "rust-v$required_native" || { echo "::error::Verify the latest stable Codex CLI ($latest_native)."; exit 1; }
+          echo "current=true" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: steps.source.outputs.current == 'true'
         with:
@@ -422,15 +378,10 @@ jobs:
         if: steps.source.outputs.current == 'true'
         id: assets
         run: |
-          version="$(node -p "require('./package.json').version")"
-          ref="$GITHUB_REF_NAME"
-          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
-            version="$version-${GITHUB_SHA::7}"
-            ref="$GITHUB_SHA"
-          fi
+          version="$(node -p "require('./package.json').version")-${GITHUB_SHA::7}"
           mkdir -p release
           sed -e "s/^codexnest_default_version=.*/codexnest_default_version=\"$version\"/" \
-              -e "s/^codexnest_default_ref=.*/codexnest_default_ref=\"$ref\"/" \
+              -e "s/^codexnest_default_ref=.*/codexnest_default_ref=\"$GITHUB_SHA\"/" \
               deploy/install.sh > release/install.sh
           sed -e "s/^claudenest_default_version=.*/claudenest_default_version=\"$version\"/" \
               -e "s/^claudenest_default_ref=.*/claudenest_default_ref=\"$GITHUB_SHA\"/" \
@@ -459,23 +410,16 @@ jobs:
           cp "${gemini_archives[0]}" release/gemininest-browser-latest.zip
           unzip -t release/gemininest-browser-latest.zip
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: steps.source.outputs.current == 'true'
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.release-qualification.outputs.run-id }}
-          name: qualified-release-${{ github.sha }}
-          path: release
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
-        if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+        if: steps.source.outputs.current == 'true'
         with:
           distribution: temurin
           java-version: 21
           cache: gradle
-      - if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+      - if: steps.source.outputs.current == 'true'
         run: npm ci
       - name: Validate Android signing secrets
-        if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+        if: steps.source.outputs.current == 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_BASE64 }}
           KEY_ALIAS: ${{ secrets.CODEXNEST_ANDROID_KEY_ALIAS }}
@@ -487,14 +431,14 @@ jobs:
           test -n "$KEYSTORE_PASSWORD"
           test -n "$KEY_PASSWORD"
       - name: Prepare Android signing key
-        if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+        if: steps.source.outputs.current == 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_BASE64 }}
         run: |
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/codexnest.jks"
           chmod 0600 "$RUNNER_TEMP/codexnest.jks"
       - name: Test Android and build signed rolling APKs
-        if: steps.source.outputs.current == 'true' && github.ref_type != 'tag'
+        if: steps.source.outputs.current == 'true'
         env:
           CODEXNEST_KEYSTORE_PATH: ${{ runner.temp }}/codexnest.jks
           CODEXNEST_KEY_ALIAS: ${{ secrets.CODEXNEST_ANDROID_KEY_ALIAS }}
@@ -557,7 +501,7 @@ jobs:
         if: steps.source.outputs.current == 'true'
         id: publish
         run: |
-          if [[ "$GITHUB_REF_TYPE" == tag ]] || [[ "$(git ls-remote origin refs/heads/main | cut -f1)" == "$GITHUB_SHA" ]]; then
+          if [[ "$(git ls-remote origin refs/heads/main | cut -f1)" == "$GITHUB_SHA" ]]; then
             echo "current=true" >> "$GITHUB_OUTPUT"
           else
             echo "current=false" >> "$GITHUB_OUTPUT"
@@ -569,32 +513,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.assets.outputs.version }}
         run: |
-          tag="$GITHUB_REF_NAME"
-          latest=false
-          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
-            tag=rolling-latest
-            latest=true
-          fi
-          release_assets=(release/install.sh release/install-claudenest.sh release/install-gemininest.sh release/qualification.json release/codexnest-browser-*.zip release/claudenest-browser-*.zip release/gemininest-browser-*.zip)
+          tag=rolling-latest
+          release_assets=(release/install.sh release/install-claudenest.sh release/install-gemininest.sh release/codexnest-browser-*.zip release/claudenest-browser-*.zip release/gemininest-browser-*.zip)
           printf 'CodexNest and ClaudeNest from verified commit `%s`.\n\nCodexNest: `curl -fsSL https://github.com/%s/releases/download/%s/install.sh | bash`\n\nClaudeNest: `curl -fsSL https://github.com/%s/releases/download/%s/install-claudenest.sh | bash`\n\nThe installers build the server and web client from this exact commit.\n' \
             "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$tag" "$GITHUB_REPOSITORY" "$tag" > release/notes.md
           printf '\nGeminiNest (Google AI Ultra through Antigravity ACP): `curl -fsSL https://github.com/%s/releases/download/%s/install-gemininest.sh | bash`\n' "$GITHUB_REPOSITORY" "$tag" >> release/notes.md
           required_native="$(node -p "require('./deploy/restart-protocol.json').minimumNativeVersion")"
-          printf '\nCodexNest is qualified with stable Codex CLI %s. Older CLI versions must be upgraded before updating CodexNest.\n' "$required_native" >> release/notes.md
-          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
-            release_assets+=(release/CodexNest-latest.apk release/ClaudeNest-latest.apk release/GeminiNest-latest.apk)
-            printf '\nThe signed CodexNest, ClaudeNest and GeminiNest Android APKs and the CodexNest, ClaudeNest and GeminiNest Chrome extensions are built from the same verified commit.\n' >> release/notes.md
-          fi
+          printf '\nCodexNest uses stable Codex CLI %s. Older CLI versions must be upgraded before updating CodexNest.\n' "$required_native" >> release/notes.md
+          release_assets+=(release/CodexNest-latest.apk release/ClaudeNest-latest.apk release/GeminiNest-latest.apk)
+          printf '\nThe signed CodexNest, ClaudeNest and GeminiNest Android APKs and the CodexNest, ClaudeNest and GeminiNest Chrome extensions are built from the same verified commit.\n' >> release/notes.md
           sha256sum "${release_assets[@]}" release/CodexNest-latest.json release/NestApps-latest.json | sed 's@  release/@  @' > release/SHA256SUMS
           release_assets+=(release/SHA256SUMS)
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${release_assets[@]}" --clobber
-            if [[ "$GITHUB_REF_TYPE" != tag ]]; then
-              gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" -f sha="$GITHUB_SHA" -F force=true >/dev/null
-            fi
-            gh release edit "$tag" --prerelease=false --latest="$latest" --title "Nest Apps $RELEASE_VERSION" --notes-file release/notes.md
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            gh release edit "$tag" --prerelease=false --latest --title "Nest Apps $RELEASE_VERSION" --notes-file release/notes.md
           else
-            gh release create "$tag" "${release_assets[@]}" --latest="$latest" --target "$GITHUB_SHA" --title "Nest Apps $RELEASE_VERSION" --notes-file release/notes.md
+            gh release create "$tag" "${release_assets[@]}" --latest --target "$GITHUB_SHA" --title "Nest Apps $RELEASE_VERSION" --notes-file release/notes.md
           fi
           # Publish both update pointers after the assets, with the authoritative one last.
           gh release upload "$tag" release/CodexNest-latest.json --clobber

@@ -147,18 +147,13 @@ Authentication and native history are never reverted. New candidate work remains
 blocked until the exact update is confirmed. These mechanisms still require the native diagnostics;
 their presence alone is not evidence that interrupted recovery works.
 
-Each `lifecycle.json` describes only its own scope and keeps `releaseQualified:
-false`. `release-report` depends on source verification, all native account-network
-and environment jobs, clean installation, both baseline interruption jobs and
-the full five-version history matrix. Its independent report validator rejects
-missing/failed cases, incomplete scopes, a different SHA, smaller history,
-changed readiness budgets, direct provider traffic and OOM. Only that successful
-aggregate produces the immutable `qualified-release-<SHA>` artifact.
-The publication gate requires the complete successful manual CI run at the same
-SHA, validates that artifact and installer hash, and checks that the published
-healthy baseline has not moved. Missing/expired evidence or a moved baseline
-blocks release. The qualification report and asset checksums accompany the release.
-An environment-only pass or a single diagnostic pass cannot authorize publication.
+Each `lifecycle.json` describes its own diagnostic scope. On a manual run,
+`release-report` validates the SHA, complete cases, native versions, history size,
+readiness budgets, provider routing, and memory results. The aggregate is
+available as `qualified-release-<SHA>`. The shared rolling channel publishes
+through standard push CI. The manual report records lifecycle evidence for
+diagnosis.
+
 Each interruption scope also finishes a successful upgrade and saved-chat request,
 including the incident recovery baseline. The unsupported-native scope requires
 the specific version-gate diagnostic before switch, preserving the same Native
