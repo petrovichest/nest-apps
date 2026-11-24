@@ -14,8 +14,8 @@ reports are used. The preinstalled VM tools avoid any dependency on downloading
 an additional OS image or APT packages.
 
 The default mode checks the exact pinned native package and actual daemon.
-Full lifecycle qualification targets the latest stable Codex CLI, pinned at 0.171.0.
-The real installed updaters must reject 0.170.0 and 0.154.0 before switching the
+Full lifecycle qualification targets the latest stable Codex CLI, pinned at 0.172.0.
+The real installed updaters must reject 0.171.0 and 0.154.0 before switching the
 application and preserve active work. Publication checks the pin against the
 latest stable upstream release.
 `QUALIFICATION_MODE=lifecycle` additionally runs `lifecycle.mjs`. It uses the
@@ -34,7 +34,7 @@ This baseline was qualified by run `44173862212`; its published installer hash i
 Interrupted updates additionally run from the incident recovery release
 `0.1.9-fe3c5c8` and the user's installed `0.1.9-f42edbe`. All three installers
 match their observed published hashes. The installed-release case places a real
-CLI 0.144.6 in the shared Node runtime while the configured CLI is 0.171.0,
+CLI 0.144.6 in the shared Node runtime while the configured CLI is 0.172.0,
 then requires the unchanged installed updater to complete update and rollback.
 
 The older f42edbe/fe3c5c8 baselines reapply auth on reconnect. Real Native 0.167.2 and 0.169.0

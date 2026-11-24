@@ -32,7 +32,7 @@ affiliated with or endorsed by OpenAI.
 
 ## Quick start
 
-Use an Ubuntu or Debian machine (`amd64` or `arm64`) with the latest stable Codex CLI (currently 0.171.0)
+Use an Ubuntu or Debian machine (`amd64` or `arm64`) with the latest stable Codex CLI (currently 0.172.0)
 installed and signed in. Run the installer as a regular user:
 
 > **Private access only.** Keep CodexNest on the host, a fully trusted LAN, or your

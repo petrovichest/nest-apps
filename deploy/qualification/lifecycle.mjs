@@ -1094,7 +1094,7 @@ async function qualify() {
   }
   if (scope === "unsupported") {
     await stage("unsupported-native-update-refused-with-work-intact", async () => {
-      assert.ok(["0.154.0", "0.170.0"].includes(process.env.NATIVE_VERSION));
+      assert.ok(["0.154.0", "0.171.0"].includes(process.env.NATIVE_VERSION));
       const held = `unsupported-held-${randomUUID()}`;
       const queued = `unsupported-queued-${randomUUID()}`;
       const identity = await pidIdentity(true);

@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const nativeVersions = ["0.171.0"];
+export const nativeVersions = ["0.172.0"];
 export const healthyBaseline = "5779121e2e58ad4b73a8cacda22d704a619137ec";
 export const installedBaseline = "f42edbee78b582bb54c96ab7bfc732286f10a667";
 const incidentBaseline = "fe3c5c858344b5f03c2619250b01d351930c891b";
@@ -140,15 +140,15 @@ export function validateScope(report, candidate, native, scope, baseline) {
   }
 }
 
-const environmentNativeVersions = ["0.154.0", "0.170.0", ...nativeVersions];
+const environmentNativeVersions = ["0.154.0", "0.171.0", ...nativeVersions];
 const lifecycleScopes = [
   ...nativeVersions.map((native) => ["lifecycle", native, "all", healthyBaseline]),
-  ["clean-install", "0.171.0", "clean", healthyBaseline],
-  ["interruption", "0.171.0", "interruption", healthyBaseline],
-  ["interruption", "0.171.0", "interruption", incidentBaseline],
-  ["interruption", "0.171.0", "interruption", installedBaseline],
+  ["clean-install", "0.172.0", "clean", healthyBaseline],
+  ["interruption", "0.172.0", "interruption", healthyBaseline],
+  ["interruption", "0.172.0", "interruption", incidentBaseline],
+  ["interruption", "0.172.0", "interruption", installedBaseline],
   ["unsupported-native", "0.154.0", "unsupported", installedBaseline],
-  ["unsupported-native", "0.170.0", "unsupported", healthyBaseline],
+  ["unsupported-native", "0.171.0", "unsupported", healthyBaseline],
 ];
 
 async function collect(directory, candidate, installerHash) {

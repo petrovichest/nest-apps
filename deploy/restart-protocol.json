@@ -3,6 +3,6 @@
   "recoveryProtocolVersion": 1,
   "runtimeRecoveryProtocolVersion": 3,
   "updateAdmissionProtocolVersion": 1,
-  "minimumNativeVersion": "0.171.0",
+  "minimumNativeVersion": "0.172.0",
   "supportedTeamToolsVersions": [2]
 }

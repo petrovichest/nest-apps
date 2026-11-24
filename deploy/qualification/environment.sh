@@ -6,7 +6,7 @@ set -euo pipefail
   exit 2
 }
 [[ "$(id -un)" == runner && "${RUNNER_OS:-}" == Linux ]]
-case "${NATIVE_VERSION:-}" in 0.154.0|0.170.0|0.171.0) ;; *) exit 2 ;; esac
+case "${NATIVE_VERSION:-}" in 0.154.0|0.171.0|0.172.0) ;; *) exit 2 ;; esac
 qualification_mode="${QUALIFICATION_MODE:-environment}"
 case "$qualification_mode" in environment|lifecycle) ;; *) exit 2 ;; esac
 qualification_scope="${QUALIFICATION_SCOPE:-all}"

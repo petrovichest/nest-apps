@@ -120,7 +120,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        codex: ["0.171.0"]
+        codex: ["0.172.0"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -162,7 +162,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        codex: ["0.154.0", "0.170.0", "0.171.0"]
+        codex: ["0.154.0", "0.171.0", "0.172.0"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -194,7 +194,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        codex: ["0.171.0"]
+        codex: ["0.172.0"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -225,7 +225,7 @@ jobs:
           persist-credentials: false
       - name: Install the exact candidate into an empty isolated HOME
         env:
-          NATIVE_VERSION: "0.171.0"
+          NATIVE_VERSION: "0.172.0"
           QUALIFICATION_MODE: lifecycle
           QUALIFICATION_SCOPE: clean
         run: bash deploy/qualification/environment.sh
@@ -233,7 +233,7 @@ jobs:
         if: always()
         with:
           name: clean-install-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ runner.temp }}/qualification-lifecycle-0.171.0/
+          path: ${{ runner.temp }}/qualification-lifecycle-0.172.0/
           if-no-files-found: error
 
   release-interruption-diagnostics:
@@ -244,11 +244,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - codex: "0.171.0"
+          - codex: "0.172.0"
             baseline: current
-          - codex: "0.171.0"
+          - codex: "0.172.0"
             baseline: incident
-          - codex: "0.171.0"
+          - codex: "0.172.0"
             baseline: installed
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -280,7 +280,7 @@ jobs:
         include:
           - codex: "0.154.0"
             baseline: installed
-          - codex: "0.170.0"
+          - codex: "0.171.0"
             baseline: current
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

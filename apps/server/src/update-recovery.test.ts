@@ -44,7 +44,7 @@ async function checkNative({ configBin, environmentBin, pathVersion = "0.144.6" 
     await mkdir(join(directory, "configured cli"), { recursive: true });
     await mkdir(join(directory, "old cli"), { recursive: true });
     for (const [path, version] of [
-      [supported, "0.171.0"],
+      [supported, "0.172.0"],
       [unsupported, "0.144.6"],
       [join(pathBin, "codex"), pathVersion],
     ]) {
@@ -63,7 +63,7 @@ async function checkNative({ configBin, environmentBin, pathVersion = "0.144.6" 
       JSON.stringify({
         schemaVersion: 1,
         recoveryProtocolVersion: 1,
-        minimumNativeVersion: "0.171.0",
+        minimumNativeVersion: "0.172.0",
       }),
     );
     const git = (...args: string[]) => exec("git", args, { cwd: release, env, timeout: 5_000 });
@@ -97,17 +97,17 @@ it.each<NativeCheck>([
   { configBin: "supported" },
   { configBin: "quoted" },
   { configBin: "unsupported", environmentBin: "supported" },
-  { pathVersion: "0.171.0" },
-  { configBin: "empty", pathVersion: "0.171.0" },
+  { pathVersion: "0.172.0" },
+  { configBin: "empty", pathVersion: "0.172.0" },
 ])("checks the selected CLI despite a shadowing runtime: %j", async (options) => {
   await expect(checkNative(options)).resolves.toMatchObject({ stdout: "", stderr: "" });
 });
 
 it.each<NativeCheck>([
   {},
-  { pathVersion: "0.170.0" },
-  { configBin: "unsupported", pathVersion: "0.171.0" },
-  { configBin: "supported", environmentBin: "unsupported", pathVersion: "0.171.0" },
+  { pathVersion: "0.171.0" },
+  { configBin: "unsupported", pathVersion: "0.172.0" },
+  { configBin: "supported", environmentBin: "unsupported", pathVersion: "0.172.0" },
 ])("still refuses an unsupported selected CLI: %j", async (options) => {
   await expect(checkNative(options)).rejects.toMatchObject({
     code: 1,
