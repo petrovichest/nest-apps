@@ -25,6 +25,7 @@ type WorkerMemorySuccess = {
   scope: MemoryScope;
   usage: string;
   entry_count: number;
+  saved?: true;
   patched_entries?: Record<number, string>;
   patched_entries_after?: Record<number, string>;
   removed_entries?: Record<number, string>;
@@ -243,6 +244,8 @@ export function curateMemory(
         ...(operations.length === 1 ? { current_entries: original.map(({ text }) => text) } : {}),
       },
     };
+  const previousTexts = new Set(original.map((entry) => entry.text));
+  const saved = draft.some((entry) => !previousTexts.has(entry.text));
   return {
     entries: draft,
     result: {
@@ -252,6 +255,7 @@ export function curateMemory(
       scope,
       usage: `${size}/${limit}`,
       entry_count: draft.length,
+      ...(saved ? { saved: true as const } : {}),
       ...(Object.keys(patched).length
         ? { patched_entries: patched, patched_entries_after: patchedAfter }
         : {}),

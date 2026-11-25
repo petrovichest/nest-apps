@@ -1,10 +1,12 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { KanbanBoard, KanbanRun } from "@codexnest/protocol";
+import { WORKER_MEMORY_SAVED_MARKER, type KanbanBoard, type KanbanRun } from "@codexnest/protocol";
 import { PUBLISH_PROMPT } from "./agent.js";
 import { atomicJson, type KanbanDocument } from "./store.js";
 import type { ReplyVerdict } from "./reply.js";
@@ -170,6 +172,7 @@ async function fixture(
             result?: { id?: string; url?: string };
             code?: string;
             error?: string;
+            memorySaved?: true;
           };
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -276,6 +279,16 @@ it("routes simultaneous assignments of one shared worker to their original sessi
   expect(reviewA.threadId).not.toBe(reviewB.threadId);
   expect(reviewA.workerId).toBe(team[2]!.id);
   expect(reviewB.workerId).toBe(team[2]!.id);
+  expect(codex.workerSession(a.threadId!)).toEqual({ name: "Import lead" });
+  expect(codex.workerSession(reviewA.threadId!)).toEqual({
+    name: "Reviewer",
+    parentThreadId: a.threadId,
+  });
+  expect(claude.workerSession(reviewB.threadId!)).toEqual({
+    name: "Reviewer",
+    parentThreadId: b.threadId,
+  });
+  expect(codex.workerSession(reviewB.threadId!)).toBeUndefined();
   const board = await codex.read(f.project);
   expect(board.cards.filter(({ id }) => id === ids[0])).toEqual([
     expect.objectContaining({ parentCardId: a.cardIds[0] }),
@@ -503,10 +516,32 @@ it("lets a worker curate memory and ends repeated consolidation failures for tha
   await codex.notifyThread(threadId, "running");
   const call = (operations: unknown[]) =>
     f.workerTool("codex", runId, "memory", { target: "memory", operations });
-  expect(await call([{ action: "add", content: "Run npm test" }])).toMatchObject({
-    ok: true,
-    result: { success: true, done: true, scope: "project", entry_count: 1 },
+  const add = [{ action: "add", content: "Run npm test" }];
+  const directory = codex.store.directory;
+  const { stdout, stderr } = await promisify(execFile)(process.execPath, [
+    join(directory, "agent.mjs"),
+    join(directory, "capabilities", `worker-codex-${runId}.json`),
+    "memory",
+    JSON.stringify({ target: "memory", operations: add }),
+  ]);
+  expect(JSON.parse(stdout)).toMatchObject({
+    success: true,
+    done: true,
+    scope: "project",
+    entry_count: 1,
   });
+  expect(stderr.trim()).toBe(WORKER_MEMORY_SAVED_MARKER);
+  expect(await call(add)).toEqual({
+    ok: true,
+    result: expect.objectContaining({ success: true, entry_count: 1 }),
+  });
+  const legacy = { kind: "notes", scope: "project", text: "Use the project runner" };
+  expect(await f.workerTool("codex", runId, "memory_add", legacy)).toMatchObject({
+    ok: true,
+    memorySaved: true,
+  });
+  expect((await f.workerTool("codex", runId, "memory_add", legacy))?.memorySaved).toBeUndefined();
+  expect((await call([{ action: "remove", old_text: legacy.text }]))?.memorySaved).toBeUndefined();
   const stale = [{ action: "remove", old_text: "no longer present" }];
   for (let retry = 0; retry < 3; retry++)
     expect(await call(stale)).toMatchObject({
@@ -528,6 +563,7 @@ it("lets a worker curate memory and ends repeated consolidation failures for tha
   ).toMatchObject({
     ok: true,
     result: { success: true, done: true, patched_entries: { 1: "Run npm test" } },
+    memorySaved: true,
   });
   await claude.startWorker(worker.id, f.project, randomUUID());
   expect(f.inputs.claude[0]?.prompt).toContain("Run npm test -- --run");

@@ -30,7 +30,7 @@ import type {
 
 export type TimelineArtifact = Extract<
   ActivityItem,
-  { type: "userInputResponse" | "planChecklist" | "orchestrationNotice" }
+  { type: "userInputResponse" | "planChecklist" | "orchestrationNotice" | "workerMemorySaved" }
 >;
 
 export interface InterruptedTextActivityState {
@@ -261,6 +261,8 @@ export interface ThreadMetaState {
   awaitingPlanResponse?: boolean;
   dismissedPlanTurnId?: string;
   timelineArtifacts?: Record<string, TimelineArtifact[]>;
+  // A separate optional key lets older versions still validate timelineArtifacts during rollback.
+  workerMemoryNotices?: Record<string, TimelineArtifact[]>;
   /** Historical state key retained for backwards compatibility. */
   interruptedReasoning?: Record<string, InterruptedTextActivityState[]>;
   teamOrchestration?: TeamOrchestrationState;
@@ -1218,6 +1220,7 @@ function validateState(value: unknown): CodexNestState {
       (meta.awaitingPlanResponse !== undefined && typeof meta.awaitingPlanResponse !== "boolean") ||
       (meta.dismissedPlanTurnId !== undefined && typeof meta.dismissedPlanTurnId !== "string") ||
       (meta.timelineArtifacts !== undefined && !isTimelineArtifacts(meta.timelineArtifacts)) ||
+      (meta.workerMemoryNotices !== undefined && !isTimelineArtifacts(meta.workerMemoryNotices)) ||
       (meta.interruptedReasoning !== undefined &&
         !isInterruptedReasoning(meta.interruptedReasoning)) ||
       (meta.teamOrchestration !== undefined && !isTeamOrchestrationState(meta.teamOrchestration)) ||
@@ -1637,6 +1640,7 @@ function isTimelineArtifact(value: unknown): value is TimelineArtifact {
       )
     );
   }
+  if (value.type === "workerMemorySaved") return value.status === "completed";
   if (value.type === "orchestrationNotice") {
     return (
       value.status === "completed" &&

@@ -20,6 +20,7 @@ import type {
   UpdateKanbanCardRequest,
   UpdateKanbanStageRequest,
   WorkerProfile,
+  WorkerSessionSummary,
 } from "@codexnest/protocol";
 import {
   KANBAN_AUDIO_MAX_BYTES,
@@ -110,6 +111,7 @@ export type KanbanServiceOptions = {
   classifies?(): boolean;
   dataDir?: string;
   onChange?: (board: KanbanBoard) => void;
+  onWorkerSessionChanged?: (threadId: string) => void;
   onError?: (error: unknown) => void;
 };
 const active = (run: KanbanRun) =>
@@ -354,7 +356,7 @@ export class KanbanService {
   private pending = new Set<Promise<unknown>>();
   private pumpWaiters: (() => void)[] = [];
   private threads = new Map<string, { boardId: string; runId: string }>();
-  private workerThreads = new Map<string, string>();
+  private workerThreads = new Map<string, { id: string; summary: WorkerSessionSummary }>();
   private workerMemoryFailures = new Map<string, number>();
   private revisions = new Map<string, number>();
   private observedStates = new Map<string, string>();
@@ -585,7 +587,11 @@ export class KanbanService {
     return join(this.store.directory, "capabilities", `worker-${this.options.provider}-${id}.json`);
   }
 
-  private async workerCommand(request: AgentRequest, scope: WorkerCapability): Promise<unknown> {
+  private async workerCommand(
+    request: AgentRequest,
+    scope: WorkerCapability,
+    onMemorySaved: () => void,
+  ): Promise<unknown> {
     const token = typeof request.token === "string" ? Buffer.from(request.token) : Buffer.alloc(0);
     const expected = Buffer.from(scope.token);
     if (token.length !== expected.length || !timingSafeEqual(token, expected))
@@ -598,8 +604,10 @@ export class KanbanService {
       throw new KanbanError("invalid_request", "Expected a tool argument object", 400);
     if (request.command === "memory") {
       const result = await this.workers.curate(workerId, projectKey, input, request.id);
-      if (result.success) this.workerMemoryFailures.delete(request.runId);
-      else if (
+      if (result.success) {
+        this.workerMemoryFailures.delete(request.runId);
+        if (result.saved) onMemorySaved();
+      } else if (
         ["memory_full", "memory_not_found", "memory_ambiguous", "memory_would_empty"].includes(
           result.code,
         )
@@ -624,12 +632,12 @@ export class KanbanService {
         typeof input.text !== "string"
       )
         throw new KanbanError("invalid_request", "Invalid memory arguments", 400);
-      return this.workers.changeMemory(workerId, projectKey, {
-        action: "add",
-        kind: input.kind,
-        scope: input.scope,
-        text: input.text,
-      });
+      return this.workers.changeMemory(
+        workerId,
+        projectKey,
+        { action: "add", kind: input.kind, scope: input.scope, text: input.text },
+        onMemorySaved,
+      );
     }
     if (
       ["worker_list", "worker_ask", "worker_delegate", "worker_results", "worker_finish"].includes(
@@ -940,9 +948,36 @@ export class KanbanService {
     });
   }
 
+  workerSession(threadId: string): WorkerSessionSummary | undefined {
+    return this.workerThreads.get(threadId)?.summary;
+  }
+
+  private indexWorkerThread(
+    session: WorkerSession,
+    sessions: Record<string, WorkerSession>,
+  ): boolean {
+    if (!session.threadId || session.provider !== this.options.provider) return false;
+    const parent = session.parentId ? sessions[session.parentId] : undefined;
+    const parentThreadId = parent?.provider === session.provider ? parent.threadId : null;
+    const previous = this.workerThreads.get(session.threadId);
+    if (
+      previous?.id === session.id &&
+      previous.summary.name === session.workerName &&
+      previous.summary.parentThreadId === (parentThreadId ?? undefined)
+    )
+      return false;
+    this.workerThreads.set(session.threadId, {
+      id: session.id,
+      summary: {
+        name: session.workerName,
+        ...(parentThreadId ? { parentThreadId } : {}),
+      },
+    });
+    return true;
+  }
+
   private async attachWorker(id: string, threadId: string): Promise<void> {
-    this.workerThreads.set(threadId, id);
-    await this.processes.update((sessions) => {
+    const sessions = await this.processes.update((sessions) => {
       const session = sessions[id]!;
       session.threadId = threadId;
       if (session.status === "queued") {
@@ -950,7 +985,16 @@ export class KanbanService {
         delete session.error;
       }
       session.updatedAt = Date.now();
+      return sessions;
     });
+    for (const session of Object.values(sessions)) {
+      if (
+        (session.id === id || session.parentId === id) &&
+        this.indexWorkerThread(session, sessions)
+      ) {
+        this.options.onWorkerSessionChanged?.(session.threadId!);
+      }
+    }
   }
 
   private async launchWorker(job: KanbanLaunch) {
@@ -1312,9 +1356,8 @@ export class KanbanService {
     this.observedStates.clear();
     // Index persisted sessions before accepting HTTP requests so early events are not lost.
     for (const document of await this.store.list()) this.indexThreads(document);
-    for (const session of Object.values(await this.processes.read()))
-      if (session.provider === this.options.provider && session.threadId)
-        this.workerThreads.set(session.threadId, session.id);
+    const sessions = await this.processes.read();
+    for (const session of Object.values(sessions)) this.indexWorkerThread(session, sessions);
     for (const path of [this.store.boardsDirectory, join(this.store.directory, "inbox")]) {
       const watcher = watch(path, (_event, name) => {
         if (name?.toString().endsWith(".json")) this.schedule();
@@ -2241,7 +2284,7 @@ export class KanbanService {
   /** Called from local session notifications; unknown sessions are a constant-time no-op. */
   notifyThread(threadId: string, state: string): Promise<void> {
     const known = this.threads.get(threadId);
-    const workerSessionId = this.workerThreads.get(threadId);
+    const workerSessionId = this.workerThreads.get(threadId)?.id;
     if ((!known && !workerSessionId) || this.closed || this.observedStates.get(threadId) === state)
       return Promise.resolve();
     this.observedStates.set(threadId, state);
@@ -2681,7 +2724,7 @@ export class KanbanService {
           ? await this.prepareWorker(run.workerId, document.board.projectPath, run.id)
           : undefined;
       if (runtime.interruptThreadId) {
-        const replaced = this.workerThreads.get(runtime.interruptThreadId);
+        const replaced = this.workerThreads.get(runtime.interruptThreadId)?.id;
         if (replaced) await this.failWorker(replaced, "Работа продолжена в новом запуске");
         await Promise.resolve(this.options.adapter.interrupt?.(runtime.interruptThreadId)).catch(
           (error) => this.options.onError?.(error),
@@ -2824,13 +2867,16 @@ export class KanbanService {
           return;
         }
         let result: { ok: true; result: unknown } | { ok: false; error: string; code?: string };
+        let memorySaved = false;
         try {
           if (request.id !== requestId)
             throw new KanbanError("invalid_request", "Invalid helper request identifier", 400);
           result = {
             ok: true,
             result: scope
-              ? await this.workerCommand(request, scope)
+              ? await this.workerCommand(request, scope, () => {
+                  memorySaved = true;
+                })
               : await this.store.withLock(`run-${run!.id}`, () => this.agentCommand(request)),
           };
         } catch (error) {
@@ -2840,7 +2886,10 @@ export class KanbanService {
             code: error instanceof KanbanError ? error.code : (error as { code?: string }).code,
           };
         }
-        await atomicJson(resultPath, result);
+        await atomicJson(
+          resultPath,
+          result.ok && memorySaved ? { ...result, memorySaved } : result,
+        );
         if (memory && result.ok && (result.result as WorkerMemoryResult).success)
           await this.workers.acknowledgeMemory(memory.workerId, memory.projectKey, request.id);
         await rm(path, { force: true });

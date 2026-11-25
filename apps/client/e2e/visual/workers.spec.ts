@@ -52,6 +52,7 @@ for (const width of [1440, 390]) {
       projectKey: "canonical-project",
     };
     const starts: string[] = [];
+    const projectCreationIds: string[] = [];
     await page.route("**/api/v1/workers/**", async (route) => {
       const request = route.request();
       const headers = {
@@ -78,7 +79,17 @@ for (const width of [1440, 390]) {
       if (path.endsWith("/lead"))
         return route.fulfill({ headers, json: { profile: lead, memory: [] } });
       if (path.endsWith("/sessions")) {
-        starts.push(new URL(request.url()).searchParams.get("projectId") ?? "");
+        const projectId = new URL(request.url()).searchParams.get("projectId") ?? "";
+        starts.push(projectId);
+        if (projectId === "project-nest") {
+          projectCreationIds.push(request.postDataJSON().creationId);
+          if (projectCreationIds.length === 1)
+            return route.fulfill({
+              status: 503,
+              headers,
+              json: { error: { code: "app_server_unavailable", message: "Network unavailable" } },
+            });
+        }
         return route.fulfill({ headers, json: { threadId: "session-main" } });
       }
       return route.fulfill({
@@ -176,12 +187,15 @@ for (const width of [1440, 390]) {
     await settings.getByRole("button", { name: "Сохранить", exact: true }).click();
     await expect(settings).toBeHidden();
     await expect(tiles.last()).toContainText("Руководитель");
-    await tiles.last().click();
-    const leadProjects = page.getByRole("dialog", { name: "Запустить «Руководитель»" });
-    await expect(leadProjects.getByRole("searchbox")).toHaveCount(0);
-    await expect(leadProjects.getByRole("button", { name: /^Минеральный атлас/ })).toHaveCount(0);
-    await leadProjects.getByRole("button", { name: /^CodexNest/ }).click();
+    await tiles.last().focus();
+    await tiles.last().press("Enter");
+    await expect(page.getByRole("alert")).toHaveText("Network unavailable");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(tiles.last()).toBeFocused();
+    await tiles.last().press("Enter");
     await expect(page).toHaveURL(/\/threads\/session-main$/u);
-    expect(starts).toEqual(["project-mineral", "project-nest"]);
+    expect(starts).toEqual(["project-mineral", "project-nest", "project-nest"]);
+    expect(projectCreationIds[0]).toBeTruthy();
+    expect(projectCreationIds[1]).toBe(projectCreationIds[0]);
   });
 }

@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { asyncQuestionReplyMessageId } from "@codexnest/protocol";
+import { asyncQuestionReplyMessageId, WORKER_MEMORY_SAVED_MARKER } from "@codexnest/protocol";
 import type {
   ActivityItem,
   AttentionRequest,
@@ -7108,6 +7108,86 @@ describe("AppProjection", () => {
       },
       30_000,
     );
+  });
+
+  it("publishes a confirmed memory save and restores it without loading command history", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codexnest-memory-notice-"));
+    directories.push(directory);
+    const path = join(directory, "state.json");
+    const store = new StateStore(path);
+    await store.load();
+    const bridge = new FakeBridge();
+    const history = testTurn("memory-turn", "completed");
+    history.items = [
+      {
+        type: "userMessage",
+        id: "user",
+        content: [{ type: "text", text: "Remember this", text_elements: [] }],
+      },
+      { type: "agentMessage", id: "answer", text: "Done.", phase: "final_answer" },
+    ];
+    bridge.request.mockImplementation(async (method) => {
+      if (method === "thread/turns/list")
+        return { data: [history], nextCursor: null, backwardsCursor: null };
+      throw new Error(`Unexpected ${method}`);
+    });
+    const projection = new AppProjection(
+      bridge as unknown as CodexBridge,
+      store,
+      new AttentionManager(),
+    );
+    projection.upsertThread(thread("one", "/work", 10));
+    const notices: string[] = [];
+    projection.on("event", (_sequence, event: ServerEvent) => {
+      if (event.type === "activity.upserted" && event.item.type === "workerMemorySaved")
+        notices.push(event.item.id);
+    });
+    const command = "node '/work/agent.mjs' '/work/capabilities/worker-codex-abc.json'";
+    for (const [id, request, output, exitCode] of [
+      ["saved", "memory", `${WORKER_MEMORY_SAVED_MARKER}\n{"success":true}`, 0],
+      ["unchanged", "memory", '{"success":true}', 0],
+      ["read", "memory_read", WORKER_MEMORY_SAVED_MARKER, 0],
+      ["failed", "memory", WORKER_MEMORY_SAVED_MARKER, 1],
+    ] as const) {
+      bridge.emit("notification", {
+        method: "item/completed",
+        params: {
+          threadId: "one",
+          turnId: history.id,
+          item: {
+            type: "commandExecution",
+            id,
+            command: `${command} ${request} '{}'`,
+            source: "agent",
+            cwd: "/work",
+            status: "completed",
+            commandActions: [],
+            aggregatedOutput: output,
+            exitCode,
+            durationMs: 1,
+            processId: null,
+          },
+          completedAtMs: 11_000,
+        },
+      } satisfies ServerNotification);
+    }
+
+    await vi.waitFor(() => expect(notices).toEqual(["memory-saved:saved"]));
+    const restoredStore = new StateStore(path);
+    await restoredStore.load();
+    const restored = new AppProjection(
+      bridge as unknown as CodexBridge,
+      restoredStore,
+      new AttentionManager(),
+    );
+    restored.upsertThread(thread("one", "/work", 12));
+    const detail = await restored.readThread("one");
+    expect(detail.turns[0]?.items.map(({ type }) => type)).toEqual([
+      "userMessage",
+      "workerMemorySaved",
+      "agentMessage",
+    ]);
+    expect(detail.turns[0]?.itemsLoaded).toBe(false);
   });
 
   it("reconciles an agent item started under a provisional id with its canonical completion", async () => {

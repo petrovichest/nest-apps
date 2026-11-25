@@ -302,6 +302,12 @@ export class Engine extends EventEmitter {
   canAcceptWork() {
     return this.ready && this.accepting && !this.syncing && !this.closed;
   }
+  private workerSessionProvider?: (id: string) => ThreadSummary["workerSession"];
+
+  setWorkerSessionProvider(provider: (id: string) => ThreadSummary["workerSession"]): void {
+    this.workerSessionProvider = provider;
+  }
+
   setBrowserStatusProvider(provider: (id: string) => BrowserThreadStatus) {
     this.browserStatus = provider;
   }
@@ -451,8 +457,10 @@ export class Engine extends EventEmitter {
   summary(id: string): ThreadSummary {
     const thread = this.thread(id);
     const attention = [...this.requests.values()].some((request) => request.threadId === id);
+    const workerSession = this.workerSessionProvider?.(id);
     const summary: ThreadSummary = {
       ...thread.summary,
+      ...(workerSession ? { workerSession } : {}),
       browserStatus: this.browserStatus?.(id) ?? "disabled",
       state: attention
         ? "needsAttention"

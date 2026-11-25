@@ -364,6 +364,12 @@ export class Engine extends EventEmitter {
   resumeAccepting() {
     this.accepting = true;
   }
+  private workerSessionProvider?: (id: string) => ThreadSummary["workerSession"];
+
+  setWorkerSessionProvider(provider: (id: string) => ThreadSummary["workerSession"]): void {
+    this.workerSessionProvider = provider;
+  }
+
   setBrowserStatusProvider(provider: (threadId: string) => BrowserThreadStatus) {
     this.browserStatusProvider = provider;
   }
@@ -424,7 +430,8 @@ export class Engine extends EventEmitter {
     const thread = this.thread(id);
     thread.detail.summary.browserStatus =
       this.browserStatusProvider?.(id) ?? (thread.browserEnabled ? "disconnected" : "disabled");
-    return thread.detail.summary;
+    const workerSession = this.workerSessionProvider?.(id);
+    return workerSession ? { ...thread.detail.summary, workerSession } : thread.detail.summary;
   }
   project(id: string) {
     const result = this.data.projects.find((project) => project.id === id);
@@ -432,11 +439,9 @@ export class Engine extends EventEmitter {
     return result;
   }
   detail(id: string): ThreadDetail {
-    const thread = this.thread(id);
-    thread.detail.summary.browserStatus =
-      this.browserStatusProvider?.(id) ?? (thread.browserEnabled ? "disconnected" : "disabled");
     return {
-      ...thread.detail,
+      ...this.thread(id).detail,
+      summary: this.summary(id),
       version: { instanceId: this.instanceId, sequence: this.sequence },
     };
   }
@@ -589,7 +594,7 @@ export class Engine extends EventEmitter {
     detail.summary.queuedMessageCount = detail.queuedMessages.filter(
       (m) => m.deliveryMode !== "steer",
     ).length;
-    this.publish({ type: "thread.upserted", thread: detail.summary });
+    this.publish({ type: "thread.upserted", thread: this.summary(id) });
     const turn = detail.turns.at(-1);
     if (turn) this.publish({ type: "turn.replaced", threadId: id, turn });
     this.publish({ type: "queue.changed", threadId: id, messages: detail.queuedMessages });

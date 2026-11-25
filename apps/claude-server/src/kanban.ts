@@ -30,6 +30,10 @@ export async function registerClaudeKanban(
   const { openRouter, stateDir, configDir } = ui.manager.config;
   const provider = openRouter ? "open" : "claude";
   const service = new KanbanService({
+    onWorkerSessionChanged: (id) => {
+      if (Object.hasOwn(ui.store.data.threads, id))
+        ui.publish({ type: "thread.upserted", thread: ui.summary(id) });
+    },
     provider,
     classifies: () => ui.store.data.taskDefaults.classifyTasks !== false,
     ...(voice
@@ -115,6 +119,7 @@ export async function registerClaudeKanban(
       },
     },
   });
+  ui.setWorkerSessionProvider((id) => service.workerSession(id));
   registerKanbanRoutes(app, service, (id) => ui.project(id).path, provider);
   const observe = (frame: ServerFrame) => {
     if (frame.type === "event" && frame.event.type === "thread.upserted") {

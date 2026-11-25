@@ -377,6 +377,12 @@ export class UiService extends EventEmitter {
     if (!this.closed) void this.refreshRateLimits().catch(() => undefined);
   }
   private browserStatus?: (threadId: string) => BrowserThreadStatus;
+  private workerSessionProvider?: (id: string) => ThreadSummary["workerSession"];
+
+  setWorkerSessionProvider(provider: (id: string) => ThreadSummary["workerSession"]): void {
+    this.workerSessionProvider = provider;
+  }
+
   setBrowserStatusProvider(provider: (threadId: string) => BrowserThreadStatus): void {
     this.browserStatus = provider;
   }
@@ -455,8 +461,10 @@ export class UiService extends EventEmitter {
                         : last
                           ? "completed"
                           : "idle";
+    const workerSession = this.workerSessionProvider?.(id);
     const summary: ThreadSummary = {
       id,
+      ...(workerSession ? { workerSession } : {}),
       projectId: thread.projectId,
       title: thread.title,
       preview: thread.queue.at(-1)?.text ?? "",

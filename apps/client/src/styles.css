@@ -520,6 +520,10 @@
   padding-left: var(--space-3);
 }
 
+.thread-branch-row .thread-link.team-lead {
+  min-height: 42px;
+}
+
 .active-session-list > .thread-branch > .thread-branch-row .thread-link,
 .active-pinned-sessions > .thread-branch > .thread-branch-row .thread-link {
   min-height: 42px;

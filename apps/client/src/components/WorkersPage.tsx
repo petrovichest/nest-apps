@@ -20,6 +20,7 @@ import { WorkersHeader } from "./WorkersHeader";
 import "./workers.css";
 
 type Selection = { worker: WorkerProfile; projectId?: string };
+type WorkerLaunch = { workerId: string; projectId: string };
 
 export function WorkersPage({
   projects,
@@ -30,11 +31,18 @@ export function WorkersPage({
 }) {
   const { api, state } = useConnection();
   const { language, t } = useI18n();
+  const navigate = useNavigate();
   const [search, setSearch] = useSearchParams();
   const proposalId = search.get("proposal");
   const [catalogue, setCatalogue] = useState<WorkerCatalogue>();
   const [selection, setSelection] = useState<Selection>();
-  const [launch, setLaunch] = useState<Selection>();
+  const [launch, setLaunch] = useState<WorkerProfile>();
+  const [opening, setOpening] = useState<WorkerLaunch>();
+  const [launchError, setLaunchError] = useState<WorkerLaunch & { message: string }>();
+  const launchErrorId = useId();
+  const launchPending = useRef(false);
+  const lastAttempt = useRef<WorkerLaunch & { creationId: string }>(undefined);
+  const mounted = useRef(false);
   const [error, setError] = useState<string>();
   const [refresh, setRefresh] = useState(0);
   const projectIds = JSON.stringify(projects.map(({ id }) => id));
@@ -57,39 +65,107 @@ export function WorkersPage({
     };
   }, [api, projectIds, refresh]);
 
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  async function start(workerId: string, projectId: string) {
+    if (launchPending.current) return;
+    launchPending.current = true;
+    const target = { workerId, projectId };
+    setOpening(target);
+    setLaunchError(undefined);
+    const previous = lastAttempt.current;
+    const creationId =
+      previous?.workerId === workerId && previous.projectId === projectId
+        ? previous.creationId
+        : crypto.randomUUID();
+    lastAttempt.current = { ...target, creationId };
+    try {
+      const { threadId } = await api.startWorker(workerId, projectId, creationId);
+      lastAttempt.current = undefined;
+      if (mounted.current) await navigate(`/threads/${encodeURIComponent(threadId)}`);
+    } catch (cause) {
+      if (mounted.current)
+        setLaunchError({
+          ...target,
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
+    } finally {
+      launchPending.current = false;
+      if (mounted.current) setOpening(undefined);
+    }
+  }
+
   function group(name: string, workers: WorkerProfile[], projectId?: string) {
     if (!workers.length) return null;
     return (
       <section key={projectId ?? "common"}>
         <h2>{name}</h2>
         <ul className="workers-grid">
-          {workers.map((worker) => (
-            <li key={worker.id}>
-              <button
-                type="button"
-                className="worker-tile"
-                onClick={() => setLaunch({ worker, projectId })}
-              >
-                <strong>{worker.id === WORKER_ARCHITECT_ID ? t("Архитектор") : worker.name}</strong>
-                <span>
-                  {worker.id === WORKER_ARCHITECT_ID
-                    ? t("Помогает создать работника")
-                    : worker.role}
-                </span>
-              </button>
-              <button
-                type="button"
-                className="icon-button worker-tile-settings"
-                aria-label={t("Настройки работника «{{name}}»", {
-                  name: worker.id === WORKER_ARCHITECT_ID ? t("Архитектор") : worker.name,
-                })}
-                title={t("Настройки")}
-                onClick={() => setSelection({ worker, projectId })}
-              >
-                <SlidersIcon />
-              </button>
-            </li>
-          ))}
+          {workers.map((worker) => {
+            const starting = opening?.workerId === worker.id && opening.projectId === projectId;
+            const failed =
+              launchError?.workerId === worker.id && launchError.projectId === projectId
+                ? launchError.message
+                : undefined;
+            return (
+              <li key={worker.id}>
+                <button
+                  type="button"
+                  className="worker-tile"
+                  aria-busy={starting || undefined}
+                  aria-disabled={starting || undefined}
+                  aria-describedby={failed ? launchErrorId : undefined}
+                  disabled={Boolean(opening) && !starting}
+                  onClick={() => {
+                    if (launchPending.current) return;
+                    if (projectId) {
+                      void start(worker.id, projectId);
+                    } else {
+                      setLaunchError(undefined);
+                      setLaunch(worker);
+                    }
+                  }}
+                >
+                  <strong>
+                    {worker.id === WORKER_ARCHITECT_ID ? t("Архитектор") : worker.name}
+                  </strong>
+                  {starting ? (
+                    <span className="working-text" role="status">
+                      {t("Открываем диалог…")}
+                    </span>
+                  ) : (
+                    <span>
+                      {worker.id === WORKER_ARCHITECT_ID
+                        ? t("Помогает создать работника")
+                        : worker.role}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="icon-button worker-tile-settings"
+                  aria-label={t("Настройки работника «{{name}}»", {
+                    name: worker.id === WORKER_ARCHITECT_ID ? t("Архитектор") : worker.name,
+                  })}
+                  title={t("Настройки")}
+                  disabled={Boolean(opening)}
+                  onClick={() => setSelection({ worker, projectId })}
+                >
+                  <SlidersIcon />
+                </button>
+                {failed && (
+                  <p className="worker-launch-error" id={launchErrorId} role="alert">
+                    {localizeKnownServerText(language, failed)}
+                  </p>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </section>
     );
@@ -120,9 +196,15 @@ export function WorkersPage({
       </section>
       {launch && (
         <WorkerProjectDialog
-          worker={launch.worker}
-          projects={projects.filter(({ id }) => !launch.projectId || id === launch.projectId)}
-          onClose={() => setLaunch(undefined)}
+          worker={launch}
+          projects={projects}
+          opening={opening?.projectId}
+          error={launchError?.message}
+          onStart={(projectId) => void start(launch.id, projectId)}
+          onClose={() => {
+            setLaunch(undefined);
+            setLaunchError(undefined);
+          }}
         />
       )}
       {selection && (
@@ -155,22 +237,23 @@ export function WorkersPage({
 function WorkerProjectDialog({
   worker,
   projects,
+  opening,
+  error,
+  onStart,
   onClose,
 }: {
   worker: WorkerProfile;
   projects: Project[];
+  opening?: string;
+  error?: string;
+  onStart(projectId: string): void;
   onClose(): void;
 }) {
-  const { api } = useConnection();
   const { language, t } = useI18n();
-  const navigate = useNavigate();
   const titleId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
-  const [opening, setOpening] = useState<string>();
-  const [error, setError] = useState<string>();
-  const pending = useRef(false);
   const name = worker.id === WORKER_ARCHITECT_ID ? t("Архитектор") : worker.name;
   const busy = opening !== undefined;
   const searchable = projects.length > 1;
@@ -179,22 +262,6 @@ function WorkerProjectDialog({
     ? projects.filter(({ displayName }) => displayName.toLowerCase().includes(term))
     : projects;
   const resultsId = `${titleId}-projects`;
-
-  async function open(projectId: string) {
-    if (pending.current) return;
-    pending.current = true;
-    setOpening(projectId);
-    setError(undefined);
-    try {
-      const { threadId } = await api.startWorker(worker.id, projectId, crypto.randomUUID());
-      await navigate(`/threads/${encodeURIComponent(threadId)}`);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      pending.current = false;
-      setOpening(undefined);
-    }
-  }
 
   return (
     <Dialog
@@ -247,7 +314,7 @@ function WorkerProjectDialog({
                 matches.length === 1
               ) {
                 event.preventDefault();
-                void open(matches[0]!.id);
+                onStart(matches[0]!.id);
               }
             }}
           />
@@ -261,7 +328,7 @@ function WorkerProjectDialog({
               type="button"
               className="project-directory-entry worker-project-option"
               disabled={busy}
-              onClick={() => void open(id)}
+              onClick={() => onStart(id)}
             >
               <FolderIcon />
               <span>

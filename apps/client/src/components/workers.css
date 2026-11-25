@@ -784,6 +784,11 @@
   background: var(--surface-raised);
 }
 
+.workers-grid .worker-tile[aria-busy="true"] {
+  opacity: 1;
+  cursor: progress;
+}
+
 .worker-tile > :is(strong, span) {
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -813,6 +818,13 @@
   width: 40px;
   height: 40px;
   border-radius: var(--radius-md);
+}
+
+.worker-launch-error {
+  margin: var(--space-2) var(--space-1) 0;
+  color: var(--color-danger);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
 }
 
 .worker-project-dialog.dialog-surface {
@@ -845,12 +857,22 @@
 
 .worker-project-dialog .project-directory-list {
   flex: 0 1 auto;
-  max-block-size: calc(5 * (var(--worker-project-option-height) + var(--space-1)) + var(--space-2));
+  overflow: visible;
   padding-block: var(--space-1);
+}
+
+.worker-project-search-backdrop .project-directory-list {
+  max-block-size: calc(
+    5 * (var(--worker-project-option-height) + var(--space-1)) + 2 * var(--space-5)
+  );
+  overflow-y: auto;
   overscroll-behavior: contain;
+  margin: calc(-1 * var(--space-3)) calc(-1 * var(--space-5));
+  padding: var(--space-5);
 }
 
 .worker-project-dialog .worker-project-option {
+  --chat-shadow: var(--chat-inner-shadow);
   min-height: var(--worker-project-option-height);
   border-radius: var(--chat-radius-card);
 }

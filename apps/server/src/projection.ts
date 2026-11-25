@@ -3,6 +3,7 @@ import {
   appendUserInputRecordings,
   asyncQuestionReplyMessageId,
   canonicalServiceTier,
+  isWorkerMemorySave,
   modelServiceTier,
   pastedText,
 } from "@codexnest/protocol";
@@ -126,6 +127,7 @@ const LOADED_RECOVERY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
 
 export class AppProjection extends EventEmitter {
   private readonly threads = new Map<string, CachedThread>();
+  private workerSessionProvider?: (threadId: string) => ThreadSummary["workerSession"];
   /** Latest context fill per thread; Codex reports it only while a thread is loaded. */
   private readonly contextUsage = new Map<string, NonNullable<ThreadSummary["contextUsage"]>>();
   private readonly unmaterializedThreads = new Set<string>();
@@ -584,6 +586,10 @@ export class AppProjection extends EventEmitter {
 
   removeForkOperation(operationId: string): void {
     this.publish({ type: "forkOperation.removed", operationId });
+  }
+
+  setWorkerSessionProvider(provider: (threadId: string) => ThreadSummary["workerSession"]): void {
+    this.workerSessionProvider = provider;
   }
 
   setBrowserStatusProvider(provider: (threadId: string) => BrowserThreadStatus): void {
@@ -1915,10 +1921,13 @@ export class AppProjection extends EventEmitter {
     const markedRead: string[] = [];
     await this.store.update((state) => {
       const meta = state.threadMeta[threadId] ?? { pinned: false, lastReadUpdatedAt: 0 };
-      meta.timelineArtifacts ??= {};
-      const items = meta.timelineArtifacts[turnId] ?? [];
+      const artifacts =
+        item.type === "workerMemorySaved"
+          ? (meta.workerMemoryNotices ??= {})
+          : (meta.timelineArtifacts ??= {});
+      const items = artifacts[turnId] ?? [];
       const index = items.findIndex((candidate) => candidate.id === item.id);
-      meta.timelineArtifacts[turnId] =
+      artifacts[turnId] =
         index < 0
           ? [...items, item]
           : items.map((candidate, itemIndex) => (itemIndex === index ? item : candidate));
@@ -1962,9 +1971,11 @@ export class AppProjection extends EventEmitter {
   }
 
   private timelineArtifacts(threadId: string, turnId: string): TimelineArtifact[] {
-    const saved = this.store.view().threadMeta[threadId]?.timelineArtifacts?.[turnId] ?? [];
-    if (!saved.length) return [];
-    const artifacts = cloneView<TimelineArtifact[]>(saved);
+    const meta = this.store.view().threadMeta[threadId];
+    const saved = meta?.timelineArtifacts?.[turnId] ?? [];
+    const memoryNotices = meta?.workerMemoryNotices?.[turnId] ?? [];
+    if (!saved.length && !memoryNotices.length) return [];
+    const artifacts = cloneView<TimelineArtifact[]>([...saved, ...memoryNotices]);
     if (!artifacts.some((item) => item.type === "userInputResponse")) return artifacts;
     const previous =
       this.turnStates.get(turnKey(threadId, turnId))?.items ??
@@ -3587,6 +3598,32 @@ export class AppProjection extends EventEmitter {
         this.activity.set(key, item);
         this.publishActivityUpsert(notification.params.threadId, notification.params.turnId, item);
         if (
+          notification.method === "item/completed" &&
+          item.type === "command" &&
+          isWorkerMemorySave({
+            ...item,
+            output: item.output || (previous?.type === "command" ? previous.output : ""),
+          })
+        ) {
+          const { threadId, turnId } = notification.params;
+          const id = `memory-saved:${item.id}`;
+          if (
+            !this.store
+              .view()
+              .threadMeta[threadId]?.workerMemoryNotices?.[turnId]?.some(
+                (notice) => notice.id === id,
+              )
+          ) {
+            await this.upsertTimelineArtifact(threadId, turnId, {
+              type: "workerMemorySaved",
+              id,
+              status: "completed",
+              timestamp: eventTimestamp ?? Date.now(),
+              afterItemId: this.latestConversationActivityId(threadId, turnId),
+            });
+          }
+        }
+        if (
           !this.touchThreadActivity(notification.params.threadId, eventTimestamp) &&
           previousState !== undefined &&
           previousState !== this.summary(notification.params.threadId)?.state
@@ -3848,6 +3885,7 @@ export class AppProjection extends EventEmitter {
     const updatedAt = cached.thread.updatedAt * 1_000;
     const threadState = this.threadState(cached, meta.lastOutcome, state);
     const unread = updatedAt > meta.lastReadUpdatedAt && isTerminal(threadState);
+    const workerSession = this.workerSessionProvider?.(cached.thread.id);
     const resultAt =
       meta.lastResult === undefined ? updatedAt : (meta.lastResult?.completedAt ?? 0);
     return {
@@ -3894,6 +3932,8 @@ export class AppProjection extends EventEmitter {
       browserStatus: this.browserStatusProvider(cached.thread.id),
       settings: sessionSettings(meta.settings),
       relation: threadRelation(cached.thread, meta),
+      ...(workerSession ? { workerSession } : {}),
+      ...(meta.teamOrchestration ? { teamLead: true } : {}),
       canAcceptDirectInput: cached.thread.canAcceptDirectInput ?? null,
       codexSettings: {
         model: cached.thread.model ?? null,
@@ -5321,7 +5361,7 @@ function sameRenderedActivity(
 }
 
 function fallbackArtifactPosition(items: ActivityItem[], artifact: TimelineArtifact): number {
-  if (artifact.type === "userInputResponse") {
+  if (artifact.type === "userInputResponse" || artifact.type === "workerMemorySaved") {
     const finalResponse = items.findIndex(
       (item) =>
         item.type === "plan" || (item.type === "agentMessage" && item.phase === "final_answer"),
@@ -5339,7 +5379,8 @@ function isTimelineArtifact(item: ActivityItem): item is TimelineArtifact {
   return (
     item.type === "userInputResponse" ||
     item.type === "planChecklist" ||
-    item.type === "orchestrationNotice"
+    item.type === "orchestrationNotice" ||
+    item.type === "workerMemorySaved"
   );
 }
 

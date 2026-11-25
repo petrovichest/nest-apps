@@ -4167,6 +4167,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   const kanbanClassifiers = new Map<string, { state: string; checked: boolean; turnId?: string }>();
   const kanban = new KanbanService({
     provider: "codex",
+    onWorkerSessionChanged: (id) => projection.publishThreadState(id),
     classifies: () => store.view().taskDefaults?.classifyTasks !== false,
     ...(services.transcription
       ? {
@@ -4317,6 +4318,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       },
     },
   });
+  projection.setWorkerSessionProvider((id) => kanban.workerSession(id));
   wakeKanban = () => kanban.wake();
   bridge.on("state", wakeKanban);
   registerKanbanRoutes(

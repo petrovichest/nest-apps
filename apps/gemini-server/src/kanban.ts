@@ -24,6 +24,10 @@ export async function registerGeminiKanban(
   voice?: Pick<GeminiVoiceService, "transcribe">,
 ): Promise<void> {
   const service = new KanbanService({
+    onWorkerSessionChanged: (id) => {
+      if (Object.hasOwn(engine.data.threads, id))
+        engine.publish({ type: "thread.upserted", thread: engine.summary(id) });
+    },
     provider: "gemini",
     classifies: () => engine.data.taskDefaults.classifyTasks !== false,
     ...(voice
@@ -104,6 +108,7 @@ export async function registerGeminiKanban(
       },
     },
   });
+  engine.setWorkerSessionProvider((id) => service.workerSession(id));
   registerKanbanRoutes(app, service, (id) => engine.project(id).path, "gemini");
   const observe = (frame: ServerFrame) => {
     if (frame.type === "event" && frame.event.type === "thread.upserted") {

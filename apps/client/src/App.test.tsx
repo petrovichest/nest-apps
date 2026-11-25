@@ -2878,6 +2878,51 @@ describe("App routing and navigation", () => {
     expect(within(sessions).getByRole("button", { name: "Показать ещё 3" })).toBeInTheDocument();
   });
 
+  it("keeps an idle lead and its worker hierarchy available while a delegated session runs", async () => {
+    const lead: ThreadSummary = {
+      ...baseThread,
+      id: "lead",
+      title: "Проверка релиза",
+      workerSession: { name: "Мария" },
+    };
+    const reviewer: ThreadSummary = {
+      ...baseThread,
+      id: "review",
+      title: "Ревью изменений",
+      workerSession: { name: "Ревьюер", parentThreadId: lead.id },
+    };
+    const build: ThreadSummary = {
+      ...baseThread,
+      id: "build",
+      title: "Проверить сборку",
+      state: "running",
+      workerSession: { name: "Сборщик", parentThreadId: reviewer.id },
+    };
+    const separate: ThreadSummary = {
+      ...baseThread,
+      id: "separate",
+      title: "Независимый диалог",
+      state: "running",
+    };
+    mockConnection(snapshot([lead, reviewer, build, separate]));
+    await renderList("/threads/separate");
+    fireEvent.click(screen.getByRole("button", { name: "Активные" }));
+    const nav = within(screen.getByRole("navigation", { name: "Задачи" }));
+    const leadLink = nav.getByRole("link", { name: /Проверка релиза Тимлид · Мария/ });
+    expect(leadLink).toHaveAttribute("href", "/threads/lead");
+    expect(nav.getByRole("link", { name: /Независимый диалог/ })).toBeInTheDocument();
+    expect(nav.queryByRole("link", { name: /Ревью изменений/ })).toBeNull();
+    expect(nav.queryByRole("link", { name: /Проверить сборку/ })).toBeNull();
+    fireEvent.click(nav.getByRole("button", { name: "Показать сессии команды «Проверка релиза»" }));
+    expect(nav.getByRole("link", { name: /Ревью изменений/ })).toBeInTheDocument();
+    fireEvent.click(nav.getByRole("button", { name: "Показать сессии команды «Ревью изменений»" }));
+    const child = nav.getByRole("link", { name: /Проверить сборку/ });
+    expect(child).toHaveAttribute("href", "/threads/build");
+    expect(child.closest(".thread-branch-children")).toBeInTheDocument();
+    fireEvent.click(leadLink);
+    expect(leadLink).toHaveAttribute("aria-current", "page");
+  });
+
   it("collapses running and completed subagents by default and reveals them without navigating", async () => {
     const running: ThreadSummary = {
       ...baseThread,

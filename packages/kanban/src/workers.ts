@@ -260,6 +260,7 @@ export class WorkerStore {
     id: string,
     projectKey: string | null,
     change: MemoryChange,
+    onAdd?: () => void,
   ): Promise<WorkerMemoryEntry[]> {
     return this.update((data) => {
       const worker = this.require(data, id, projectKey);
@@ -282,8 +283,10 @@ export class WorkerStore {
               item.projectKey === entry.projectKey &&
               item.text === entry.text,
           )
-        )
+        ) {
           worker.memory.push(entry);
+          onAdd?.();
+        }
       } else {
         const entry = worker.memory.find(
           (item) =>

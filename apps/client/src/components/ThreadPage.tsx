@@ -33,6 +33,7 @@ import { Link, matchPath, Navigate, useLocation, useNavigate, useParams } from "
 
 import {
   DEFAULT_SESSION_SETTINGS,
+  isWorkerMemorySave,
   canonicalServiceTier,
   modelServiceTier,
 } from "@codexnest/protocol";
@@ -1073,20 +1074,34 @@ export function ThreadPage({
     summary?.awaitingPlanResponse,
     summary?.dismissedPlanTurnId,
   ]);
+  // Codex projects the receipt itself because its initial history omits command output.
+  const showMemoryToolReceipts =
+    application.provider !== "codex" && Boolean(summary?.workerSession);
   const groupedTurnActivities = useMemo(
     () =>
       new Map(
         (detail?.turns ?? []).map((turn) => {
           const entries = groupActivities(
-            activitiesForThreadDisplay(turn.items, isSubagent).filter(
-              (item) =>
-                !isTechnicalActivity(item) &&
-                !(
-                  item.type === "error" &&
-                  (item.failureKind === "modelCapacity" ||
-                    turn.id === summary?.capacityRetry?.failedTurnId)
-                ),
-            ),
+            activitiesForThreadDisplay(turn.items, isSubagent)
+              .map((item): ActivityItem => {
+                if (!showMemoryToolReceipts || !isWorkerMemorySave(item)) return item;
+                return {
+                  type: "workerMemorySaved",
+                  id: `memory-saved:${item.id}`,
+                  status: "completed",
+                  timestamp: turn.startedAt ?? 0,
+                  afterItemId: item.id,
+                };
+              })
+              .filter(
+                (item) =>
+                  !isTechnicalActivity(item) &&
+                  !(
+                    item.type === "error" &&
+                    (item.failureKind === "modelCapacity" ||
+                      turn.id === summary?.capacityRetry?.failedTurnId)
+                  ),
+              ),
           );
           const completionResponseId =
             turn.status === "completed"
@@ -1103,7 +1118,7 @@ export function ThreadPage({
           return [turn.id, { entries, completionResponseId }] as const;
         }),
       ),
-    [detail?.turns, isSubagent, summary?.capacityRetry?.failedTurnId],
+    [detail?.turns, isSubagent, showMemoryToolReceipts, summary?.capacityRetry?.failedTurnId],
   );
   const loadTurnJournal = useCallback(
     (turnId: string) => loadTurnItems(threadId, turnId),
@@ -6171,6 +6186,14 @@ export function Activity({
       </article>
     );
   }
+  if (item.type === "workerMemorySaved") {
+    return (
+      <div className="message worker-memory-notice" role="status">
+        <CheckIcon aria-hidden="true" />
+        <span>{t("Сохранено в память")}</span>
+      </div>
+    );
+  }
   if (item.type === "orchestrationNotice") {
     return (
       <article className="message orchestration-notice">
@@ -7757,7 +7780,10 @@ function activitiesForThreadDisplay(items: ActivityItem[], isSubagent: boolean):
   if (!isSubagent) return items;
   return items.filter(
     (item) =>
-      item.type === "userMessage" || item.type === "agentMessage" || isNativeSubagentLaunch(item),
+      item.type === "userMessage" ||
+      item.type === "agentMessage" ||
+      item.type === "workerMemorySaved" ||
+      isNativeSubagentLaunch(item),
   );
 }
 

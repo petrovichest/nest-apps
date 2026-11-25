@@ -861,6 +861,7 @@ function mergeLoadedTurnItems(
         "userInputResponse",
         "planChecklist",
         "orchestrationNotice",
+        "workerMemorySaved",
       ].includes(item.type)
     ) {
       const nextId = current.items

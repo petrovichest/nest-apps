@@ -879,9 +879,9 @@ function HomeRoute({
   const project = projects.find((item) => item.id === stored) ?? projects[0];
   if (project && application.supportsKanban)
     return <Navigate to={`/projects/${encodeURIComponent(project.id)}/kanban`} replace />;
-  const childrenByParent = childThreadsByParent(threads);
+  const { roots, childrenByParent } = sidebarThreadTree(threads);
   const latest = sortThreadBranchesByActivity(
-    threads.filter((thread) => !thread.archived && thread.relation.kind === "session"),
+    roots.filter((thread) => !thread.archived),
     childrenByParent,
   )[0];
   if (latest) return <Navigate to={`/threads/${encodeURIComponent(latest.id)}`} replace />;
@@ -1009,8 +1009,21 @@ function Sidebar({
       .filter((operation) => operation.status !== "ready")
       .map((operation) => operation.sourceThreadId),
   );
-  const childrenByParent = childThreadsByParent(allThreads);
-  const roots = sortThreadBranchesByActivity(topLevelThreads(allThreads), childrenByParent);
+  const tree = sidebarThreadTree(allThreads);
+  const { childrenByParent, teamParentByChild } = tree;
+  const threadRouteId = matchPath("/threads/:threadId", location.pathname)?.params.threadId;
+  const team: SidebarTeamState = {
+    activeAncestors: new Set(),
+    selectedAncestors: new Set(),
+    parentsByChild: teamParentByChild,
+  };
+  for (const thread of allThreads) {
+    if (isActiveFeedEligible(thread) || pendingForkSourceIds.has(thread.id))
+      addTeamAncestors(team.activeAncestors, teamParentByChild, thread.id);
+  }
+  if (threadRouteId) addTeamAncestors(team.selectedAncestors, teamParentByChild, threadRouteId);
+
+  const roots = sortThreadBranchesByActivity(tree.roots, childrenByParent);
   const activeRoots = pinnedThreadsFirst(roots.filter((thread) => !thread.archived));
   const archivedRoots = roots.filter((thread) => thread.archived);
   const dissolveFinished = sessionListMode === "active" && canAnimateThreadLeave();
@@ -1027,7 +1040,10 @@ function Sidebar({
           .map((thread) => leavingThreads.get(thread.id) ?? thread)
           .filter(
             (thread) =>
-              thread.pinned || isActiveFeedEligible(thread) || pendingForkSourceIds.has(thread.id),
+              thread.pinned ||
+              isActiveFeedEligible(thread) ||
+              team.activeAncestors.has(thread.id) ||
+              pendingForkSourceIds.has(thread.id),
           ),
         childrenByParent,
         null,
@@ -1087,7 +1103,6 @@ function Sidebar({
   const projectOrderKey = snapshot?.projects.map((project) => project.id).join(":") ?? "";
   const projects = snapshot?.projects ?? [];
   const boardRoute = matchPath("/projects/:projectId/kanban", location.pathname);
-  const threadRouteId = matchPath("/threads/:threadId", location.pathname)?.params.threadId;
   const knownProject = (id: string | null | undefined) =>
     id && projects.some((project) => project.id === id) ? id : undefined;
   const viewedProjectId =
@@ -1255,6 +1270,7 @@ function Sidebar({
         onNewSession={openNewSession}
         thread={thread}
         childrenByParent={childrenByParent}
+        team={team}
         key={thread.id}
         onNavigate={onClose}
         runningOrderByParent={activeFeedRunningOrderRef.current.byParent}
@@ -1707,6 +1723,7 @@ function Sidebar({
             listResetKey={listResetKey}
             thread={thread}
             childrenByParent={childrenByParent}
+            team={team}
             key={thread.id}
             onNavigate={onClose}
           />
@@ -2070,6 +2087,7 @@ function Sidebar({
                           listResetKey={listResetKey}
                           thread={thread}
                           childrenByParent={childrenByParent}
+                          team={team}
                           key={thread.id}
                           onNavigate={onClose}
                         />
@@ -2114,19 +2132,28 @@ function Sidebar({
   );
 }
 
+type SidebarTeamState = {
+  activeAncestors: Set<string>;
+  selectedAncestors: Set<string>;
+  parentsByChild: Map<string, string>;
+};
+
 function ThreadBranch({
   thread,
   childrenByParent,
+  team,
   listResetKey,
   onNavigate,
 }: {
   thread: ThreadSummary;
   childrenByParent: Map<string, ThreadSummary[]>;
+  team: SidebarTeamState;
   listResetKey: number;
   onNavigate(): void;
 }) {
   const { state } = useConnection();
-  const [expanded, setExpanded] = useState(false);
+  const [expansion, setExpansion] = useState<boolean>();
+  const expanded = expansion ?? team.selectedAncestors.has(thread.id);
   const childrenId = useId();
   const forkOperations = forkOperationsFromSnapshot(state.snapshot).filter(
     (operation) => operation.sourceThreadId === thread.id && operation.status !== "ready",
@@ -2143,10 +2170,14 @@ function ThreadBranch({
       <ThreadLink
         thread={thread}
         onNavigate={onNavigate}
+        teamLead={
+          thread.teamLead ||
+          childrenByParent.get(thread.id)?.some((child) => team.parentsByChild.has(child.id))
+        }
         subagentCount={children.length}
         subagentsExpanded={expanded}
         subagentsId={childrenId}
-        onToggleSubagents={() => setExpanded((value) => !value)}
+        onToggleSubagents={() => setExpansion(!expanded)}
       />
       {((expanded && children.length > 0) || forkOperations.length > 0) && (
         <div className="thread-branch-children" id={childrenId}>
@@ -2165,6 +2196,7 @@ function ThreadBranch({
                   listResetKey={listResetKey}
                   thread={child}
                   childrenByParent={childrenByParent}
+                  team={team}
                   key={child.id}
                   onNavigate={onNavigate}
                 />
@@ -2180,6 +2212,7 @@ function ActiveThreadBranch({
   onNewSession,
   thread,
   childrenByParent,
+  team,
   onNavigate,
   projectLabel,
   runningOrderByParent,
@@ -2190,6 +2223,7 @@ function ActiveThreadBranch({
   onNewSession(projectId: string): void;
   thread: ThreadSummary;
   childrenByParent: Map<string, ThreadSummary[]>;
+  team: SidebarTeamState;
   onNavigate(): void;
   projectLabel?: string;
   runningOrderByParent: Map<string | null, string[]>;
@@ -2198,7 +2232,8 @@ function ActiveThreadBranch({
   onLeft?(threadId: string): void;
 }) {
   const { state } = useConnection();
-  const [expanded, setExpanded] = useState(false);
+  const [expansion, setExpansion] = useState<boolean>();
+  const expanded = expansion ?? team.selectedAncestors.has(thread.id);
   const childrenId = useId();
   const forkOperations = forkOperationsFromSnapshot(state.snapshot).filter(
     (operation) =>
@@ -2206,7 +2241,11 @@ function ActiveThreadBranch({
       (operation.status === "preparing" || operation.status === "reconciling"),
   );
   const children = sortActiveFeedThreads(
-    (childrenByParent.get(thread.id) ?? []).filter(isActiveChildFeedEligible),
+    (childrenByParent.get(thread.id) ?? []).filter((child) =>
+      team.parentsByChild.has(child.id)
+        ? isActiveFeedEligible(child) || team.activeAncestors.has(child.id)
+        : isActiveChildFeedEligible(child),
+    ),
     childrenByParent,
     thread.id,
     runningOrderByParent,
@@ -2238,10 +2277,14 @@ function ActiveThreadBranch({
         secondaryLabel={projectLabel}
         onNewSession={onNewSession}
         dissolveOnFinish={dissolveOnFinish}
+        teamLead={
+          thread.teamLead ||
+          childrenByParent.get(thread.id)?.some((child) => team.parentsByChild.has(child.id))
+        }
         subagentCount={children.length}
         subagentsExpanded={expanded}
         subagentsId={childrenId}
-        onToggleSubagents={() => setExpanded((value) => !value)}
+        onToggleSubagents={() => setExpansion(!expanded)}
       />
       {!leaving && ((expanded && children.length > 0) || forkOperations.length > 0) && (
         <div className="thread-branch-children" id={childrenId}>
@@ -2259,6 +2302,7 @@ function ActiveThreadBranch({
                 onNewSession={onNewSession}
                 thread={child}
                 childrenByParent={childrenByParent}
+                team={team}
                 key={child.id}
                 onNavigate={onNavigate}
                 runningOrderByParent={runningOrderByParent}
@@ -2364,6 +2408,7 @@ function ThreadLink({
   secondaryLabel,
   onNewSession,
   dissolveOnFinish = false,
+  teamLead = false,
   subagentCount = 0,
   subagentsExpanded = false,
   subagentsId,
@@ -2374,6 +2419,7 @@ function ThreadLink({
   secondaryLabel?: string;
   onNewSession?(projectId: string): void;
   dissolveOnFinish?: boolean;
+  teamLead?: boolean;
   subagentCount?: number;
   subagentsExpanded?: boolean;
   subagentsId?: string;
@@ -2400,6 +2446,23 @@ function ThreadLink({
       ? thread.relation.nickname?.trim() || thread.relation.role?.trim() || null
       : null;
   const displayTitle = agentName ? `${agentName} · ${title}` : title;
+  const workerName = thread.workerSession?.name;
+  const leadRole = t("Тимлид");
+  const caption = teamLead && workerName && workerName !== title ? workerName : secondaryLabel;
+  const captionNamesLead =
+    teamLead &&
+    caption === workerName &&
+    Boolean(
+      caption?.toLocaleLowerCase(language).startsWith(`${leadRole.toLocaleLowerCase(language)} `),
+    );
+  const disclosureLabel = teamLead
+    ? t(
+        subagentsExpanded
+          ? "Свернуть сессии команды «{{title}}»"
+          : "Показать сессии команды «{{title}}»",
+        { title: displayTitle },
+      )
+    : t(subagentsExpanded ? "Свернуть субагентов" : "Показать субагентов");
   const canPin = thread.relation.kind === "session";
   const project = onNewSession
     ? state.snapshot?.projects.find((candidate) => candidate.id === thread.projectId)
@@ -2585,7 +2648,7 @@ function ThreadLink({
         <span className="thread-branch-spacer" />
         <NavLink
           className={({ isActive }) =>
-            `thread-link${hasActions ? " has-actions" : ""}${canFinish ? " finishable" : ""}${isActive ? " active" : ""}`
+            `thread-link${teamLead ? " team-lead" : ""}${hasActions ? " has-actions" : ""}${canFinish ? " finishable" : ""}${isActive ? " active" : ""}`
           }
           end
           state={{ focusComposer: true }}
@@ -2604,12 +2667,17 @@ function ThreadLink({
             }
           }}
         >
-          {secondaryLabel ? (
+          {caption || teamLead ? (
             <span className="thread-link-copy">
               <span className="thread-link-title" ref={titleRef}>
                 <span className="thread-link-title-text">{displayTitle}</span>
               </span>
-              <span className="thread-link-project">{secondaryLabel}</span>
+              {teamLead && " "}
+              <span className="thread-link-project" title={teamLead ? caption : undefined}>
+                {teamLead && !captionNamesLead && leadRole}
+                {teamLead && !captionNamesLead && caption && " · "}
+                {caption}
+              </span>
             </span>
           ) : (
             <span className="thread-link-title" ref={titleRef}>
@@ -2652,12 +2720,22 @@ function ThreadLink({
           <button
             type="button"
             className="thread-subagent-count"
-            aria-label={t(subagentsExpanded ? "Свернуть субагентов" : "Показать субагентов")}
+            aria-label={disclosureLabel}
             aria-expanded={subagentsExpanded}
             aria-controls={subagentsExpanded ? subagentsId : undefined}
+            title={teamLead ? disclosureLabel : undefined}
             onClick={onToggleSubagents}
           >
-            <TeamIcon /> {subagentCount}
+            {teamLead ? (
+              subagentsExpanded ? (
+                <ChevronDownIcon />
+              ) : (
+                <ChevronRightIcon />
+              )
+            ) : (
+              <TeamIcon />
+            )}{" "}
+            {subagentCount}
           </button>
         )}
         {hasActions && (
@@ -2724,10 +2802,6 @@ function prepareThreadTitleScroll(element: HTMLSpanElement | null): void {
   element.dataset.overflowing = "true";
   element.style.setProperty("--thread-title-scroll-distance", `${overflow}px`);
   element.style.setProperty("--thread-title-scroll-duration", `${duration}ms`);
-}
-
-function topLevelThreads(threads: ThreadSummary[]): ThreadSummary[] {
-  return threads.filter((thread) => thread.relation.kind === "session");
 }
 
 function pinnedThreadsFirst(threads: ThreadSummary[]): ThreadSummary[] {
@@ -2812,15 +2886,46 @@ function sortThreadBranchesByActivity(
   return [...threads].sort((a, b) => branchUpdatedAt(b) - branchUpdatedAt(a));
 }
 
-function childThreadsByParent(threads: ThreadSummary[]): Map<string, ThreadSummary[]> {
-  const result = new Map<string, ThreadSummary[]>();
+function sidebarThreadTree(threads: ThreadSummary[]) {
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  const childrenByParent = new Map<string, ThreadSummary[]>();
+  const teamParentByChild = new Map<string, string>();
+  const roots: ThreadSummary[] = [];
   for (const thread of threads) {
-    if (thread.relation.kind !== "subagent") continue;
-    const children = result.get(thread.relation.parentThreadId) ?? [];
+    const { relation } = thread;
+    const isSubagent = relation.kind === "subagent";
+    const parentId = isSubagent ? relation.parentThreadId : thread.workerSession?.parentThreadId;
+    const parent = parentId ? byId.get(parentId) : undefined;
+    const nestedWorker =
+      !isSubagent &&
+      !thread.pinned &&
+      parent?.id !== thread.id &&
+      parent?.archived === thread.archived;
+    if (!parentId || (!isSubagent && !nestedWorker)) {
+      roots.push(thread);
+      continue;
+    }
+    const children = childrenByParent.get(parentId) ?? [];
     children.push(thread);
-    result.set(thread.relation.parentThreadId, children);
+    childrenByParent.set(parentId, children);
+    if (nestedWorker || (parent?.teamLead && parent.archived === thread.archived))
+      teamParentByChild.set(thread.id, parentId);
   }
-  return result;
+  return { roots, childrenByParent, teamParentByChild };
+}
+
+function addTeamAncestors(
+  ancestors: Set<string>,
+  parentsByChild: Map<string, string>,
+  threadId: string,
+) {
+  for (
+    let parent = parentsByChild.get(threadId);
+    parent && !ancestors.has(parent);
+    parent = parentsByChild.get(parent)
+  ) {
+    ancestors.add(parent);
+  }
 }
 
 function rateLimitsLabel(

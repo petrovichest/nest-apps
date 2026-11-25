@@ -1,7 +1,32 @@
-import type { SessionSettings } from "./index.js";
+import type { ActivityItem, SessionSettings } from "./index.js";
 import type { KanbanProvider } from "./kanban.js";
 
 export const WORKER_ARCHITECT_ID = "architect";
+export const WORKER_MEMORY_SAVED_MARKER = "[nest:worker-memory-saved]";
+
+export function isWorkerMemorySave(item: ActivityItem): boolean {
+  if (item.status !== "completed") return false;
+  let output: string;
+  if (item.type === "command") {
+    if (
+      (item.exitCode !== null && item.exitCode !== 0) ||
+      !item.command.includes("/agent.mjs") ||
+      !/\/capabilities\/worker-[\w-]+\.json['"]?\s+['"]?memory(?:_add)?(?=\s|['"]|$)/u.test(
+        item.command,
+      )
+    )
+      return false;
+    output = item.output;
+  } else if (item.type === "tool") {
+    output = item.detail;
+  } else {
+    return false;
+  }
+  return (
+    output.includes(WORKER_MEMORY_SAVED_MARKER) &&
+    output.split("\n").some((line) => line.trim() === WORKER_MEMORY_SAVED_MARKER)
+  );
+}
 
 export type WorkerProfile = {
   id: string;
@@ -49,6 +74,12 @@ export type WorkerProposal = {
   settings: SessionSettings;
   coordinates?: boolean;
   target?: { id: string; revision: number; previousInstructions: string };
+};
+
+/** Identity and ancestry of a session launched through the worker registry. */
+export type WorkerSessionSummary = {
+  name: string;
+  parentThreadId?: string;
 };
 
 export type WorkerProcessSession = {

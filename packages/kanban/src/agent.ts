@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { KanbanBoard, KanbanCard, KanbanRun } from "@codexnest/protocol";
+import {
+  WORKER_MEMORY_SAVED_MARKER,
+  type KanbanBoard,
+  type KanbanCard,
+  type KanbanRun,
+} from "@codexnest/protocol";
 import { atomicJson } from "./store.js";
 
 /** Short-lived CLI requests are durable files; no server token or HTTP endpoint is exposed. */
@@ -21,7 +26,7 @@ const id=randomUUID(), resultPath=join(cap.directory,'results',id+'.json');
 const watcher=watch(join(cap.directory,'results'));
 const finished=new Promise((resolve,reject)=>{
  let checking=false,changed=false;
- const check=async()=>{changed=true;if(checking)return;checking=true;try{while(changed){changed=false;try{const r=JSON.parse(await readFile(resultPath,'utf8'));if(r.ok)resolve(r.result);else reject(new Error(r.error));return;}catch(e){if(e.code!=='ENOENT'){reject(e);return;}}}}finally{checking=false;}};
+ const check=async()=>{changed=true;if(checking)return;checking=true;try{while(changed){changed=false;try{const r=JSON.parse(await readFile(resultPath,'utf8'));if(r.ok)resolve(r);else reject(new Error(r.error));return;}catch(e){if(e.code!=='ENOENT'){reject(e);return;}}}}finally{checking=false;}};
  watcher.on('change',()=>void check());watcher.on('error',reject);
  watcher.once('close',()=>{});void check();
 });
@@ -29,7 +34,7 @@ const path=join(cap.directory,'inbox',id+'.json');
 await writeFile(path+'.tmp',JSON.stringify({id,boardId:cap.boardId,runId:cap.runId,token:cap.token,command,payload:JSON.parse(raw)}),{mode:0o600});
 await rename(path+'.tmp',path);
 let timeout;
-try{const result=await Promise.race([finished,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Board service has not answered. Durable request '+id+' remains pending; inspect its result before retrying.')),300000);})]);process.stdout.write(JSON.stringify(result)+'\\n');}
+try{const result=await Promise.race([finished,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Board service has not answered. Durable request '+id+' remains pending; inspect its result before retrying.')),300000);})]);if(result.memorySaved)process.stderr.write(${JSON.stringify(WORKER_MEMORY_SAVED_MARKER)}+'\\n');process.stdout.write(JSON.stringify(result.result)+'\\n');}
 finally{clearTimeout(timeout);watcher.close();}
 `;
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;

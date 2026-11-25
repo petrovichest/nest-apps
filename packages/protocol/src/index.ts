@@ -1,6 +1,7 @@
 import { pastedText, type PastedText } from "./pasted-text.js";
 import type { ClaudeAccountsStatus } from "./claude-accounts.js";
 import type { CodexAccountsStatus } from "./codex-accounts.js";
+import type { WorkerSessionSummary } from "./workers.js";
 export * from "./pasted-text.js";
 
 export type AppProvider = "codex" | "claude" | "gemini" | "open";
@@ -330,6 +331,9 @@ export type ThreadSummary = {
   browserStatus: BrowserThreadStatus;
   settings: SessionSettings;
   relation: ThreadRelation;
+  workerSession?: WorkerSessionSummary;
+  /** The session leads a CodexNest managed team. */
+  teamLead?: true;
   canAcceptDirectInput?: boolean | null;
   /** Current configured settings reported by Codex, not per-turn execution telemetry. */
   codexSettings?: { model: string | null; reasoningEffort: string | null };
@@ -538,6 +542,13 @@ export type ActivityItem =
       status: "inProgress" | "completed" | "failed";
       explanation: string | null;
       steps: TurnPlanStep[];
+      timestamp: number;
+      afterItemId: string | null;
+    }
+  | {
+      type: "workerMemorySaved";
+      id: string;
+      status: "completed";
       timestamp: number;
       afterItemId: string | null;
     }

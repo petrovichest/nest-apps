@@ -20,6 +20,10 @@ export async function registerOpenKanban(
   voice: Pick<OpenVoiceService, "transcribe">,
 ) {
   const service = new KanbanService({
+    onWorkerSessionChanged: (id) => {
+      if (Object.hasOwn(engine.data.threads, id))
+        engine.publish({ type: "thread.upserted", thread: engine.summary(id) });
+    },
     provider: "open",
     classifies: () => engine.data.taskDefaults.classifyTasks !== false,
     transcribe: (audio, contentType, durationMs) =>
@@ -106,6 +110,7 @@ export async function registerOpenKanban(
       },
     },
   });
+  engine.setWorkerSessionProvider((id) => service.workerSession(id));
   registerKanbanRoutes(app, service, (id) => engine.project(id).path, "open");
   const observe = (frame: ServerFrame) => {
     if (frame.type === "event" && frame.event.type === "thread.upserted")
