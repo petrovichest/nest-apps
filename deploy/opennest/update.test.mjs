@@ -9,6 +9,7 @@ import {
   createUpdater,
   manifestCandidate,
   qualifyCandidate,
+  rollingChannel,
 } from "../../apps/open-server/scripts/update.mjs";
 
 const A = "a".repeat(40),
@@ -125,6 +126,8 @@ async function fixture(t) {
     legacy = false,
     nativeVersion = "1.19.5",
     nextRuntime,
+    rolling = false,
+    candidateIsDescendant = true,
     pendingWorkCount = 0;
   const evidence = () =>
     nextRuntime
@@ -138,6 +141,10 @@ async function fixture(t) {
   const offered = () => {
     const publication = manifest(evidence());
     if (nextRuntime) publication.applications.opennest.runtime = nextRuntime;
+    if (rolling) {
+      delete publication.applications.opennest.qualification;
+      publication.applications.opennest.restartProtocolVersion = 1;
+    }
     return publication;
   };
   const run = async (command, args) => {
@@ -149,6 +156,8 @@ async function fixture(t) {
           code: 22,
           stderr: "curl: (22) error: 404",
         });
+      if (rolling && url.endsWith("opennest-qualification.json"))
+        throw new Error("A rolling release has no qualification artifact");
       return {
         stdout: url.endsWith("OpenNest-latest.json")
           ? JSON.stringify(legacy ? { schemaVersion: 1, version, commit: B } : offered())
@@ -160,6 +169,8 @@ async function fixture(t) {
     }
     if (command === "claude") return { stdout: "2.1.289 (Claude Code)\n", stderr: "" };
     if (command === "/fixture/opencode") return { stdout: nativeVersion + "\n", stderr: "" };
+    if (command === "git" && args.includes("--is-ancestor") && !candidateIsDescendant)
+      throw new Error("Fixture candidate is not a descendant of the current release");
     if (command === "systemctl" && args.includes("MainPID"))
       return { stdout: String(pid), stderr: "" };
     if (command === "systemctl" && args.includes("--property=MainPID"))
@@ -241,6 +252,17 @@ async function fixture(t) {
       nextRuntime = "claude";
       pendingWorkCount = pending;
     },
+    rolling: async ({ currentRuntime = "claude", descendant = true } = {}) => {
+      rolling = true;
+      nextRuntime = "claude";
+      candidateIsDescendant = descendant;
+      if (currentRuntime === "claude") {
+        await writeFile(
+          location.env,
+          `${await readFile(location.env, "utf8")}OPENNEST_RUNTIME=claude\n`,
+        );
+      }
+    },
     unsupportedNative: () => {
       nativeVersion = "1.20.0";
     },
@@ -273,6 +295,43 @@ test("legacy channels offer no OpenNest candidate and do not touch native state"
   await f.updater.updateWorker();
   assert.ok(f.calls.every((call) => call.command === "curl"));
   assert.equal(await realpath(join(f.root, "current")), f.previous);
+});
+
+test("a rolling release checks the installed Claude API and upgrades without a qualification report", async (t) => {
+  const f = await fixture(t);
+  await f.rolling();
+  assert.equal((await f.updater.checkUpdate()).updateAvailable, true);
+  assert.equal(f.calls[0].args.at(-1), rollingChannel);
+  await f.updater.updateWorker();
+  assert.equal(await realpath(join(f.root, "current")), f.target);
+  assert.equal(f.nativePid(), 4242);
+  assert.deepEqual(
+    f.calls
+      .filter(({ command, args }) => command === "git" && args.includes("--is-ancestor"))
+      .map(({ args }) => args.slice(-2)),
+    [[A, B]],
+  );
+});
+
+test("a failed rolling release restores the previous ready Claude API", async (t) => {
+  const f = await fixture(t);
+  await f.rolling();
+  f.fail();
+  await assert.rejects(f.updater.updateWorker(), /previous ready version was restored/);
+  assert.equal(await realpath(join(f.root, "current")), f.previous);
+  assert.equal((await f.configuration()).OPENNEST_RUNTIME, "claude");
+  assert.equal(f.nativePid(), 4242);
+});
+
+test("rolling releases cannot replace OpenCode or downgrade to a retained checkout", async (t) => {
+  const transitioning = await fixture(t);
+  await transitioning.rolling({ currentRuntime: "opencode" });
+  await assert.rejects(transitioning.updater.checkUpdate(), /check failed/);
+  const older = await fixture(t);
+  await older.rolling({ descendant: false });
+  await assert.rejects(older.updater.updateWorker(), /update failed/);
+  assert.equal(await realpath(join(older.root, "current")), older.previous);
+  assert.ok(!older.apiCalls.includes("internal/restart/prepare"));
 });
 test("qualified API update preserves the native unit and process identity", async (t) => {
   const f = await fixture(t);

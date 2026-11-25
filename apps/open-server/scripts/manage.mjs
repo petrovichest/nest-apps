@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { createUpdater } from "./update.mjs";
+import { createUpdater, legacyChannel, rollingChannel } from "./update.mjs";
 
 const execute = promisify(execFile);
 const nativeVersion = "1.19.5";
@@ -361,7 +361,7 @@ export function createManager({ env = process.env, run = execute, fetcher = fetc
           : {}),
         OPENNEST_UPDATE_MANIFEST_URL:
           env.OPENNEST_UPDATE_MANIFEST_URL ||
-          "https://github.com/petrovichest/nest-apps/releases/download/opennest-latest/OpenNest-latest.json",
+          (runtimeMode === "claude" ? rollingChannel : legacyChannel),
         ...(env.OPENNEST_REPOSITORY_URL
           ? { OPENNEST_REPOSITORY_URL: env.OPENNEST_REPOSITORY_URL }
           : {}),

@@ -17,9 +17,11 @@ const commitId = (value) => typeof value === "string" && /^[0-9a-f]{40}$/.test(v
 const checksum = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 const openCodeVersion = "1.19.5";
 const claudeVersion = "2.1.289";
-const legacyChannel =
+export const legacyChannel =
   "https://github.com/petrovichest/nest-apps/releases/download/opennest-latest/OpenNest-latest.json";
 const claudeChannel = legacyChannel.replace("/opennest-latest/", "/opennest-claude-latest/");
+export const rollingChannel = legacyChannel.replace("/opennest-latest/", "/opennest-rolling/");
+const notFound = (error) => error.code === 22 && /\b404\b/.test(error.stderr ?? "");
 
 function runtimeVersion(runtime) {
   if (runtime === undefined || runtime === "opencode") return openCodeVersion;
@@ -52,7 +54,6 @@ function artifact(value) {
   return value;
 }
 
-/** Legacy shared manifests cannot implicitly qualify another native application. */
 export function manifestCandidate(value) {
   if (
     !value ||
@@ -64,7 +65,17 @@ export function manifestCandidate(value) {
   )
     throw new Error("Invalid Nest Apps release manifest");
   const application = value.applications?.opennest;
-  if (!application || !application.qualification) return null;
+  if (!application) return null;
+  if (!application.qualification) {
+    if (application.runtime !== "claude" || application.restartProtocolVersion !== 1)
+      throw new Error("Unsupported OpenNest rolling release");
+    return {
+      version: value.version,
+      commit: value.commit,
+      installer: artifact(application.installer),
+      runtime: application.runtime,
+    };
+  }
   if (application.runtime !== undefined) runtimeVersion(application.runtime);
   return {
     version: value.version,
@@ -229,18 +240,25 @@ export function createUpdater({
       config.OPENNEST_UPDATE_MANIFEST_URL || env.OPENNEST_UPDATE_MANIFEST_URL || legacyChannel;
     let raw;
     let fromClaudeChannel = false;
-    if (configured !== legacyChannel) raw = await download(configured);
+    if (
+      config.OPENNEST_RUNTIME === "claude" &&
+      [legacyChannel, claudeChannel, rollingChannel].includes(configured)
+    ) {
+      // Existing installations keep their saved channel URL after the bridge update.
+      try {
+        raw = await download(rollingChannel);
+      } catch (error) {
+        if (!notFound(error)) throw error;
+        raw = await download(claudeChannel);
+      }
+      fromClaudeChannel = true;
+    } else if (configured !== legacyChannel) raw = await download(configured);
     else {
       try {
         raw = await download(claudeChannel);
         fromClaudeChannel = true;
       } catch (error) {
-        if (
-          config.OPENNEST_RUNTIME === "claude" ||
-          error.code !== 22 ||
-          !/\b404\b/.test(error.stderr ?? "")
-        )
-          throw error;
+        if (!notFound(error)) throw error;
         raw = await download(legacyChannel);
       }
     }
@@ -282,6 +300,8 @@ export function createUpdater({
     if (oldRuntime === "claude" && proposed.runtime !== "claude")
       throw new Error("A release for OpenCode cannot replace the active Claude Code runtime");
     if (proposed.runtime === "claude" && oldRuntime !== "claude") {
+      if (!proposed.qualification)
+        throw new Error("Switching to Claude Code requires a qualified transition release");
       const claude = config.OPENNEST_CLAUDE_BIN || "claude";
       const claimed = (
         await run(claude, ["--version"], {
@@ -294,25 +314,22 @@ export function createUpdater({
       if (claimed !== claudeVersion)
         throw new Error("Install the qualified Claude Code version before switching runtimes");
     }
-    const reportBytes = await download(proposed.qualification.url);
-    if (sha(reportBytes) !== proposed.qualification.sha256)
-      throw new Error("OpenNest qualification checksum does not match");
-    let report;
-    try {
-      report = JSON.parse(reportBytes);
-    } catch {
-      throw new Error("Invalid OpenNest qualification metadata");
+    if (proposed.qualification) {
+      const reportBytes = await download(proposed.qualification.url);
+      if (sha(reportBytes) !== proposed.qualification.sha256)
+        throw new Error("OpenNest qualification checksum does not match");
+      const report = JSON.parse(reportBytes);
+      qualifyCandidate(
+        proposed,
+        report,
+        proposed.commit === current.commit ? report?.baseline : current.commit,
+        version,
+      );
     }
-    const qualified = qualifyCandidate(
-      proposed,
-      report,
-      proposed.commit === current.commit ? report.baseline : current.commit,
-      version,
-    );
-    const installer = await download(qualified.installer.url);
-    if (sha(installer) !== qualified.installer.sha256)
+    const installer = await download(proposed.installer.url);
+    if (sha(installer) !== proposed.installer.sha256)
       throw new Error("OpenNest installer checksum does not match");
-    return { ...qualified, installerBytes: installer };
+    return { ...proposed, baseline: current.commit };
   }
   async function checkUpdate() {
     try {
@@ -352,6 +369,7 @@ export function createUpdater({
         (await readFile(join(target, ".opennest-built"), "utf8")).trim() !== value.commit
       )
         throw new Error("Existing OpenNest release is incomplete or has a different identity");
+      await run("git", ["-C", target, "merge-base", "--is-ancestor", value.baseline, value.commit]);
       await verifyPackagedInstaller(target, value);
       return target;
     }
@@ -585,7 +603,9 @@ export function createUpdater({
       if (
         !confirmed ||
         confirmed.commit !== next.commit ||
-        confirmed.qualification.sha256 !== next.qualification.sha256 ||
+        confirmed.qualification?.sha256 !== next.qualification?.sha256 ||
+        confirmed.installer.sha256 !== next.installer.sha256 ||
+        confirmed.runtime !== next.runtime ||
         confirmed.baseline !== before.commit ||
         (await nativeIdentity()) !== nativePid
       )
