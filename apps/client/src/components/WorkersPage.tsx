@@ -15,7 +15,7 @@ import { application } from "../application";
 import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n } from "../i18n";
 import { Dialog } from "./Dialog";
-import { SlidersIcon, XIcon } from "./Icons";
+import { ChevronRightIcon, FolderIcon, SearchIcon, SlidersIcon, XIcon } from "./Icons";
 import { WorkersHeader } from "./WorkersHeader";
 import "./workers.css";
 
@@ -30,15 +30,13 @@ export function WorkersPage({
 }) {
   const { api, state } = useConnection();
   const { language, t } = useI18n();
-  const navigate = useNavigate();
   const [search, setSearch] = useSearchParams();
   const proposalId = search.get("proposal");
   const [catalogue, setCatalogue] = useState<WorkerCatalogue>();
   const [selection, setSelection] = useState<Selection>();
-  const [opening, setOpening] = useState<string>();
+  const [launch, setLaunch] = useState<Selection>();
   const [error, setError] = useState<string>();
   const [refresh, setRefresh] = useState(0);
-  const pending = useRef(false);
   const projectIds = JSON.stringify(projects.map(({ id }) => id));
 
   useEffect(() => {
@@ -59,22 +57,6 @@ export function WorkersPage({
     };
   }, [api, projectIds, refresh]);
 
-  async function open(worker: WorkerProfile, projectId?: string) {
-    if (pending.current) return;
-    pending.current = true;
-    setOpening(worker.id);
-    setError(undefined);
-    try {
-      const { threadId } = await api.startWorker(worker.id, projectId, crypto.randomUUID());
-      await navigate(`/threads/${encodeURIComponent(threadId)}`);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      pending.current = false;
-      setOpening(undefined);
-    }
-  }
-
   function group(name: string, workers: WorkerProfile[], projectId?: string) {
     if (!workers.length) return null;
     return (
@@ -86,16 +68,13 @@ export function WorkersPage({
               <button
                 type="button"
                 className="worker-tile"
-                disabled={Boolean(opening)}
-                onClick={() => void open(worker, projectId)}
+                onClick={() => setLaunch({ worker, projectId })}
               >
                 <strong>{worker.id === WORKER_ARCHITECT_ID ? t("Архитектор") : worker.name}</strong>
                 <span>
-                  {opening === worker.id
-                    ? t("Открываем диалог…")
-                    : worker.id === WORKER_ARCHITECT_ID
-                      ? t("Помогает создать работника")
-                      : worker.role}
+                  {worker.id === WORKER_ARCHITECT_ID
+                    ? t("Помогает создать работника")
+                    : worker.role}
                 </span>
               </button>
               <button
@@ -139,6 +118,13 @@ export function WorkersPage({
           })}
         </div>
       </section>
+      {launch && (
+        <WorkerProjectDialog
+          worker={launch.worker}
+          projects={projects.filter(({ id }) => !launch.projectId || id === launch.projectId)}
+          onClose={() => setLaunch(undefined)}
+        />
+      )}
       {selection && (
         <WorkerSettings
           selection={selection}
@@ -163,6 +149,147 @@ export function WorkersPage({
         />
       )}
     </div>
+  );
+}
+
+function WorkerProjectDialog({
+  worker,
+  projects,
+  onClose,
+}: {
+  worker: WorkerProfile;
+  projects: Project[];
+  onClose(): void;
+}) {
+  const { api } = useConnection();
+  const { language, t } = useI18n();
+  const navigate = useNavigate();
+  const titleId = useId();
+  const searchRef = useRef<HTMLInputElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = useState("");
+  const [opening, setOpening] = useState<string>();
+  const [error, setError] = useState<string>();
+  const pending = useRef(false);
+  const name = worker.id === WORKER_ARCHITECT_ID ? t("Архитектор") : worker.name;
+  const busy = opening !== undefined;
+  const searchable = projects.length > 1;
+  const term = searchable ? query.trim().toLowerCase() : "";
+  const matches = term
+    ? projects.filter(({ displayName }) => displayName.toLowerCase().includes(term))
+    : projects;
+  const resultsId = `${titleId}-projects`;
+
+  async function open(projectId: string) {
+    if (pending.current) return;
+    pending.current = true;
+    setOpening(projectId);
+    setError(undefined);
+    try {
+      const { threadId } = await api.startWorker(worker.id, projectId, crypto.randomUUID());
+      await navigate(`/threads/${encodeURIComponent(threadId)}`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      pending.current = false;
+      setOpening(undefined);
+    }
+  }
+
+  return (
+    <Dialog
+      titleId={titleId}
+      className="chat-dialog worker-project-dialog"
+      backdropClassName={searchable ? "worker-project-search-backdrop" : undefined}
+      initialFocusRef={searchable ? searchRef : undefined}
+      closeOnBackdrop={!busy}
+      closeOnEscape={!busy}
+      onClose={onClose}
+    >
+      <div className="dialog-header">
+        <div className="dialog-heading">
+          <h2 id={titleId}>{t("Запустить «{{name}}»", { name })}</h2>
+          {projects.length > 0 && <p>{t("Выберите проект")}</p>}
+        </div>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label={t("Закрыть")}
+          disabled={busy}
+          onClick={onClose}
+        >
+          <XIcon />
+        </button>
+      </div>
+      {searchable && (
+        <div className="worker-project-search">
+          <SearchIcon />
+          <input
+            ref={searchRef}
+            type="search"
+            aria-label={t("Найти проект")}
+            aria-controls={resultsId}
+            placeholder={t("Найти проект")}
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            disabled={busy}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.currentTarget.value);
+              if (resultsRef.current) resultsRef.current.scrollTop = 0;
+            }}
+            onKeyDown={(event) => {
+              if (
+                event.key === "Enter" &&
+                !event.nativeEvent.isComposing &&
+                term &&
+                matches.length === 1
+              ) {
+                event.preventDefault();
+                void open(matches[0]!.id);
+              }
+            }}
+          />
+        </div>
+      )}
+      {projects.length > 0 ? (
+        <div ref={resultsRef} id={resultsId} className="project-directory-list">
+          {matches.map(({ id, displayName, path }) => (
+            <button
+              key={id}
+              type="button"
+              className="project-directory-entry worker-project-option"
+              disabled={busy}
+              onClick={() => void open(id)}
+            >
+              <FolderIcon />
+              <span>
+                <strong>{displayName}</strong>
+                <small>{opening === id ? t("Открываем диалог…") : path}</small>
+              </span>
+              <ChevronRightIcon />
+            </button>
+          ))}
+          {matches.length === 0 && (
+            <p className="worker-project-empty" role="status">
+              {t("Совпадений нет")}
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="dialog-notice">
+          {worker.projectKey
+            ? t("Проект работника больше недоступен.")
+            : t("Добавьте проект, чтобы запустить работника.")}
+        </p>
+      )}
+      {error && (
+        <p className="dialog-notice danger" role="alert">
+          {localizeKnownServerText(language, error)}
+        </p>
+      )}
+    </Dialog>
   );
 }
 

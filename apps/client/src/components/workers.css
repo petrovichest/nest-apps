@@ -815,6 +815,64 @@
   border-radius: var(--radius-md);
 }
 
+.worker-project-dialog.dialog-surface {
+  --worker-project-option-height: 54px;
+
+  width: min(100%, 440px);
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog-backdrop.worker-project-search-backdrop {
+  --worker-project-picker-top: max(calc(18px + var(--app-safe-area-top)), min(24dvh, 220px));
+
+  align-items: start;
+  padding-block-start: var(--worker-project-picker-top);
+}
+
+.worker-project-search-backdrop .worker-project-dialog {
+  max-height: calc(100dvh - var(--worker-project-picker-top) - 18px - var(--app-safe-area-bottom));
+}
+
+.worker-project-search {
+  flex: 0 0 auto;
+}
+
+.worker-project-search input::placeholder {
+  color: var(--color-muted-strong);
+  opacity: 1;
+}
+
+.worker-project-dialog .project-directory-list {
+  flex: 0 1 auto;
+  max-block-size: calc(5 * (var(--worker-project-option-height) + var(--space-1)) + var(--space-2));
+  padding-block: var(--space-1);
+  overscroll-behavior: contain;
+}
+
+.worker-project-dialog .worker-project-option {
+  min-height: var(--worker-project-option-height);
+  border-radius: var(--chat-radius-card);
+}
+
+.worker-project-empty {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--color-muted-strong);
+}
+
+.worker-project-option :is(strong, small) {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.worker-project-option small {
+  color: var(--color-muted-strong);
+  font-size: var(--text-small);
+  margin-top: var(--space-0-5);
+}
+
 .worker-settings-fields,
 .worker-settings-fields label {
   display: grid;
@@ -860,6 +918,10 @@
 }
 
 @media (max-width: 820px) {
+  .dialog-backdrop.worker-project-search-backdrop {
+    --worker-project-picker-top: max(calc(18px + var(--app-safe-area-top)), min(16dvh, 160px));
+  }
+
   .workers-content {
     gap: 24px;
   }

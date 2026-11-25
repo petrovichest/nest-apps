@@ -396,7 +396,14 @@ it("creates a worker with explicit approval, groups its tasks and shares its pro
   }
 
   const architect = randomUUID();
-  await f.services.codex.startWorker("architect", null, architect);
+  await expect(f.services.codex.startWorker("architect", null, architect)).rejects.toMatchObject({
+    code: "worker_project_required",
+    status: 400,
+  });
+  expect(f.inputs.codex).toEqual([]);
+  await f.services.codex.startWorker("architect", f.project, architect);
+  expect(f.inputs.codex[0]?.cwd).toBe(f.project);
+  expect(f.inputs.codex[0]?.prompt).toContain(JSON.stringify({ id: "project", path: f.project }));
   expect(f.inputs.codex[0]?.settings).toBeUndefined();
   const draft = await workerTool("codex", architect, "propose", {
     name: "Lead",

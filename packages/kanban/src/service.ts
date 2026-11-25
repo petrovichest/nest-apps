@@ -111,6 +111,12 @@ const AUTO_ARCHIVE_MS = 7 * 24 * 60 * 60 * 1000;
 const CLASSIFICATION_TIMEOUT_MS = 2 * 60_000;
 const stageRole = (board: KanbanBoard, stageId: string) =>
   board.stages.find((stage) => stage.id === stageId)?.role ?? null;
+function requireWorkerProject(projectPath: string | null): string {
+  if (!projectPath)
+    throw new KanbanError("worker_project_required", "Choose a project to start the worker", 400);
+  return projectPath;
+}
+
 /** A card that changes stage moves to the top of its new column. */
 function setStage(data: KanbanDocument, card: KanbanCard, stageId: string): void {
   if (card.stageId === stageId) return;
@@ -344,8 +350,8 @@ export class KanbanService {
     this.processes = new WorkerProcessStore(this.workers.directory);
   }
 
-  private async prepareWorker(id: string, projectPath: string | null, runId: string) {
-    const projectKey = projectPath ? await this.workers.projectKey(projectPath) : null;
+  private async prepareWorker(id: string, projectPath: string, runId: string) {
+    const projectKey = await this.workers.projectKey(projectPath);
     const { profile, memory } = await this.workers.snapshot(id, projectKey);
     const architect = id === WORKER_ARCHITECT_ID;
     const models = this.options.adapter.models?.();
@@ -360,17 +366,21 @@ export class KanbanService {
         "worker_model_unavailable",
         `Модель «${settings.model}» работника «${profile.name}» недоступна. Повторите запуск после восстановления или измените настройки работника.`,
       );
+    const projects = architect ? (this.options.adapter.projects?.() ?? []) : [];
+    const currentProject = projects.find(({ path }) => path === projectPath);
     const role = architect
       ? [
           "Ты встроенный Архитектор работников Nest.",
-          "Когда пользователь хочет создать работника, начинай grilling автоматически.",
-          "Выясни, какие задачи он будет выполнять и как пользователь проверит результат.",
+          `Текущий проект: ${JSON.stringify({ id: currentProject?.id, path: projectPath })}.`,
+          "Когда пользователь опишет нужного работника, сначала изучи текущий проект. Прочитай README и AGENTS.md, если они есть, и файлы, относящиеся к будущей роли. При подготовке профиля работай с файлами в режиме чтения.",
+          "Используй найденные факты, чтобы провести grilling. Выясни, какие задачи будет выполнять работник и как пользователь проверит результат.",
           "Задавай вопросы раундами. Для каждого открытого решения предложи вариант. Отложи зависимые вопросы до следующего раунда.",
+          "Опирайся на проверенные в проекте команды, пути и соглашения при составлении постоянных инструкций. Для роли под этот проект предложи область текущего проекта.",
           "Согласуй имя, роль, постоянные инструкции, область доступности, модель и уровень рассуждений.",
           "Уточни, может ли работник как координатор сам поручать подзадачи на Kanban. Передай coordinates: true только при согласии пользователя.",
           "Модель и уровень рассуждений подбирай по назначению работника из доступных вариантов.",
           "В конце предложи профиль через инструмент propose и покажи возвращённую ссылку для утверждения.",
-          `Проекты: ${JSON.stringify(this.options.adapter.projects?.().map(({ id, displayName }) => ({ id, displayName })) ?? [])}`,
+          `Проекты: ${JSON.stringify(projects.map(({ id, displayName }) => ({ id, displayName })))}`,
           ...(models?.length
             ? [
                 `Модели этого Nest: ${JSON.stringify(
@@ -445,7 +455,7 @@ export class KanbanService {
   private async chooseWorkerModel(
     profile: Awaited<ReturnType<WorkerStore["snapshot"]>>["profile"],
     models: readonly ModelOption[],
-    projectPath: string | null,
+    projectPath: string,
   ): Promise<SessionSettings> {
     const existing = Object.values(profile.settings);
     const same = existing.find(
@@ -486,7 +496,7 @@ export class KanbanService {
           models: catalogue,
         }),
       ].join("\n"),
-      projectPath ?? (await this.workers.workspace()),
+      projectPath,
     );
     const match = output?.match(/\{[\s\S]*\}/u)?.[0];
     const choice = match
@@ -506,7 +516,8 @@ export class KanbanService {
     };
   }
 
-  async startWorker(id: string, projectPath: string | null, creationId: string) {
+  async startWorker(id: string, path: string | null, creationId: string) {
+    const projectPath = requireWorkerProject(path);
     if (this.options.adapter.available?.() === false)
       throw new KanbanError("app_server_unavailable", "The session engine is not ready", 503);
     this.workerCapabilityPath(creationId);
@@ -525,13 +536,17 @@ export class KanbanService {
       });
       if (session.threadId) return { threadId: session.threadId };
       try {
+        const greeting =
+          id === WORKER_ARCHITECT_ID
+            ? "Поприветствуй пользователя и спроси, какого работника он хочет создать для этого проекта."
+            : "Поприветствуй пользователя и спроси, с чего начать.";
         return await this.launchWorker({
           id: creationId,
           kind: "execute",
-          projectPath: projectPath ?? "",
-          cwd: projectPath ?? (await this.workers.workspace()),
+          projectPath,
+          cwd: projectPath,
           title: profile.name,
-          prompt: `${context}\n\nПоприветствуй пользователя и спроси, с чего начать.`,
+          prompt: `${context}\n\n${greeting}`,
           ...(settings ? { settings } : {}),
         });
       } catch (error) {
@@ -796,6 +811,7 @@ export class KanbanService {
     }
     if (input.wait !== undefined && typeof input.wait !== "boolean")
       throw new KanbanError("invalid_request", "Wait must be a boolean", 400);
+    const projectPath = requireWorkerProject(sender.projectPath);
     const target = await this.workers.snapshot(
       text(input.workerId, "Worker", 120),
       scope.projectKey,
@@ -857,7 +873,7 @@ export class KanbanService {
         workerName: target.profile.name,
         provider: sender.provider,
         threadId: null,
-        projectPath: sender.projectPath,
+        projectPath,
         projectKey: sender.projectKey,
         projectName: sender.projectName,
         kind: assignment ? "assignment" : "question",
@@ -1037,16 +1053,17 @@ export class KanbanService {
     await this.processes.exclusive(session.id, async () => {
       const current = (await this.processes.read())[session.id];
       if (!current || current.status !== "queued" || current.threadId) return;
+      const projectPath = requireWorkerProject(session.projectPath);
       const { context, settings } = await this.prepareWorker(
         session.workerId,
-        session.projectPath,
+        projectPath,
         session.id,
       );
       await this.launchWorker({
         id: session.id,
         kind: "execute",
-        projectPath: session.projectPath ?? "",
-        cwd: session.projectPath ?? (await this.workers.workspace()),
+        projectPath,
+        cwd: projectPath,
         title: session.title,
         prompt: `${context}\n\nВопрос от «${sender.workerName}»\n${session.description}\n\nОжидаемый результат: ${session.expectedResult}\nОтветь отправителю через worker_finish.`,
         ...(settings ? { settings } : {}),

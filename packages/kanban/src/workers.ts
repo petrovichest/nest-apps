@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -72,12 +72,6 @@ export class WorkerStore {
 
   async projectKey(projectPath: string): Promise<string> {
     return (await this.lock.identity(projectPath)).id;
-  }
-
-  async workspace(): Promise<string> {
-    const path = join(this.lock.directory, "workspace");
-    await mkdir(path, { recursive: true, mode: 0o700 });
-    return path;
   }
 
   async propose(fields: Omit<WorkerProposal, "id">): Promise<WorkerProposal> {

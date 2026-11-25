@@ -51,6 +51,10 @@ const ENGLISH: Record<string, string> = {
   "Помогает создать работника": "Helps create workers",
   "Настройки работника «{{name}}»": "Settings for {{name}}",
   "Открываем диалог…": "Opening conversation…",
+  "Запустить «{{name}}»": "Start “{{name}}”",
+  "Найти проект": "Find a project",
+  "Проект работника больше недоступен.": "The worker’s project is no longer available.",
+  "Добавьте проект, чтобы запустить работника.": "Add a project to start a worker.",
   "Загружаем работников…": "Loading workers…",
   "Запуск работника": "Starting worker",
   "Постоянные инструкции": "Standing instructions",
@@ -1538,6 +1542,7 @@ export function translate(
 
 /** Why a board task waits for the operator, as the shared board service words it. */
 const BOARD_REASONS: Record<string, string> = {
+  "Choose a project to start the worker": "Выберите проект для запуска работника.",
   "The session was stopped; continue it or start again":
     "Сессия остановлена. Продолжите её или начните заново.",
   "The session failed; continue it or start again":

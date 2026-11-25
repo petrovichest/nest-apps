@@ -102,13 +102,16 @@ each project. Click the Architect to design a worker and approve its proposed
 profile. Each application uses its own model catalogue. An unavailable saved
 model is reported on the card so you can retry or change the worker's settings.
 
-Use the Architect to grant or revoke permission to coordinate tasks, then
-approve the proposal. Workers can ask a colleague a question from a project or
-personal session. A coordinator working on a Kanban card can also start a linked
-task for a colleague. The colleague gets a separate session and sends the result
-or error back to the requesting session. A session waiting for the reply resumes
-when it arrives. Each recipient uses its own profile, memory, and settings for
-the application where the work started.
+To open a worker session from the catalogue, select one of the worker's available
+projects registered in this application. The Architect inspects the selected
+project when designing a profile and uses relevant files and conventions in its
+proposal. Use the Architect to grant or revoke permission to coordinate tasks,
+then approve the proposal. Workers can ask a colleague a question from a project
+session. A coordinator working on a Kanban card can also start a linked task for
+a colleague. The colleague gets a separate session and sends the result or error
+back to the requesting session. A session waiting for the reply resumes when it
+arrives. Each recipient uses its own profile, memory, and settings for the
+application where the work started.
 
 The **Processes** tab under **Workers** shows the work across local Nest
 applications, grouped by project. Open a process to see which workers it

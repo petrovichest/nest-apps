@@ -606,11 +606,7 @@ export class ApiClient {
     });
   }
 
-  startWorker(
-    id: string,
-    projectId: string | undefined,
-    creationId: string,
-  ): Promise<{ threadId: string }> {
+  startWorker(id: string, projectId: string, creationId: string): Promise<{ threadId: string }> {
     return this.request(workerPath(id, projectId, "/sessions"), {
       method: "POST",
       body: { creationId },
