@@ -7,6 +7,7 @@ export function WorkspaceHeader({
   title,
   subtitle,
   leadingIcon,
+  navigation,
   onOpenNavigation,
   onToggleInspector,
   actions,
@@ -14,6 +15,7 @@ export function WorkspaceHeader({
   title: string;
   subtitle?: ReactNode;
   leadingIcon?: ReactNode;
+  navigation?: ReactNode;
   onOpenNavigation(): void;
   onToggleInspector?(): void;
   actions?: ReactNode;
@@ -37,8 +39,9 @@ export function WorkspaceHeader({
           </span>
         )}
         <div>
-          <h1>{title}</h1>
+          <h1 className={navigation ? "sr-only" : undefined}>{title}</h1>
           {subtitle && <p>{subtitle}</p>}
+          {navigation}
         </div>
       </div>
       <div className="workspace-actions">

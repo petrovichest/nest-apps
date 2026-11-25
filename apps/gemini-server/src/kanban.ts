@@ -78,6 +78,9 @@ export async function registerGeminiKanban(
         const reply = lastReply(engine.detail(id).turns);
         return reply ? engine.checkReply(reply, engine.data.taskDefaults.replyCheckModel) : null;
       },
+      async readAnswer(id) {
+        return engine.data.threads[id] ? lastReply(engine.detail(id).turns) : null;
+      },
       async readRequest(id) {
         return engine.data.threads[id] ? firstRequest(engine.detail(id).turns) : null;
       },

@@ -11,7 +11,10 @@ import {
 import { atomicJson, KanbanError, KanbanStore } from "./store.js";
 
 type WorkerDocument = { profile: WorkerProfile; memory: WorkerMemoryEntry[] };
-type ProfileFields = Pick<WorkerProfile, "name" | "role" | "instructions" | "settings">;
+type ProfileFields = Pick<
+  WorkerProfile,
+  "name" | "role" | "instructions" | "settings" | "coordinates"
+>;
 type MemoryChange =
   | { action: "add"; kind: WorkerMemoryEntry["kind"]; scope: "worker" | "project"; text: string }
   | { action: "edit"; id: string; expectedText: string; text: string }
@@ -41,6 +44,7 @@ function profileFields(fields: ProfileFields): ProfileFields {
     name: text(fields.name, "name", 120),
     role: text(fields.role, "role", 500),
     instructions: text(fields.instructions, "instructions", 16_000, true),
+    ...(fields.coordinates !== undefined ? { coordinates: fields.coordinates } : {}),
     settings: fields.settings,
   };
 }
@@ -60,6 +64,10 @@ export class WorkerStore {
   ) {
     this.lock = new KanbanStore(directory);
     this.path = join(directory, "workers.json");
+  }
+
+  get directory(): string {
+    return this.lock.directory;
   }
 
   async projectKey(projectPath: string): Promise<string> {
@@ -99,10 +107,18 @@ export class WorkerStore {
       if (proposal.target) {
         const { id, revision } = proposal.target;
         const worker = this.require(data, id, proposal.projectKey);
-        if (worker.profile.instructions === proposal.instructions) return worker.profile;
+        if (
+          worker.profile.instructions === proposal.instructions &&
+          (proposal.coordinates === undefined ||
+            worker.profile.coordinates === proposal.coordinates)
+        )
+          return worker.profile;
         if (worker.profile.revision !== revision)
           throw new KanbanError("worker_changed", "Worker profile changed; request a new proposal");
         worker.profile.instructions = proposal.instructions.trim();
+        if (proposal.coordinates !== undefined && id !== WORKER_ARCHITECT_ID) {
+          worker.profile.coordinates = proposal.coordinates;
+        }
         worker.profile.revision++;
         data[id] = worker;
         return worker.profile;

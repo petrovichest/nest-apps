@@ -4285,6 +4285,10 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           effort: model?.reasoningEfforts[0]?.value,
         });
       },
+      async readAnswer(threadId) {
+        if (!projection.summary(threadId)) return null;
+        return lastReply((await projection.readThread(threadId)).turns);
+      },
       async readRequest(threadId) {
         if (!projection.summary(threadId)) return null;
         return firstRequest((await projection.readThread(threadId)).turns);

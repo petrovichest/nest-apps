@@ -98,6 +98,9 @@ export async function registerClaudeKanban(
         const reply = lastReply((await ui.detail(id)).turns);
         return reply ? ui.checkReply(reply, ui.store.data.taskDefaults.replyCheckModel) : null;
       },
+      async readAnswer(id) {
+        return ui.store.data.threads[id] ? lastReply((await ui.detail(id)).turns) : null;
+      },
       async readRequest(id) {
         return ui.store.data.threads[id] ? firstRequest((await ui.detail(id)).turns) : null;
       },

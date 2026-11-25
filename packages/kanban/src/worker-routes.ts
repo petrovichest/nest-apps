@@ -115,7 +115,15 @@ export function registerWorkerRoutes(
     return proposal;
   };
   app.get<{ Params: { id: string } }>(`${root}/proposals/:id`, (request, reply) =>
-    handle(reply, () => checkedProposal(request.params.id)),
+    handle(reply, async () => {
+      const proposal = await checkedProposal(request.params.id);
+      return proposal.coordinates === undefined
+        ? proposal
+        : {
+            ...proposal,
+            role: `${proposal.role} · ${proposal.coordinates ? "Может поручать задачи" : "Поручения отключены"}`,
+          };
+    }),
   );
   app.post<{ Params: { id: string } }>(`${root}/proposals/:id/approve`, (request, reply) =>
     handle(reply, async () => workers.approveProposal(await checkedProposal(request.params.id))),

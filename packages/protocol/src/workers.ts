@@ -10,6 +10,8 @@ export type WorkerProfile = {
   name: string;
   role: string;
   instructions: string;
+  /** Set by the operator when authorizing the worker to delegate Kanban tasks. */
+  coordinates?: boolean;
   settings: Partial<Record<KanbanProvider, SessionSettings>>;
   revision: number;
 };
@@ -45,5 +47,33 @@ export type WorkerProposal = {
   role: string;
   instructions: string;
   settings: SessionSettings;
+  coordinates?: boolean;
   target?: { id: string; revision: number; previousInstructions: string };
+};
+
+export type WorkerProcessSession = {
+  id: string;
+  parentId: string | null;
+  workerId: string;
+  workerName: string;
+  provider: KanbanProvider;
+  threadId: string | null;
+  sessionUrl?: string;
+  title: string;
+  kind: "session" | "question" | "assignment";
+  description?: string;
+  expectedResult?: string;
+  status: "queued" | "running" | "waiting" | "completed" | "failed";
+  waitingFor: string[];
+  result?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type WorkerProcess = {
+  id: string;
+  projectKey: string | null;
+  projectName: string | null;
+  sessions: WorkerProcessSession[];
 };

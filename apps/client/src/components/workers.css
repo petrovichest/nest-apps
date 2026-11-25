@@ -13,6 +13,741 @@
   display: none;
 }
 
+.workers-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.workers-tabs a {
+  display: grid;
+  place-items: center;
+  min-height: 36px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  color: var(--color-muted-strong);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.workers-tabs a[aria-current="page"] {
+  color: var(--color-ink-strong);
+  background: var(--sidebar-control-active);
+  font-weight: var(--weight-action);
+}
+
+.workers-tabs a:hover {
+  color: var(--color-ink-strong);
+}
+
+@media (min-width: 821px) {
+  .thread-workspace.workers-workspace:not(.pending-fork-workspace) .workspace-title {
+    padding-inline: var(--space-1);
+  }
+}
+
+.workers-content.processes-content {
+  width: min(100%, 970px);
+  container: processes / inline-size;
+  gap: 28px;
+}
+
+.workers-content.process-detail-content {
+  width: min(100%, 1120px);
+}
+
+.process-project h2 {
+  margin-block-end: 10px;
+}
+
+.process-worker-list,
+.process-session-list,
+.process-overview-members,
+.process-graph-branches {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.process-worker-list {
+  border-top: 1px solid var(--color-line);
+}
+
+.process-worker-list > li {
+  border-bottom: 1px solid var(--color-line);
+}
+
+.process-overview-members {
+  margin-block-end: 8px;
+}
+
+.process-overview-members > li {
+  position: relative;
+}
+
+.process-overview-members > li::before,
+.process-overview-members > li::after {
+  position: absolute;
+  inset-inline-start: 7px;
+  pointer-events: none;
+  content: "";
+}
+
+.process-overview-members > li::before {
+  inset-block: 0;
+  border-inline-start: 1px solid var(--color-line-strong);
+}
+
+.process-overview-members > li:last-child::before {
+  inset-block-end: 50%;
+}
+
+.process-overview-members > li::after {
+  inset-block-start: 50%;
+  width: 11px;
+  border-top: 1px solid var(--color-line-strong);
+}
+
+.process-overview-members .process-worker-row {
+  min-height: 44px;
+  padding-block: 8px;
+}
+
+.process-overview-members .process-worker-label {
+  padding-inline-start: 25px;
+}
+
+.process-worker-row {
+  display: grid;
+  grid-template-columns: minmax(136px, 25%) minmax(0, 1fr) 16px;
+  gap: 12px;
+  align-items: center;
+  min-height: 58px;
+  padding: 12px 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.process-worker-row:hover {
+  background: var(--color-hover);
+}
+
+.process-worker-label {
+  display: grid;
+  gap: 3px;
+}
+
+.process-worker-label small,
+.process-graph-heading > span,
+.process-node-heading small,
+.process-node-meta small,
+.process-inspector-heading > span {
+  color: var(--color-muted-strong);
+  font-size: var(--text-caption);
+}
+
+.process-provider,
+.process-breadcrumb,
+.process-inspector-meta,
+.process-empty {
+  color: var(--color-muted-strong);
+  font-size: var(--text-small);
+}
+
+.process-session-list {
+  display: grid;
+  gap: 8px;
+}
+
+.process-session-list > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px minmax(116px, auto);
+  align-items: baseline;
+  gap: 12px;
+}
+
+.process-session-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.process-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-muted-strong);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+}
+
+.process-status::before {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--process-phase, var(--color-muted-strong));
+  content: "";
+}
+
+.process-status[data-phase="running"] {
+  --process-phase: var(--status-running);
+}
+
+.process-status[data-phase="queued"] {
+  --process-phase: var(--status-queued);
+}
+
+.process-status[data-phase="waiting"] {
+  --process-phase: var(--status-attention);
+  color: var(--color-warning-text);
+}
+
+.process-status[data-phase="done"] {
+  --process-phase: var(--status-idle);
+}
+
+.process-status[data-phase="failed"] {
+  --process-phase: var(--status-failed);
+  color: var(--color-danger);
+}
+
+.process-row-chevron,
+.process-breadcrumb svg,
+.process-session-link svg,
+.process-work summary svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: var(--color-muted-strong);
+}
+
+.process-detail {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
+.process-breadcrumb,
+.process-breadcrumb a,
+.process-session-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.process-breadcrumb a {
+  color: var(--color-ink-strong);
+  text-underline-offset: 3px;
+}
+
+.process-breadcrumb a {
+  text-decoration: none;
+}
+
+.process-breadcrumb a:hover,
+.process-session-link:hover {
+  text-decoration: underline;
+}
+
+.process-detail-heading,
+.process-graph-heading,
+.process-node-heading,
+.process-inspector-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workers-content .process-detail-heading h2 {
+  margin: 0 0 7px;
+  font-size: var(--text-display);
+}
+
+.process-detail-title {
+  margin: 0;
+}
+
+.process-session-link {
+  min-height: 36px;
+  color: var(--color-ink-strong);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.process-graph {
+  --process-line: color-mix(in srgb, var(--color-muted-strong) 72%, var(--color-line));
+  --process-waiting-line: color-mix(
+    in srgb,
+    var(--color-warning-text) 62%,
+    var(--status-attention)
+  );
+  --process-edge-width: 1.5px;
+  --process-arrow-size: 16px;
+  --process-branch-gap: 16px;
+  --process-branch-height: 38px;
+
+  display: grid;
+  padding-block-start: 18px;
+  border-top: 1px solid var(--color-line);
+}
+
+.process-graph-heading {
+  margin-block-end: 16px;
+}
+
+.process-graph-heading h3 {
+  margin: 0;
+  font-size: var(--text-section);
+  font-weight: 650;
+}
+
+.process-graph-layout {
+  display: grid;
+  align-items: start;
+  gap: var(--space-6);
+}
+
+.process-network {
+  container: process-network / inline-size;
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  padding: 0 0 var(--space-1);
+}
+
+.process-graph-node {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: stretch;
+  align-content: start;
+  gap: var(--space-1);
+  width: 100%;
+  min-width: 0;
+  min-height: 92px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  color: var(--color-ink);
+  text-align: start;
+}
+
+.process-graph-node:hover {
+  background: var(--color-hover);
+}
+
+.process-graph-node[aria-pressed="true"] {
+  border-color: var(--color-ink-strong);
+  background: var(--color-recessed);
+}
+
+.process-graph-node:focus-visible {
+  outline: 2px solid var(--color-lapis);
+  outline-offset: 2px;
+}
+
+.process-network .process-graph-node:is(:hover, :focus-visible, :active) {
+  box-shadow: none;
+}
+
+.process-graph-root {
+  width: min(100%, 285px);
+  min-height: 64px;
+  place-self: start center;
+}
+
+.process-node-heading {
+  flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
+}
+
+.process-node-heading strong,
+.process-node-task {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.process-node-task {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: var(--text-small);
+}
+
+.process-node-meta {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.process-node-meta .process-node-wait {
+  color: var(--color-warning-text);
+}
+
+.process-node-meta .process-status {
+  white-space: normal;
+}
+
+.process-graph-branches {
+  position: relative;
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  align-items: start;
+  gap: var(--process-branch-gap);
+  padding-block-start: var(--process-branch-height);
+}
+
+.process-graph-branches::before,
+.process-graph-branches > li::before,
+.process-graph-branches > li::after {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: none;
+  content: "";
+}
+
+.process-graph-branches::before {
+  inset-block-start: 0;
+  inset-inline-start: 50%;
+  height: calc(var(--process-branch-height) / 2);
+  border-inline-start: var(--process-edge-width) solid var(--process-line);
+}
+
+.process-graph-branches > li {
+  --process-edge: var(--process-line);
+
+  position: relative;
+  min-width: 0;
+}
+
+.process-graph-branches > li[data-awaiting="true"] {
+  --process-edge: var(--process-waiting-line);
+}
+
+.process-graph-branches > li:only-child {
+  width: min(100%, 420px);
+  justify-self: center;
+}
+
+.process-graph-branches > li::before {
+  inset-block-start: calc(var(--process-branch-height) / -2);
+  inset-inline: calc(var(--process-branch-gap) / -2);
+  border-block-start: var(--process-edge-width) solid var(--process-line);
+}
+
+.process-graph-branches > li::after {
+  inset-block-start: calc(var(--process-branch-height) / -2);
+  inset-inline-start: 50%;
+  height: calc(var(--process-branch-height) / 2 - 3px);
+  border-inline-start: var(--process-edge-width) solid var(--process-edge);
+}
+
+@container process-network (width > 470px) {
+  .process-graph-branches:has(> li[data-awaiting="true"])::before {
+    border-inline-start-color: var(--process-waiting-line);
+  }
+
+  .process-graph-branches:has(> li[data-awaiting="true"])::after {
+    --process-waiting-left: calc(
+      (100% + var(--process-branch-gap)) * var(--process-waiting-start) -
+        var(--process-branch-gap) / 2
+    );
+    --process-waiting-right: calc(
+      (100% + var(--process-branch-gap)) * var(--process-waiting-end) - var(--process-branch-gap) /
+        2
+    );
+
+    position: absolute;
+    inset-block-start: calc(var(--process-branch-height) / 2);
+    inset-inline-start: min(50%, var(--process-waiting-left));
+    inset-inline-end: calc(100% - max(50%, var(--process-waiting-right)));
+    border-block-start: var(--process-edge-width) solid var(--process-waiting-line);
+    pointer-events: none;
+    content: "";
+  }
+
+  .process-graph-branches > li:only-child::before {
+    content: none;
+  }
+
+  .process-graph-branches > li:is(:first-child, :last-child):not(:only-child)::before {
+    height: calc(var(--process-branch-height) / 2 - 3px);
+    border-block-start-color: var(--process-edge);
+  }
+
+  .process-graph-branches > li:first-child:not(:only-child)::before {
+    inset-inline-start: 50%;
+    border-inline-start: var(--process-edge-width) solid var(--process-edge);
+    border-start-start-radius: var(--radius-sm);
+  }
+
+  .process-graph-branches > li:last-child:not(:only-child)::before {
+    inset-inline-end: calc(50% - var(--process-edge-width));
+    border-inline-end: var(--process-edge-width) solid var(--process-edge);
+    border-start-end-radius: var(--radius-sm);
+  }
+
+  .process-graph-branches > li:is(:first-child, :last-child):not(:only-child)::after {
+    display: none;
+  }
+}
+
+.process-edge-arrow {
+  position: absolute;
+  inset-block-start: -12px;
+  inset-inline-start: calc(50% - var(--process-arrow-size) / 2 + 0.5px);
+  width: var(--process-arrow-size);
+  height: var(--process-arrow-size);
+  color: var(--process-edge);
+  pointer-events: none;
+}
+
+.process-inspector {
+  min-width: 0;
+  padding: var(--space-4);
+  scroll-margin-block-start: 64px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  overflow-wrap: anywhere;
+}
+
+.process-inspector-heading {
+  flex-wrap: wrap;
+  margin-block-end: var(--space-1);
+}
+
+.process-inspector-heading h4 {
+  margin: 0;
+  font-size: var(--text-section);
+}
+
+.process-inspector-meta {
+  margin: 0 0 var(--space-3);
+}
+
+.process-work-detail,
+.process-work-result {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: var(--space-1);
+}
+
+.process-work-detail {
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.process-work-detail p {
+  margin: 0;
+}
+
+.process-work-result {
+  margin-block-start: var(--space-2);
+}
+
+.process-work-result > strong,
+.process-inspector-wait {
+  font-size: var(--text-caption);
+}
+
+.process-inspector-wait {
+  color: var(--color-warning-text);
+}
+
+.process-work {
+  margin-block-start: var(--space-2);
+  padding-block-start: var(--space-2);
+  border-top: 1px solid var(--color-line);
+}
+
+.process-work summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.process-work summary::-webkit-details-marker {
+  display: none;
+}
+
+.process-work-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  align-items: center;
+  margin-block-end: 2px;
+  color: var(--color-muted-strong);
+}
+
+.process-work-meta small {
+  font-size: var(--text-caption);
+}
+
+.process-work summary:hover {
+  color: var(--color-ink-strong);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.process-work[open] summary svg {
+  transform: rotate(180deg);
+}
+
+.process-empty {
+  margin: 12px 0 0;
+  text-align: center;
+}
+
+@container processes (min-width: 850px) {
+  .process-graph-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(270px, 30%);
+  }
+}
+
+@container processes (max-width: 600px) {
+  .process-worker-row {
+    grid-template-columns: minmax(0, 1fr) 16px;
+    gap: 8px 12px;
+  }
+
+  .process-worker-label {
+    grid-area: 1 / 1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 3px 8px;
+  }
+
+  .process-row-chevron {
+    grid-area: 1 / 2;
+  }
+
+  .process-session-list {
+    grid-column: 1 / -1;
+  }
+
+  .process-session-list > li {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 8px;
+  }
+
+  .process-session-name {
+    grid-column: 1 / -1;
+  }
+
+  .process-overview-members .process-session-list {
+    padding-inline-start: 25px;
+  }
+
+  .process-overview-members > li:last-child::before {
+    inset-block-end: auto;
+    height: 19px;
+  }
+
+  .process-overview-members > li::after {
+    inset-block-start: 19px;
+  }
+
+  .process-detail-heading,
+  .process-graph-heading {
+    flex-wrap: wrap;
+  }
+
+  .process-detail-heading {
+    gap: 5px 12px;
+  }
+
+  .process-graph-heading {
+    gap: 4px 12px;
+  }
+}
+
+@container process-network (max-width: 470px) {
+  .process-graph-root {
+    width: 100%;
+    place-self: start stretch;
+  }
+
+  .process-graph-branches {
+    grid-auto-flow: row;
+    gap: 12px;
+    padding: var(--space-4) 0 0 var(--space-5);
+  }
+
+  .process-graph-branches::before {
+    display: none;
+  }
+
+  .process-graph-branches > li:only-child {
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .process-graph-branches > li::before {
+    --process-stem-lift: var(--space-3);
+    --process-stem-junction: calc(var(--process-stem-lift) + 23px);
+
+    inset: calc(-1 * var(--process-stem-lift)) auto 0 -11px;
+    z-index: 1;
+    width: var(--process-edge-width);
+    border: 0;
+    border-inline-start: var(--process-edge-width) solid var(--process-line);
+  }
+
+  .process-graph-branches > li:first-child::before {
+    --process-stem-lift: var(--space-4);
+  }
+
+  .process-graph-branches > li:has(~ li[data-awaiting="true"])::before {
+    border-inline-start-color: var(--process-waiting-line);
+  }
+
+  .process-graph-branches
+    > li[data-awaiting="true"]:not(:last-child, :has(~ li[data-awaiting="true"]))::before {
+    border-image: linear-gradient(
+        var(--process-waiting-line) var(--process-stem-junction),
+        var(--process-line) var(--process-stem-junction)
+      )
+      1;
+  }
+
+  .process-graph-branches > li:last-child::before {
+    inset-block-end: auto;
+    width: 8px;
+    height: var(--process-stem-junction);
+    border-inline-start: var(--process-edge-width) solid var(--process-edge);
+    border-block-end: var(--process-edge-width) solid var(--process-edge);
+    border-end-start-radius: var(--radius-sm);
+  }
+
+  .process-graph-branches > li:not(:last-child)::after {
+    inset: 22px auto auto -11px;
+    width: 8px;
+    height: var(--process-edge-width);
+    border: 0;
+    background: var(--process-edge);
+  }
+
+  .process-graph-branches > li:last-child::after {
+    display: none;
+  }
+
+  .process-edge-arrow {
+    inset: 14px auto auto -12px;
+    transform: rotate(-90deg);
+  }
+}
+
 .workers-content h2 {
   margin: 0 0 6px;
   font-size: var(--text-section);
@@ -127,5 +862,9 @@
 @media (max-width: 820px) {
   .workers-content {
     gap: 24px;
+  }
+
+  .workers-content.processes-content {
+    padding-block-start: calc(70px + var(--app-safe-area-top));
   }
 }

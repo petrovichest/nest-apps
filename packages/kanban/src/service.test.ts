@@ -141,6 +141,42 @@ async function fixture(
       (result) => result !== null,
     );
   }
+  async function workerTool(
+    provider: "codex" | "claude",
+    runId: string,
+    command: string,
+    payload: unknown,
+    id = randomUUID(),
+  ) {
+    const directory = services[provider].store.directory;
+    const cap = JSON.parse(
+      await readFile(join(directory, "capabilities", `worker-${provider}-${runId}.json`), "utf8"),
+    ) as { token: string };
+    await atomicJson(join(directory, "inbox", `${id}.json`), {
+      id,
+      boardId: "worker",
+      runId,
+      token: cap.token,
+      command,
+      payload,
+    });
+    return until(
+      async () => {
+        try {
+          return JSON.parse(await readFile(join(directory, "results", `${id}.json`), "utf8")) as {
+            ok: boolean;
+            result?: { id?: string; url?: string };
+            code?: string;
+            error?: string;
+          };
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw error;
+        }
+      },
+      (result) => result !== null,
+    );
+  }
   /** The session runs one turn and finishes it; question is what the fast check reads. */
   async function finish(run: KanbanRun, question: string | null = null) {
     const service = services[run.provider];
@@ -178,10 +214,173 @@ async function fixture(
     requests,
     running,
     command,
+    workerTool,
     finish,
     card,
   };
 }
+
+it("routes simultaneous assignments of one shared worker to their original sessions", async () => {
+  const f = await fixture(undefined, undefined, () => false);
+  const { codex, claude } = f.services;
+  const team = await Promise.all(
+    ["Import lead", "Release lead", "Reviewer"].map((name, index) =>
+      codex.workers.create(
+        {
+          name,
+          role: name,
+          instructions: "",
+          settings: {},
+          coordinates: index < 2,
+        },
+        null,
+      ),
+    ),
+  );
+  const start = async (name: string, workerId: string, service: KanbanService) => {
+    const board = await service.createCard(f.project, {
+      description: name,
+      clientCreationId: randomUUID(),
+      workerId,
+    });
+    const id = board.cards[0]!.id;
+    await service.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    return f.running("execute", id, service);
+  };
+  const a = await start("Import", team[0]!.id, codex);
+  const b = await start("Release", team[1]!.id, claude);
+  const ids = [randomUUID(), randomUUID()] as const;
+  const request = (title: string) => ({
+    workerId: team[2]!.id,
+    title,
+    description: `Check ${title}`,
+    expectedResult: "Report findings",
+  });
+  expect(
+    await f.workerTool("codex", a.id, "worker_delegate", request("Import review"), ids[0]),
+  ).toMatchObject({ ok: true, result: { id: ids[0] } });
+  expect(
+    await f.workerTool("claude", b.id, "worker_delegate", request("Release review"), ids[1]),
+  ).toMatchObject({ ok: true, result: { id: ids[1] } });
+  expect(
+    await f.workerTool("codex", a.id, "worker_delegate", request("Import review"), ids[0]),
+  ).toMatchObject({ ok: true, result: { id: ids[0] } });
+  const reviewA = await f.running("execute", ids[0], codex);
+  const reviewB = await f.running("execute", ids[1], claude);
+  expect(reviewA.threadId).not.toBe(reviewB.threadId);
+  expect(reviewA.workerId).toBe(team[2]!.id);
+  expect(reviewB.workerId).toBe(team[2]!.id);
+  const board = await codex.read(f.project);
+  expect(board.cards.filter(({ id }) => id === ids[0])).toEqual([
+    expect.objectContaining({ parentCardId: a.cardIds[0] }),
+  ]);
+  expect(board.cards.find(({ id }) => id === ids[1])?.parentCardId).toBe(b.cardIds[0]);
+  expect(
+    await f.workerTool("codex", reviewA.id, "worker_delegate", {
+      ...request("Cannot delegate"),
+      workerId: team[1]!.id,
+    }),
+  ).toMatchObject({ ok: false, code: "worker_cannot_delegate" });
+  await f.finish(a);
+  await f.finish(b);
+  const processes = await claude.processes.list();
+  expect(processes.find(({ id }) => id === a.id)?.sessions).toEqual([
+    expect.objectContaining({ id: a.id, status: "waiting", waitingFor: [ids[0]] }),
+    expect.objectContaining({
+      id: ids[0],
+      parentId: a.id,
+      provider: "codex",
+      workerId: team[2]!.id,
+    }),
+  ]);
+  expect(processes.find(({ id }) => id === b.id)?.sessions.map(({ id }) => id)).toEqual([
+    b.id,
+    ids[1],
+  ]);
+
+  expect(
+    await f.workerTool("codex", reviewA.id, "worker_finish", { result: "Import approved" }),
+  ).toMatchObject({ ok: true });
+  await f.finish(reviewA);
+  await until(
+    async () => f.resumes.codex,
+    (resumes) => resumes.length === 1,
+  );
+  expect(f.resumes.codex).toEqual([a.threadId]);
+  expect(f.resumes.claude).toEqual([]);
+  expect(f.prompts.get(ids[0])).toContain("Import approved");
+
+  expect(
+    await f.workerTool("claude", reviewB.id, "worker_finish", { error: "Release diff missing" }),
+  ).toMatchObject({ ok: true });
+  await f.finish(reviewB);
+  await until(
+    async () => f.resumes.claude,
+    (resumes) => resumes.length === 1,
+  );
+  expect(f.resumes.claude).toEqual([b.threadId]);
+  expect(f.prompts.get(ids[1])).toContain("Release diff missing");
+});
+
+it("answers a direct worker question in a separate session without creating a Kanban card", async () => {
+  const f = await fixture(undefined, undefined, () => false);
+  const service = f.services.codex;
+  const asker = await service.workers.create(
+    {
+      name: "Asker",
+      role: "Asks",
+      instructions: "",
+      settings: {},
+      coordinates: true,
+    },
+    null,
+  );
+  const responder = await service.workers.create(
+    {
+      name: "Responder",
+      role: "Answers",
+      instructions: "",
+      settings: {},
+    },
+    null,
+  );
+  const source = randomUUID();
+  const { threadId } = await service.startWorker(asker.id, f.project, source);
+  const request = {
+    workerId: responder.id,
+    title: "Check tests",
+    description: "What should I run?",
+    expectedResult: "A command",
+  };
+  expect(await f.workerTool("codex", source, "worker_delegate", request)).toMatchObject({
+    ok: false,
+    code: "worker_task_required",
+  });
+  const asked = await f.workerTool("codex", source, "worker_ask", request);
+  expect(asked?.ok).toBe(true);
+  const childId = asked!.result!.id!;
+  const child = await until(
+    async () =>
+      (await service.processes.list(source))[0]?.sessions.find(({ id }) => id === childId),
+    (session) => Boolean(session?.threadId),
+  );
+  await service.notifyThread(threadId, "completed");
+  expect((await service.read(f.project)).cards).toHaveLength(0);
+  expect(
+    await f.workerTool("codex", childId, "worker_finish", { result: "Run npm test" }),
+  ).toMatchObject({ ok: true });
+  await service.notifyThread(child!.threadId!, "completed");
+  await until(
+    async () => f.resumes.codex,
+    (resumes) => resumes.length === 1,
+  );
+  expect(f.resumes.codex).toEqual([threadId]);
+  expect(f.prompts.get(childId)).toContain("Run npm test");
+});
 
 it("creates a worker with explicit approval, groups its tasks and shares its project memory across apps", async () => {
   const f = await fixture(undefined, undefined, () => false);
@@ -191,35 +390,9 @@ it("creates a worker with explicit approval, groups its tasks and shares its pro
     command: string,
     payload: unknown,
   ) {
-    const directory = f.services[provider].store.directory;
-    const cap = JSON.parse(
-      await readFile(join(directory, "capabilities", `worker-${provider}-${runId}.json`), "utf8"),
-    ) as { token: string };
-    const id = randomUUID();
-    await atomicJson(join(directory, "inbox", `${id}.json`), {
-      id,
-      boardId: "worker",
-      runId,
-      token: cap.token,
-      command,
-      payload,
-    });
-    const result = await until(
-      async () => {
-        try {
-          return JSON.parse(await readFile(join(directory, "results", `${id}.json`), "utf8")) as {
-            ok: boolean;
-            result: { url?: string };
-          };
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-          throw error;
-        }
-      },
-      (value) => value !== null,
-    );
+    const result = await f.workerTool(provider, runId, command, payload);
     expect(result?.ok).toBe(true);
-    return result!.result;
+    return result!.result!;
   }
 
   const architect = randomUUID();

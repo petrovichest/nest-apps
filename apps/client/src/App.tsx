@@ -80,6 +80,7 @@ import {
 } from "./components/SettingsPage";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { WorkersPage } from "./components/WorkersPage";
+import { WorkerProcessesPage } from "./components/WorkerProcessesPage";
 import { useConnection } from "./connection";
 import { localizeKnownServerText, useI18n, type Translate } from "./i18n";
 import { stopPushNotifications, usePushNotifications } from "./push";
@@ -499,6 +500,10 @@ export function App({
                   onOpenNavigation={() => setDrawer(true)}
                 />
               }
+            />
+            <Route
+              path="/workers/processes/:processId?"
+              element={<WorkerProcessesPage onOpenNavigation={() => setDrawer(true)} />}
             />
             <Route
               path="/projects/:projectId/kanban"

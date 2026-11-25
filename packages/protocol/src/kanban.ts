@@ -29,6 +29,7 @@ export type KanbanVoiceState = {
 export type KanbanCard = {
   id: string;
   workerId?: string;
+  parentCardId?: string;
   title: string;
   description: string;
   categoryId: string | null;

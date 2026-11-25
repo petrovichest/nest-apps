@@ -16,7 +16,7 @@ import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n } from "../i18n";
 import { Dialog } from "./Dialog";
 import { SlidersIcon, XIcon } from "./Icons";
-import { WorkspaceHeader } from "./WorkspaceHeader";
+import { WorkersHeader } from "./WorkersHeader";
 import "./workers.css";
 
 type Selection = { worker: WorkerProfile; projectId?: string };
@@ -119,7 +119,7 @@ export function WorkersPage({
   return (
     <div className="thread-workspace kanban-workspace workers-workspace">
       <section className="conversation-pane kanban-pane">
-        <WorkspaceHeader title={t("Работники")} onOpenNavigation={onOpenNavigation} />
+        <WorkersHeader onOpenNavigation={onOpenNavigation} />
         <div className="workers-content">
           {error && (
             <div role="alert">

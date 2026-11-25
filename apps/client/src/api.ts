@@ -75,6 +75,7 @@ import type {
   KanbanBoard,
   UpdateWorkerRequest,
   WorkerCatalogue,
+  WorkerProcess,
   WorkerDetails,
   WorkerMemoryEntry,
   WorkerProfile,
@@ -560,6 +561,13 @@ export class ApiClient {
 
   workerCatalogue(projectIds: string[]): Promise<WorkerCatalogue> {
     return this.request("/api/v1/workers/catalog", { method: "POST", body: { projectIds } });
+  }
+
+  workerProcesses(processId?: string): Promise<WorkerProcess[]> {
+    return this.request(
+      `/api/v1/workers/processes${processId ? `?processId=${encodeURIComponent(processId)}` : ""}`,
+      { cache: "no-store" },
+    );
   }
 
   readWorkerProposal(id: string): Promise<WorkerProposal> {

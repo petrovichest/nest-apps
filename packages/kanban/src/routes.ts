@@ -17,41 +17,30 @@ export function registerKanbanRoutes(
     service.startWorker(id, path, creationId),
   );
   const root = "/api/v1/projects/:id/kanban";
+  const sessionLink = (path: string, target: KanbanProvider, request: FastifyRequest): string => {
+    if (target === provider || !path.startsWith("/")) return path;
+    const configured = process.env[`KANBAN_${target.toUpperCase()}_URL`];
+    const base = new URL(configured ?? `${request.protocol}://${request.host}`);
+    if (!configured)
+      base.port = { codex: "4310", claude: "4311", gemini: "4312", open: "4313" }[target];
+    return new URL(path, base).href;
+  };
   const links = (board: KanbanBoard, request: FastifyRequest): KanbanBoard => ({
     ...board,
-    runs: board.runs.map((run) => {
-      if (!run.sessionUrl || run.provider === provider || !run.sessionUrl.startsWith("/"))
-        return run;
-      const configured =
-        process.env[
-          run.provider === "codex"
-            ? "KANBAN_CODEX_URL"
-            : run.provider === "claude"
-              ? "KANBAN_CLAUDE_URL"
-              : run.provider === "open"
-                ? "KANBAN_OPEN_URL"
-                : "KANBAN_GEMINI_URL"
-        ];
-      const base = new URL(configured ?? `${request.protocol}://${request.host}`);
-      if (!configured)
-        base.port =
-          run.provider === "codex"
-            ? "4310"
-            : run.provider === "claude"
-              ? "4311"
-              : run.provider === "open"
-                ? "4313"
-                : "4312";
-      return { ...run, sessionUrl: new URL(run.sessionUrl, base).href };
-    }),
+    runs: board.runs.map((run) =>
+      run.sessionUrl
+        ? { ...run, sessionUrl: sessionLink(run.sessionUrl, run.provider, request) }
+        : run,
+    ),
   });
   const handle = async <T>(
     request: FastifyRequest,
     reply: FastifyReply,
     operation: () => Promise<T>,
+    wake = true,
   ) => {
     try {
-      service.wake();
+      if (wake) service.wake();
       return await operation();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Kanban operation failed";
@@ -71,6 +60,33 @@ export function registerKanbanRoutes(
       });
     }
   };
+  app.get<{ Querystring: { processId?: string } }>(
+    "/api/v1/workers/processes",
+    (request, reply) => {
+      reply.header("Cache-Control", "no-store");
+      return handle(
+        request,
+        reply,
+        async () =>
+          (await service.processes.list(request.query.processId)).map((process) => ({
+            ...process,
+            sessions: process.sessions.map((session) =>
+              session.threadId
+                ? {
+                    ...session,
+                    sessionUrl: sessionLink(
+                      `/threads/${encodeURIComponent(session.threadId)}`,
+                      session.provider,
+                      request,
+                    ),
+                  }
+                : session,
+            ),
+          })),
+        false,
+      );
+    },
+  );
   const run = (
     request: FastifyRequest,
     reply: FastifyReply,

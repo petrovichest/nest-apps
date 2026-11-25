@@ -18,6 +18,7 @@ import type {
   SessionSettings,
   UpdateKanbanCardRequest,
   UpdateKanbanStageRequest,
+  WorkerProfile,
 } from "@codexnest/protocol";
 import {
   KANBAN_AUDIO_MAX_BYTES,
@@ -42,6 +43,12 @@ import {
   type StoredImage,
 } from "./store.js";
 import { WorkerStore } from "./workers.js";
+import {
+  unfinished,
+  waitingFor,
+  WorkerProcessStore,
+  type WorkerSession,
+} from "./worker-processes.js";
 import { WORKER_ARCHITECT_ID, type ModelOption } from "@codexnest/protocol";
 
 export type KanbanLaunch = {
@@ -71,6 +78,8 @@ export type KanbanProviderAdapter = {
    * for the operator (a question, a decision, a failure), and whether it says it pushed its work.
    */
   readReply?(threadId: string): Promise<ReplyVerdict | null>;
+  /** The last assistant reply, used when a worker ends without a structured report. */
+  readAnswer?(threadId: string): Promise<string | null>;
   /** The operator's first message in the session; null until it has one. */
   readRequest?(threadId: string): Promise<string | null>;
 };
@@ -309,6 +318,7 @@ function classifiedTasks(payload: Record<string, unknown>, pictures: number): Cl
 export class KanbanService {
   readonly store: KanbanStore;
   readonly workers: WorkerStore;
+  readonly processes: WorkerProcessStore;
   private watchers: FSWatcher[] = [];
   private pumping = false;
   private again = false;
@@ -320,6 +330,7 @@ export class KanbanService {
   private pending = new Set<Promise<unknown>>();
   private pumpWaiters: (() => void)[] = [];
   private threads = new Map<string, { boardId: string; runId: string }>();
+  private workerThreads = new Map<string, string>();
   private revisions = new Map<string, number>();
   private observedStates = new Map<string, string>();
   private scheduled: ReturnType<typeof setTimeout> | null = null;
@@ -327,8 +338,10 @@ export class KanbanService {
   constructor(private readonly options: KanbanServiceOptions) {
     this.store = new KanbanStore(options.dataDir);
     this.workers = new WorkerStore(
-      process.env.VITEST ? join(this.store.directory, "workers") : undefined,
+      process.env.NEST_WORKERS_DATA_DIR ||
+        (process.env.VITEST ? join(this.store.directory, "workers") : undefined),
     );
+    this.processes = new WorkerProcessStore(this.workers.directory);
   }
 
   private async prepareWorker(id: string, projectPath: string | null, runId: string) {
@@ -354,6 +367,7 @@ export class KanbanService {
           "Выясни, какие задачи он будет выполнять и как пользователь проверит результат.",
           "Задавай вопросы раундами. Для каждого открытого решения предложи вариант. Отложи зависимые вопросы до следующего раунда.",
           "Согласуй имя, роль, постоянные инструкции, область доступности, модель и уровень рассуждений.",
+          "Уточни, может ли работник как координатор сам поручать подзадачи на Kanban. Передай coordinates: true только при согласии пользователя.",
           "Модель и уровень рассуждений подбирай по назначению работника из доступных вариантов.",
           "В конце предложи профиль через инструмент propose и покажи возвращённую ссылку для утверждения.",
           `Проекты: ${JSON.stringify(this.options.adapter.projects?.().map(({ id, displayName }) => ({ id, displayName })) ?? [])}`,
@@ -408,14 +422,24 @@ export class KanbanService {
       "Используй memory_read с {} для чтения актуальной памяти.",
       'Сохраняй устойчивые факты и подтверждённые предпочтения через memory_add с {"kind":"notes" или "user","scope":"project" или "worker","text":"…"}. Для внутренних деталей проекта используй scope project.',
       'Предлагай правки своей личности через propose_personality с {"instructions":"полный новый текст"} и показывай ссылку для утверждения.',
+      "worker_list с {} показывает доступных коллег и карточки этой сессии.",
+      'Для вопроса коллеге вызови worker_ask с {"workerId":"ID коллеги","title":"короткая тема","description":"сам вопрос","expectedResult":"что нужно узнать"}.',
+      ...(profile.coordinates
+        ? [
+            'Для поручения из карточки вызови worker_delegate с {"workerId":"ID исполнителя","title":"название карточки","description":"что сделать","expectedResult":"что вернуть","cardId":"ID исходной карточки"}.',
+          ]
+        : []),
+      "Запрос ставится в очередь. Если ждёшь результата, закончи текущий ход: результат вернётся в эту сессию. Для фонового поручения укажи wait: false и проверь результат через worker_results с {}.",
+      'Когда закончил полученный вопрос или поручение, вызови worker_finish с {"result":"ответ, выполненная работа и ссылки на результаты"} либо {"error":"почему не удалось"}. Затем закончи ход.',
       ...(architect
         ? [
-            'Для утверждения профиля вызови propose с {"name":"…","role":"…","instructions":"…","projectId":null или ID проекта,"model":"ID модели","reasoningEffort":"значение уровня" или null}.',
+            'Для утверждения профиля вызови propose с {"name":"…","role":"…","instructions":"…","projectId":null или ID проекта,"model":"ID модели","reasoningEffort":"значение уровня" или null,"coordinates":false}.',
+            'Чтобы изменить право существующего работника поручать задачи, вызови propose_coordination с {"workerId":"ID работника","projectId":null или ID проекта,"coordinates":true}, затем покажи ссылку для утверждения.',
             "Покажи ссылку из результата. Профиль появляется после подтверждения пользователем на странице работников.",
           ]
         : []),
     ].join("\n");
-    return { profile, settings, context: `${context}\n\n${tools}` };
+    return { profile, settings, projectKey, context: `${context}\n\n${tools}` };
   }
 
   private async chooseWorkerModel(
@@ -485,17 +509,35 @@ export class KanbanService {
   async startWorker(id: string, projectPath: string | null, creationId: string) {
     if (this.options.adapter.available?.() === false)
       throw new KanbanError("app_server_unavailable", "The session engine is not ready", 503);
-    const { profile, settings, context } = await this.store.withLock(`worker-${creationId}`, () =>
-      this.prepareWorker(id, projectPath, creationId),
-    );
-    return this.options.adapter.launch({
-      id: creationId,
-      kind: "execute",
-      projectPath: projectPath ?? "",
-      cwd: projectPath ?? (await this.workers.workspace()),
-      title: profile.name,
-      prompt: `${context}\n\nПоприветствуй пользователя и спроси, с чего начать.`,
-      ...(settings ? { settings } : {}),
+    this.workerCapabilityPath(creationId);
+    return this.processes.exclusive(creationId, async () => {
+      const { profile, settings, context, projectKey } = await this.prepareWorker(
+        id,
+        projectPath,
+        creationId,
+      );
+      const session = await this.registerWorkerSession({
+        id: creationId,
+        profile,
+        projectKey,
+        projectPath,
+        title: profile.name,
+      });
+      if (session.threadId) return { threadId: session.threadId };
+      try {
+        return await this.launchWorker({
+          id: creationId,
+          kind: "execute",
+          projectPath: projectPath ?? "",
+          cwd: projectPath ?? (await this.workers.workspace()),
+          title: profile.name,
+          prompt: `${context}\n\nПоприветствуй пользователя и спроси, с чего начать.`,
+          ...(settings ? { settings } : {}),
+        });
+      } catch (error) {
+        await this.failWorker(creationId, message(error));
+        throw error;
+      }
     });
   }
 
@@ -530,6 +572,12 @@ export class KanbanService {
         text: input.text,
       });
     }
+    if (
+      ["worker_list", "worker_ask", "worker_delegate", "worker_results", "worker_finish"].includes(
+        request.command,
+      )
+    )
+      return this.workerInteraction(request, scope, input);
     if (request.command === "propose_personality") {
       const { profile } = await this.workers.snapshot(workerId, projectKey);
       const project = profile.projectKey
@@ -553,7 +601,40 @@ export class KanbanService {
       });
       return { url: `/workers?proposal=${proposal.id}` };
     }
+    if (workerId === WORKER_ARCHITECT_ID && request.command === "propose_coordination") {
+      if (typeof input.coordinates !== "boolean" || input.workerId === WORKER_ARCHITECT_ID)
+        throw new KanbanError(
+          "invalid_worker",
+          "Choose a worker and set its coordination permission",
+          400,
+        );
+      const project = this.options.adapter.projects?.().find(({ id }) => id === input.projectId);
+      if (!project && input.projectId != null)
+        throw new KanbanError("not_found", "Project not found", 404);
+      const { profile } = await this.workers.snapshot(
+        text(input.workerId, "Worker", 120),
+        project ? await this.workers.projectKey(project.path) : null,
+      );
+      const proposal = await this.workers.propose({
+        provider: this.options.provider,
+        ...(project ? { projectId: project.id, projectName: project.displayName } : {}),
+        projectKey: profile.projectKey,
+        name: profile.name,
+        role: profile.role,
+        instructions: profile.instructions,
+        coordinates: input.coordinates,
+        settings: profile.settings[this.options.provider] ?? { collaborationMode: "default" },
+        target: {
+          id: profile.id,
+          revision: profile.revision,
+          previousInstructions: profile.instructions,
+        },
+      });
+      return { url: `/workers?proposal=${proposal.id}` };
+    }
     if (workerId === WORKER_ARCHITECT_ID && request.command === "propose") {
+      if (input.coordinates !== undefined && typeof input.coordinates !== "boolean")
+        throw new KanbanError("invalid_worker", "Invalid coordination permission", 400);
       const model = this.options.adapter.models?.().find((option) => option.id === input.model);
       const effort = input.reasoningEffort;
       if (
@@ -575,6 +656,7 @@ export class KanbanService {
         name: text(input.name, "Worker name", 120),
         role: text(input.role, "Worker role", 500),
         instructions: text(input.instructions, "Worker instructions", 16_000),
+        ...(input.coordinates !== undefined ? { coordinates: input.coordinates } : {}),
         settings: {
           collaborationMode: "default",
           model: model.id,
@@ -590,6 +672,487 @@ export class KanbanService {
     if (id === WORKER_ARCHITECT_ID || typeof id !== "string")
       throw new KanbanError("invalid_worker", "Select a worker for this task", 400);
     await this.workers.snapshot(id, await this.workers.projectKey(projectPath));
+  }
+
+  private async registerWorkerSession(input: {
+    id: string;
+    profile: WorkerProfile;
+    projectKey: string | null;
+    projectPath: string | null;
+    title: string;
+    boardId?: string;
+    cardIds?: string[];
+  }): Promise<WorkerSession> {
+    const { id, profile, projectKey, projectPath, title, boardId, cardIds } = input;
+    const provider = this.options.provider;
+    return this.processes.update((sessions) => {
+      const existing = sessions[id];
+      if (existing) {
+        if (
+          existing.workerId !== profile.id ||
+          existing.projectKey !== projectKey ||
+          existing.provider !== provider ||
+          existing.boardId !== boardId
+        )
+          throw new KanbanError("conflict", "Worker session identifier was reused");
+        if (!existing.threadId && existing.status === "failed" && existing.kind === "session") {
+          existing.status = "queued";
+          delete existing.error;
+        }
+        return existing;
+      }
+      const now = Date.now();
+      const projectName = projectPath
+        ? (this.options.adapter.projects?.().find(({ path }) => path === projectPath)
+            ?.displayName ?? basename(projectPath))
+        : null;
+      return (sessions[id] = {
+        id,
+        processId: id,
+        parentId: null,
+        workerId: profile.id,
+        workerName: profile.name,
+        provider,
+        projectPath,
+        projectKey,
+        projectName,
+        boardId,
+        cardIds,
+        threadId: null,
+        title,
+        kind: "session",
+        status: "queued",
+        createdAt: now,
+        updatedAt: now,
+      });
+    });
+  }
+
+  private async workerInteraction(
+    request: AgentRequest,
+    scope: WorkerCapability,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    const sessions = await this.processes.read();
+    const sender = sessions[request.runId];
+    if (
+      !sender ||
+      sender.workerId !== scope.workerId ||
+      sender.projectKey !== scope.projectKey ||
+      sender.provider !== this.options.provider
+    )
+      throw new KanbanError("worker_session_not_found", "Open a new worker session", 404);
+    if (request.command === "worker_list") {
+      const profiles = await this.workers.list(scope.projectKey);
+      const board = sender.boardId ? await this.store.readById(sender.boardId) : null;
+      return {
+        workers: profiles
+          .filter(({ id }) => id !== sender.workerId)
+          .map(({ id, name, role }) => ({ id, name, role })),
+        cards:
+          board?.board.cards
+            .filter(
+              ({ id, archivedAt }) => sender.cardIds?.includes(id) && archivedAt === undefined,
+            )
+            .map(({ id, title }) => ({ id, title })) ?? [],
+      };
+    }
+    if (request.command === "worker_results")
+      return Object.values(sessions)
+        .filter(({ parentId }) => parentId === sender.id)
+        .map(({ id, workerName, title, status, result, error }) => ({
+          id,
+          workerName,
+          title,
+          status,
+          result,
+          error,
+        }));
+    if (request.command === "worker_finish") {
+      if (sender.kind === "session" || (input.result === undefined) === (input.error === undefined))
+        throw new KanbanError(
+          "invalid_request",
+          "Supply a result or error for a worker request",
+          400,
+        );
+      const report =
+        input.error === undefined
+          ? { result: text(input.result, "Worker result", 32_000) }
+          : { error: text(input.error, "Worker error", 8_000) };
+      return this.processes.update((current) => {
+        const own = current[sender.id]!;
+        if (
+          !unfinished(own) ||
+          waitingFor(current, own.id).length ||
+          (own.reported && JSON.stringify(own.reported) !== JSON.stringify(report))
+        )
+          throw new KanbanError(
+            "worker_result_conflict",
+            "The worker request already ended or is waiting on a colleague",
+          );
+        own.reported = report;
+        return { accepted: true };
+      });
+    }
+    if (input.wait !== undefined && typeof input.wait !== "boolean")
+      throw new KanbanError("invalid_request", "Wait must be a boolean", 400);
+    const target = await this.workers.snapshot(
+      text(input.workerId, "Worker", 120),
+      scope.projectKey,
+    );
+    for (
+      let ancestor: WorkerSession | undefined = sender;
+      ancestor;
+      ancestor = ancestor.parentId ? sessions[ancestor.parentId] : undefined
+    ) {
+      if (ancestor.workerId === target.profile.id)
+        throw new KanbanError("worker_cycle", "The recipient already participates in this chain");
+    }
+    const assignment = request.command === "worker_delegate";
+    let sourceCardId: string | undefined;
+    if (assignment) {
+      const { profile } = await this.workers.snapshot(scope.workerId, scope.projectKey);
+      if (!profile.coordinates)
+        throw new KanbanError(
+          "worker_cannot_delegate",
+          "Only a worker authorized to coordinate can delegate tasks",
+          403,
+        );
+      if (!sender.boardId || !sender.cardIds?.length || target.profile.id === WORKER_ARCHITECT_ID)
+        throw new KanbanError("worker_task_required", "Delegate from a task on Kanban", 400);
+      sourceCardId =
+        input.cardId === undefined && sender.cardIds.length === 1
+          ? sender.cardIds[0]
+          : text(input.cardId, "Source card", 120);
+      if (!sourceCardId || !sender.cardIds.includes(sourceCardId))
+        throw new KanbanError(
+          "worker_task_required",
+          "Choose a card assigned to this session",
+          400,
+        );
+    }
+    const title = text(input.title, "Worker request title", 160);
+    const description = text(input.description, "Worker request", 16_000);
+    const expectedResult = text(input.expectedResult, "Expected result", 4_000);
+    return this.processes.update((current) => {
+      const existing = current[request.id];
+      if (existing) {
+        if (existing.parentId !== sender.id || existing.workerId !== target.profile.id)
+          throw new KanbanError("conflict", "Worker request identifier was reused");
+        return {
+          id: existing.id,
+          status: existing.status,
+          processUrl: `/workers/processes/${sender.processId}?session=${existing.id}`,
+        };
+      }
+      const own = current[sender.id]!;
+      if (own.status === "failed" || own.reported)
+        throw new KanbanError("worker_session_finished", "The sending session has ended");
+      const now = Date.now();
+      current[request.id] = {
+        id: request.id,
+        processId: sender.processId,
+        parentId: sender.id,
+        workerId: target.profile.id,
+        workerName: target.profile.name,
+        provider: sender.provider,
+        threadId: null,
+        projectPath: sender.projectPath,
+        projectKey: sender.projectKey,
+        projectName: sender.projectName,
+        kind: assignment ? "assignment" : "question",
+        boardId: assignment ? sender.boardId : undefined,
+        sourceCardId,
+        cardIds: assignment ? [request.id] : undefined,
+        title,
+        description,
+        expectedResult,
+        wait: input.wait !== false,
+        status: "queued",
+        createdAt: now,
+        updatedAt: now,
+      };
+      return {
+        id: request.id,
+        status: "queued",
+        processUrl: `/workers/processes/${sender.processId}?session=${request.id}`,
+      };
+    });
+  }
+
+  private async attachWorker(id: string, threadId: string): Promise<void> {
+    this.workerThreads.set(threadId, id);
+    await this.processes.update((sessions) => {
+      const session = sessions[id]!;
+      session.threadId = threadId;
+      if (session.status === "queued") {
+        session.status = "running";
+        delete session.error;
+      }
+      session.updatedAt = Date.now();
+    });
+  }
+
+  private async launchWorker(job: KanbanLaunch) {
+    const launched = await this.options.adapter.launch(job);
+    await this.attachWorker(job.id, launched.threadId);
+    const state = await this.options.adapter.threadState?.(launched.threadId);
+    if (state && state !== "idle") await this.notifyThread(launched.threadId, state);
+    return launched;
+  }
+
+  private async failWorker(id: string, error: string): Promise<void> {
+    await this.processes.update((sessions) => {
+      const session = sessions[id];
+      if (!session) return;
+      session.status = "failed";
+      session.error = error;
+      delete session.awaitingWorkers;
+      delete session.reported;
+      session.updatedAt = Date.now();
+    });
+  }
+
+  private async observeWorker(
+    id: string,
+    threadId: string,
+    state: string,
+    waitingForOperator = false,
+  ): Promise<void> {
+    const stable = () => this.observedStates.get(threadId) === state;
+    if (!stable()) return;
+    if (["running", "queued", "needsAttention"].includes(state)) {
+      await this.processes.update((sessions) => {
+        const own = sessions[id];
+        if (!own || !stable()) return;
+        own.started = true;
+        own.status = state === "needsAttention" ? "waiting" : "running";
+        delete own.awaitingWorkers;
+        delete own.error;
+        own.updatedAt = Date.now();
+      });
+      return;
+    }
+    if (state !== "completed" && state !== "idle") {
+      if (["interrupted", "failed", "unavailable"].includes(state))
+        await this.failWorker(
+          id,
+          state === "interrupted"
+            ? "Сессия работника остановлена"
+            : state === "failed"
+              ? "Сессия работника завершилась ошибкой"
+              : "Сессия работника недоступна",
+        );
+      return;
+    }
+    const snapshot = await this.processes.read();
+    const session = snapshot[id];
+    if (!session || !unfinished(session)) return;
+    if (state === "idle" && !session.started && !session.reported) return;
+    let answer: string | undefined;
+    let failure: string | undefined;
+    if (
+      !waitingFor(snapshot, id).length &&
+      !waitingForOperator &&
+      session.kind !== "session" &&
+      !session.reported
+    ) {
+      try {
+        answer = (await this.options.adapter.readAnswer?.(threadId))?.trim().slice(0, 32_000);
+        if (!answer) failure = "Работник завершил ход без результата";
+      } catch (error) {
+        failure = message(error);
+      }
+    }
+    await this.processes.update((sessions) => {
+      const own = sessions[id]!;
+      if (!stable() || !unfinished(own)) return;
+      const pending = waitingFor(sessions, id).length > 0;
+      if (pending || (waitingForOperator && !own.reported)) {
+        own.status = "waiting";
+        own.awaitingWorkers = pending;
+      } else {
+        const error = own.reported?.error ?? failure;
+        own.status = error ? "failed" : "completed";
+        own.result = own.reported?.result ?? answer;
+        own.error = error;
+        delete own.reported;
+        delete own.awaitingWorkers;
+      }
+      own.updatedAt = Date.now();
+    });
+  }
+
+  private async queueAssignment(session: WorkerSession, sender: WorkerSession): Promise<void> {
+    const boardId = session.boardId!;
+    const document = await this.store.readById(boardId);
+    if (document?.board.runs.some(({ id }) => id === session.id)) return;
+    if (!document) throw new KanbanError("not_found", "Project board not found", 404);
+    const { board } = await this.store.updateById(boardId, (data) => {
+      if (data.board.runs.some(({ id }) => id === session.id)) return;
+      const parent = data.board.cards.find(
+        ({ id, archivedAt }) => id === session.sourceCardId && archivedAt === undefined,
+      );
+      if (!parent) throw new KanbanError("not_found", "The source card is unavailable", 404);
+      const origin = taskSession(data, parent.id);
+      if (
+        !origin ||
+        (origin.run.id !== sender.id && (!sender.threadId || origin.threadId !== sender.threadId))
+      )
+        throw new KanbanError(
+          "worker_task_required",
+          "The source card belongs to a different session",
+          409,
+        );
+      const now = Date.now();
+      data.board.cards.unshift({
+        id: session.id,
+        parentCardId: parent.id,
+        workerId: session.workerId,
+        title: session.title,
+        description: `${session.description}\n\nОжидаемый результат: ${session.expectedResult}`,
+        categoryId: parent.categoryId,
+        stageId: role(data.board, "working"),
+        classification: "ready",
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      data.cards[session.id] = {};
+      const run = this.addRun(
+        data,
+        "execute",
+        [session.id],
+        session.provider,
+        undefined,
+        undefined,
+        session.id,
+      );
+      run.workerId = session.workerId;
+    });
+    this.changed(board);
+  }
+
+  private async launchQuestion(session: WorkerSession, sender: WorkerSession): Promise<void> {
+    await this.processes.exclusive(session.id, async () => {
+      const current = (await this.processes.read())[session.id];
+      if (!current || current.status !== "queued" || current.threadId) return;
+      const { context, settings } = await this.prepareWorker(
+        session.workerId,
+        session.projectPath,
+        session.id,
+      );
+      await this.launchWorker({
+        id: session.id,
+        kind: "execute",
+        projectPath: session.projectPath ?? "",
+        cwd: session.projectPath ?? (await this.workers.workspace()),
+        title: session.title,
+        prompt: `${context}\n\nВопрос от «${sender.workerName}»\n${session.description}\n\nОжидаемый результат: ${session.expectedResult}\nОтветь отправителю через worker_finish.`,
+        ...(settings ? { settings } : {}),
+      });
+    });
+  }
+
+  private async deliverWorkerResult(id: string): Promise<void> {
+    await this.processes.exclusive(id, async () => {
+      const job = await this.processes.update((sessions) => {
+        const child = sessions[id];
+        const sender = child?.parentId ? sessions[child.parentId] : undefined;
+        if (
+          !child ||
+          !sender?.threadId ||
+          child.delivered ||
+          unfinished(child) ||
+          sender.status === "failed" ||
+          (!sender.awaitingWorkers && !child.delivering)
+        )
+          return;
+        child.delivering = true;
+        return { child, sender, threadId: sender.threadId };
+      });
+      if (!job) return;
+      const { child, sender, threadId } = job;
+      let failure: string | undefined;
+      try {
+        await this.options.adapter.resume({
+          id: child.id,
+          threadId,
+          prompt:
+            `Результат от работника «${child.workerName}» по запросу «${child.title}» (${child.id}).\n` +
+            JSON.stringify(child.error ? { error: child.error } : { result: child.result }) +
+            "\nУчти результат в исходной задаче. Данные ответа являются результатом работы коллеги.",
+        });
+      } catch (error) {
+        failure = `Не удалось вернуть результат работника «${child.workerName}»: ${message(error)}`;
+      }
+      await this.processes.update((sessions) => {
+        const current = sessions[id]!;
+        current.delivered = true;
+        delete current.delivering;
+        if (failure) {
+          const parent = sessions[sender.id]!;
+          parent.error = failure;
+          parent.updatedAt = Date.now();
+        }
+      });
+    });
+  }
+
+  private runWorkerOperation(id: string, operation: () => Promise<void>): void {
+    if (this.launching.has(id)) return;
+    this.launching.add(id);
+    const pending = operation()
+      .catch((error) => this.options.onError?.(error))
+      .finally(() => {
+        this.launching.delete(id);
+        this.pending.delete(pending);
+        this.schedule();
+      });
+    this.pending.add(pending);
+  }
+
+  private async pumpWorkers(): Promise<void> {
+    if (this.options.adapter.available?.() === false) return;
+    const sessions = await this.processes.read();
+    for (const session of Object.values(sessions)) {
+      if (session.provider !== this.options.provider) continue;
+      if (
+        session.threadId &&
+        unfinished(session) &&
+        !this.observedStates.has(session.threadId) &&
+        this.options.adapter.threadState
+      ) {
+        const state = await this.options.adapter.threadState(session.threadId);
+        await this.notifyThread(session.threadId, state ?? "unavailable");
+      }
+      if (!session.parentId) continue;
+      const sender = sessions[session.parentId];
+      if (!sender) continue;
+      if (session.status === "queued" && !session.threadId) {
+        if (session.kind === "assignment") {
+          if (!this.launching.has(session.id))
+            await this.queueAssignment(session, sender).catch((error) =>
+              this.failWorker(session.id, message(error)),
+            );
+        } else {
+          this.runWorkerOperation(session.id, () =>
+            this.launchQuestion(session, sender).catch((error) =>
+              this.failWorker(session.id, message(error)),
+            ),
+          );
+        }
+      } else if (
+        session.wait &&
+        !session.delivered &&
+        !unfinished(session) &&
+        sender.threadId &&
+        sender.status !== "failed" &&
+        (sender.awaitingWorkers || session.delivering)
+      ) {
+        this.runWorkerOperation(`reply-${session.id}`, () => this.deliverWorkerResult(session.id));
+      }
+    }
   }
   /** Recover only OpenNest's own work from the board formerly shared by the applications. */
   async importOpenNestBoards(
@@ -678,12 +1241,17 @@ export class KanbanService {
   }
   async initialize(): Promise<void> {
     await this.store.initialize();
+    await this.processes.initialize();
     this.helper = await installAgentHelper(this.store.directory);
     this.closed = false;
     this.threads.clear();
+    this.workerThreads.clear();
     this.observedStates.clear();
     // Index persisted sessions before accepting HTTP requests so early events are not lost.
     for (const document of await this.store.list()) this.indexThreads(document);
+    for (const session of Object.values(await this.processes.read()))
+      if (session.provider === this.options.provider && session.threadId)
+        this.workerThreads.set(session.threadId, session.id);
     for (const path of [this.store.boardsDirectory, join(this.store.directory, "inbox")]) {
       const watcher = watch(path, (_event, name) => {
         if (name?.toString().endsWith(".json")) this.schedule();
@@ -691,6 +1259,11 @@ export class KanbanService {
       watcher.on("error", (error) => this.options.onError?.(error));
       this.watchers.push(watcher);
     }
+    const workerWatcher = watch(this.processes.directory, (_event, name) => {
+      if (name?.toString() === "processes.json") this.schedule();
+    });
+    workerWatcher.on("error", (error) => this.options.onError?.(error));
+    this.watchers.push(workerWatcher);
     // Recovery may read native history and ask a model about a finished turn. It must not
     // block HTTP readiness, including when an update rolls back against the same board.
     this.schedule();
@@ -761,10 +1334,11 @@ export class KanbanService {
     provider = this.options.provider,
     comment?: string,
     resumeThreadId?: string,
+    id: string = randomUUID(),
   ): KanbanRun {
     const now = Date.now();
     const run: KanbanRun = {
-      id: randomUUID(),
+      id,
       kind,
       cardIds,
       provider,
@@ -1604,14 +2178,18 @@ export class KanbanService {
   /** Called from local session notifications; unknown sessions are a constant-time no-op. */
   notifyThread(threadId: string, state: string): Promise<void> {
     const known = this.threads.get(threadId);
-    if (!known || this.closed || this.observedStates.get(threadId) === state)
+    const workerSessionId = this.workerThreads.get(threadId);
+    if ((!known && !workerSessionId) || this.closed || this.observedStates.get(threadId) === state)
       return Promise.resolve();
     this.observedStates.set(threadId, state);
     // Remember the initial idle state until a real turn transition arrives.
-    if (state === "idle" && this.launching.has(known.runId)) return Promise.resolve();
-    const pending = this.saveThreadState(known, threadId, state).finally(() =>
-      this.pending.delete(pending),
-    );
+    if (state === "idle" && this.launching.has(known?.runId ?? workerSessionId!))
+      return Promise.resolve();
+    const pending = (
+      known
+        ? this.saveThreadState(known, threadId, state, workerSessionId)
+        : this.observeWorker(workerSessionId!, threadId, state)
+    ).finally(() => this.pending.delete(pending));
     this.pending.add(pending);
     return pending;
   }
@@ -1619,6 +2197,7 @@ export class KanbanService {
     known: { boardId: string; runId: string },
     threadId: string,
     state: string,
+    workerSessionId?: string,
   ): Promise<void> {
     let classifierFailed = false;
     let awaitingText: string[] = [];
@@ -1695,7 +2274,9 @@ export class KanbanService {
       await this.describe(target.boardId, cardId, threadId).catch((error) =>
         this.options.onError?.(error),
       );
-    if (finished) await this.settle(target, threadId, state);
+    if (finished) await this.settle(target, threadId, state, workerSessionId);
+    else if (workerSessionId && state !== "completed" && state !== "idle")
+      await this.observeWorker(workerSessionId, threadId, state);
   }
   /** A session's card takes its text from the session's first message, then is classified. */
   private async describe(boardId: string, cardId: string, threadId: string): Promise<void> {
@@ -1756,17 +2337,27 @@ export class KanbanService {
     known: { boardId: string; runId: string },
     threadId: string,
     state: string,
+    workerSessionId?: string,
   ): Promise<void> {
     let question: string | null = null;
     let published = false;
     let error: string | null = null;
-    try {
-      const reply = await this.options.adapter.readReply?.(threadId);
-      question = reply?.question ?? null;
-      published = reply?.published ?? false;
-    } catch (failure) {
-      this.options.onError?.(failure);
-      error = "Could not tell whether the agent finished; open the session";
+    const sessions = workerSessionId ? await this.processes.read() : undefined;
+    const worker = workerSessionId ? sessions?.[workerSessionId] : undefined;
+    const pending = worker && sessions ? waitingFor(sessions, worker.id) : [];
+    if (pending.length) {
+      question = `Ждёт результата от ${[...new Set(pending.map(({ workerName }) => workerName))].join(", ")}`;
+    } else if (worker?.reported) {
+      error = worker.reported.error ?? null;
+    } else {
+      try {
+        const reply = await this.options.adapter.readReply?.(threadId);
+        question = reply?.question ?? null;
+        published = reply?.published ?? false;
+      } catch (failure) {
+        this.options.onError?.(failure);
+        error = "Could not tell whether the agent finished; open the session";
+      }
     }
     // The operator may have answered while the reply was being read.
     if (this.observedStates.get(threadId) !== state) return;
@@ -1793,6 +2384,13 @@ export class KanbanService {
       }
     });
     this.changed(board);
+    if (workerSessionId)
+      await this.observeWorker(
+        workerSessionId,
+        threadId,
+        state,
+        !pending.length && Boolean(question || error),
+      );
   }
   private async pump(): Promise<void> {
     if (this.closed) return;
@@ -1856,6 +2454,7 @@ export class KanbanService {
           }
         }
         await this.consumeRequests();
+        await this.pumpWorkers();
       } while (this.again && !this.closed);
     } finally {
       this.pumping = false;
@@ -1954,6 +2553,7 @@ export class KanbanService {
     if (threadId) await this.stopClassifier(threadId);
   }
   private async dispatch(boardId: string, runId: string): Promise<void> {
+    let workerLaunch = false;
     try {
       const claim = await this.store.updateById(boardId, (data) => {
         const run = data.board.runs.find((run) => run.id === runId)!;
@@ -2007,15 +2607,34 @@ export class KanbanService {
         ),
       );
       const imageInput = images.length ? { images } : {};
+      workerLaunch = run.kind === "execute" && !runtime.resumeThreadId && Boolean(run.workerId);
       const worker =
         run.kind === "execute" && !runtime.resumeThreadId && run.workerId
           ? await this.prepareWorker(run.workerId, document.board.projectPath, run.id)
           : undefined;
-      if (runtime.interruptThreadId)
+      if (runtime.interruptThreadId) {
+        const replaced = this.workerThreads.get(runtime.interruptThreadId);
+        if (replaced) await this.failWorker(replaced, "Работа продолжена в новом запуске");
         await Promise.resolve(this.options.adapter.interrupt?.(runtime.interruptThreadId)).catch(
           (error) => this.options.onError?.(error),
         );
+      }
       const resume = runtime.resumeThreadId;
+      const title =
+        run.kind === "classify"
+          ? `classify: ${card.title}`
+          : cards.map((item) => item.title).join("; ");
+      const workerSession = worker
+        ? await this.registerWorkerSession({
+            id: run.id,
+            profile: worker.profile,
+            projectKey: worker.projectKey,
+            projectPath: document.board.projectPath,
+            title,
+            boardId,
+            cardIds: run.cardIds,
+          })
+        : undefined;
       if (resume) {
         // Register first: the continued turn may start and finish before resume() returns.
         if (this.threads.get(resume)?.runId !== runId) this.observedStates.delete(resume);
@@ -2037,13 +2656,12 @@ export class KanbanService {
             id: run.id,
             projectPath: document.board.projectPath,
             cwd: document.board.projectPath,
-            prompt: worker ? `${worker.context}\n\nЗадача:\n${prompt}` : prompt,
+            prompt: worker
+              ? `${worker.context}\n\n${workerSession?.parentId ? "Это подзадача от другого работника. По окончании передай итог через worker_finish.\n\n" : ""}Задача:\n${prompt}`
+              : prompt,
             ...imageInput,
             kind: run.kind,
-            title:
-              run.kind === "classify"
-                ? `classify: ${card.title}`
-                : cards.map((item) => item.title).join("; "),
+            title,
             ...(worker?.settings ? { settings: worker.settings } : {}),
           });
       // Register before publishing running state: an immediate native completion must
@@ -2051,6 +2669,7 @@ export class KanbanService {
       if (this.threads.get(launched.threadId)?.runId !== runId)
         this.observedStates.delete(launched.threadId);
       this.threads.set(launched.threadId, { boardId, runId });
+      if (worker) await this.attachWorker(run.id, launched.threadId);
       const { board } = await this.store.updateById(boardId, (data) => {
         const current = data.board.runs.find((run) => run.id === runId)!;
         current.threadId = launched.threadId;
@@ -2078,6 +2697,7 @@ export class KanbanService {
         await this.notifyThread(launched.threadId, state ?? "unavailable");
       }
     } catch (error) {
+      if (workerLaunch) await this.failWorker(runId, message(error));
       const { board } = await this.store.updateById(boardId, (data) => {
         const run = data.board.runs.find((run) => run.id === runId)!;
         if (!active(run)) return;

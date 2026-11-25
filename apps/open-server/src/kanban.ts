@@ -81,6 +81,9 @@ export async function registerOpenKanban(
         );
         return parseReplyOutcome(output);
       },
+      async readAnswer(id) {
+        return engine.data.threads[id] ? lastReply(engine.detail(id).turns) : null;
+      },
       async readRequest(id) {
         return engine.data.threads[id] ? firstRequest(engine.detail(id).turns) : null;
       },
