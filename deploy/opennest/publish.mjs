@@ -20,6 +20,8 @@ const tag = `opennest-v${version}`;
 const channel = "opennest-claude-latest";
 const legacyChannel = "opennest-latest";
 const root = join(process.env.RUNNER_TEMP, "qualified-opennest-publication");
+const rollingBridge = "6bf2caaaf86467c7bb275796462617644318c780";
+const bridgeBaseline = "4098f78f1dc73db36c2a0b7c90207cf8ac745c07";
 await mkdir(root, { recursive: true });
 const gh = async (args) => (await execute("gh", args, { maxBuffer: 8 * 1024 * 1024 })).stdout;
 const api = async (path) => JSON.parse(await gh(["api", `repos/${repository}/${path}`]));
@@ -31,6 +33,13 @@ async function release(name) {
     throw error;
   }
 }
+async function requirePublishableSource() {
+  const head = (await api("git/ref/heads/main")).object.sha;
+  if (head === candidate) return;
+  assert.equal(candidate, rollingBridge, "Main moved after qualification");
+  const comparison = await api(`compare/${candidate}...${head}`);
+  assert.equal(comparison.merge_base_commit.sha, candidate, "The bridge is no longer on main");
+}
 const run = await api(`actions/runs/${runId}`);
 assert.equal(run.event, "workflow_dispatch");
 assert.equal(run.status, "completed");
@@ -38,11 +47,7 @@ assert.equal(run.conclusion, "success");
 assert.equal(run.head_sha, candidate);
 assert.equal(run.head_branch, "main");
 assert.equal(run.path, ".github/workflows/opennest-qualification.yml");
-assert.equal(
-  (await api("git/ref/heads/main")).object.sha,
-  candidate,
-  "Main moved after qualification",
-);
+await requirePublishableSource();
 const checks = await api(`commits/${candidate}/check-runs?per_page=100`);
 validateSourceChecks(checks, candidate);
 const evidence = join(root, "evidence");
@@ -97,6 +102,8 @@ if (baselineRelease && !baselineRelease.draft) {
   baselineManifest = JSON.parse(await readFile(join(previous, "OpenNest-latest.json"), "utf8"));
 }
 const publicationRecovery = baselineManifest?.commit === candidate;
+if (candidate === rollingBridge && !publicationRecovery)
+  assert.equal(baselineManifest?.commit, bridgeBaseline, "The legacy bridge baseline changed");
 let validationBaseline = baselineManifest;
 if (publicationRecovery) {
   const priorVersion = await release(tag);
@@ -241,11 +248,7 @@ if (existing && !existing.draft) {
     sums,
     "--clobber",
   ]);
-  assert.equal(
-    (await api("git/ref/heads/main")).object.sha,
-    candidate,
-    "Main moved during packaging",
-  );
+  await requirePublishableSource();
   const tagBeforePublish = await tagTarget(tag);
   if (tagBeforePublish) assert.equal(tagBeforePublish, candidate);
   await gh([
@@ -319,11 +322,7 @@ if (publicationRecovery) {
     ]);
   }
   await gh(["release", "upload", channel, "-R", repository, ...assets, sums, "--clobber"]);
-  assert.equal(
-    (await api("git/ref/heads/main")).object.sha,
-    candidate,
-    "Main moved before updating channel",
-  );
+  await requirePublishableSource();
   // The update pointer is the final write. Existing Nest Apps manifests are untouched.
   await gh(["release", "upload", channel, "-R", repository, manifestPath, "--clobber"]);
   await gh([
