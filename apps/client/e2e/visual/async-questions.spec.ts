@@ -128,6 +128,7 @@ test("async replies preserve the composer and survive acceptance and history rel
   );
   await expect(card.getByRole("radio", { name: "Профильные тесты" })).toBeChecked();
   await card.getByRole("radio", { name: "Свой ответ" }).check();
+  await expect(card.getByRole("textbox")).toHaveCSS("border-radius", "20px");
   await expect(card.getByRole("textbox")).toHaveCSS("background-color", "rgb(36, 39, 34)");
   await expect(card.getByRole("textbox")).not.toHaveCSS("box-shadow", "none");
   await composer.focus();

@@ -85,6 +85,14 @@ for (const width of [1440, 390]) {
     await architectSettings.getByRole("button", { name: "Закрыть" }).click();
     await page.getByRole("button", { name: "Настройки работника «Тимлид»" }).click();
     const settings = page.getByRole("dialog", { name: "Тимлид" });
+    await expect(settings.getByRole("textbox", { name: "Постоянные инструкции" })).toHaveCSS(
+      "border-radius",
+      "20px",
+    );
+    await expect(settings.getByRole("textbox", { name: "Имя" })).toHaveCSS(
+      "border-radius",
+      "999px",
+    );
     await settings.getByRole("textbox", { name: "Имя" }).fill("Руководитель");
     await settings.getByRole("button", { name: "Сохранить", exact: true }).click();
     await expect(settings).toBeHidden();

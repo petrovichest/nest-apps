@@ -88,8 +88,6 @@
 
 .worker-settings-fields {
   gap: 14px;
-  max-height: min(72dvh, 720px);
-  overflow: auto;
 }
 
 .worker-settings-fields :is(input, textarea, select) {

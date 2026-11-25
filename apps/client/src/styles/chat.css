@@ -934,7 +934,6 @@ a.native-subagent-row:hover strong {
   :is(input:not([type="radio"], [type="checkbox"]), textarea, select),
 .chat-dialog :is(input:not([type="radio"], [type="checkbox"]), textarea, select) {
   border-color: transparent;
-  border-radius: 999px;
   background-color: var(--color-floating);
   font-weight: 400;
 }
@@ -1962,11 +1961,6 @@ a.native-subagent-row:hover strong {
   .chat-dialog.dialog-surface {
     outline: 1px solid CanvasText;
   }
-}
-
-.thread-workspace .timeline :is(.attention-card, .async-question-card) textarea,
-.chat-dialog textarea {
-  border-radius: var(--chat-radius-card);
 }
 
 .thread-workspace .timeline .async-question-card textarea {
