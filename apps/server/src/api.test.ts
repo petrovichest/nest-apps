@@ -2959,6 +2959,44 @@ describe("skills API and explicit invocation", () => {
 
     await harness.app.close();
   });
+
+  it("attaches the Architect's grilling skill from the selected project on a cold catalog", async () => {
+    const { app, bridge, headers, projectPath } = await createSkillsHarness({ realProject: true });
+    const skillPath = join(projectPath, ".agents", "skills", "grilling", "SKILL.md");
+    bridge.skills.push({
+      name: "grilling",
+      description: "Agree on a worker profile",
+      interface: { displayName: "Grilling", shortDescription: "Ask questions in rounds" },
+      path: skillPath,
+      scope: "repo",
+      enabled: true,
+    });
+    bridge.request.mockClear();
+    try {
+      const started = await app.inject({
+        method: "POST",
+        url: "/api/v1/workers/architect/sessions?projectId=project",
+        headers,
+        payload: { creationId: "6b86e3ae-b101-4fef-8ca2-86f2aa272248" },
+      });
+      expect(started.statusCode).toBe(200);
+      await vi.waitFor(() =>
+        expect(
+          bridge.request.mock.calls.findLast(([method]) => method === "turn/start")?.[1],
+        ).toMatchObject({
+          input: [
+            { type: "text", text: expect.stringContaining("$grilling") },
+            { type: "skill", name: "grilling", path: skillPath },
+          ],
+        }),
+      );
+      expect(bridge.request.mock.calls.filter(([method]) => method === "skills/list")).toEqual([
+        ["skills/list", { cwds: [projectPath], forceReload: false }],
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe("project removal", () => {
@@ -11162,9 +11200,10 @@ class SettingsBridge extends EventEmitter {
   }
 }
 
-async function createSkillsHarness() {
+async function createSkillsHarness({ realProject = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "codexnest-skills-api-test-"));
   directories.push(directory);
+  const projectPath = realProject ? directory : "/work";
   const store = new StateStore(join(directory, "state.json"));
   await store.load();
   await store.update((state) => {
@@ -11172,7 +11211,7 @@ async function createSkillsHarness() {
     state.projects.push({
       id: "project",
       displayName: "Project",
-      path: "/work",
+      path: projectPath,
       createdAt: "2026-01-01",
       updatedAt: "2026-01-01",
     });
@@ -11197,6 +11236,7 @@ async function createSkillsHarness() {
   return {
     app,
     bridge,
+    projectPath,
     headers: { authorization: "Bearer correct" },
   };
 }

@@ -11,7 +11,14 @@ import {
   type PastedText,
 } from "@codexnest/protocol";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { firstRequest, KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
+import {
+  ARCHITECT_PROMPT_HEADER,
+  ARCHITECT_SKILL_NAME,
+  firstRequest,
+  KanbanService,
+  lastReply,
+  registerKanbanRoutes,
+} from "@nest-apps/kanban";
 import { constants, createReadStream, type Stats } from "node:fs";
 import { access, lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -810,11 +817,26 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         summary = projection.upsertThread(resumed.thread, currentSummary.archived);
         assertDirectInput(summary);
       };
+      const cwd = summary.cwd;
+      let skillCatalog = skillsByCwd.get(cwd);
+      if (
+        !skillCatalog &&
+        clientMessageId &&
+        /^kanban:[\da-f-]{36}:start$/i.test(clientMessageId) &&
+        turnInput.startsWith(`${ARCHITECT_PROMPT_HEADER}\n`) &&
+        turnInput.includes(`$${ARCHITECT_SKILL_NAME}`)
+      ) {
+        skillCatalog = await listSkillsForCwd(bridge, cwd, false).catch((error: unknown) => {
+          app.log.warn({ err: safeError(error), threadId }, "Architect skill catalog unavailable");
+          return undefined;
+        });
+        if (skillCatalog) skillsByCwd.set(cwd, skillCatalog);
+      }
       const startParams = {
         threadId,
         clientUserMessageId: teamMarkerId ?? clientMessageId,
         input: skillAwareMessageInput(
-          skillsByCwd.get(summary.cwd),
+          skillCatalog,
           turnInput,
           images,
           validatedFiles,

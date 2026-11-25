@@ -1,7 +1,14 @@
 import { dirname, join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { ServerFrame, ThreadSummary } from "@codexnest/protocol";
-import { firstRequest, KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
+import {
+  firstRequest,
+  KanbanService,
+  lastReply,
+  readArchitectSkill,
+  registerKanbanRoutes,
+} from "@nest-apps/kanban";
+import { listClaudeSkills } from "./skills";
 import type { UiService } from "./ui-service";
 import type { ClaudeVoiceService } from "./voice";
 
@@ -20,7 +27,7 @@ export async function registerClaudeKanban(
   ui: UiService,
   voice?: Pick<ClaudeVoiceService, "transcribe">,
 ): Promise<void> {
-  const { openRouter, stateDir } = ui.manager.config;
+  const { openRouter, stateDir, configDir } = ui.manager.config;
   const provider = openRouter ? "open" : "claude";
   const service = new KanbanService({
     provider,
@@ -42,6 +49,8 @@ export async function registerClaudeKanban(
         ui.chooseWorkerModel?.(prompt, ui.store.data.taskDefaults.model) ??
         Promise.resolve(undefined),
       projects: () => ui.store.data.projects,
+      architectSkill: async (cwd) =>
+        readArchitectSkill((await listClaudeSkills(configDir, cwd)).skills),
       available: () => ui.manager.accepting,
       async launch(job) {
         const project = ui.store.data.projects.find((item) => item.path === job.projectPath);

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify from "fastify";
@@ -8,7 +8,7 @@ import type { KanbanBoard, KanbanRun } from "@codexnest/protocol";
 import { PUBLISH_PROMPT } from "./agent.js";
 import { atomicJson, type KanbanDocument } from "./store.js";
 import type { ReplyVerdict } from "./reply.js";
-import { KanbanService, type KanbanLaunch } from "./service.js";
+import { KanbanService, readArchitectSkill, type KanbanLaunch } from "./service.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -27,6 +27,7 @@ async function fixture(
   available?: () => boolean,
   transcribe?: (audio: Buffer, contentType: string, durationMs: number) => Promise<string>,
   classifies?: () => boolean,
+  architectSkill?: (cwd: string) => Promise<string | undefined>,
 ) {
   const directory = await mkdtemp(join(tmpdir(), "kanban-service-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
@@ -53,6 +54,7 @@ async function fixture(
       ...(classifies ? { classifies } : {}),
       dataDir: join(directory, "shared"),
       adapter: {
+        architectSkill,
         models: () => [
           {
             id: provider + "-model",
@@ -458,6 +460,35 @@ it("creates a worker with explicit approval, groups its tasks and shares its pro
   const input = f.inputs.claude.find(({ id }) => id === next.id)!;
   expect(input.settings?.model).toBe("claude-model");
   expect(input.prompt).toContain("Run npm test before review");
+});
+
+it("includes the discovered grilling instructions in the Architect startup prompt", async () => {
+  const resolver = vi.fn(async (cwd: string) => {
+    const path = join(cwd, ".claude", "skills", "grilling", "SKILL.md");
+    return readArchitectSkill([
+      {
+        name: "grilling",
+        displayName: "Grilling",
+        description: "Agree on the worker profile",
+        shortDescription: null,
+        scope: "repo",
+        path,
+        enabled: true,
+      },
+    ]);
+  });
+  const f = await fixture(undefined, undefined, undefined, resolver);
+  const path = join(f.project, ".claude", "skills", "grilling", "SKILL.md");
+  await mkdir(join(f.project, ".claude", "skills", "grilling"), { recursive: true });
+  await writeFile(path, "Request confirmation after the final interview round.");
+
+  await f.services.claude.startWorker("architect", f.project, randomUUID());
+  expect(resolver).toHaveBeenCalledExactlyOnceWith(f.project);
+  const prompt = f.inputs.claude[0]?.prompt;
+  expect(prompt).toContain("$grilling");
+  expect(prompt).toContain(
+    `<skill name="grilling" path=${JSON.stringify(path)}>\nRequest confirmation after the final interview round.\n</skill>`,
+  );
 });
 
 it("lets a worker curate memory and ends repeated consolidation failures for that turn", async () => {

@@ -16,6 +16,7 @@ import type {
   KanbanStageRole,
   Project,
   SessionSettings,
+  SkillCatalogItem,
   UpdateKanbanCardRequest,
   UpdateKanbanStageRequest,
   WorkerProfile,
@@ -52,6 +53,21 @@ import {
 } from "./worker-processes.js";
 import { WORKER_ARCHITECT_ID, type ModelOption } from "@codexnest/protocol";
 
+export const ARCHITECT_PROMPT_HEADER = "Ты встроенный Архитектор работников Nest.";
+export const ARCHITECT_SKILL_NAME = "grilling";
+
+export function architectSkillBlock(path: string, content: string): string | undefined {
+  if (!content.trim() || Buffer.byteLength(content) > 256 * 1024) return undefined;
+  return `<skill name="${ARCHITECT_SKILL_NAME}" path=${JSON.stringify(path)}>\n${content.trim()}\n</skill>`;
+}
+
+export async function readArchitectSkill(
+  skills: readonly SkillCatalogItem[],
+): Promise<string | undefined> {
+  const skill = skills.find(({ name, enabled }) => name === ARCHITECT_SKILL_NAME && enabled);
+  return skill && architectSkillBlock(skill.path, await readFile(skill.path, "utf8"));
+}
+
 export type KanbanLaunch = {
   id: string;
   projectPath: string;
@@ -66,6 +82,7 @@ export type KanbanLaunch = {
 export type KanbanProviderAdapter = {
   models?(): readonly ModelOption[];
   projects?(): readonly Project[];
+  architectSkill?(cwd: string): Promise<string | undefined>;
   chooseModel?(prompt: string, cwd: string): Promise<string | undefined>;
   available?(): boolean;
   launch(input: KanbanLaunch): Promise<{ threadId: string; sessionUrl?: string }>;
@@ -370,13 +387,20 @@ export class KanbanService {
       );
     const projects = architect ? (this.options.adapter.projects?.() ?? []) : [];
     const currentProject = projects.find(({ path }) => path === projectPath);
+    const skill = architect
+      ? await this.options.adapter.architectSkill?.(projectPath).catch((error: unknown) => {
+          this.options.onError?.(error);
+          return undefined;
+        })
+      : undefined;
     const role = architect
       ? [
-          "Ты встроенный Архитектор работников Nest.",
+          ARCHITECT_PROMPT_HEADER,
           `Текущий проект: ${JSON.stringify({ id: currentProject?.id, path: projectPath })}.`,
           "Когда пользователь опишет нужного работника, сначала изучи текущий проект. Прочитай README и AGENTS.md, если они есть, и файлы, относящиеся к будущей роли. При подготовке профиля работай с файлами в режиме чтения.",
-          "Используй найденные факты, чтобы провести grilling. Выясни, какие задачи будет выполнять работник и как пользователь проверит результат.",
-          "Задавай вопросы раундами. Для каждого открытого решения предложи вариант. Отложи зависимые вопросы до следующего раунда.",
+          `Вызови $${ARCHITECT_SKILL_NAME} для согласования профиля и следуй инструкциям скилла. Используй найденные в проекте факты. Выясни задачи работника и способ проверить его результат.`,
+          "Если скилл недоступен, скажи об этом и задай вопросы раундом. Предложи вариант для каждого открытого решения, а зависимые вопросы отложи до следующего раунда.",
+          ...(skill ? [skill] : []),
           "Опирайся на проверенные в проекте команды, пути и соглашения при составлении постоянных инструкций. Для роли под этот проект предложи область текущего проекта.",
           "Согласуй имя, роль, постоянные инструкции, область доступности, модель и уровень рассуждений.",
           "Уточни, может ли работник как координатор сам поручать подзадачи на Kanban. Передай coordinates: true только при согласии пользователя.",

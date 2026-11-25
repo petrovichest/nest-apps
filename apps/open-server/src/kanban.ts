@@ -1,9 +1,17 @@
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { ServerFrame } from "@codexnest/protocol";
-import { firstRequest, KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
+import {
+  ARCHITECT_SKILL_NAME,
+  architectSkillBlock,
+  firstRequest,
+  KanbanService,
+  lastReply,
+  registerKanbanRoutes,
+} from "@nest-apps/kanban";
 import { parseReplyOutcome } from "../../gemini-server/src/title";
 import type { Engine } from "./engine";
+import { nativeSkills } from "./skills";
 import type { OpenVoiceService } from "./voice";
 
 export async function registerOpenKanban(
@@ -21,6 +29,15 @@ export async function registerOpenKanban(
       models: () => engine.models,
       chooseModel: (prompt) => engine.oneShot(prompt),
       projects: () => engine.data.projects,
+      async architectSkill(cwd) {
+        const skill = (await nativeSkills(engine, cwd)).find(
+          ({ name, location }) =>
+            name === ARCHITECT_SKILL_NAME && engine.data.skillOverrides?.[location] !== false,
+        );
+        return skill && typeof skill.content === "string"
+          ? architectSkillBlock(skill.location, skill.content)
+          : undefined;
+      },
       available: () => engine.canAcceptWork(),
       async launch(job) {
         const project = engine.data.projects.find(

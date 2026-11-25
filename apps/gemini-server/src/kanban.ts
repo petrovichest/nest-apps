@@ -1,8 +1,15 @@
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { ServerFrame, ThreadSummary } from "@codexnest/protocol";
-import { firstRequest, KanbanService, lastReply, registerKanbanRoutes } from "@nest-apps/kanban";
+import {
+  firstRequest,
+  KanbanService,
+  lastReply,
+  readArchitectSkill,
+  registerKanbanRoutes,
+} from "@nest-apps/kanban";
 import type { Engine } from "./engine";
+import { listGeminiSkills } from "./skills";
 import type { GeminiVoiceService } from "./voice";
 
 export function boardThreadState(thread: Pick<ThreadSummary, "state" | "currentTurnId">): string {
@@ -32,6 +39,17 @@ export async function registerGeminiKanban(
       models: () => engine.data.models,
       chooseModel: (prompt) => engine.chooseWorkerModel(prompt),
       projects: () => engine.data.projects,
+      architectSkill: async (cwd) =>
+        readArchitectSkill(
+          (
+            await listGeminiSkills({
+              cwd,
+              configDir: engine.config.configDir,
+              nativeDir: engine.config.nativeDir,
+              overrides: engine.data.skillOverrides,
+            })
+          ).skills,
+        ),
       available: () => engine.canAcceptWork(),
       async launch(job) {
         const project = engine.data.projects.find((item) => item.path === job.projectPath);
