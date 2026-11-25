@@ -1,13 +1,7 @@
-name: Publish qualified OpenNest
+name: Publish OpenNest rolling release
 
 on:
-  workflow_run:
-    workflows: ["OpenNest qualification"]
-    types: [completed]
-    branches: [main]
-
-permissions:
-  contents: read
+  workflow_call:
 
 concurrency:
   group: opennest-publication
@@ -15,23 +9,83 @@ concurrency:
 
 jobs:
   publish:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     permissions:
       contents: write
-      actions: read
-      checks: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Check main before building release packages
+        id: source
+        run: |
+          set -euo pipefail
+          head_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          echo "current=$([[ "$head_sha" == "$GITHUB_SHA" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.source.outputs.current == 'true'
         with:
           node-version: 24
-      - name: Publish only the independently qualified OpenNest artifacts
+          cache: npm
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        if: steps.source.outputs.current == 'true'
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - if: steps.source.outputs.current == 'true'
+        run: npm ci --include=dev
+      - name: Build exact OpenNest web and extension assets
+        if: steps.source.outputs.current == 'true'
+        id: assets
+        run: |
+          set -euo pipefail
+          export VITE_APP_VERSION="$(node -p "require('./package.json').version")-${GITHUB_SHA::7}"
+          echo "version=$VITE_APP_VERSION" >> "$GITHUB_OUTPUT"
+          npm run build:open
+          npm run build:open -w @codexnest/extension
+          npm run package:open -w @codexnest/extension
+          mkdir -p release
+          sed -e "s/^opennest_default_version=.*/opennest_default_version=\"$VITE_APP_VERSION\"/" -e "s/^opennest_default_ref=.*/opennest_default_ref=\"$GITHUB_SHA\"/" deploy/opennest/install.sh > release/install-opennest.sh
+          bash -n release/install-opennest.sh
+          cp apps/extension/artifacts/opennest-browser-*.zip release/opennest-browser-latest.zip
+          unzip -t release/opennest-browser-latest.zip
+          npm run android:sync:open -w @codexnest/client
+      - name: Build and verify signed OpenNest Android package
+        if: steps.source.outputs.current == 'true'
+        env:
+          CODEXNEST_ANDROID_VERSION_NAME: ${{ steps.assets.outputs.version }}
+          KEYSTORE_BASE64: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_BASE64 }}
+          CODEXNEST_KEY_ALIAS: ${{ secrets.CODEXNEST_ANDROID_KEY_ALIAS }}
+          CODEXNEST_KEYSTORE_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEYSTORE_PASSWORD }}
+          CODEXNEST_KEY_PASSWORD: ${{ secrets.CODEXNEST_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64" && test -n "$CODEXNEST_KEY_ALIAS" && test -n "$CODEXNEST_KEYSTORE_PASSWORD" && test -n "$CODEXNEST_KEY_PASSWORD"
+          export CODEXNEST_KEYSTORE_PATH="$RUNNER_TEMP/opennest.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$CODEXNEST_KEYSTORE_PATH"
+          chmod 0600 "$CODEXNEST_KEYSTORE_PATH"
+          export NEST_APP_PROVIDER=open
+          export CODEXNEST_ANDROID_VERSION_CODE="$((4000000 + GITHUB_RUN_NUMBER))"
+          (cd apps/client/android && ./gradlew testDebugUnitTest assembleRelease)
+          apk=apps/client/android/app/build/outputs/apk/release/app-release.apk
+          tools="$(printf '%s\n' "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          "$tools/apksigner" verify --print-certs "$apk" > "$RUNNER_TEMP/apk-signature.txt"
+          keytool -exportcert -keystore "$CODEXNEST_KEYSTORE_PATH" -alias "$CODEXNEST_KEY_ALIAS" -storepass:env CODEXNEST_KEYSTORE_PASSWORD -file "$RUNNER_TEMP/signature.der"
+          certificate="$(sha256sum "$RUNNER_TEMP/signature.der" | cut -d ' ' -f 1)"
+          apk_certificate="$(sed -nE 's/^[[:space:]]*(V[0-9]+ )?Signer.* certificate SHA-256 digest: ([[:xdigit:]]{64})[[:space:]]*$/\2/p' "$RUNNER_TEMP/apk-signature.txt" | tr '[:upper:]' '[:lower:]' | sort -u)"
+          test "$certificate" = "$apk_certificate"
+          "$tools/aapt" dump badging "$apk" | grep -F "name='com.opennest.app'" | grep -F "versionName='$CODEXNEST_ANDROID_VERSION_NAME'" | grep -F "versionCode='$CODEXNEST_ANDROID_VERSION_CODE'"
+          unzip -p "$apk" assets/capacitor.config.json | node -e 'let s="";process.stdin.on("data",v=>s+=v);process.stdin.on("end",()=>{if(JSON.parse(s).appId!=="com.opennest.app")process.exit(1)})'
+          unzip -p "$apk" assets/public/index.html | grep -F 'data-application="opennest"'
+          cp "$apk" release/OpenNest-latest.apk
+          rm -f "$CODEXNEST_KEYSTORE_PATH" "$RUNNER_TEMP/signature.der"
+      - name: Publish the verified OpenNest commit
+        if: steps.source.outputs.current == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          OPENNEST_CANDIDATE: ${{ github.event.workflow_run.head_sha }}
-          QUALIFIED_RUN_ID: ${{ github.event.workflow_run.id }}
+          GH_REPO: ${{ github.repository }}
+          OPENNEST_RELEASE_VERSION: ${{ steps.assets.outputs.version }}
         run: node deploy/opennest/publish.mjs

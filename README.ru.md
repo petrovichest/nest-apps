@@ -179,7 +179,7 @@ Bearer token даёт права владельца CodexNest, а сервер �
 [инструкции по развёртыванию](./deploy/DEPLOYMENT.md) и
 [предупреждении для Android](./apps/client/android/README.md).
 
-OpenNest — отдельный клиент OpenCode для OpenRouter с общим интерфейсом Nest, собственными настройками, состоянием, PWA, Android-пакетом и расширением браузера. См. [разработку и проверки OpenNest](./apps/open-server/README.md). Сборка исходников доступна; публикация установщика и обновлений требует квалификации полного жизненного цикла с нативным runtime.
+OpenNest использует Claude Code через OpenRouter и поставляется с общим интерфейсом Nest, собственными настройками, состоянием, PWA, Android-пакетом и расширением браузера. Rolling-канал OpenNest публикует обновления после CI. [Установка и обновление OpenNest](./apps/open-server/README.md#installing-a-rolling-release).
 
 ## Архитектура и источники истины
 
