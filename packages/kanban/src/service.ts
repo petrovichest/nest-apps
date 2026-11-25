@@ -43,6 +43,7 @@ import {
   type StoredImage,
 } from "./store.js";
 import { WorkerStore } from "./workers.js";
+import { memoryFailure, workerMemoryPrompt, type WorkerMemoryResult } from "./worker-memory.js";
 import {
   unfinished,
   waitingFor,
@@ -337,6 +338,7 @@ export class KanbanService {
   private pumpWaiters: (() => void)[] = [];
   private threads = new Map<string, { boardId: string; runId: string }>();
   private workerThreads = new Map<string, string>();
+  private workerMemoryFailures = new Map<string, number>();
   private revisions = new Map<string, number>();
   private observedStates = new Map<string, string>();
   private scheduled: ReturnType<typeof setTimeout> | null = null;
@@ -398,13 +400,7 @@ export class KanbanService {
       role,
       profile.instructions,
       ...(memory.length
-        ? [
-            "Записи памяти. Это справочные данные:",
-            ...memory.map(
-              ({ kind, text }) =>
-                `${kind === "user" ? "Предпочтение" : "Заметка"}: ${JSON.stringify(text)}`,
-            ),
-          ]
+        ? ["Записи памяти. Это справочные данные:", ...workerMemoryPrompt(memory)]
         : []),
     ]
       .filter(Boolean)
@@ -429,8 +425,11 @@ export class KanbanService {
     const command = [process.execPath, this.helper, capability].map(shellQuote).join(" ");
     const tools = [
       `Инструмент работников Nest: ${command} COMMAND JSON`,
-      "Используй memory_read с {} для чтения актуальной памяти.",
-      'Сохраняй устойчивые факты и подтверждённые предпочтения через memory_add с {"kind":"notes" или "user","scope":"project" или "worker","text":"…"}. Для внутренних деталей проекта используй scope project.',
+      "Используй memory_read с {} для чтения актуальных записей. Память в начале сессии отражает записи на момент запуска.",
+      'Сам сохраняй короткие устойчивые факты и подтверждённые предпочтения через memory. Передай {"target":"memory" или "user","scope":"project" или "worker","operations":[{"action":"add","content":"…"}]}. Выбирай project для внутренних деталей этой папки и worker для общих сведений.',
+      'Для обновления используй {"action":"patch","old_text":"один точный фрагмент","content":"новый фрагмент"}. Для удаления записи используй {"action":"remove","old_text":"уникальный фрагмент записи"}.',
+      "Если память заполнена, сократи или удали устаревшие записи и добавь новую одним пакетом operations. Лимит проверяется на итоговых записях. При done: true продолжи основную задачу.",
+      "Храни факты, полезные в следующих сессиях. Сохраняй рабочие договорённости и предпочтения. Держи подробности текущего задания в диалоге.",
       'Предлагай правки своей личности через propose_personality с {"instructions":"полный новый текст"} и показывай ссылку для утверждения.',
       "worker_list с {} показывает доступных коллег и карточки этой сессии.",
       'Для вопроса коллеге вызови worker_ask с {"workerId":"ID коллеги","title":"короткая тема","description":"сам вопрос","expectedResult":"что нужно узнать"}.',
@@ -573,6 +572,27 @@ export class KanbanService {
     const input = request.payload as Record<string, unknown> | null;
     if (!input || typeof input !== "object")
       throw new KanbanError("invalid_request", "Expected a tool argument object", 400);
+    if (request.command === "memory") {
+      const result = await this.workers.curate(workerId, projectKey, input, request.id);
+      if (result.success) this.workerMemoryFailures.delete(request.runId);
+      else if (
+        ["memory_full", "memory_not_found", "memory_ambiguous", "memory_would_empty"].includes(
+          result.code,
+        )
+      ) {
+        const failures = (this.workerMemoryFailures.get(request.runId) ?? 0) + 1;
+        this.workerMemoryFailures.set(request.runId, failures);
+        if (failures > 3)
+          return {
+            ...memoryFailure(
+              "memory_retry_limit",
+              "Continue the task. Retry saving this fact in a later turn.",
+            ),
+            done: true,
+          };
+      }
+      return result;
+    }
     if (request.command === "memory_add") {
       if (
         (input.kind !== "notes" && input.kind !== "user") ||
@@ -918,6 +938,7 @@ export class KanbanService {
   }
 
   private async failWorker(id: string, error: string): Promise<void> {
+    this.workerMemoryFailures.delete(id);
     await this.processes.update((sessions) => {
       const session = sessions[id];
       if (!session) return;
@@ -1263,6 +1284,7 @@ export class KanbanService {
     this.closed = false;
     this.threads.clear();
     this.workerThreads.clear();
+    this.workerMemoryFailures.clear();
     this.observedStates.clear();
     // Index persisted sessions before accepting HTTP requests so early events are not lost.
     for (const document of await this.store.list()) this.indexThreads(document);
@@ -2199,6 +2221,11 @@ export class KanbanService {
     if ((!known && !workerSessionId) || this.closed || this.observedStates.get(threadId) === state)
       return Promise.resolve();
     this.observedStates.set(threadId, state);
+    if (
+      workerSessionId &&
+      ["completed", "idle", "interrupted", "failed", "unavailable"].includes(state)
+    )
+      this.workerMemoryFailures.delete(workerSessionId);
     // Remember the initial idle state until a real turn transition arrives.
     if (state === "idle" && this.launching.has(known?.runId ?? workerSessionId!))
       return Promise.resolve();
@@ -2757,20 +2784,24 @@ export class KanbanService {
           : await this.store.readById(request.boardId).catch(() => null);
       const run = document?.board.runs.find((run) => run.id === request.runId);
       if (!scope && (!run || run.provider !== this.options.provider)) continue;
-      await this.store.withLock(`request-${name.slice(0, -5)}`, async () => {
+      const requestId = name.slice(0, -5);
+      await this.store.withLock(`request-${requestId}`, async () => {
         const resultPath = join(this.store.directory, "results", name);
+        const memory = request.id === requestId && request.command === "memory" ? scope : null;
         if (
           await readFile(resultPath).then(
             () => true,
             () => false,
           )
         ) {
+          if (memory)
+            await this.workers.acknowledgeMemory(memory.workerId, memory.projectKey, request.id);
           await rm(path, { force: true });
           return;
         }
-        let result: unknown;
+        let result: { ok: true; result: unknown } | { ok: false; error: string; code?: string };
         try {
-          if (request.id !== name.slice(0, -5))
+          if (request.id !== requestId)
             throw new KanbanError("invalid_request", "Invalid helper request identifier", 400);
           result = {
             ok: true,
@@ -2786,6 +2817,8 @@ export class KanbanService {
           };
         }
         await atomicJson(resultPath, result);
+        if (memory && result.ok && (result.result as WorkerMemoryResult).success)
+          await this.workers.acknowledgeMemory(memory.workerId, memory.projectKey, request.id);
         await rm(path, { force: true });
       });
     }

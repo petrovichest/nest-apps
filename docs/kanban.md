@@ -113,6 +113,16 @@ back to the requesting session. A session waiting for the reply resumes when it
 arrives. Each recipient uses its own profile, memory, and settings for the
 application where the work started.
 
+Workers curate their memory during normal task turns. Each new session starts
+with the available notes and preferences for its worker and project. The
+`memory` tool can add an entry, patch one exact span, or remove an entry. A
+batch covers one target and scope and commits once the final contents fit the
+2,200-character notes budget or the 1,375-character preference budget. A full
+target returns its usage and current entries on a single-write attempt. The
+worker can then shorten stale entries and add the new fact in one operation.
+An explicit `memory_read` reads the latest entries during a session. The
+write and consolidation behavior follows the [Hermes built-in memory tool](https://github.com/NousResearch/hermes-agent/blob/c84e8d7f81a8a12860dd802c24910c74115e36b6/website/docs/user-guide/features/memory.md).
+
 The **Processes** tab under **Workers** shows the work across local Nest
 applications, grouped by project. Open a process to see which workers it
 started, their sessions and results, and the highlighted path to a pending

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,6 +59,148 @@ it("shares profiles across app owners and confines memory to the canonical proje
       settings: { codex: { collaborationMode: "default", model: "pinned" } },
     });
     expect((await second.snapshot(WORKER_ARCHITECT_ID, null)).profile.settings).toEqual({});
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("fits an atomic consolidation against the final budget and preserves existing scope and entry IDs", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "nest-worker-memory-"));
+  try {
+    const first = new WorkerStore(directory);
+    const second = new WorkerStore(directory);
+    const project = "this-project";
+    const { id } = await first.create(
+      { name: "Reviewer", role: "Review", instructions: "", settings: {} },
+      null,
+    );
+    const keep = "Default command: npm test. Reports include file paths.";
+    const obsolete = "x".repeat(2200 - keep.length - 2);
+    for (const text of [keep, obsolete])
+      await first.changeMemory(id, project, {
+        action: "add",
+        kind: "notes",
+        scope: "project",
+        text,
+      });
+    await first.changeMemory(id, project, {
+      action: "add",
+      kind: "notes",
+      scope: "worker",
+      text: "Review the tests first",
+    });
+    await first.changeMemory(id, "other-project", {
+      action: "add",
+      kind: "notes",
+      scope: "project",
+      text: "Use another test runner",
+    });
+
+    const original = (await first.snapshot(id, project)).memory;
+    const add = { action: "add", content: "Use fixtures from the current project." };
+    expect(await second.curate(id, project, { target: "memory", operations: [add] })).toMatchObject(
+      {
+        success: false,
+        code: "memory_full",
+        usage: "2200/2200",
+        current_entries: [keep, obsolete],
+      },
+    );
+    const patch = { action: "patch", old_text: "npm test", content: "npm test -- --run" };
+    expect(
+      await second.curate(id, project, {
+        target: "memory",
+        operations: [patch, { action: "remove", old_text: "missing entry" }],
+      }),
+    ).toMatchObject({ success: false, code: "memory_not_found" });
+    expect((await first.snapshot(id, project)).memory).toEqual(original);
+
+    const requestId = randomUUID();
+    const batch = {
+      target: "memory",
+      scope: "project",
+      operations: [add, patch, { action: "remove", old_text: obsolete }],
+    };
+    const result = await first.curate(id, project, batch, requestId);
+    expect(result).toMatchObject({
+      success: true,
+      done: true,
+      entry_count: 2,
+      patched_entries: { 2: keep },
+      patched_entries_after: {
+        2: "Default command: npm test -- --run. Reports include file paths.",
+      },
+      removed_entries: { 3: obsolete },
+    });
+    expect(await second.curate(id, project, batch, requestId)).toEqual(result);
+    expect(await second.curate(id, "other-project", batch, requestId)).toMatchObject({
+      success: false,
+      code: "invalid_request",
+    });
+    await second.acknowledgeMemory(id, project, requestId);
+    expect(await second.curate(id, project, { target: "memory", operations: [add] })).toMatchObject(
+      {
+        success: true,
+        entry_count: 2,
+      },
+    );
+    expect((await first.snapshot(id, project)).memory).toEqual([
+      { ...original[0], text: "Default command: npm test -- --run. Reports include file paths." },
+      original[2],
+      expect.objectContaining({ kind: "notes", projectKey: project, text: add.content }),
+    ]);
+    expect((await first.snapshot(id, "other-project")).memory.map(({ text }) => text)).toEqual([
+      "Review the tests first",
+      "Use another test runner",
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("uses whole-entry matches before substrings and rejects an ambiguous patch or a bulk wipe", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "nest-worker-memory-matches-"));
+  try {
+    const workers = new WorkerStore(directory);
+    const { id } = await workers.create(
+      { name: "Reviewer", role: "Review", instructions: "", settings: {} },
+      null,
+    );
+    const call = (operations: unknown[]) =>
+      workers.curate(id, null, { target: "user", scope: "worker", operations });
+    const add = (content: string) => ({ action: "add", content });
+    const remove = (old_text: string) => ({ action: "remove", old_text });
+    expect(
+      await call([add("tea"), add("Refer to ‘tea’ — twice: tea"), add("tea is the default")]),
+    ).toMatchObject({
+      success: true,
+      entry_count: 3,
+    });
+    expect(await call([remove("tea")])).toMatchObject({
+      success: true,
+      removed_entries: { 1: "tea" },
+    });
+    expect(await call([{ action: "patch", old_text: "tea", content: "coffee" }])).toMatchObject({
+      success: false,
+      code: "memory_ambiguous",
+    });
+    expect(
+      await call([remove("Refer to 'tea' - twice: tea"), remove("tea is the default")]),
+    ).toMatchObject({
+      success: false,
+      code: "memory_would_empty",
+    });
+    expect(await call([remove("Refer to 'tea' - twice: tea")])).toMatchObject({
+      success: true,
+      entry_count: 1,
+    });
+    expect(await call([remove("tea is the default"), add("Invisible\u200b text")])).toMatchObject({
+      success: false,
+      code: "memory_unsafe",
+    });
+    expect((await workers.snapshot(id, null)).memory.map(({ text }) => text)).toEqual([
+      "tea is the default",
+    ]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

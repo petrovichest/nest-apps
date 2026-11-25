@@ -460,6 +460,49 @@ it("creates a worker with explicit approval, groups its tasks and shares its pro
   expect(input.prompt).toContain("Run npm test before review");
 });
 
+it("lets a worker curate memory and ends repeated consolidation failures for that turn", async () => {
+  const f = await fixture(undefined, undefined, () => false);
+  const { codex, claude } = f.services;
+  const worker = await codex.workers.create(
+    { name: "Reviewer", role: "Review", instructions: "", settings: {} },
+    null,
+  );
+  const runId = randomUUID();
+  const { threadId } = await codex.startWorker(worker.id, f.project, runId);
+  await codex.notifyThread(threadId, "running");
+  const call = (operations: unknown[]) =>
+    f.workerTool("codex", runId, "memory", { target: "memory", operations });
+  expect(await call([{ action: "add", content: "Run npm test" }])).toMatchObject({
+    ok: true,
+    result: { success: true, done: true, scope: "project", entry_count: 1 },
+  });
+  const stale = [{ action: "remove", old_text: "no longer present" }];
+  for (let retry = 0; retry < 3; retry++)
+    expect(await call(stale)).toMatchObject({
+      ok: true,
+      result: { success: false, code: "memory_not_found" },
+    });
+  expect(await call(stale)).toMatchObject({
+    ok: true,
+    result: { success: false, code: "memory_retry_limit", done: true },
+  });
+  await codex.notifyThread(threadId, "completed");
+  await codex.notifyThread(threadId, "running");
+  expect(await call(stale)).toMatchObject({
+    ok: true,
+    result: { success: false, code: "memory_not_found" },
+  });
+  expect(
+    await call([{ action: "patch", old_text: "npm test", content: "npm test -- --run" }]),
+  ).toMatchObject({
+    ok: true,
+    result: { success: true, done: true, patched_entries: { 1: "Run npm test" } },
+  });
+  await claude.startWorker(worker.id, f.project, randomUUID());
+  expect(f.inputs.claude[0]?.prompt).toContain("Run npm test -- --run");
+  expect(f.inputs.codex[0]?.prompt).not.toContain("Run npm test");
+});
+
 const stage = (board: KanbanBoard, id: string) =>
   board.stages.find((item) => item.id === board.cards.find((card) => card.id === id)?.stageId)
     ?.role;

@@ -9,8 +9,23 @@ import {
   type WorkerProposal,
 } from "@codexnest/protocol";
 import { atomicJson, KanbanError, KanbanStore } from "./store.js";
+import {
+  curateMemory,
+  memoryContentProblem,
+  memoryFailure,
+  memoryLimits,
+  type WorkerMemoryResult,
+} from "./worker-memory.js";
 
-type WorkerDocument = { profile: WorkerProfile; memory: WorkerMemoryEntry[] };
+type WorkerDocument = {
+  profile: WorkerProfile;
+  memory: WorkerMemoryEntry[];
+  /** Commit with the changes until the durable helper result has been written. */
+  pendingMemoryResults?: Record<
+    string,
+    { projectKey: string | null; result: Extract<WorkerMemoryResult, { success: true }> }
+  >;
+};
 type ProfileFields = Pick<
   WorkerProfile,
   "name" | "role" | "instructions" | "settings" | "coordinates"
@@ -29,8 +44,6 @@ const architect: WorkerProfile = {
   projectKey: null,
   revision: 0,
 };
-
-const memoryLimits = { notes: 2200, user: 1375 };
 
 function text(value: string, field: string, max: number, allowEmpty = false): string {
   const trimmed = typeof value === "string" ? value.trim() : "";
@@ -161,12 +174,15 @@ export class WorkerStore {
     }
   }
 
-  private async update<T>(mutate: (data: Record<string, WorkerDocument>) => T): Promise<T> {
+  private async update<T>(
+    mutate: (data: Record<string, WorkerDocument>) => T,
+    persist?: (result: T) => boolean,
+  ): Promise<T> {
     await this.lock.initialize();
     return this.lock.withLock("workers", async () => {
       const data = await this.read();
       const result = mutate(data);
-      await atomicJson(this.path, data);
+      if (persist?.(result) ?? true) await atomicJson(this.path, data);
       return result;
     });
   }
@@ -257,6 +273,8 @@ export class WorkerStore {
           projectKey: scope,
           text: text(change.text, "memory", memoryLimits[change.kind]),
         };
+        const problem = memoryContentProblem(entry.text);
+        if (problem) throw new KanbanError("memory_unsafe", problem, 400);
         if (
           !worker.memory.some(
             (item) =>
@@ -276,7 +294,12 @@ export class WorkerStore {
           throw new KanbanError("memory_changed", "Memory entry changed; reload before saving");
         if (change.action === "remove")
           worker.memory = worker.memory.filter((item) => item !== entry);
-        else entry.text = text(change.text, "memory", memoryLimits[entry.kind]);
+        else {
+          const replacement = text(change.text, "memory", memoryLimits[entry.kind]);
+          const problem = memoryContentProblem(replacement);
+          if (problem) throw new KanbanError("memory_unsafe", problem, 400);
+          entry.text = replacement;
+        }
       }
       const totals = new Map<string, number>();
       for (const entry of worker.memory) {
@@ -291,5 +314,74 @@ export class WorkerStore {
         (entry) => entry.projectKey === null || entry.projectKey === projectKey,
       );
     });
+  }
+
+  async curate(
+    id: string,
+    projectKey: string | null,
+    input: Record<string, unknown>,
+    requestId?: string,
+  ): Promise<WorkerMemoryResult> {
+    if (input.target !== "memory" && input.target !== "user")
+      return memoryFailure("invalid_request", "Set target to memory or user.");
+    const scope =
+      input.scope === undefined ? (projectKey === null ? "worker" : "project") : input.scope;
+    if (scope !== "worker" && scope !== "project")
+      return memoryFailure("invalid_request", "Set scope to worker or project.");
+    if (scope === "project" && projectKey === null)
+      return memoryFailure("invalid_request", "Open a project to edit project memory.");
+    const operations = input.operations === undefined ? [input] : input.operations;
+    if (!Array.isArray(operations) || !operations.length)
+      return memoryFailure("invalid_request", "Supply a nonempty operations array.");
+    const kind = input.target === "memory" ? "notes" : "user";
+    return this.update<WorkerMemoryResult>(
+      (data) => {
+        const worker = this.require(data, id, projectKey);
+        const previous = requestId && worker.pendingMemoryResults?.[requestId];
+        if (previous)
+          return previous.projectKey === projectKey
+            ? previous.result
+            : memoryFailure("invalid_request", "Worker memory request identifier was reused.");
+        const targetProject = scope === "project" ? projectKey : worker.profile.projectKey;
+        const inTarget = (entry: WorkerMemoryEntry) =>
+          entry.kind === kind && entry.projectKey === targetProject;
+        const change = curateMemory(
+          worker.memory.filter(inTarget),
+          kind,
+          targetProject,
+          scope,
+          operations,
+        );
+        if ("entries" in change) {
+          const replacements = new Map(change.entries.map((entry) => [entry.id, entry]));
+          const retained = worker.memory.flatMap((entry) => {
+            if (!inTarget(entry)) return [entry];
+            const replacement = replacements.get(entry.id);
+            replacements.delete(entry.id);
+            return replacement ? [replacement] : [];
+          });
+          worker.memory = [...retained, ...replacements.values()];
+          if (requestId)
+            (worker.pendingMemoryResults ??= {})[requestId] = { projectKey, result: change.result };
+          data[id] = worker;
+        }
+        return change.result;
+      },
+      (result) => result.success,
+    );
+  }
+
+  async acknowledgeMemory(id: string, projectKey: string | null, requestId: string): Promise<void> {
+    await this.update(
+      (data) => {
+        const worker = this.require(data, id, projectKey);
+        const pending = worker.pendingMemoryResults;
+        if (pending?.[requestId]?.projectKey !== projectKey) return false;
+        delete pending[requestId];
+        if (!Object.keys(pending).length) delete worker.pendingMemoryResults;
+        return true;
+      },
+      (changed) => changed,
+    );
   }
 }
