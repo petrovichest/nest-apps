@@ -338,6 +338,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  publish-opennest:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [verify, opennest-native-contract]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/opennest-publish.yml
+    secrets: inherit
+
   publish:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [verify, native-account-network]

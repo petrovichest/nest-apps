@@ -11,9 +11,9 @@
 ## Release and lifecycle diagnostics
 
 - Follow [docs/release-safety.md](docs/release-safety.md) before publication.
-  The shared rolling release publishes after standard CI for the exact commit.
+  The shared and OpenNest rolling releases publish after CI for the exact commit.
   The full native lifecycle workflow runs manually for diagnosis.
-  OpenNest uses its separately qualified release channel.
+  Run the full OpenNest diagnostics for changes to its native runtime, installer, or recovery.
 - Verify the exact commit on a working branch, then fast-forward `main` after
   `verify` passes. Preserve branch protection and the updater's readiness and
   rollback checks. PRs and independent approvals are optional.

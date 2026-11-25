@@ -6,7 +6,7 @@ set -euo pipefail
 [[ "$(id -un)" == runner && "$(cat /proc/1/comm)" == systemd ]]
 [[ "${OPENNEST_QUALIFICATION_BASELINE:-}" =~ ^[0-9a-f]{40}$ ]]
 [[ -n "${RUNNER_TEMP:-}" && -n "${GITHUB_RUN_ID:-}" ]]
-[[ "${OPENNEST_DIAGNOSTIC_STARTUP_ONLY:-0}" == 0 || ( "${OPENNEST_DIAGNOSTIC_STARTUP_ONLY:-0}" == 1 && "${GITHUB_REF:-}" == refs/heads/* && "${GITHUB_REF:-}" != refs/heads/main ) ]]
+[[ "${OPENNEST_DIAGNOSTIC_STARTUP_ONLY:-0}" =~ ^[01]$ ]]
 qualification_source="$(git rev-parse --show-toplevel)"
 qualification_candidate="$(git rev-parse HEAD)"
 qualification_uid=17002
@@ -215,6 +215,6 @@ sudo systemd-run --unit=opennest-qualification-driver --wait --pipe --uid=17002 
   --setenv="OPENNEST_QUALIFICATION_BASELINE_RUNTIME=${OPENNEST_QUALIFICATION_BASELINE_RUNTIME:?}" \
   --setenv="OPENNEST_QUALIFICATION_BASELINE_VERSION=${OPENNEST_QUALIFICATION_BASELINE_VERSION:?}" \
   --setenv="OPENNEST_DIAGNOSTIC_STARTUP_ONLY=${OPENNEST_DIAGNOSTIC_STARTUP_ONLY:-0}" \
-  --setenv="GITHUB_REF=${GITHUB_REF:?}" \
+  --setenv="OPENNEST_DIAGNOSTIC_ROLLING_BASELINE=${OPENNEST_DIAGNOSTIC_ROLLING_BASELINE:-0}" \
   --setenv="GITHUB_RUN_ID=$GITHUB_RUN_ID" --setenv=GITHUB_ACTIONS=true \
   /bin/bash /opennest-qualification-input/guest.sh

@@ -54,43 +54,41 @@ credential redaction, native tool context, and a managed native-subagent denial.
 HTTP and SOCKS5 bridge unit checks additionally cover upstream authentication and
 remote DNS. These checks do not qualify application installation or rollback.
 
-The installer remains a closed source template until publication substitutes the
-qualified exact commit and matching version. It cannot install a moving branch,
-and existing installations are never overwritten. Update commands intentionally
-refuse candidates until the [mandatory qualification](../../docs/release-safety.md)
-covers native installation, large histories, upgrade and failed-candidate rollback.
-Neither these scripts nor their unit tests constitute release qualification.
+The rolling channel publishes an installer, signed APK and extension after
+`verify` and `opennest-native-contract` pass on the exact commit on `main`.
+The manifest is published after the assets and points at the versioned installer
+and its SHA-256. The installed updater checks the recovery protocol and current
+native runtime before building the exact candidate. The installed commit must
+be an ancestor of the candidate, so installations can skip rolling releases.
 
-`check-update` reads the shared release manifest. A legacy manifest without
-`applications.opennest` reports no eligible OpenNest release. An eligible section
-must contain `installer` and `qualification` artifacts, each with a trusted GitHub
-release URL and SHA-256 checksum. The downloaded report must bind the exact
-candidate and unchanged healthy baseline, OpenNest identity, supported native
-version, recovery protocol, installer checksum and successful manual workflow.
-It must include all native scopes, at least 2000 nonarchived sessions and 3 GiB,
-three cold and warm runs inside the startup budget, and automatic rollback with
-the same native process, a ready previous application and resumed work.
+The updater builds a detached Git worktree and verifies the packaged installer
+against the source before switching the API. The native service stays running.
+Failed or interrupted updates use the saved transaction to restore the previous
+API. The updater records `rolled_back` after confirming readiness and the original
+native process identity.
 
-The updater fetches only that exact Git commit and builds an immutable checkout.
-It verifies the packaged installer bytes against qualification before switching
-the API pointer. The native service unit and process are preserved. A private
-durable transaction is written before switching. Failed candidates and interrupted
-updaters restore the previous API through `ExecStopPost` recovery; `rolled_back`
-is recorded only after the previous API reaches readiness with the original
-native identity. Failed recovery retains evidence and reports failure. Emergency
-restart runs the recovery unit, which stops the updater before API recovery.
-Installation, checking, replacement and recovery use the OpenNest kernel lock.
+`OpenNest native diagnostics` runs on an isolated GitHub runner. Use
+`diagnostic_scope=full` for runtime, installer, and recovery changes. Set
+`baseline_release` to reproduce a particular upgrade from an older published tag.
 
-`node --test deploy/opennest/update.test.mjs` verifies qualification parsing and
-update/rollback control flow with simulated services and health responses. These
-are supplemental source tests, not the mandatory native lifecycle matrix.
+## Upgrading a legacy installation
 
-No installer or manager is run against an existing user installation during
-development. Native lifecycle checks require isolated HOME, credentials, native
-state, ports and services. The first-release baseline is qualified independently as specified in the
-release policy. The separate `OpenNest qualification` workflow executes the
-complete native matrix, signed Android packaging and extension checks. Only a
-successful completed manual run for the exact source SHA enables
-`Publish qualified OpenNest`; its versioned release artifacts are immutable and
-the dedicated channel manifest is written last. The existing Nest Apps channel
-is never updated by this publisher.
+An installation at `0.1.9-4098f78` can use its normal update button to install the
+bridge from `opennest-claude-latest`. The bridge uses the rolling channel for
+subsequent updates.
+
+Older updaters require the exact next release. If an older installation skipped
+updates, work through the remaining versions in this order:
+
+```text
+085a170 → a589610 → 7265629 → f789d8a → 1781d46 → 7d6350e → a0cefda → 4098f78
+```
+
+For each step, set `OPENNEST_UPDATE_MANIFEST_URL` in the OpenNest `server.env`
+(by default `~/.config/opennest/server.env`) to the versioned manifest and use the
+update button. For example, the next release from `7d6350e` is
+[`0.1.9-a0cefda`](https://github.com/petrovichest/nest-apps/releases/download/opennest-v0.1.9-a0cefda/OpenNest-latest.json).
+Replace the version in that URL with the next needed version at each step.
+Remove the temporary override after reaching `4098f78` and use the update button
+to install the bridge. The step from `7265629` to `f789d8a` requires Claude
+Code 2.1.289 and completed OpenCode work.

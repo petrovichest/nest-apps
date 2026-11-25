@@ -1,44 +1,34 @@
 # OpenNest backend
 
-OpenNest is a separate Nest application using OpenCode's native HTTP runtime and
-OpenRouter models. Its configuration, API token, drafts, queues and receipts are
-independent of the other Nest applications. The API defaults to `127.0.0.1:4313`;
-the independently managed OpenCode service defaults to `127.0.0.1:4097`.
+OpenNest is a separate Nest application that runs Claude Code through OpenRouter.
+Older installations can still use the OpenCode runtime. Its configuration, API token,
+drafts, queues and receipts are independent of the other Nest applications. The API defaults
+to `127.0.0.1:4313` and the independently managed OpenCode service to `127.0.0.1:4097`.
 
-The shared client has been integrated after approval of its concrete preview.
-Source implementation and isolated tests do **not** qualify an application release.
-Publication is gated by [the native release safety rules](../../docs/release-safety.md).
-The first release independently qualifies its initial baseline; later releases
-qualify an upgrade from the previously published OpenNest version.
+The `opennest-rolling` channel publishes after the source and native contract
+checks pass on `main`. The [release safety rules](../../docs/release-safety.md)
+describe the manual native diagnostics for changes to the runtime, installer, or recovery.
 
-The `OpenNest qualification` workflow on a working branch runs isolated baseline
-diagnostics by default; `diagnostic_scope=full` exercises the full native lifecycle.
-Both modes keep the report incomplete and produce no release packages or
-qualification artifact. The full publication matrix runs on `main`.
+## Installing a rolling release
 
-## Installing a qualified release
-
-The published backend supports Linux **x86_64**, Node.js **24**, and OpenCode
-**1.19.5**. Install Git, npm, `flock` and `/usr/bin/bwrap` (bubblewrap) first.
-OpenCode is an external prerequisite; the installer verifies its exact version.
-Set `OPENNEST_OPENCODE_BIN=/absolute/path/to/opencode` when it is not on PATH.
-
-Installers appear only after the complete native qualification has passed:
+The published backend supports Linux **x86_64** and Node.js **24**. Install Git,
+npm, `flock`, bubblewrap, OpenCode **1.19.5**, and Claude Code **2.1.289** first.
+Set `OPENNEST_OPENCODE_BIN` and `OPENNEST_CLAUDE_BIN` to absolute paths when the
+executables are outside PATH.
 
 ```sh
-curl -fsSL https://github.com/petrovichest/nest-apps/releases/download/opennest-latest/install-opennest.sh | bash
+curl -fsSL https://github.com/petrovichest/nest-apps/releases/download/opennest-rolling/install-opennest.sh | bash
 ```
 
 Open `http://127.0.0.1:4313`. The owner token is in
 `~/.config/opennest/token`; enter the OpenRouter key in OpenNest settings and
-choose a model. The same qualified release contains `OpenNest-latest.apk` and
-`opennest-browser-latest.zip`. [OpenNest releases](https://github.com/petrovichest/nest-apps/releases)
-use their own `opennest-v…` tags and `opennest-latest` update channel.
+choose a model. The release includes `OpenNest-latest.apk` and
+`opennest-browser-latest.zip`. [OpenNest rolling channel](https://github.com/petrovichest/nest-apps/releases/tag/opennest-rolling)
 
-The installer creates its own API/native services and directories; existing Nest
-installations are preserved. Use the OpenNest update button or `opennest update`
-for qualified updates. Source templates intentionally refuse to install until
-release packaging pins their tested version and full commit.
+Use the OpenNest update button for regular updates. The updater can skip rolling
+releases when the candidate descends from the installed commit and supports the
+current runtime and recovery protocol. It restores the previous ready API when a
+candidate fails to become ready. [Upgrading a legacy installation](../../deploy/opennest/README.md#upgrading-a-legacy-installation)
 
 ## Implemented behavior
 
@@ -69,8 +59,7 @@ release packaging pins their tested version and full commit.
   second transcript database, search index or transcript cache. Unknown native
   storage schemas return an explicit error rather than incomplete results.
 - Masked OpenRouter/proxy settings, connection checks, and in-app update controls.
-  A managed update restarts the API while retaining the native process. An
-  unqualified or missing OpenNest release is not offered as an update.
+  A managed update restarts the API while retaining the native process.
 
 OpenCode remains the conversation source of truth. OpenNest stores only its own
 metadata, workflow state, drafts, queues and receipts in private atomic JSON.
