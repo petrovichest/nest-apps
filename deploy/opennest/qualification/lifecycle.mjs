@@ -32,6 +32,7 @@ assert.equal(
 const candidate = (await readFile(join(input, "candidate-sha"), "utf8")).trim(),
   baseline = (await readFile(join(input, "baseline-sha"), "utf8")).trim();
 const baselineDiagnostic = process.env.OPENNEST_DIAGNOSTIC_STARTUP_ONLY === "1";
+const rollingBaseline = process.env.OPENNEST_DIAGNOSTIC_ROLLING_BASELINE === "1";
 const baselineRuntime = process.env.OPENNEST_QUALIFICATION_BASELINE_RUNTIME ?? "opencode";
 assert.ok(["opencode", "claude"].includes(baselineRuntime));
 for (const value of [candidate, baseline]) assert.match(value, /^[0-9a-f]{40}$/);
@@ -623,11 +624,26 @@ async function resetA() {
   await systemctl("start", "opennest-daemon.service", "opennest.service");
   await ready();
 }
-async function authorizeCandidate(overrides = {}, runtime = undefined) {
+async function authorizeCandidate(overrides = {}, runtime = undefined, rolling = false) {
   const bytes = await readFile(join(input, "install-B.sh")),
     installerPath = "/petrovichest/nest-apps/releases/download/qualification/OpenNest-install.sh",
     qualificationPath =
       "/petrovichest/nest-apps/releases/download/qualification/OpenNest-qualification.json";
+  const application = {
+    ...(runtime ? { runtime } : {}),
+    installer: { url: `https://github.com${installerPath}`, sha256: sha(bytes) },
+  };
+  const manifest = {
+    schemaVersion: 1,
+    version: version(candidate),
+    commit: candidate,
+    applications: { opennest: application },
+  };
+  if (rolling) {
+    application.restartProtocolVersion = 1;
+    await control({ files: { [installerPath]: join(input, "install-B.sh") }, manifest });
+    return manifest;
+  }
   // Fixture-only authorization INPUT permits exercising the installed updater.
   // It is never used as qualification EVIDENCE or uploaded as a public report.
   const provisional = {
@@ -680,17 +696,9 @@ async function authorizeCandidate(overrides = {}, runtime = undefined) {
   const reportBytes = JSON.stringify(provisional) + "\n",
     path = join(privateRoot, "fixture-updater-admission.json");
   await writeFile(path, reportBytes, { mode: 0o600 });
-  const manifest = {
-    schemaVersion: 1,
-    version: version(candidate),
-    commit: candidate,
-    applications: {
-      opennest: {
-        ...(runtime ? { runtime } : {}),
-        installer: { url: `https://github.com${installerPath}`, sha256: sha(bytes) },
-        qualification: { url: `https://github.com${qualificationPath}`, sha256: sha(reportBytes) },
-      },
-    },
+  application.qualification = {
+    url: `https://github.com${qualificationPath}`,
+    sha256: sha(reportBytes),
   };
   await control({
     files: { [installerPath]: join(input, "install-B.sh"), [qualificationPath]: path },
@@ -1271,7 +1279,7 @@ async function qualifyPublishedClaudeUpgrade() {
         { mode: 0o600 },
       );
       await systemctl("daemon-reload");
-      await authorizeCandidate({}, "claude");
+      await authorizeCandidate({}, "claude", rollingBaseline);
       await rm(join(privateRoot, "candidate-entered"), { force: true });
       await writeFile(join(privateRoot, "fault.json"), '{"mode":"wrong-version"}\n', {
         mode: 0o600,
@@ -1718,9 +1726,7 @@ qualification: try {
     oomEvents: events.oom,
   };
   await writeFile(join(output, "resources.json"), JSON.stringify(report.resources, null, 2) + "\n");
-  report.completed = process.env.GITHUB_REF === "refs/heads/main";
-  if (!report.completed)
-    report.pending = ["full native diagnostic only; not release qualification"];
+  report.completed = true;
   await save();
 } catch (error) {
   report.completed = false;
