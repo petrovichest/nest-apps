@@ -424,6 +424,7 @@ describe("App routing and navigation", () => {
       update,
       limits,
       status,
+      within(controls as HTMLElement).getByRole("link", { name: "Работники" }),
       addProject,
       search,
     ]);
@@ -1708,6 +1709,7 @@ describe("App routing and navigation", () => {
         update,
         limits,
         status,
+        within(controls).getByRole("link", { name: "Работники" }),
         addProject,
         search,
       ]);
@@ -1715,7 +1717,11 @@ describe("App routing and navigation", () => {
       expect(search.querySelector("svg")).not.toBeNull();
       expect(search).toHaveAttribute("title", "Поиск по диалогам");
       expect(screen.queryByText("Поиск по диалогам")).not.toBeInTheDocument();
-      expect(within(controls).getAllByRole("link")).toEqual([settings, update]);
+      expect(within(controls).getAllByRole("link")).toEqual([
+        settings,
+        update,
+        within(controls).getByRole("link", { name: "Работники" }),
+      ]);
 
       search.focus();
       fireEvent.click(search);
@@ -1758,6 +1764,7 @@ describe("App routing and navigation", () => {
       indicator,
       limits,
       status,
+      within(controls as HTMLElement).getByRole("link", { name: "Работники" }),
       addProject,
       search,
     ]);

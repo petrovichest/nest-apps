@@ -3,7 +3,7 @@ import { loadConfig } from "./config";
 import { SessionManager } from "./manager";
 import { UiService } from "./ui-service";
 import { ClaudeAccounts } from "./accounts";
-import { claudeReplyCheck, claudeTitleGenerator } from "./title";
+import { claudeReplyCheck, claudeTitleGenerator, claudeWorkerModelChooser } from "./title";
 
 const config = await loadConfig();
 const accounts: ClaudeAccounts = new ClaudeAccounts(config, {
@@ -11,7 +11,12 @@ const accounts: ClaudeAccounts = new ClaudeAccounts(config, {
 });
 const manager = new SessionManager(config, undefined, accounts);
 const helper = { claudeBin: config.claudeBin, configDir: config.configDir, accounts };
-const ui = new UiService(manager, claudeTitleGenerator(helper), claudeReplyCheck(helper));
+const ui = new UiService(
+  manager,
+  claudeTitleGenerator(helper),
+  claudeReplyCheck(helper),
+  claudeWorkerModelChooser(helper),
+);
 await accounts.initialize();
 await manager.initialize();
 await ui.initialize();

@@ -1,0 +1,133 @@
+.workers-content {
+  box-sizing: border-box;
+  width: min(100%, 820px);
+  min-height: 0;
+  overflow: auto;
+  padding: 70px clamp(16px, 3vw, 36px) 36px;
+  display: grid;
+  gap: 32px;
+  align-content: start;
+}
+
+.workers-workspace .workspace-actions:empty {
+  display: none;
+}
+
+.workers-content h2 {
+  margin: 0 0 6px;
+  font-size: var(--text-section);
+  font-weight: 650;
+}
+
+.workers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(150px, calc((100% - 12px) / 2)), 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workers-grid li {
+  min-width: 0;
+  position: relative;
+}
+
+.workers-grid .worker-tile {
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 30px 14px 14px;
+  text-align: start;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+}
+
+.worker-tile > :is(strong, span) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.worker-tile strong {
+  -webkit-line-clamp: 2;
+}
+
+.worker-tile span {
+  -webkit-line-clamp: 3;
+  font-size: var(--text-small);
+  line-height: 1.4;
+}
+
+.workers-grid .worker-tile:is(:hover, :focus-visible),
+.workers-grid .worker-tile-settings:is(:hover, :focus-visible) {
+  background: color-mix(in srgb, currentColor 8%, var(--surface-raised));
+}
+
+.workers-grid .worker-tile-settings {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-end: 4px;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+}
+
+.worker-settings-fields,
+.worker-settings-fields label {
+  display: grid;
+  gap: 8px;
+}
+
+.worker-settings-fields {
+  gap: 14px;
+  max-height: min(72dvh, 720px);
+  overflow: auto;
+}
+
+.worker-settings-fields :is(input, textarea, select) {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.worker-model-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(155px, 100%), 1fr));
+  gap: 12px;
+}
+
+.worker-settings-fields footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.worker-memory {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.worker-memory li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-block: 8px;
+}
+
+.worker-memory li > span {
+  flex: 1 0 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 820px) {
+  .workers-content {
+    gap: 24px;
+  }
+}

@@ -2003,3 +2003,4 @@ export * from "./claude-accounts.js";
 export * from "./codex-accounts.js";
 export * from "./claude-proxy.js";
 export * from "./kanban.js";
+export * from "./workers.js";

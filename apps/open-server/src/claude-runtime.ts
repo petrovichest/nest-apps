@@ -7,6 +7,7 @@ import { buildApp } from "../../claude-server/src/app";
 import { executablePath } from "../../claude-server/src/config";
 import { readJson } from "../../claude-server/src/io";
 import { SessionManager } from "../../claude-server/src/manager";
+import { claudeWorkerModelChooser } from "../../claude-server/src/title";
 import { AppError } from "../../claude-server/src/types";
 import { UiService } from "../../claude-server/src/ui-service";
 import { AppManager } from "./app-management";
@@ -67,7 +68,20 @@ export async function startClaudeRuntime(config: Config) {
       models,
     },
   });
-  const ui = new UiService(manager);
+  const ui = new UiService(
+    manager,
+    undefined,
+    undefined,
+    claudeWorkerModelChooser({
+      claudeBin,
+      configDir,
+      openRouter: {
+        keyFile: manager.config.openRouter!.keyFile,
+        environment,
+        defaultModel: models.find((model) => model.isDefault)?.id,
+      },
+    }),
+  );
   const proxy = new OpenConnection(config, {
     async withIdleNative(action) {
       if (!manager.accepting)

@@ -5421,6 +5421,8 @@ function MarkdownLink({
         {children}
       </GalleryImageLink>
     );
+  if (href && /^\/workers\?proposal=[a-f0-9-]{36}$/u.test(href))
+    return <Link to={href}>{children}</Link>;
   const opensSeparately = !Capacitor.isNativePlatform() && isExternalHttpLink(href);
   const path = cwd && !opensSeparately ? localDownloadPath(href, cwd) : null;
   const artifact = path ? artifactDescriptor(path) : null;

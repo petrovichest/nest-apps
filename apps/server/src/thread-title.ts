@@ -73,6 +73,23 @@ export class ThreadTitleGenerator {
     );
   }
 
+  async chooseWorkerModel(
+    prompt: string,
+    options: ThreadTitleOptions,
+  ): Promise<string | undefined> {
+    return this.ask(
+      "Choose a model from the supplied catalogue and return only structured output.",
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["model", "reasoningEffort"],
+        properties: { model: { type: "string" }, reasoningEffort: { type: ["string", "null"] } },
+      },
+      prompt,
+      options,
+    );
+  }
+
   private async ask(
     instructions: string,
     schema: object,

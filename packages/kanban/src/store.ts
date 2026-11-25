@@ -164,9 +164,7 @@ export class KanbanStore {
     while (true) {
       try {
         await mkdir(path, { mode: 0o700 });
-        await writeFile(join(path, "owner.json"), JSON.stringify({ pid: process.pid }), {
-          mode: 0o600,
-        });
+        await atomicJson(join(path, "owner.json"), { pid: process.pid });
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -177,7 +175,7 @@ export class KanbanStore {
           };
           abandoned = !processAlive(owner.pid);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
             abandoned = await stat(path).then(
               (info) => Date.now() - info.mtimeMs > 30_000,
               () => false,

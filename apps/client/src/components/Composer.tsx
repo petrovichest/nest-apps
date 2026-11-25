@@ -139,6 +139,7 @@ export function Composer({
   running = false,
   settings,
   onSettingsChange,
+  hideSettings = false,
   settingsBusy = false,
   settingsDisabled = false,
   effortDisabled = false,
@@ -205,6 +206,7 @@ export function Composer({
   running?: boolean;
   settings: SessionSettings;
   onSettingsChange(value: UpdateThreadSettingsRequest): void;
+  hideSettings?: boolean;
   settingsBusy?: boolean;
   settingsDisabled?: boolean;
   effortDisabled?: boolean;
@@ -1957,26 +1959,28 @@ export function Composer({
                   </select>
                 </label>
               )}
-              <SettingsPicker
-                effortDisabled={effortDisabled}
-                disabled={running || busy || settingsBusy || settingsDisabled || speechBusy}
-                teamToggleDisabled={
-                  busy ||
-                  settingsBusy ||
-                  settingsDisabled ||
-                  speechBusy ||
-                  (running && settings.collaborationMode !== "team")
-                }
-                models={models}
-                value={settings}
-                onChange={onSettingsChange}
-                goalMode={goalMode}
-                goal={goal}
-                goalBusy={goalBusy}
-                onGoalModeChange={onGoalModeChange}
-                onGoalUpdate={onGoalUpdate}
-                onGoalClear={onGoalClear}
-              />
+              {!hideSettings && (
+                <SettingsPicker
+                  effortDisabled={effortDisabled}
+                  disabled={running || busy || settingsBusy || settingsDisabled || speechBusy}
+                  teamToggleDisabled={
+                    busy ||
+                    settingsBusy ||
+                    settingsDisabled ||
+                    speechBusy ||
+                    (running && settings.collaborationMode !== "team")
+                  }
+                  models={models}
+                  value={settings}
+                  onChange={onSettingsChange}
+                  goalMode={goalMode}
+                  goal={goal}
+                  goalBusy={goalBusy}
+                  onGoalModeChange={onGoalModeChange}
+                  onGoalUpdate={onGoalUpdate}
+                  onGoalClear={onGoalClear}
+                />
+              )}
               {costUsage && (
                 <span
                   className="setting-control session-cost"

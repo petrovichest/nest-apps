@@ -79,6 +79,7 @@ import {
   type SidebarSide,
 } from "./components/SettingsPage";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
+import { WorkersPage } from "./components/WorkersPage";
 import { useConnection } from "./connection";
 import { localizeKnownServerText, useI18n, type Translate } from "./i18n";
 import { stopPushNotifications, usePushNotifications } from "./push";
@@ -490,6 +491,15 @@ export function App({
           />
         ) : (
           <Routes>
+            <Route
+              path="/workers"
+              element={
+                <WorkersPage
+                  projects={snapshot?.projects ?? []}
+                  onOpenNavigation={() => setDrawer(true)}
+                />
+              }
+            />
             <Route
               path="/projects/:projectId/kanban"
               element={
@@ -1752,6 +1762,16 @@ function Sidebar({
           <ConnectionDot state={state.network} />
           <span className="sr-only">{networkLabel(state.network, t)}</span>
         </div>
+        <NavLink
+          to="/workers"
+          className="sidebar-control-action"
+          onClick={() => {
+            onManualNavigationIntent();
+            onClose();
+          }}
+        >
+          <TeamIcon /> {t("Работники")}
+        </NavLink>
         <button className="sidebar-control-action" onClick={onNewProject}>
           <PlusIcon />
           {t("Добавить проект")}

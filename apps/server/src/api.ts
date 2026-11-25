@@ -535,7 +535,7 @@ export interface ApiServices {
   appManager?: AppManager;
   lifecycle?: RuntimeLifecycle;
   threadTitles?: Pick<ThreadTitleGenerator, "generate"> &
-    Partial<Pick<ThreadTitleGenerator, "readReply">>;
+    Partial<Pick<ThreadTitleGenerator, "readReply" | "chooseWorkerModel">>;
   transcription?: Pick<
     TranscriptionService,
     "configuration" | "updateConfiguration" | "transcribe"
@@ -994,7 +994,8 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       }
       codexManager?.assertTurnsAllowed();
       const project = store.view().projects.find((candidate) => candidate.id === projectId);
-      if (!project) throw new ProjectNotFoundError("Project not found");
+      if (!project && (projectId || !workspace))
+        throw new ProjectNotFoundError("Project not found");
       // Settings chosen with a board task replace the new-session defaults.
       const settings = workspace?.settings
         ? mergeSettings(
@@ -1006,7 +1007,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       if (!previous) {
         const params = {
           clientCreationId,
-          cwd: workspace?.cwd ?? project.path,
+          cwd: workspace?.cwd ?? project!.path,
           ...threadSettings(settings, projection.availableModels),
           developerInstructions: SESSION_ARTIFACT_INSTRUCTIONS,
           dynamicTools: ROOT_DYNAMIC_TOOLS,
@@ -1037,7 +1038,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
             pinned: false,
             lastReadUpdatedAt: 0,
           });
-          meta.kanbanProjectId = projectId;
+          if (projectId) meta.kanbanProjectId = projectId;
         }
       });
       if (workspace) {
@@ -4155,10 +4156,18 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       ? { dataDir: join(dirname(store.path), "kanban") }
       : {}),
     adapter: {
+      models: () => projection.availableModels,
+      chooseModel: (prompt, cwd) =>
+        threadTitles?.chooseWorkerModel?.(prompt, {
+          cwd,
+          model: projection.newSessionSettings.model,
+          effort: projection.newSessionSettings.reasoningEffort,
+        }) ?? Promise.resolve(undefined),
+      projects: () => store.view().projects,
       available: () => bridge.state === "ready" && (!lifecycle || lifecycle.acceptsMutations),
       async launch(job) {
         const project = store.view().projects.find((item) => item.path === job.projectPath);
-        if (!project) throw new ProjectNotFoundError("Project not found");
+        if (job.projectPath && !project) throw new ProjectNotFoundError("Project not found");
         if (job.kind === "classify") {
           // Like title/transcript helpers, classifiers never enter the user projection or queue.
           const settings =
@@ -4204,7 +4213,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           }
           return { threadId: thread.id };
         }
-        const thread = await getOrCreateProjectThread(project.id, `kanban:${job.id}`, {
+        const thread = await getOrCreateProjectThread(project?.id ?? "", `kanban:${job.id}`, {
           cwd: job.cwd,
           title: job.title,
           ...(job.settings ? { settings: job.settings } : {}),

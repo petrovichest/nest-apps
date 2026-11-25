@@ -58,7 +58,7 @@ When a new task holds several independent tasks of different categories, the
 classifier splits it: the card keeps the first task and the others appear right
 below it in To do. Each part gets the original sentences that belong to it, word for
 word, its own images (an image the classifier does not assign goes to every part)
-and the settings chosen with the task. A task whose text changed while it was being
+and the worker assigned to the original card. A task whose text changed while it was being
 classified is never split.
 
 The initial stages are **To do → In progress → Waiting for answer → Ready →
@@ -84,20 +84,23 @@ current application.
 
 ## Execution
 
-Starting a card creates an ordinary session of the current application in the
-project folder, with that application's new-session defaults. Its first message is
-exactly the task text and pictures as the operator wrote them. There are no board
-instructions, helper commands or reports: the agent follows the project's own rules as
-in any session, including committing and pushing its work. Tasks share the project
-folder, so the operator decides which tasks may run at the same time.
+Starting a card creates a session of the current application in the project folder.
+The assignee is either a worker or a standard session with that application's defaults.
+The worker receives its profile, the project-scoped and common notes available to it,
+and its settings for the current application. The agent follows the project's own
+rules as in any session. Tasks share the project folder, so the operator decides
+which tasks may run at the same time.
 
-Several tasks can share one session: tick them in To do and press **Start together
-(N)** in the column header, or drag one of the ticked tasks into In progress. The
-first message then holds every task's text under its own heading («## Задача 1», …)
-with all their pictures; the session uses the first settings chosen with them in
-this application. From then on the tasks move together: a rework comment, **Start
-again** and **Publish** on any of them go to that one session once and carry all of
-them. The task panel lists the other tasks of its session.
+Tick tasks in To do and press **Start together (N)**, or drag a selected task into
+In progress. The board creates one session for each assigned worker, and one
+standard session for the unassigned cards. Sessions run independently. Tasks
+that share a session get one first message with a heading per task and all their
+pictures. The task panel lists the other tasks in the same session.
+
+Open **Workers** from the sidebar to browse the shared workers and the workers of
+each project. Click the Architect to design a worker and approve its proposed
+profile. Each application uses its own model catalogue. An unavailable saved
+model is reported on the card so you can retry or change the worker's settings.
 
 The card follows the session:
 

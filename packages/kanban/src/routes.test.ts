@@ -34,6 +34,14 @@ function fixture() {
     })) as KanbanBoard["runs"],
   };
   const service = {
+    workers: {
+      list: vi.fn(async () => []),
+      projectKey: vi.fn(async () => "canonical-project"),
+      listForProjects: vi.fn(async () => [
+        { id: "reviewer", projectKey: null },
+        { id: "lead", projectKey: "canonical-project" },
+      ]),
+    },
     wake: vi.fn(),
     read: vi.fn(async () => board),
     createCard: vi.fn(async () => board),
@@ -58,6 +66,36 @@ function fixture() {
   return { app, service };
 }
 describe("shared board HTTP routes", () => {
+  it("returns the common catalogue and the requested local projects in one read", async () => {
+    const { app, service } = fixture();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/workers/catalog",
+      payload: { projectIds: ["local-project-id"] },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      common: [{ id: "reviewer", projectKey: null }],
+      projects: [
+        {
+          projectId: "local-project-id",
+          workers: [{ id: "lead", projectKey: "canonical-project" }],
+        },
+      ],
+    });
+    expect(service.workers.listForProjects).toHaveBeenCalledOnce();
+    expect(service.read).not.toHaveBeenCalled();
+  });
+
+  it("lists common workers without reading the board", async () => {
+    const { app, service } = fixture();
+    const response = await app.inject({ method: "GET", url: "/api/v1/workers" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([]);
+    expect(service.workers.list).toHaveBeenCalledWith(null);
+    expect(service.read).not.toHaveBeenCalled();
+  });
+
   it("routes stage edits, stage removal and archived task deletion to the shared board", async () => {
     const { app, service } = fixture();
     const base = "/api/v1/projects/local-project-id/kanban";

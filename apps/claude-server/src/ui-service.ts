@@ -183,6 +183,7 @@ export class UiService extends EventEmitter {
     private readonly generateTitle?: TitleGenerator,
     /** Tells a finished board task's question from a done result. */
     readonly checkReply?: ReplyCheck,
+    readonly chooseWorkerModel?: (prompt: string, model?: string) => Promise<string>,
   ) {
     super();
     this.store = new UiStore(
@@ -1481,13 +1482,15 @@ export class UiService extends EventEmitter {
     draft?: UpdateThreadDraftRequest,
     workspace?: { cwd: string; title: string; model?: string },
   ): Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> {
-    const project = this.project(projectId),
+    const project = projectId ? this.project(projectId) : null,
       prior = this.store.data.creations[clientCreationId];
     if (prior) {
       if (prior.projectId !== projectId || (prior.fingerprint && prior.fingerprint !== fingerprint))
         throw new AppError("conflict", "Creation ID was reused with different input", 409);
       return { thread: this.summary(prior.threadId), draft: this.thread(prior.threadId).draft };
     }
+    if (!project && (!workspace?.cwd || draft?.files?.length))
+      throw new AppError("not_found", "Project not found", 404);
     if (draft) validateDraft(draft);
     const id = randomUUID(),
       refs: ThreadFileAttachment[] = [];
@@ -1507,9 +1510,14 @@ export class UiService extends EventEmitter {
           );
       }
       await this.store.update((data) => {
-        if (!data.projects.some((item) => item.id === projectId))
+        if (projectId && !data.projects.some((item) => item.id === projectId))
           throw new AppError("conflict", "Project was removed during session creation", 409);
-        const thread = blankThread(id, workspace?.cwd ?? project.path, projectId, workspace?.title);
+        const thread = blankThread(
+          id,
+          workspace?.cwd ?? project!.path,
+          project?.id ?? null,
+          workspace?.title,
+        );
         const model = workspace?.model ?? data.taskDefaults.model;
         const defaultEffort = data.taskDefaults.reasoningEffort;
         const defaultModel = this.modelOptions().find((item) => item.id === (model ?? "default"));

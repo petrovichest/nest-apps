@@ -385,6 +385,7 @@ export type BoardTaskDraft = PastedText & {
   input: string;
   images: ThreadDraftImage[];
   settings?: SessionSettings;
+  workerId?: string;
 };
 
 type LocalBoardTaskDraft = {
@@ -414,7 +415,13 @@ export async function saveBoardTaskDraft(
 ): Promise<void> {
   const connectionKey = connectionCacheKey(settings);
   const key = boardTaskDraftKey(connectionKey, projectId);
-  if (!value.input && !value.images.length && !value.pasteBlocks?.length && !value.settings) {
+  if (
+    !value.input &&
+    !value.images.length &&
+    !value.pasteBlocks?.length &&
+    !value.settings &&
+    !value.workerId
+  ) {
     await deleteValue(DRAFT_STORE, key);
     return;
   }

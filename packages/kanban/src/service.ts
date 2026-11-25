@@ -14,6 +14,7 @@ import type {
   KanbanRun,
   KanbanRunKind,
   KanbanStageRole,
+  Project,
   SessionSettings,
   UpdateKanbanCardRequest,
   UpdateKanbanStageRequest,
@@ -29,6 +30,7 @@ import {
   installAgentHelper,
   PUBLISH_PROMPT,
   taskPrompt,
+  shellQuote,
 } from "./agent.js";
 import type { ReplyVerdict } from "./reply.js";
 import {
@@ -39,6 +41,8 @@ import {
   type KanbanDocument,
   type StoredImage,
 } from "./store.js";
+import { WorkerStore } from "./workers.js";
+import { WORKER_ARCHITECT_ID, type ModelOption } from "@codexnest/protocol";
 
 export type KanbanLaunch = {
   id: string;
@@ -52,6 +56,9 @@ export type KanbanLaunch = {
   settings?: SessionSettings;
 };
 export type KanbanProviderAdapter = {
+  models?(): readonly ModelOption[];
+  projects?(): readonly Project[];
+  chooseModel?(prompt: string, cwd: string): Promise<string | undefined>;
   available?(): boolean;
   launch(input: KanbanLaunch): Promise<{ threadId: string; sessionUrl?: string }>;
   resume(input: { threadId: string; prompt: string; id: string; images?: string[] }): Promise<void>;
@@ -301,6 +308,7 @@ function classifiedTasks(payload: Record<string, unknown>, pictures: number): Cl
 
 export class KanbanService {
   readonly store: KanbanStore;
+  readonly workers: WorkerStore;
   private watchers: FSWatcher[] = [];
   private pumping = false;
   private again = false;
@@ -318,6 +326,270 @@ export class KanbanService {
   private classificationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   constructor(private readonly options: KanbanServiceOptions) {
     this.store = new KanbanStore(options.dataDir);
+    this.workers = new WorkerStore(
+      process.env.VITEST ? join(this.store.directory, "workers") : undefined,
+    );
+  }
+
+  private async prepareWorker(id: string, projectPath: string | null, runId: string) {
+    const projectKey = projectPath ? await this.workers.projectKey(projectPath) : null;
+    const { profile, memory } = await this.workers.snapshot(id, projectKey);
+    const architect = id === WORKER_ARCHITECT_ID;
+    const models = this.options.adapter.models?.();
+    const settings = architect
+      ? undefined
+      : (profile.settings[this.options.provider] ??
+        (await this.workers.configure(id, projectKey, this.options.provider, (current) =>
+          this.chooseWorkerModel(current, models ?? [], projectPath),
+        )));
+    if (settings?.model && models && !models.some(({ id }) => id === settings.model))
+      throw new KanbanError(
+        "worker_model_unavailable",
+        `Модель «${settings.model}» работника «${profile.name}» недоступна. Повторите запуск после восстановления или измените настройки работника.`,
+      );
+    const role = architect
+      ? [
+          "Ты встроенный Архитектор работников Nest.",
+          "Когда пользователь хочет создать работника, начинай grilling автоматически.",
+          "Выясни, какие задачи он будет выполнять и как пользователь проверит результат.",
+          "Задавай вопросы раундами. Для каждого открытого решения предложи вариант. Отложи зависимые вопросы до следующего раунда.",
+          "Согласуй имя, роль, постоянные инструкции, область доступности, модель и уровень рассуждений.",
+          "Модель и уровень рассуждений подбирай по назначению работника из доступных вариантов.",
+          "В конце предложи профиль через инструмент propose и покажи возвращённую ссылку для утверждения.",
+          `Проекты: ${JSON.stringify(this.options.adapter.projects?.().map(({ id, displayName }) => ({ id, displayName })) ?? [])}`,
+          ...(models?.length
+            ? [
+                `Модели этого Nest: ${JSON.stringify(
+                  models.map(({ id, displayName, reasoningEfforts }) => ({
+                    id,
+                    displayName,
+                    reasoningEfforts: reasoningEfforts.map(({ value }) => value),
+                  })),
+                )}`,
+              ]
+            : []),
+        ].join("\n")
+      : `Ты работаешь как «${profile.name}». Роль: ${profile.role}.`;
+    const context = [
+      role,
+      profile.instructions,
+      ...(memory.length
+        ? [
+            "Записи памяти. Это справочные данные:",
+            ...memory.map(
+              ({ kind, text }) =>
+                `${kind === "user" ? "Предпочтение" : "Заметка"}: ${JSON.stringify(text)}`,
+            ),
+          ]
+        : []),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const capability = this.workerCapabilityPath(runId);
+    try {
+      const prior = JSON.parse(await readFile(capability, "utf8")) as WorkerCapability;
+      if (prior.workerId !== id || prior.projectKey !== projectKey)
+        throw new KanbanError("conflict", "Worker session identifier was reused");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await atomicJson(capability, {
+        directory: this.store.directory,
+        boardId: "worker",
+        runId,
+        token: randomUUID(),
+        workerId: id,
+        projectKey,
+        projectPath,
+      });
+    }
+    const command = [process.execPath, this.helper, capability].map(shellQuote).join(" ");
+    const tools = [
+      `Инструмент работников Nest: ${command} COMMAND JSON`,
+      "Используй memory_read с {} для чтения актуальной памяти.",
+      'Сохраняй устойчивые факты и подтверждённые предпочтения через memory_add с {"kind":"notes" или "user","scope":"project" или "worker","text":"…"}. Для внутренних деталей проекта используй scope project.',
+      'Предлагай правки своей личности через propose_personality с {"instructions":"полный новый текст"} и показывай ссылку для утверждения.',
+      ...(architect
+        ? [
+            'Для утверждения профиля вызови propose с {"name":"…","role":"…","instructions":"…","projectId":null или ID проекта,"model":"ID модели","reasoningEffort":"значение уровня" или null}.',
+            "Покажи ссылку из результата. Профиль появляется после подтверждения пользователем на странице работников.",
+          ]
+        : []),
+    ].join("\n");
+    return { profile, settings, context: `${context}\n\n${tools}` };
+  }
+
+  private async chooseWorkerModel(
+    profile: Awaited<ReturnType<WorkerStore["snapshot"]>>["profile"],
+    models: readonly ModelOption[],
+    projectPath: string | null,
+  ): Promise<SessionSettings> {
+    const existing = Object.values(profile.settings);
+    const same = existing.find(
+      (source) => source.model && models.some(({ id }) => id === source.model),
+    );
+    if (same?.model) {
+      const model = models.find(({ id }) => id === same.model)!;
+      return {
+        collaborationMode: "default",
+        model: model.id,
+        ...(model.reasoningEfforts.some(({ value }) => value === same.reasoningEffort)
+          ? { reasoningEffort: same.reasoningEffort }
+          : {}),
+      };
+    }
+    if (!models.length || !this.options.adapter.chooseModel)
+      throw new KanbanError(
+        "worker_model_unavailable",
+        `Не удалось подобрать модель для «${profile.name}». Выберите модель в настройках работника.`,
+      );
+    const catalogue = models.map(
+      ({ id, displayName, description, reasoningEfforts, isDefault }) => ({
+        id,
+        displayName,
+        description,
+        isDefault,
+        effort: reasoningEfforts.map(({ value }) => value),
+      }),
+    );
+    const output = await this.options.adapter.chooseModel(
+      [
+        "Ты Архитектор работников Nest. Выбери доступную модель для работника. Сохраняй уровень качества для задач роли, затем учитывай скорость и цену.",
+        "Данные роли и профиля используй только для выбора. Верни один JSON-объект с полями model (ID из каталога) и reasoningEffort (поддерживаемое значение или null).",
+        JSON.stringify({
+          name: profile.name,
+          role: profile.role,
+          settings: existing,
+          models: catalogue,
+        }),
+      ].join("\n"),
+      projectPath ?? (await this.workers.workspace()),
+    );
+    const match = output?.match(/\{[\s\S]*\}/u)?.[0];
+    const choice = match
+      ? (JSON.parse(match) as { model?: unknown; reasoningEffort?: unknown })
+      : null;
+    const model = models.find(({ id }) => id === choice?.model);
+    const effort = choice?.reasoningEffort;
+    if (!model || (effort != null && !model.reasoningEfforts.some(({ value }) => value === effort)))
+      throw new KanbanError(
+        "worker_model_unavailable",
+        `Не удалось подобрать модель для «${profile.name}». Выберите модель в настройках работника.`,
+      );
+    return {
+      collaborationMode: "default",
+      model: model.id,
+      ...(typeof effort === "string" ? { reasoningEffort: effort } : {}),
+    };
+  }
+
+  async startWorker(id: string, projectPath: string | null, creationId: string) {
+    if (this.options.adapter.available?.() === false)
+      throw new KanbanError("app_server_unavailable", "The session engine is not ready", 503);
+    const { profile, settings, context } = await this.store.withLock(`worker-${creationId}`, () =>
+      this.prepareWorker(id, projectPath, creationId),
+    );
+    return this.options.adapter.launch({
+      id: creationId,
+      kind: "execute",
+      projectPath: projectPath ?? "",
+      cwd: projectPath ?? (await this.workers.workspace()),
+      title: profile.name,
+      prompt: `${context}\n\nПоприветствуй пользователя и спроси, с чего начать.`,
+      ...(settings ? { settings } : {}),
+    });
+  }
+
+  private workerCapabilityPath(id: string): string {
+    if (!/^[0-9a-f-]{36}$/i.test(id))
+      throw new KanbanError("invalid_request", "Invalid worker session identifier", 400);
+    return join(this.store.directory, "capabilities", `worker-${this.options.provider}-${id}.json`);
+  }
+
+  private async workerCommand(request: AgentRequest, scope: WorkerCapability): Promise<unknown> {
+    const token = typeof request.token === "string" ? Buffer.from(request.token) : Buffer.alloc(0);
+    const expected = Buffer.from(scope.token);
+    if (token.length !== expected.length || !timingSafeEqual(token, expected))
+      throw new KanbanError("forbidden", "Invalid worker capability", 403);
+    const { workerId, projectKey } = scope;
+    if (request.command === "memory_read")
+      return (await this.workers.snapshot(workerId, projectKey)).memory;
+    const input = request.payload as Record<string, unknown> | null;
+    if (!input || typeof input !== "object")
+      throw new KanbanError("invalid_request", "Expected a tool argument object", 400);
+    if (request.command === "memory_add") {
+      if (
+        (input.kind !== "notes" && input.kind !== "user") ||
+        (input.scope !== "worker" && input.scope !== "project") ||
+        typeof input.text !== "string"
+      )
+        throw new KanbanError("invalid_request", "Invalid memory arguments", 400);
+      return this.workers.changeMemory(workerId, projectKey, {
+        action: "add",
+        kind: input.kind,
+        scope: input.scope,
+        text: input.text,
+      });
+    }
+    if (request.command === "propose_personality") {
+      const { profile } = await this.workers.snapshot(workerId, projectKey);
+      const project = profile.projectKey
+        ? this.options.adapter.projects?.().find(({ path }) => path === scope.projectPath)
+        : undefined;
+      if (profile.projectKey && !project)
+        throw new KanbanError("not_found", "Project not found", 404);
+      const proposal = await this.workers.propose({
+        provider: this.options.provider,
+        ...(project ? { projectId: project.id, projectName: project.displayName } : {}),
+        projectKey: profile.projectKey,
+        name: profile.name,
+        role: profile.role,
+        instructions: text(input.instructions, "Worker instructions", 16_000),
+        settings: profile.settings[this.options.provider] ?? { collaborationMode: "default" },
+        target: {
+          id: workerId,
+          revision: profile.revision,
+          previousInstructions: profile.instructions,
+        },
+      });
+      return { url: `/workers?proposal=${proposal.id}` };
+    }
+    if (workerId === WORKER_ARCHITECT_ID && request.command === "propose") {
+      const model = this.options.adapter.models?.().find((option) => option.id === input.model);
+      const effort = input.reasoningEffort;
+      if (
+        !model ||
+        (effort != null && !model.reasoningEfforts.some(({ value }) => value === effort))
+      )
+        throw new KanbanError(
+          "invalid_worker",
+          "Select an available model and level of reasoning",
+          400,
+        );
+      const project = this.options.adapter.projects?.().find(({ id }) => id === input.projectId);
+      if (!project && input.projectId != null)
+        throw new KanbanError("not_found", "Project not found", 404);
+      const proposal = await this.workers.propose({
+        provider: this.options.provider,
+        ...(project ? { projectId: project.id, projectName: project.displayName } : {}),
+        projectKey: project ? await this.workers.projectKey(project.path) : null,
+        name: text(input.name, "Worker name", 120),
+        role: text(input.role, "Worker role", 500),
+        instructions: text(input.instructions, "Worker instructions", 16_000),
+        settings: {
+          collaborationMode: "default",
+          model: model.id,
+          ...(typeof effort === "string" ? { reasoningEffort: effort } : {}),
+        },
+      });
+      return { url: `/workers?proposal=${proposal.id}` };
+    }
+    throw new KanbanError("invalid_request", "Unknown worker tool", 400);
+  }
+
+  private async requireAssignableWorker(id: string, projectPath: string) {
+    if (id === WORKER_ARCHITECT_ID || typeof id !== "string")
+      throw new KanbanError("invalid_worker", "Select a worker for this task", 400);
+    await this.workers.snapshot(id, await this.workers.projectKey(projectPath));
   }
   /** Recover only OpenNest's own work from the board formerly shared by the applications. */
   async importOpenNestBoards(
@@ -561,15 +833,17 @@ export class KanbanService {
           : [null]),
     ]);
     const settings = decodeSettings(request.settings);
+    const workerId = request.workerId;
     if (audio) this.requireTranscription();
     // Keep the original text-only fingerprint compatible with existing retries.
     let fingerprint = description;
-    if (images.length || audio || settings) {
+    if (images.length || audio || settings || workerId !== undefined) {
       const hash = createHash("sha256").update(JSON.stringify([description, images.length]));
       for (const image of images)
         hash.update(JSON.stringify([image.name, image.mediaType])).update(image.bytes);
       if (audio) hash.update(audio.mediaType).update(audio.bytes);
       if (settings) hash.update(JSON.stringify(settings));
+      if (workerId !== undefined) hash.update(JSON.stringify({ workerId }));
       fingerprint = hash.digest("hex");
     }
     const { board } = await this.store.update(projectPath, async (data) => {
@@ -582,9 +856,11 @@ export class KanbanService {
           );
         return;
       }
+      if (workerId !== undefined) await this.requireAssignableWorker(workerId, projectPath);
       const now = Date.now();
       const card: KanbanCard = {
         id: randomUUID(),
+        ...(workerId ? { workerId } : {}),
         title: description.replace(/\s+/g, " ").slice(0, 100),
         description,
         categoryId: null,
@@ -812,15 +1088,29 @@ export class KanbanService {
       typeof patch !== "object" ||
       Object.keys(patch).some(
         (key) =>
-          !["title", "description", "stageId", "categoryId", "beforeCardId", "archived"].includes(
-            key,
-          ),
+          ![
+            "title",
+            "description",
+            "stageId",
+            "categoryId",
+            "beforeCardId",
+            "archived",
+            "workerId",
+          ].includes(key),
       )
     )
       throw new KanbanError("invalid_request", "Invalid card patch", 400);
-    const { board } = await this.store.update(projectPath, (data) =>
-      this.patchCard(data, findCard(data, cardId), patch),
-    );
+    if (patch.workerId != null) await this.requireAssignableWorker(patch.workerId, projectPath);
+    const { board } = await this.store.update(projectPath, (data) => {
+      const card = findCard(data, cardId);
+      if (patch.workerId !== undefined) {
+        if (working(data, card.id))
+          throw new KanbanError("already_running", "The task's agent is working; wait or stop it");
+        if (patch.workerId === null) delete card.workerId;
+        else card.workerId = patch.workerId;
+      }
+      this.patchCard(data, card, patch);
+    });
     this.changed(board);
     return board;
   }
@@ -1132,14 +1422,26 @@ export class KanbanService {
           this.release(data, item);
           setStage(data, item, role(data.board, "working"));
         }
-        const run = this.addRun(
-          data,
-          "execute",
-          affectedIds,
-          provider,
-          request.comment,
-          resumeThreadId,
-        );
+        const groups = new Map<string | undefined, string[]>();
+        for (const item of affected) {
+          const workerId = request.action === "rework" ? session?.run.workerId : item.workerId;
+          const group = groups.get(workerId) ?? [];
+          group.push(item.id);
+          groups.set(workerId, group);
+        }
+        const runs = [...groups].map(([workerId, cardIds]) => {
+          const run = this.addRun(
+            data,
+            "execute",
+            cardIds,
+            provider,
+            request.comment,
+            resumeThreadId,
+          );
+          if (workerId) run.workerId = workerId;
+          return run;
+        });
+        const run = runs[0]!;
         // Starting again replaces the session: the new one gets the original task.
         if (request.action === "restart" && session && active(session.run)) {
           session.run.status = "completed";
@@ -1705,10 +2007,10 @@ export class KanbanService {
         ),
       );
       const imageInput = images.length ? { images } : {};
-      // Tasks sent together start with the first settings chosen in this application.
-      const chosen = cards
-        .map((item) => document.cards[item.id]?.settings)
-        .find((value) => value?.provider === this.options.provider);
+      const worker =
+        run.kind === "execute" && !runtime.resumeThreadId && run.workerId
+          ? await this.prepareWorker(run.workerId, document.board.projectPath, run.id)
+          : undefined;
       if (runtime.interruptThreadId)
         await Promise.resolve(this.options.adapter.interrupt?.(runtime.interruptThreadId)).catch(
           (error) => this.options.onError?.(error),
@@ -1735,16 +2037,14 @@ export class KanbanService {
             id: run.id,
             projectPath: document.board.projectPath,
             cwd: document.board.projectPath,
-            prompt,
+            prompt: worker ? `${worker.context}\n\nЗадача:\n${prompt}` : prompt,
             ...imageInput,
             kind: run.kind,
             title:
               run.kind === "classify"
                 ? `classify: ${card.title}`
                 : cards.map((item) => item.title).join("; "),
-            ...(run.kind === "execute" && chosen?.provider === this.options.provider
-              ? { settings: chosen.value }
-              : {}),
+            ...(worker?.settings ? { settings: worker.settings } : {}),
           });
       // Register before publishing running state: an immediate native completion must
       // already resolve to this run, including a continuation of an existing thread.
@@ -1807,10 +2107,19 @@ export class KanbanService {
         this.options.onError?.(error);
         continue;
       }
-      const document = await this.store.readById(request.boardId).catch(() => null);
-      if (!document) continue;
-      const run = document.board.runs.find((run) => run.id === request.runId);
-      if (!run || run.provider !== this.options.provider) continue;
+      const scope =
+        request.boardId === "worker"
+          ? await Promise.resolve()
+              .then(() => readFile(this.workerCapabilityPath(request.runId), "utf8"))
+              .then((value) => JSON.parse(value) as WorkerCapability)
+              .catch(() => null)
+          : null;
+      const document =
+        request.boardId === "worker"
+          ? null
+          : await this.store.readById(request.boardId).catch(() => null);
+      const run = document?.board.runs.find((run) => run.id === request.runId);
+      if (!scope && (!run || run.provider !== this.options.provider)) continue;
       await this.store.withLock(`request-${name.slice(0, -5)}`, async () => {
         const resultPath = join(this.store.directory, "results", name);
         if (
@@ -1828,7 +2137,9 @@ export class KanbanService {
             throw new KanbanError("invalid_request", "Invalid helper request identifier", 400);
           result = {
             ok: true,
-            result: await this.store.withLock(`run-${run.id}`, () => this.agentCommand(request)),
+            result: scope
+              ? await this.workerCommand(request, scope)
+              : await this.store.withLock(`run-${run!.id}`, () => this.agentCommand(request)),
           };
         } catch (error) {
           result = {
@@ -1905,6 +2216,7 @@ export class KanbanService {
             await copyFile(path(images[index]!.file), path(`${id}.${position}`));
           added.push({
             id,
+            ...(current.workerId ? { workerId: current.workerId } : {}),
             title: task.title,
             description: task.text!,
             categoryId: group(task.category),
@@ -1955,4 +2267,11 @@ type AgentRequest = {
   token: string;
   command: string;
   payload: unknown;
+};
+
+type WorkerCapability = {
+  token: string;
+  workerId: string;
+  projectKey: string | null;
+  projectPath?: string | null;
 };

@@ -20,7 +20,7 @@ import type {
   KanbanRun,
   KanbanStage,
   Project,
-  SessionSettings,
+  WorkerProfile,
   ThreadSummary,
   TranscriptionConfigResponse,
   TranscriptionProvider,
@@ -30,6 +30,7 @@ import {
   KANBAN_IMAGE_LIMIT,
   KANBAN_IMAGE_MAX_BYTES,
   rebasePastedText,
+  WORKER_ARCHITECT_ID,
 } from "@codexnest/protocol";
 import { MessageImageGallery, MessageImageProvider } from "./MessageImageGallery";
 import { onBeforeAppReload } from "../app-reload";
@@ -37,11 +38,7 @@ import { application } from "../application";
 import { useConnection } from "../connection";
 import { loadBoardTaskDraft, saveBoardTaskDraft, type BoardTaskDraft } from "../offline-store";
 import { Composer, type ComposerImage, type ComposerRecording } from "./Composer";
-import {
-  applySessionSettingsPatch,
-  clientSessionSettingsPatch,
-  initialSessionSettings,
-} from "./ThreadPage";
+import { initialSessionSettings } from "./ThreadPage";
 import { localizeKnownServerText, useI18n, type Translate } from "../i18n";
 import { threadMarkerClasses } from "../thread-status";
 import { Dialog } from "./Dialog";
@@ -287,7 +284,58 @@ export function KanbanBoard({
   const [stageDrag, setStageDrag] = useState<string | null>(null);
   const [headerRetry, setHeaderRetry] = useState<Recording | null>(null);
   const [stageDropId, setStageDropId] = useState<string | null>(null);
+  const [workerOptions, setWorkerOptions] = useState<{
+    projectId: string;
+    options: WorkerProfile[];
+  }>();
   const [taskDraft, setTaskDraft] = useState<BoardTaskDraft>(EMPTY_TASK_DRAFT);
+  const pickWorker = dialog === "create" || cardId !== null;
+  useEffect(() => {
+    if (!pickWorker || !projectId || workerOptions?.projectId === projectId) return;
+    let active = true;
+    void api.workerCatalogue([projectId]).then(
+      (data) => {
+        if (active)
+          setWorkerOptions({
+            projectId,
+            options: [...data.common, ...(data.projects[0]?.workers ?? [])].filter(
+              ({ id }) => id !== WORKER_ARCHITECT_ID,
+            ),
+          });
+      },
+      () => {
+        if (active) setWorkerOptions({ projectId, options: [] });
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [api, pickWorker, projectId, workerOptions?.projectId]);
+
+  function workerPicker(value: string | undefined, onChange: (id: string) => void) {
+    const options = workerOptions?.projectId === projectId ? workerOptions.options : [];
+    return (
+      <label>
+        {t("Исполнитель")}
+        <select
+          value={value ?? ""}
+          disabled={busy}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          <option value="">{t("Стандартная сессия")}</option>
+          {value && !options.some(({ id }) => id === value) && (
+            <option value={value}>{t("Назначенный работник")}</option>
+          )}
+          {options.map((worker) => (
+            <option key={worker.id} value={worker.id}>
+              {worker.name}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+
   const taskDraftRef = useRef(taskDraft);
   const taskDraftSave = useRef<{ projectId: string; timer: number } | null>(null);
   const taskCreationId = useRef(uuid());
@@ -490,7 +538,7 @@ export function KanbanBoard({
         clientCreationId: value.id,
         ...(value.images.length ? { images: value.images } : {}),
         ...(audio ? { audio } : {}),
-        ...(value.settings ? { settings: value.settings } : {}),
+        ...(value.workerId ? { workerId: value.workerId } : {}),
       }),
     );
   }
@@ -512,7 +560,7 @@ export function KanbanBoard({
       text: copyPastedMessage(draft.input.trim(), draft).trim(),
       images: draft.images.map(({ name, url }) => ({ name, url })),
       ...(recording ? { recording } : {}),
-      ...(draft.settings ? { settings: draft.settings } : {}),
+      ...(draft.workerId ? { workerId: draft.workerId } : {}),
     });
     if (!ok) return false;
     // Text typed while the task was being sent stays for the next task.
@@ -1652,6 +1700,13 @@ export function KanbanBoard({
                     ))}
                   </select>
                 </label>
+                {workerPicker(
+                  card.workerId,
+                  (id) =>
+                    void mutate(() =>
+                      api.updateKanbanCard(projectId, card.id, { workerId: id || null }),
+                    ),
+                )}
               </div>
               {card.question && <p className="kanban-card-question">{card.question}</p>}
               {card.error && (
@@ -2020,6 +2075,11 @@ export function KanbanBoard({
               <XIcon />
             </button>
           </div>
+          <div className="kanban-panel-fields kanban-worker-picker">
+            {workerPicker(taskDraft.workerId, (id) =>
+              editTaskDraft({ ...taskDraftRef.current, workerId: id || undefined }),
+            )}
+          </div>
           <Composer
             autoFocus
             sessionIdentity={`board-task:${projectId}`}
@@ -2053,17 +2113,9 @@ export function KanbanBoard({
             }}
             onSubmit={() => void submitTask()}
             busy={busy}
-            settings={taskDraft.settings ?? defaultTaskSettings}
-            onSettingsChange={(patch) => {
-              const current = taskDraftRef.current;
-              editTaskDraft({
-                ...current,
-                settings: applySessionSettingsPatch(
-                  current.settings ?? defaultTaskSettings,
-                  clientSessionSettingsPatch(patch),
-                ),
-              });
-            }}
+            settings={defaultTaskSettings}
+            hideSettings
+            onSettingsChange={() => undefined}
             models={models ?? []}
             cwd={project?.path ?? null}
             transcriptionConfig={transcriptionConfig}
@@ -2299,7 +2351,7 @@ type ComposerValue = {
   text: string;
   images: KanbanImageInput[];
   recording?: Recording;
-  settings?: SessionSettings;
+  workerId?: string;
 };
 const EMPTY_TASK_DRAFT: BoardTaskDraft = { input: "", images: [] };
 

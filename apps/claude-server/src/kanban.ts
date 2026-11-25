@@ -37,10 +37,15 @@ export async function registerClaudeKanban(
         ? { dataDir: join(dirname(ui.store.path), "kanban") }
         : {}),
     adapter: {
+      models: () => ui.modelOptions(),
+      chooseModel: (prompt) =>
+        ui.chooseWorkerModel?.(prompt, ui.store.data.taskDefaults.model) ??
+        Promise.resolve(undefined),
+      projects: () => ui.store.data.projects,
       available: () => ui.manager.accepting,
       async launch(job) {
         const project = ui.store.data.projects.find((item) => item.path === job.projectPath);
-        if (!project) throw new Error("Project not found");
+        if (job.projectPath && !project) throw new Error("Project not found");
         const configured = ui.store.data.taskDefaults.classificationModel;
         const classifyModel = openRouter
           ? (
@@ -48,7 +53,7 @@ export async function registerClaudeKanban(
               openRouter.models.find((model) => model.isDefault)
             )?.id
           : (configured ?? "haiku");
-        const { thread } = await ui.createThread(project.id, job.id, undefined, {
+        const { thread } = await ui.createThread(project?.id ?? "", job.id, undefined, {
           cwd: job.cwd,
           title: job.title,
           // Task classification is a short routine step: unless settings choose a model, run it

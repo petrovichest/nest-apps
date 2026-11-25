@@ -610,8 +610,10 @@ export class Engine extends EventEmitter {
   ) {
     return this.serial(async () => {
       this.requireReady();
-      const project = this.project(projectId);
-      const cwd = options.cwd ? await realpath(options.cwd) : project.path;
+      const project = projectId ? this.project(projectId) : null;
+      if (!project && (!options.cwd || draft?.files?.length))
+        throw new AppError("not_found", "Project not found", 404);
+      const cwd = options.cwd ? await realpath(options.cwd) : project!.path;
       if (!(await stat(cwd)).isDirectory())
         throw new AppError("validation_failed", "Session cwd must be a directory");
       const prior = this.data.creations[creationId];
@@ -638,7 +640,7 @@ export class Engine extends EventEmitter {
       this.importSession(session, cwd);
       const stored = this.thread(session.id);
       stored.permissionVersion = this.data.permissionVersion;
-      stored.summary.projectId = project.id;
+      stored.summary.projectId = project?.id ?? null;
       stored.summary.settings = { ...stored.summary.settings, ...options.settings };
       if (options.parentThreadId) {
         stored.parentThreadId = options.parentThreadId;

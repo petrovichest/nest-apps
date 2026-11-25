@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { ReplyVerdict } from "@nest-apps/kanban";
 import type { ClaudeAccounts } from "./accounts";
 import { createClaudeProxyEnvironment, type ClaudeProxyEnvironment } from "./proxy";
+import { startOpenRouterGateway } from "./openrouter-gateway";
 
 const TITLE_TIMEOUT_MS = 60_000;
 const TITLE_INPUT_LIMIT = 8_000;
@@ -54,6 +55,7 @@ type ClaudeHelperOptions = {
   model?: string;
   accounts?: Pick<ClaudeAccounts, "launchAccount">;
   proxyEnvironment?: typeof createClaudeProxyEnvironment;
+  openRouter?: { keyFile: string; environment(): NodeJS.ProcessEnv; defaultModel?: string };
 };
 
 /** A finished turn's last reply: what the agent waits for, and whether it pushed its work. */
@@ -103,6 +105,25 @@ export function claudeTitleGenerator(options: ClaudeHelperOptions): TitleGenerat
   };
 }
 
+export function claudeWorkerModelChooser(options: ClaudeHelperOptions) {
+  return async (prompt: string, model?: string): Promise<string> =>
+    JSON.stringify(
+      await structured(
+        options,
+        "Choose a model from the supplied catalogue and return only structured output.",
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["model", "reasoningEffort"],
+          properties: { model: { type: "string" }, reasoningEffort: { type: ["string", "null"] } },
+        },
+        prompt,
+        model ?? options.openRouter?.defaultModel ?? "default",
+        [],
+      ),
+    );
+}
+
 /** One tool-free request with a JSON schema; returns the structured output. */
 async function structured(
   options: ClaudeHelperOptions,
@@ -113,13 +134,14 @@ async function structured(
   images: readonly string[],
 ): Promise<unknown> {
   const cwd = await mkdtemp(join(tmpdir(), "claudenest-title-"));
-  const env = { ...process.env };
+  let env = { ...process.env };
   delete env.CLAUDECODE;
   if (options.configDir) env.CLAUDE_CONFIG_DIR = options.configDir;
   const pictures = imageBlocks(images);
   // Only the streaming input format can carry images, and it needs streaming output as well.
   const streaming = pictures.length > 0;
   let connection: ClaudeProxyEnvironment | undefined;
+  let gateway: Awaited<ReturnType<typeof startOpenRouterGateway>> | undefined;
   try {
     // Resolve per request so manual and automatic account switches apply to titles too.
     const account = await options.accounts?.launchAccount();
@@ -130,6 +152,25 @@ async function structured(
         account.proxy,
         account.defaultConfig ? "" : account.configDir,
       );
+    if (options.openRouter) {
+      gateway = await startOpenRouterGateway(options.openRouter, options.openRouter.environment());
+      env = {
+        ...env,
+        ANTHROPIC_BASE_URL: gateway.url,
+        ANTHROPIC_AUTH_TOKEN: gateway.token,
+        ANTHROPIC_API_KEY: "",
+        CLAUDE_CODE_OAUTH_TOKEN: undefined,
+        CLAUDE_CODE_USE_BEDROCK: undefined,
+        CLAUDE_CODE_USE_VERTEX: undefined,
+        CLAUDE_CODE_USE_FOUNDRY: undefined,
+        ANTHROPIC_CUSTOM_HEADERS: undefined,
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        NO_PROXY: [env.NO_PROXY ?? env.no_proxy, "127.0.0.1"].filter(Boolean).join(","),
+      };
+      for (const key of Object.keys(env)) {
+        if (/^(?:https?|all)_proxy$/i.test(key) || key === "no_proxy") delete env[key];
+      }
+    }
     const output = await run(
       options.claudeBin,
       [
@@ -139,6 +180,7 @@ async function structured(
         streaming ? "stream-json" : "json",
         "--model",
         model,
+        ...(gateway ? ["--setting-sources", ""] : []),
         "--tools",
         "",
         "--no-session-persistence",
@@ -170,6 +212,7 @@ async function structured(
     if (payload.is_error === true) throw new Error("Invalid Claude title response");
     return payload.structured_output;
   } finally {
+    await gateway?.close().catch(() => undefined);
     await connection?.close().catch(() => undefined);
     await rm(cwd, { recursive: true, force: true });
   }

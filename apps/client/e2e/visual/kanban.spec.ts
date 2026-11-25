@@ -141,7 +141,9 @@ for (const width of [390, 1440]) {
       await expect(start).toBeHidden();
       expect(started).toEqual(["card-0", "todo-3"]);
       if (width < 821) await page.getByRole("tab", { name: /В работе/ }).click();
-      await page.getByRole("button", { name: "Убрать пробелы в адресе", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Изменить задачу «Убрать пробелы в адресе»", exact: true })
+        .click();
       const panel = page.getByRole("complementary", { name: "Убрать пробелы в адресе" });
       await expect(panel.getByRole("heading", { name: "В той же сессии" })).toBeVisible();
       await expect(
@@ -281,7 +283,10 @@ for (const width of [390, 1440]) {
       if (width >= 821) {
         // A waiting task shows what the agent asks; answering opens its session.
         await page
-          .getByRole("button", { name: "Проверить мобильную навигацию", exact: true })
+          .getByRole("button", {
+            name: "Изменить задачу «Проверить мобильную навигацию»",
+            exact: true,
+          })
           .click();
         const waiting = page.getByRole("complementary", { name: "Проверить мобильную навигацию" });
         await expect(
@@ -316,9 +321,7 @@ for (const width of [390, 1440]) {
       await expect(
         create.getByRole("button", { name: "Начать запись", exact: true }),
       ).toBeVisible();
-      await expect(
-        create.getByRole("button", { name: "Модель и уровень рассуждений" }),
-      ).toBeVisible();
+      await expect(create.getByRole("combobox", { name: "Исполнитель" })).toBeVisible();
       await create.getByRole("button", { name: "Добавить изображения" }).click();
       // The attachment menu opens upwards and stays inside the dialog.
       const attachments = create.getByRole("dialog", { name: "Вложения" });
@@ -388,7 +391,9 @@ for (const width of [390, 1440]) {
     );
     await page.goto("/projects/project-nest/kanban");
     if (width < 821) await page.getByRole("tab", { name: /Готовые/ }).click();
-    await page.getByRole("button", { name: "Добавить поиск по категориям", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Изменить задачу «Добавить поиск по категориям»", exact: true })
+      .click();
     const panel = page.getByRole("complementary", { name: "Добавить поиск по категориям" });
     const description = panel.locator(".kanban-panel-description");
     const fields = panel.locator(".kanban-panel-fields");

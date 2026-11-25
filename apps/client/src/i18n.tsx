@@ -23,6 +23,25 @@ const LEGACY_INSTALLATION_KEYS = [
 ];
 
 const ENGLISH: Record<string, string> = {
+  Работники: "Workers",
+  Архитектор: "Architect",
+  Общие: "Shared",
+  "Помогает создать работника": "Helps create workers",
+  "Настройки работника «{{name}}»": "Settings for {{name}}",
+  "Открываем диалог…": "Opening conversation…",
+  "Загружаем работников…": "Loading workers…",
+  "Постоянные инструкции": "Standing instructions",
+  "Текущие инструкции": "Current instructions",
+  "Архитектор использует настройки приложения по умолчанию.":
+    "The Architect uses the app’s default session settings.",
+  "Запись памяти": "Memory entry",
+  "Сохранить запись": "Save entry",
+  "Пока нет записей.": "No entries yet.",
+  "Профиль работника": "Worker profile",
+  "Создать работника": "Create worker",
+  "Назначенный работник": "Assigned worker",
+  "Стандартная сессия": "Standard session",
+  Исполнитель: "Worker",
   Скорость: "Speed",
   "Скорость по умолчанию": "Default speed",
   Обычная: "Normal",

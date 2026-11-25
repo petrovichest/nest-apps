@@ -29,11 +29,14 @@ export async function registerGeminiKanban(
       ? { dataDir: join(engine.config.stateDir, "kanban") }
       : {}),
     adapter: {
+      models: () => engine.data.models,
+      chooseModel: (prompt) => engine.chooseWorkerModel(prompt),
+      projects: () => engine.data.projects,
       available: () => engine.canAcceptWork(),
       async launch(job) {
         const project = engine.data.projects.find((item) => item.path === job.projectPath);
-        if (!project) throw new Error("Project not found");
-        const { thread } = await engine.createThread(project.id, job.id, undefined, {
+        if (job.projectPath && !project) throw new Error("Project not found");
+        const { thread } = await engine.createThread(project?.id ?? "", job.id, undefined, {
           cwd: job.cwd,
           title: job.title,
           ...(job.kind === "classify"

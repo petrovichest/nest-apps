@@ -28,6 +28,7 @@ export type KanbanVoiceState = {
 };
 export type KanbanCard = {
   id: string;
+  workerId?: string;
   title: string;
   description: string;
   categoryId: string | null;
@@ -51,6 +52,7 @@ export type KanbanCard = {
 export type KanbanRunKind = "classify" | "execute" | "publish";
 export type KanbanRun = {
   id: string;
+  workerId?: string;
   kind: KanbanRunKind;
   cardIds: string[];
   provider: KanbanProvider;
@@ -73,6 +75,7 @@ export type KanbanBoard = {
   updatedAt: number;
 };
 export type CreateKanbanCardRequest = {
+  workerId?: string;
   /** May be empty when a recording carries the task. */
   description: string;
   clientCreationId: string;
@@ -91,6 +94,7 @@ export type CreateKanbanCardRequest = {
   threadId?: string;
 };
 export type UpdateKanbanCardRequest = {
+  workerId?: string | null;
   title?: string;
   description?: string;
   categoryId?: string | null;

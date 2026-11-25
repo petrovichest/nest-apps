@@ -53,6 +53,22 @@ async function fixture(
       ...(classifies ? { classifies } : {}),
       dataDir: join(directory, "shared"),
       adapter: {
+        models: () => [
+          {
+            id: provider + "-model",
+            displayName: provider,
+            description: "",
+            isDefault: true,
+            reasoningEfforts: [{ value: "high", description: null, isDefault: true }],
+            serviceTiers: [],
+            supportsPersonality: false,
+          },
+        ],
+        projects: () => [
+          { id: "project", path: project, displayName: "Project", createdAt: "", updatedAt: "" },
+        ],
+        chooseModel: async () =>
+          JSON.stringify({ model: provider + "-model", reasoningEffort: "high" }),
         ...(available ? { available } : {}),
         launch: async (input) => {
           prompts.set(input.id, input.prompt);
@@ -167,6 +183,103 @@ async function fixture(
   };
 }
 
+it("creates a worker with explicit approval, groups its tasks and shares its project memory across apps", async () => {
+  const f = await fixture(undefined, undefined, () => false);
+  async function workerTool(
+    provider: "codex" | "claude",
+    runId: string,
+    command: string,
+    payload: unknown,
+  ) {
+    const directory = f.services[provider].store.directory;
+    const cap = JSON.parse(
+      await readFile(join(directory, "capabilities", `worker-${provider}-${runId}.json`), "utf8"),
+    ) as { token: string };
+    const id = randomUUID();
+    await atomicJson(join(directory, "inbox", `${id}.json`), {
+      id,
+      boardId: "worker",
+      runId,
+      token: cap.token,
+      command,
+      payload,
+    });
+    const result = await until(
+      async () => {
+        try {
+          return JSON.parse(await readFile(join(directory, "results", `${id}.json`), "utf8")) as {
+            ok: boolean;
+            result: { url?: string };
+          };
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw error;
+        }
+      },
+      (value) => value !== null,
+    );
+    expect(result?.ok).toBe(true);
+    return result!.result;
+  }
+
+  const architect = randomUUID();
+  await f.services.codex.startWorker("architect", null, architect);
+  expect(f.inputs.codex[0]?.settings).toBeUndefined();
+  const draft = await workerTool("codex", architect, "propose", {
+    name: "Lead",
+    role: "Check work",
+    instructions: "Review changes",
+    projectId: "project",
+    model: "codex-model",
+    reasoningEffort: "high",
+  });
+  const proposal = await f.services.codex.workers.proposal(draft.url!.split("=")[1]!);
+  expect(await f.services.codex.workers.list(proposal.projectKey)).toHaveLength(1);
+  const profile = await f.services.codex.workers.approveProposal(proposal);
+  expect(await f.services.codex.workers.approveProposal(proposal)).toEqual(profile);
+
+  async function card(text: string, workerId?: string) {
+    return (
+      await f.services.codex.createCard(f.project, {
+        description: text,
+        clientCreationId: randomUUID(),
+        workerId,
+      })
+    ).cards[0]!.id;
+  }
+  const task = await card("Check work", profile.id);
+  const second = await card("Read tests", profile.id);
+  const regular = await card("Standard session");
+  const action = {
+    action: "execute",
+    cardIds: [task, second, regular],
+    clientActionId: randomUUID(),
+  } as const;
+  const started = await f.services.codex.action(f.project, {
+    ...action,
+    cardIds: [...action.cardIds],
+  });
+  expect(started.runs.filter(({ kind }) => kind === "execute")).toHaveLength(2);
+  const run = await f.running("execute", task);
+  expect(run.cardIds).toEqual([task, second]);
+  expect(run.workerId).toBe(profile.id);
+  await workerTool("codex", run.id, "memory_add", {
+    kind: "notes",
+    scope: "project",
+    text: "Run npm test before review",
+  });
+  const follow = await card("Review the changes", profile.id);
+  await f.services.claude.action(f.project, {
+    action: "execute",
+    cardIds: [follow],
+    clientActionId: randomUUID(),
+  });
+  const next = await f.running("execute", follow, f.services.claude);
+  const input = f.inputs.claude.find(({ id }) => id === next.id)!;
+  expect(input.settings?.model).toBe("claude-model");
+  expect(input.prompt).toContain("Run npm test before review");
+});
+
 const stage = (board: KanbanBoard, id: string) =>
   board.stages.find((item) => item.id === board.cards.find((card) => card.id === id)?.stageId)
     ?.role;
@@ -214,7 +327,7 @@ describe("shared provider board service", () => {
       expect(f.launches[provider]).not.toContain(rework.id);
     },
   );
-  it("starts a task with the settings chosen in the application that received it", async () => {
+  it("accepts legacy card settings for retries and uses defaults for new runs", async () => {
     const f = await fixture();
     const settings = { collaborationMode: "plan", model: "opus", reasoningEffort: "high" } as const;
     const request = { description: "Plan the board", clientCreationId: randomUUID(), settings };
@@ -244,7 +357,7 @@ describe("shared provider board service", () => {
       clientActionId: randomUUID(),
     });
     const executor = await f.running("execute", id, f.services.claude);
-    expect(f.inputs.claude.find((input) => input.id === executor.id)?.settings).toEqual(settings);
+    expect(f.inputs.claude.find((input) => input.id === executor.id)?.settings).toBeUndefined();
     // The other application's models differ: its session uses its own defaults.
     await f.services.claude.notifyThread(executor.threadId!, "needsAttention");
     await f.services.codex.action(f.project, {
@@ -1738,7 +1851,7 @@ describe("shared provider board service", () => {
         expect(await f.services.codex.readImage(f.project, cardId, index)).toEqual(image);
     }
     await expect(f.services.codex.readImage(f.project, id, 2)).rejects.toThrow();
-    // The split task starts with its pictures and the settings chosen with the original.
+    // The split task starts with its pictures and standard session settings.
     await f.services.claude.action(f.project, {
       action: "execute",
       cardIds: [split],
@@ -1748,7 +1861,7 @@ describe("shared provider board service", () => {
     const input = f.inputs.claude.find((item) => item.id === executor.id)!;
     expect(input.prompt).toBe("Speed up the API.");
     expect(input.images).toEqual([first.url, third.url]);
-    expect(input.settings).toEqual(settings);
+    expect(input.settings).toBeUndefined();
   });
 
   it("keeps the operator's text whole when it changed during classification or is one task", async () => {

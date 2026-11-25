@@ -443,7 +443,7 @@ describe("project boards", () => {
     }
   });
 
-  it("starts a board task's session with the settings chosen in its task field", async () => {
+  it("starts an unassigned board task with standard settings on a legacy request", async () => {
     const repository = await createApiTestRepository();
     const { app, bridge, headers, projection } = await createTeamHarness({
       projectPath: repository,
@@ -480,7 +480,7 @@ describe("project boards", () => {
         "report",
         JSON.stringify({ title: "Small model", category: "Models" }),
       ]);
-      // The classifier runs on its own model; only the task's session takes the chosen one.
+      // Both classification and execution ignore legacy card settings.
       expect(classifierStart()![1]).not.toMatchObject({ model: "gpt-b" });
       const executed = await app.inject({
         method: "POST",
@@ -494,14 +494,14 @@ describe("project boards", () => {
       });
       expect(executed.statusCode).toBe(200);
       await vi.waitFor(() =>
-        expect(projection.summary("created")?.settings).toMatchObject({
-          model: "gpt-b",
-          reasoningEffort: "low",
-        }),
+        expect(projection.summary("created")?.settings).toEqual(projection.newSessionSettings),
       );
       expect(bridge.request).toHaveBeenCalledWith(
         "thread/start",
-        expect.objectContaining({ model: "gpt-b", cwd: repository }),
+        expect.objectContaining({
+          cwd: repository,
+          clientCreationId: expect.stringMatching(/^kanban:/u),
+        }),
       );
     } finally {
       await app.close();

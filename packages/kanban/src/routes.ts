@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { KanbanBoard, KanbanProvider } from "@codexnest/protocol";
 import type { KanbanService } from "./service.js";
 import { KanbanError } from "./store.js";
+import { registerWorkerRoutes } from "./worker-routes.js";
 
 const BODY_LIMIT = 200 * 1024 * 1024;
 
@@ -12,6 +13,9 @@ export function registerKanbanRoutes(
   projectPath: (id: string) => string,
   provider: KanbanProvider,
 ): void {
+  registerWorkerRoutes(app, service.workers, projectPath, provider, (id, path, creationId) =>
+    service.startWorker(id, path, creationId),
+  );
   const root = "/api/v1/projects/:id/kanban";
   const links = (board: KanbanBoard, request: FastifyRequest): KanbanBoard => ({
     ...board,

@@ -18,22 +18,30 @@ export async function registerOpenKanban(
       voice.transcribe(audio, contentType, undefined, { audioDurationMs: durationMs }),
     dataDir: join(engine.config.stateDir, "kanban"),
     adapter: {
+      models: () => engine.models,
+      chooseModel: (prompt) => engine.oneShot(prompt),
+      projects: () => engine.data.projects,
       available: () => engine.canAcceptWork(),
       async launch(job) {
         const project = engine.data.projects.find(
           (candidate) => candidate.path === job.projectPath,
         );
-        if (!project) throw new Error("Project not found");
-        const { thread } = await engine.createThread(project.id, `kanban:${job.id}`, undefined, {
-          cwd: job.cwd,
-          title: job.title,
-          settings: {
-            ...job.settings,
-            ...(job.kind === "classify" && engine.data.taskDefaults.classificationModel
-              ? { model: engine.data.taskDefaults.classificationModel }
-              : {}),
+        if (job.projectPath && !project) throw new Error("Project not found");
+        const { thread } = await engine.createThread(
+          project?.id ?? "",
+          `kanban:${job.id}`,
+          undefined,
+          {
+            cwd: job.cwd,
+            title: job.title,
+            settings: {
+              ...job.settings,
+              ...(job.kind === "classify" && engine.data.taskDefaults.classificationModel
+                ? { model: engine.data.taskDefaults.classificationModel }
+                : {}),
+            },
           },
-        });
+        );
         await engine.send(thread.id, {
           input: job.prompt,
           ...(job.images?.length ? { images: job.images } : {}),

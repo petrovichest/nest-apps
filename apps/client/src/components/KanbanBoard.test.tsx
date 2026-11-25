@@ -102,6 +102,7 @@ const voice: TranscriptionConfigResponse = {
   },
 };
 let api: {
+  workerCatalogue: ReturnType<typeof vi.fn>;
   readKanbanImage: ReturnType<typeof vi.fn>;
   readKanban: ReturnType<typeof vi.fn>;
   createKanbanCard: ReturnType<typeof vi.fn>;
@@ -139,6 +140,9 @@ function show(
 }
 beforeEach(() => {
   api = {
+    workerCatalogue: vi
+      .fn()
+      .mockResolvedValue({ common: [{ id: "reviewer", name: "Reviewer" }], projects: [] }),
     readKanbanImage: vi.fn(),
     readKanban: vi.fn().mockResolvedValue(board()),
     createKanbanCard: vi.fn().mockResolvedValue(board()),
@@ -327,24 +331,24 @@ describe("KanbanBoard", () => {
     await waitFor(() => expect(drafts.get("project")).toMatchObject({ input: "", images: [] }));
   });
 
-  it("sends the settings chosen in the task field with the task", async () => {
+  it("sends the selected worker with the task", async () => {
     show();
     await screen.findByRole("button", { name: "Task one" });
     fireEvent.click(screen.getAllByRole("button", { name: "Добавить задачу" })[0]);
     const dialog = screen.getByRole("dialog", { name: "Добавить задачу" });
     fireEvent.change(within(dialog).getByRole("textbox", { name: "Сообщение для Codex" }), {
-      target: { value: "Use the other model" },
+      target: { value: "Ask the reviewer" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Модель и уровень рассуждений" }));
-    const picker = screen.getByRole("dialog", { name: "Настройки модели" });
-    fireEvent.click(within(picker).getByRole("radio", { name: /GPT B/ }));
-    fireEvent.click(within(picker).getByRole("button", { name: "Закрыть" }));
+    await within(dialog).findByRole("option", { name: "Reviewer" });
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Исполнитель" }), {
+      target: { value: "reviewer" },
+    });
     fireEvent.click(within(dialog).getByRole("button", { name: "Отправить" }));
     await waitFor(() =>
       expect(api.createKanbanCard).toHaveBeenCalledWith("project", {
-        description: "Use the other model",
+        description: "Ask the reviewer",
         clientCreationId: expect.any(String),
-        settings: { collaborationMode: "default", model: "gpt-b" },
+        workerId: "reviewer",
       }),
     );
   });

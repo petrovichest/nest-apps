@@ -73,6 +73,12 @@ import type {
   VoiceTranscriptionJob,
   VoiceTranscriptionMode,
   KanbanBoard,
+  UpdateWorkerRequest,
+  WorkerCatalogue,
+  WorkerDetails,
+  WorkerMemoryEntry,
+  WorkerProfile,
+  WorkerProposal,
   KanbanImageInput,
   CreateKanbanCardRequest,
   UpdateKanbanCardRequest,
@@ -549,6 +555,58 @@ export class ApiClient {
   readKanban(projectId: string): Promise<KanbanBoard> {
     return this.request(`/api/v1/projects/${encodeURIComponent(projectId)}/kanban`, {
       cache: "no-store",
+    });
+  }
+
+  workerCatalogue(projectIds: string[]): Promise<WorkerCatalogue> {
+    return this.request("/api/v1/workers/catalog", { method: "POST", body: { projectIds } });
+  }
+
+  readWorkerProposal(id: string): Promise<WorkerProposal> {
+    return this.request(`/api/v1/workers/proposals/${encodeURIComponent(id)}`, {
+      cache: "no-store",
+    });
+  }
+
+  approveWorkerProposal(id: string): Promise<WorkerProfile> {
+    return this.request(`/api/v1/workers/proposals/${encodeURIComponent(id)}/approve`, {
+      method: "POST",
+    });
+  }
+
+  readWorker(id: string, projectId?: string): Promise<WorkerDetails> {
+    return this.request(workerPath(id, projectId), { cache: "no-store" });
+  }
+
+  updateWorker(
+    id: string,
+    projectId: string | undefined,
+    body: UpdateWorkerRequest,
+  ): Promise<WorkerProfile> {
+    return this.request(workerPath(id, projectId), { method: "PATCH", body });
+  }
+
+  updateWorkerMemory(
+    id: string,
+    projectId: string | undefined,
+    entry: WorkerMemoryEntry,
+    text: string | null,
+  ): Promise<WorkerMemoryEntry[]> {
+    return this.request(workerPath(id, projectId, `/memory/${encodeURIComponent(entry.id)}`), {
+      method: text === null ? "DELETE" : "PATCH",
+      body: { expectedText: entry.text, ...(text === null ? {} : { text }) },
+    });
+  }
+
+  startWorker(
+    id: string,
+    projectId: string | undefined,
+    creationId: string,
+  ): Promise<{ threadId: string }> {
+    return this.request(workerPath(id, projectId, "/sessions"), {
+      method: "POST",
+      body: { creationId },
+      timeoutMs: null,
     });
   }
 
@@ -1117,6 +1175,11 @@ export interface DownloadTicketResponse {
   expiresAt: number;
   fileName: string;
   size: number;
+}
+
+function workerPath(id: string, projectId?: string, child = ""): string {
+  const query = projectId ? `?${new URLSearchParams({ projectId })}` : "";
+  return `/api/v1/workers/${encodeURIComponent(id)}${child}${query}`;
 }
 
 export class ApiClientError extends Error {

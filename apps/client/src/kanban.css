@@ -1259,3 +1259,8 @@ textarea.kanban-edit-field {
   min-height: 100px;
   resize: vertical;
 }
+
+.kanban-worker-picker {
+  grid-template-columns: 1fr;
+  margin-block-end: 12px;
+}

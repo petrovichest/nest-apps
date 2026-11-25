@@ -37,6 +37,7 @@ import { readGeminiUsage } from "./rate-limits";
 import {
   geminiReplyCheck,
   geminiTitleGenerator,
+  runOneShotAcpPrompt,
   type ReplyCheck,
   type TitleGenerator,
 } from "./title";
@@ -277,6 +278,17 @@ export class Engine extends EventEmitter {
       (isTestFake ? undefined : geminiTitleGenerator({ config, resolveEnv }));
     this.checkReply =
       options.checkReply ?? (isTestFake ? undefined : geminiReplyCheck({ config, resolveEnv }));
+  }
+
+  async chooseWorkerModel(prompt: string): Promise<string> {
+    if (!this.account.status().authenticated)
+      throw new AppError("Sign in to choose a worker model");
+    return runOneShotAcpPrompt({
+      config: this.config,
+      env: this.connection?.env ?? process.env,
+      prompt,
+      model: this.data.taskDefaults.model,
+    });
   }
 
   async initialize() {
@@ -651,7 +663,9 @@ export class Engine extends EventEmitter {
         thread: this.summary(existing),
         draft: this.thread(existing).detail.draft ?? null,
       };
-    const project = this.project(projectId);
+    const project = projectId ? this.project(projectId) : null;
+    if (!project && (!options?.cwd || draft?.files?.length))
+      throw new AppError("Project not found");
     const id = randomUUID();
     if (draft?.files?.length) {
       const files = await this.attachments.validate(projectId, draft.files);
@@ -693,10 +707,10 @@ export class Engine extends EventEmitter {
     }
     const summary: ThreadSummary = {
       id,
-      projectId,
+      projectId: project?.id ?? null,
       title: options?.title?.trim().slice(0, 200) || "Новая сессия",
       preview: "",
-      cwd: options?.cwd || project.path,
+      cwd: options?.cwd || project!.path,
       state: "idle",
       unread: false,
       unseen: false,
