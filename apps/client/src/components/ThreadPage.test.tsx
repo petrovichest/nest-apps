@@ -473,6 +473,52 @@ describe("Activity", () => {
     expect(screen.queryByText("Ход работы")).not.toBeInTheDocument();
   });
 
+  it("shows and copies only the task in a saved worker launch", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const context = [
+      "Ты работаешь как «Фронтенд». Роль: Фронтенд-инженер.",
+      "Пример инструкций\n\nЗадача:\nФраза внутри профиля",
+      [
+        "Инструмент работников Nest: 'node' '/test/agent.mjs' '/test/capabilities/worker-codex-12345678-1234-4123-8123-123456789abc.json' COMMAND JSON",
+        "Используй memory_read с {} для чтения актуальной памяти.",
+      ].join("\n"),
+    ].join("\n\n");
+    const task = "Проверь изображения.\n\nЗадача:\nСохрани эту строку из задачи.";
+    const item: ActivityItem = {
+      type: "userMessage",
+      id: "native-user-message",
+      status: "completed",
+      text: `${context}\n\nЗадача:\n${task}`,
+      images: ["data:image/png;base64,AA=="],
+      timestamp: 1,
+      phase: null,
+    };
+    const view = render(<Activity item={item} />);
+    expect(screen.getByText("Проверь изображения.")).toBeVisible();
+    expect(screen.getByRole("img")).toBeVisible();
+    expect(view.container).not.toHaveTextContent("Фраза внутри профиля");
+    expect(view.container).not.toHaveTextContent("Инструмент работников Nest");
+    fireEvent.click(screen.getByRole("button", { name: "Копировать сообщение" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(task));
+
+    view.rerender(
+      <Activity
+        item={{
+          ...item,
+          text: `${context}\n\nПоприветствуй пользователя и спроси, с чего начать.`,
+          images: [],
+        }}
+      />,
+    );
+    expect(view.container).toBeEmptyDOMElement();
+
+    view.rerender(
+      <Activity item={{ ...item, text: "Ты работаешь как «Фронтенд». Проверь тесты." }} />,
+    );
+    expect(screen.getByText("Ты работаешь как «Фронтенд». Проверь тесты.")).toBeVisible();
+  });
+
   it("stops animating unfinished steps when their checklist is no longer active", () => {
     const item = {
       type: "planChecklist" as const,

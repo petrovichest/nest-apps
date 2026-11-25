@@ -30,6 +30,7 @@ const ENGLISH: Record<string, string> = {
   "Настройки работника «{{name}}»": "Settings for {{name}}",
   "Открываем диалог…": "Opening conversation…",
   "Загружаем работников…": "Loading workers…",
+  "Запуск работника": "Starting worker",
   "Постоянные инструкции": "Standing instructions",
   "Текущие инструкции": "Current instructions",
   "Архитектор использует настройки приложения по умолчанию.":
