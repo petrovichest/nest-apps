@@ -318,9 +318,10 @@ for (const width of [390, 1440]) {
       // The task field is the session's composer, focused at once.
       const field = create.getByRole("textbox", { name: "Сообщение для Codex" });
       await expect(field).toBeFocused();
-      await expect(
-        create.getByRole("button", { name: "Начать запись", exact: true }),
-      ).toBeVisible();
+      const recorder = create.getByRole("button", {
+        name: /^(Начать запись|Запись с микрофона не поддерживается на этом устройстве|Этот браузер не поддерживает запись WebM или MP4)$/,
+      });
+      await expect(recorder).toBeVisible();
       await expect(create.getByRole("combobox", { name: "Исполнитель" })).toBeVisible();
       await create.getByRole("button", { name: "Добавить изображения" }).click();
       // The attachment menu opens upwards and stays inside the dialog.

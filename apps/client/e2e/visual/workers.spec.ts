@@ -8,7 +8,7 @@ for (const width of [1440, 390]) {
     await installVisualFixture(page, { theme: width === 1440 ? "light" : "dark" });
     const architect: WorkerProfile = {
       id: "architect",
-      name: "Архитектор",
+      name: "Архитектор работников",
       role: "Помогает создать работника",
       instructions: "",
       projectKey: null,
@@ -50,6 +50,8 @@ for (const width of [1440, 390]) {
         lead = { ...lead, name: request.postDataJSON().name, revision: lead.revision + 1 };
         return route.fulfill({ headers, json: lead });
       }
+      if (path.endsWith("/architect"))
+        return route.fulfill({ headers, json: { profile: architect, memory: [] } });
       if (path.endsWith("/lead"))
         return route.fulfill({ headers, json: { profile: lead, memory: [] } });
       if (path.endsWith("/lead/sessions"))
@@ -75,6 +77,12 @@ for (const width of [1440, 390]) {
     ).toBe(true);
     await waitForVisualReady(page);
     await page.screenshot({ path: info.outputPath("workers.png") });
+    await page.getByRole("button", { name: "Настройки работника «Архитектор»" }).click();
+    const architectSettings = page.getByRole("dialog", { name: "Архитектор", exact: true });
+    await expect(
+      architectSettings.getByText("Архитектор использует настройки приложения по умолчанию."),
+    ).toBeVisible();
+    await architectSettings.getByRole("button", { name: "Закрыть" }).click();
     await page.getByRole("button", { name: "Настройки работника «Тимлид»" }).click();
     const settings = page.getByRole("dialog", { name: "Тимлид" });
     await settings.getByRole("textbox", { name: "Имя" }).fill("Руководитель");

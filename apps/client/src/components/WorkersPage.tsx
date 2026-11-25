@@ -101,7 +101,9 @@ export function WorkersPage({
               <button
                 type="button"
                 className="icon-button worker-tile-settings"
-                aria-label={t("Настройки работника «{{name}}»", { name: worker.name })}
+                aria-label={t("Настройки работника «{{name}}»", {
+                  name: worker.id === WORKER_ARCHITECT_ID ? t("Архитектор") : worker.name,
+                })}
                 title={t("Настройки")}
                 onClick={() => setSelection({ worker, projectId })}
               >
@@ -343,7 +345,7 @@ function WorkerSettings({
       onClose={onClose}
     >
       <div className="dialog-header">
-        <h2 id={titleId}>{worker.name}</h2>
+        <h2 id={titleId}>{architect ? t("Архитектор") : worker.name}</h2>
         <button className="icon-button" aria-label={t("Закрыть")} disabled={busy} onClick={onClose}>
           <XIcon />
         </button>
