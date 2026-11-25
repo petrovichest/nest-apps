@@ -12,6 +12,7 @@ import {
   pastedText,
   mergeProjectDraft,
   rebasePastedText,
+  replacePasteRanges,
   trimPastedMessage,
   copyPastedMessage,
   type PastedText,
@@ -100,6 +101,7 @@ import {
 import { acknowledgePendingThread, releaseActiveThread } from "../push";
 import type { OptimisticMessage } from "../state";
 import { threadStatusClasses } from "../thread-status";
+import { workerMessagePresentation } from "../worker-message";
 import { AttentionPanel } from "./AttentionPanel";
 import { AsyncQuestionCard } from "./AsyncQuestionCard";
 import { searchTargetFromState, type SearchTarget } from "./ThreadSearchDialog";
@@ -5932,6 +5934,7 @@ export function Activity({
   const { language, t } = useI18n();
   if (!hasVisibleActivity(item)) return null;
   if (item.type === "userMessage" || item.type === "agentMessage") {
+    const message = item.type === "userMessage" ? (workerMessagePresentation(item) ?? item) : item;
     const messageAnnotations = numberedAnnotations(annotations, item.id);
     const content = (
       <article
@@ -5940,7 +5943,7 @@ export function Activity({
       >
         {item.type === "userMessage" && <PasteBlocks blocks={item.pasteBlocks} />}
         <div className="message-body">
-          {item.text &&
+          {message.text &&
             (item.type === "agentMessage" ? (
               <AnnotatableMarkdownContent
                 text={item.text}
@@ -5959,8 +5962,8 @@ export function Activity({
               />
             ) : (
               <MarkdownContent
-                text={item.text}
-                inlinePastes={item.inlinePastes}
+                text={message.text}
+                inlinePastes={message.inlinePastes}
                 cwd={cwd}
                 onDownload={onDownload}
                 onOpenArtifact={onOpenArtifact}
@@ -5990,7 +5993,7 @@ export function Activity({
             ))}
         </div>
         <MessageFooter
-          text={item.type === "userMessage" ? copyPastedMessage(item.text, item) : item.text}
+          text={item.type === "userMessage" ? copyPastedMessage(message.text, message) : item.text}
           markdown={item.type === "agentMessage"}
           timestamp={item.timestamp}
           forkAction={item.type === "agentMessage" ? forkAction : undefined}
@@ -7116,6 +7119,10 @@ export function QueuedMessages({
       )}
       <div className="queued-messages-list">
         {messages.map((message, index) => {
+          const worker = workerMessagePresentation(message);
+          const visibleMessage = worker ?? message;
+          const prefix = worker?.prefix ?? "";
+          const startingWorker = worker?.prefix === null;
           const editing = editor?.messageId === message.id;
           const busy = action?.messageId === message.id;
           const actionsDisabled =
@@ -7130,8 +7137,9 @@ export function QueuedMessages({
               message.files?.length ||
               editor?.pasteBlocks?.length,
             ) &&
-            (editValue.trim() !== message.text ||
-              JSON.stringify(pastedText(editor ?? {})) !== JSON.stringify(pastedText(message)));
+            (editValue.trim() !== visibleMessage.text ||
+              JSON.stringify(pastedText(editor ?? {})) !==
+                JSON.stringify(pastedText(visibleMessage)));
           const idleStatus = t("В очереди");
           const status = message.deliveryError
             ? localizeKnownServerText(language, message.deliveryError.message)
@@ -7184,13 +7192,15 @@ export function QueuedMessages({
                         onClick={() => {
                           void onUpdate(
                             message.id,
-                            editValue,
+                            prefix + editValue,
                             message.inlinePastes?.length ||
                               message.pasteBlocks?.length ||
                               editor?.inlinePastes?.length ||
                               editor?.pasteBlocks?.length
                               ? {
-                                  inlinePastes: editor?.inlinePastes ?? [],
+                                  inlinePastes: prefix
+                                    ? replacePasteRanges(editor?.inlinePastes, 0, 0, prefix.length)
+                                    : (editor?.inlinePastes ?? []),
                                   pasteBlocks: editor?.pasteBlocks ?? [],
                                 }
                               : undefined,
@@ -7205,11 +7215,11 @@ export function QueuedMessages({
                   </div>
                 ) : (
                   <>
-                    {message.text && (
+                    {(visibleMessage.text || startingWorker) && (
                       <div className="queued-message-text">
                         <MarkdownContent
-                          text={message.text}
-                          inlinePastes={message.inlinePastes}
+                          text={startingWorker ? t("Запуск работника") : visibleMessage.text}
+                          inlinePastes={visibleMessage.inlinePastes}
                           onLoadImage={onLoadImage}
                           cwd={cwd}
                           onDownload={onDownload}
@@ -7254,13 +7264,15 @@ export function QueuedMessages({
                 </div>
                 <div className="queued-message-actions">
                   {(message.deliveryError || !message.confirmed) &&
-                    (message.text || message.pasteBlocks?.length) && (
+                    (visibleMessage.text || visibleMessage.pasteBlocks?.length) && (
                       <button
                         type="button"
                         className="icon-button"
                         aria-label={t("Скопировать сообщение")}
                         title={t("Скопировать сообщение")}
-                        onClick={() => void copyText(copyPastedMessage(message.text, message))}
+                        onClick={() =>
+                          void copyText(copyPastedMessage(visibleMessage.text, visibleMessage))
+                        }
                       >
                         <CopyIcon />
                       </button>
@@ -7280,7 +7292,7 @@ export function QueuedMessages({
                       </button>
                     )}
                   <span className="queued-action-slot">
-                    {!editing && (
+                    {!editing && !startingWorker && (
                       <button
                         type="button"
                         className="icon-button"
@@ -7290,8 +7302,8 @@ export function QueuedMessages({
                         onClick={() =>
                           setEditor({
                             messageId: message.id,
-                            value: message.text,
-                            ...pastedText(message),
+                            value: visibleMessage.text,
+                            ...pastedText(visibleMessage),
                           })
                         }
                       >
@@ -7791,14 +7803,19 @@ function reconcileVisibleThreadSummary(
 
 function hasVisibleActivity(item: ActivityItem): boolean {
   if (item.type === "userMessage" && isQuestionReplyDelivery(item)) return false;
-  if ("text" in item)
+  if ("text" in item) {
+    const text =
+      item.type === "userMessage"
+        ? (workerMessagePresentation(item)?.text ?? item.text)
+        : item.text;
     return Boolean(
-      item.text.trim() ||
+      text.trim() ||
       item.pasteBlocks?.length ||
       item.images.length ||
       (item.files?.length ?? 0) ||
       item.questions?.length,
     );
+  }
   return true;
 }
 
