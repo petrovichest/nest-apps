@@ -71,6 +71,7 @@ export function WorkerProcessesPage({ onOpenNavigation }: { onOpenNavigation(): 
   const { api } = useConnection();
   const { language, t } = useI18n();
   const { processId } = useParams();
+  const [statusFilter, setStatusFilter] = useState<ProcessStatusFilter>("all");
   const [view, setView] = useState<{
     id: string | undefined;
     processes?: WorkerProcess[];
@@ -131,7 +132,11 @@ export function WorkerProcessesPage({ onOpenNavigation }: { onOpenNavigation(): 
           {process ? (
             <ProcessDetail key={process.id} process={process} />
           ) : visible?.processes && !processId ? (
-            <ProcessOverview processes={visible.processes} />
+            <ProcessOverview
+              processes={visible.processes}
+              filter={statusFilter}
+              onFilterChange={setStatusFilter}
+            />
           ) : null}
         </div>
       </section>
@@ -148,7 +153,10 @@ const overviewStatuses = [
   "Готово",
 ] as const;
 
-function overviewStatus(session: WorkerProcessSession): (typeof overviewStatuses)[number] {
+type ProcessStatus = (typeof overviewStatuses)[number];
+type ProcessStatusFilter = ProcessStatus | "all";
+
+function overviewStatus(session: WorkerProcessSession): ProcessStatus {
   switch (session.status) {
     case "waiting":
       return session.waitingFor.length ? "Ждёт результата" : "Ждёт ответа";
@@ -179,10 +187,18 @@ function WorkStatus({ session }: { session: WorkerProcessSession }) {
   );
 }
 
-function ProcessOverview({ processes }: { processes: WorkerProcess[] }) {
+function ProcessOverview({
+  processes,
+  filter,
+  onFilterChange,
+}: {
+  processes: WorkerProcess[];
+  filter: ProcessStatusFilter;
+  onFilterChange(filter: ProcessStatusFilter): void;
+}) {
   const { t } = useI18n();
   const sections = new Map<
-    ReturnType<typeof overviewStatus>,
+    ProcessStatus,
     Map<string | null, { process: WorkerProcess; root: WorkerProcessSession }[]>
   >();
   for (const process of processes) {
@@ -196,33 +212,56 @@ function ProcessOverview({ processes }: { processes: WorkerProcess[] }) {
     projects.set(process.projectKey, group);
     sections.set(status, projects);
   }
-  if (!sections.size) return <p>{t("Нет активных процессов")}</p>;
+  const options = overviewStatuses.filter((status) => sections.has(status) || status === filter);
+  const visibleStatuses = filter === "all" ? options : [filter];
 
-  return overviewStatuses.map((status) => {
-    const projects = sections.get(status);
-    if (!projects) return null;
-    const label = t(status);
-    return (
-      <section className="process-section" key={status} aria-label={label}>
-        <h2>{label}</h2>
-        {[...projects].map(([key, group]) => {
-          const name = group[0]!.process.projectName ?? t("Без проекта");
-          return (
-            <section className="process-project" key={key ?? ""} aria-label={name}>
-              <h3>{name}</h3>
-              <ul className="process-worker-list">
-                {group.map(({ process, root }) => (
-                  <li className="process-overview-run" key={root.id}>
-                    <ProcessRow processId={root.id} node={branch(process, [root])} />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          );
-        })}
-      </section>
-    );
-  });
+  return (
+    <div className="process-overview">
+      <label className="process-filter">
+        <span>{t("Статус")}</span>
+        <select
+          value={filter}
+          onChange={(event) => onFilterChange(event.currentTarget.value as ProcessStatusFilter)}
+        >
+          <option value="all">{t("Все")}</option>
+          {options.map((status) => (
+            <option key={status} value={status}>
+              {t(status)}
+            </option>
+          ))}
+        </select>
+      </label>
+      {filter === "all" && !sections.size && <p>{t("Нет активных процессов")}</p>}
+      {filter !== "all" && !sections.has(filter) && (
+        <p role="status">{t("Нет процессов с этим статусом")}</p>
+      )}
+      {visibleStatuses.map((status) => {
+        const projects = sections.get(status);
+        if (!projects) return null;
+        const label = t(status);
+        return (
+          <section className="process-section" key={status} aria-label={label}>
+            <h2>{label}</h2>
+            {[...projects].map(([key, group]) => {
+              const name = group[0]!.process.projectName ?? t("Без проекта");
+              return (
+                <section className="process-project" key={key ?? ""} aria-label={name}>
+                  <h3>{name}</h3>
+                  <ul className="process-worker-list">
+                    {group.map(({ process, root }) => (
+                      <li className="process-overview-run" key={root.id}>
+                        <ProcessRow processId={root.id} node={branch(process, [root])} />
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              );
+            })}
+          </section>
+        );
+      })}
+    </div>
+  );
 }
 
 function hasActiveWork(node: Participant): boolean {
