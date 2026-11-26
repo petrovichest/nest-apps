@@ -121,15 +121,15 @@ for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: width === 1440 ? 1000 : 844 });
     await installProcessesFixture(page, "light", processes);
     await page.goto("/workers/processes");
-    const rows = page.locator(".process-overview-run");
+    const rows = page.locator(".process-card");
     await expect(rows).toHaveCount(2);
     const importing = page.getByRole("region", { name: "Ждёт результата" });
     const releasing = page.getByRole("region", { name: "В работе" });
     await expect(importing).toContainText("Тимлид импорта");
     await expect(releasing).toContainText("Тимлид релиза");
-    await expect(releasing).toContainText("ClaudeNest");
+    await expect(importing.locator(".process-signal-dots")).toHaveCount(0);
     await captureProcessPreview(page, info, `overview-${width}`);
-    await importing.getByRole("link", { name: /^Тимлид импорта/ }).click();
+    await importing.getByRole("link", { name: "Исправить импорт CSV" }).click();
     const graph = page.getByRole("region", { name: "Схема процесса" });
     const inspector = graph.locator(".process-inspector");
     await expect(graph.getByText("3 дополнительных работника · 4 сессии")).toBeVisible();
@@ -157,7 +157,8 @@ for (const width of [1440, 390]) {
     await expect(developer).toHaveAttribute("aria-pressed", "true");
     await expect(inspector.getByText(/Проверки импорта прошли/)).toBeVisible();
     await page.getByRole("navigation", { name: "Раздел работников" }).getByText("Процессы").click();
-    await releasing.getByRole("link", { name: /^Ревьюер/ }).click();
+    await releasing.getByRole("link", { name: "Подготовить релиз каталога" }).click();
+    await graph.getByRole("button", { name: /^Ревьюер/ }).click();
     await expect(inspector.getByText("Поручил Тимлид релиза", { exact: false })).toBeVisible();
     await expect(inspector.getByRole("link", { name: "Открыть сессию" })).toHaveAttribute(
       "href",
@@ -166,414 +167,305 @@ for (const width of [1440, 390]) {
   });
 }
 
-const architect = "Архитектор работников";
-const longName = "Координатор междисциплинарных стратегических исследований";
-const strategy = { projectKey: "strategy", projectName: "strategy-research" };
-const overviewPreview: WorkerProcess[] = [
-  { ...strategy, id: "architect", sessions: [session("architect", architect, architect)] },
-  {
-    ...strategy,
-    id: "strategy",
-    sessions: [
-      session("strategy", longName, "Сверить выводы стратегического исследования", {
-        status: "waiting",
-        waitingFor: ["research"],
-      }),
-      session("research", "Исследователь", "Подготовить обзор источников", {
-        workerId: "researcher",
-        parentId: "strategy",
-        kind: "assignment",
-        provider: "claude",
-      }),
-      session("question", "Исследователь", "Уточнить критерии выборки", {
-        workerId: "researcher",
-        parentId: "strategy",
-        kind: "question",
-        provider: "claude",
-        status: "queued",
-      }),
-      session("review", "Редактор", "Редактор", {
-        parentId: "strategy",
-        kind: "assignment",
-        provider: "open",
-      }),
-    ],
-  },
-];
-
 const overviewPath = "/workers/processes";
-
-async function expectRegularOverviewLabels(page: Page) {
-  const labels = page.locator(
-    [
-      ".workers-tabs a",
-      ".process-filter button",
-      ".process-section > h2",
-      ".process-project > h3",
-      ".process-worker-label > *",
-      ".process-session-list > li > span",
-    ].join(", "),
-  );
-  const styles = await labels.evaluateAll((elements) =>
-    elements.map((element) => {
-      const { fontFamily, fontWeight } = getComputedStyle(element);
-      return { label: element.textContent, fontFamily, fontWeight };
-    }),
-  );
-  for (const { label, fontFamily, fontWeight } of styles) {
-    expect(fontFamily, label ?? undefined).toMatch(/^Onest\b/);
-    expect(fontWeight, label ?? undefined).toBe("400");
-  }
-}
-
-async function expectPressedOverviewLabels(page: Page, control: Locator) {
-  await control.evaluate((element) =>
-    element.addEventListener("click", (event) => event.preventDefault(), { once: true }),
-  );
-  await page.mouse.down();
-  await expect(control).toHaveCSS("box-shadow", /inset/);
-  await expectRegularOverviewLabels(page);
-  await page.mouse.up();
-}
-
-for (const theme of ["light", "dark"] as const) {
-  test(`process overview states on desktop in ${theme}`, async ({ page }, info) => {
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    await installProcessesFixture(page, theme, overviewPreview);
-    await page.goto(overviewPath);
-
-    const nav = page.getByRole("navigation", { name: "Раздел работников" });
-    const workersTab = nav.getByRole("link", { name: "Работники" });
-    const activeTab = nav.getByRole("link", { name: "Процессы" });
-    const row = page.getByRole("link", { name: new RegExp(`^${architect}`) });
-    const sidebar = page.locator(".sidebar");
-    await expect(activeTab).toHaveAttribute("aria-current", "page");
-    await expect(row).toHaveAccessibleName(`${architect} CodexNest В работе`);
-    await expect(page.getByRole("heading", { name: strategy.projectName, level: 3 })).toHaveCount(
-      2,
-    );
-    await expect(page.getByText("Редактор", { exact: true })).toHaveCount(2);
-    await expect(page.getByText("2 сессии")).toBeVisible();
-    await expect(page.getByText("Подготовить обзор источников")).toBeVisible();
-    await expect(page.getByText("Уточнить критерии выборки")).toBeVisible();
-
-    const surface = await sidebar.evaluate((element) => getComputedStyle(element).backgroundColor);
-    const elevation = await activeTab.evaluate((element) => getComputedStyle(element).boxShadow);
-    expect(elevation).not.toBe("none");
-    await expect(activeTab).toHaveCSS("background-color", surface);
-    await expect(workersTab).toHaveCSS("box-shadow", "none");
-    await expect(row).toHaveCSS("box-shadow", "none");
-    await expectRegularOverviewLabels(page);
-    await captureProcessPreview(page, info, `desktop-${theme}-rest`);
-
-    const rowBounds = await row.boundingBox();
-    await row.hover();
-    await expect(row).toHaveCSS("background-color", surface);
-    await expect(row).toHaveCSS("box-shadow", elevation);
-    expect(await row.boundingBox()).toEqual(rowBounds);
-    await expectRegularOverviewLabels(page);
-    await captureProcessPreview(page, info, `desktop-${theme}-hover`);
-
-    await expectPressedOverviewLabels(page, row);
-
-    for (const tab of [workersTab, activeTab]) {
-      await tab.hover();
-      await expect(tab).toHaveCSS("box-shadow", elevation);
-      await expectRegularOverviewLabels(page);
-      await expectPressedOverviewLabels(page, tab);
-    }
-    await expect(activeTab).toHaveCSS("box-shadow", elevation);
-    await page.mouse.move(1360, 700);
-    await workersTab.focus();
-    await page.keyboard.press("Tab");
-    await expect(activeTab).toBeFocused();
-    await expect(activeTab).toHaveCSS("outline-style", "solid");
-    await expectRegularOverviewLabels(page);
-    await page.keyboard.press("Shift+Tab");
-    await expect(workersTab).toBeFocused();
-    await expect(workersTab).toHaveCSS("outline-style", "solid");
-    await expectRegularOverviewLabels(page);
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Tab");
-    const filter = page.getByRole("group", { name: "Статус" });
-    const all = filter.getByRole("button", { name: "Все", exact: true });
-    const running = filter.getByRole("button", { name: "В работе" });
-    await expect(all).toBeFocused();
-    await expect(all).toHaveCSS("outline-style", "solid");
-    await expect(all).toHaveCSS("box-shadow", elevation);
-    await page.keyboard.press("Tab");
-    await expect(running).toBeFocused();
-    await page.keyboard.press("Space");
-    await expect(filter.getByRole("button", { pressed: true })).toHaveText("В работе");
-    await expect(page.locator(".process-section > h2")).toHaveText(["В работе"]);
-    await running.hover();
-    await expectPressedOverviewLabels(page, running);
-    await page.keyboard.press("Shift+Tab");
-    await expect(all).toBeFocused();
-    await page.keyboard.press("Enter");
-    await expect(filter.getByRole("button", { pressed: true })).toHaveText("Все");
-    for (const button of await filter.getByRole("button").all()) {
-      await expect(button).toBeFocused();
-      await page.keyboard.press("Tab");
-    }
-    await expect(row).toBeFocused();
-    await expect(row).toHaveCSS("outline-style", "solid");
-    await expect(row).toHaveCSS("box-shadow", elevation);
-    await expectRegularOverviewLabels(page);
-    await captureProcessPreview(page, info, `desktop-${theme}-focus`);
-    await page.keyboard.press("Enter");
-    await expect(page).toHaveURL(new RegExp(`${overviewPath}/architect$`));
-    await expect(page.getByRole("heading", { name: architect, level: 2 })).toBeVisible();
-  });
-}
-
-test.describe("process overview on touch", () => {
-  test.use({ hasTouch: true });
-  for (const [width, theme] of [
-    [390, "light"],
-    [390, "dark"],
-    [320, "dark"],
-    [821, "light"],
-  ] as const) {
-    test(`wraps names and opens details at ${width}px in ${theme}`, async ({ page }, info) => {
-      await page.setViewportSize({ width, height: 844 });
-      await installProcessesFixture(page, theme, overviewPreview);
-      await page.goto(overviewPath);
-      expect(await page.evaluate(() => matchMedia("(hover: none)").matches)).toBe(true);
-
-      const row = page.getByRole("link", { name: new RegExp(`^${longName}`) });
-      const label = row.getByText(longName);
-      await expect(label).toBeVisible();
-      expect(await label.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
-        true,
-      );
-      expect(await row.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
-        true,
-      );
-      const activeTab = page
-        .getByRole("navigation", { name: "Раздел работников" })
-        .getByRole("link", { name: "Процессы" });
-      await expect(row).toHaveCSS("box-shadow", "none");
-      await expectRegularOverviewLabels(page);
-      await captureProcessPreview(page, info, `touch-${width}-${theme}-rest`);
-      const filter = page.getByRole("group", { name: "Статус" });
-      const waiting = filter.getByRole("button", { name: "Ждёт результата" });
-      await waiting.tap();
-      await expect(filter.getByRole("button", { pressed: true })).toHaveText("Ждёт результата");
-      await expect(page.locator(".process-section > h2")).toHaveText(["Ждёт результата"]);
-      const elevation = await activeTab.evaluate((element) => getComputedStyle(element).boxShadow);
-      await activeTab.tap();
-      await expect(activeTab).toHaveCSS("box-shadow", elevation);
-      const child = page.getByRole("link", { name: /^Исследователь/ });
-      await child.tap();
-      await expect(page).toHaveURL(`${overviewPath}/strategy?session=research`);
-      await expect(
-        page.locator(".process-inspector").getByText("Подготовить обзор источников"),
-      ).toBeVisible();
-    });
-  }
-});
-
-const asking: WorkerProcess = {
-  ...strategy,
-  id: "outline",
+const questionTitle = "Как назвать раздел о новых экспонатах?";
+const resultText = "Подготовлены три варианта обложки.";
+const sourceDescription = "Служебное поручение дизайнеру согласовать заголовок.";
+const resultUrl = "https://claudenest.visual/threads/references";
+const longTitle = "Согласовать правила импорта архивных карточек с неполными описаниями и датами";
+const issue: WorkerProcess = {
+  ...project,
+  id: "issue",
   sessions: [
-    session("outline", "Редактор каталога", "Согласовать структуру каталога", {
+    session("issue", "Тимлид каталога", "Подготовить весенний выпуск каталога", {
       status: "waiting",
     }),
-    session("samples", "Аналитик", "Собрать примеры для каталога", {
-      parentId: "outline",
+    session("title-question", "Дизайнер", questionTitle, {
+      parentId: "issue",
+      kind: "question",
+      status: "waiting",
+      signal: "actionRequired",
+      description: sourceDescription,
+    }),
+    session("design", "Исследователь", "Проверить обложку", {
+      parentId: "title-question",
+      workerId: "researcher",
+      provider: "claude",
+    }),
+    session("references", "Исследователь", "Подборка примеров для обложки", {
+      parentId: "title-question",
+      workerId: "researcher",
+      provider: "claude",
+      sessionUrl: resultUrl,
       kind: "assignment",
+      status: "completed",
+      signal: "unseenCompletion",
+      result: resultText,
+    }),
+    session("extra", "Исследователь", "Архивные примеры для обложки", {
+      parentId: "title-question",
+      workerId: "researcher",
+      status: "completed",
+      signal: "unseenCompletion",
     }),
   ],
 };
+const archiveTitle = "Уточнить доступ к закрытым фондам";
+const finished: WorkerProcess = {
+  ...project,
+  id: "catalogue",
+  sessions: [
+    session("catalogue", "Тимлид каталога", "Собрать выпуск каталога", { status: "completed" }),
+    session("layout", "Верстальщик", "Собрать страницы", {
+      parentId: "catalogue",
+      status: "completed",
+    }),
+    session("verification", "Контролёр", "Сверить страницы", {
+      parentId: "layout",
+      provider: "open",
+      status: "completed",
+      signal: "unseenCompletion",
+    }),
+  ],
+};
+const entries: WorkerProcess[] = [
+  issue,
+  {
+    ...project,
+    id: "rules",
+    sessions: [
+      session("rules", "Куратор данных", longTitle, { status: "waiting", provider: "claude" }),
+    ],
+  },
+  {
+    projectKey: "archive",
+    projectName: "Архив коллекции",
+    id: "archive",
+    sessions: [
+      session("archive", "Архивист", archiveTitle, { status: "waiting", signal: "actionRequired" }),
+    ],
+  },
+  {
+    ...project,
+    id: "online",
+    sessions: [
+      session("online", "Публикатор", "Проверить каталог перед публикацией", { provider: "open" }),
+    ],
+  },
+  finished,
+];
 
-for (const width of [1440, 390, 320]) {
-  for (const theme of ["light", "dark"] as const) {
-    for (const language of ["ru", "en"] as const) {
-      test(`process status sections at ${width}px, ${theme}, ${language}`, async ({
-        page,
-      }, info) => {
-        await page.setViewportSize({ width, height: width === 1440 ? 1000 : 844 });
-        await installProcessesFixture(page, theme, [...overviewPreview, asking], language);
-        await page.goto(overviewPath);
+const amber = "status-needsAttention";
+const green = "status-completed-unread";
 
-        const names =
-          language === "ru"
-            ? ["Ждёт ответа", "В работе", "Ждёт результата"]
-            : ["Awaiting an answer", "In progress", "Awaiting result"];
-        const headings = page.locator(".process-section > h2");
-        const filter = page.getByRole("group", {
-          name: language === "ru" ? "Статус" : "Status",
-        });
-        const allName = language === "ru" ? "Все" : "All";
-        const all = filter.getByRole("button", { name: allName, exact: true });
-        const awaitingAnswer = filter.getByRole("button", { name: names[0], exact: true });
-        const pressed = filter.getByRole("button", { pressed: true });
-        const buttons = filter.getByRole("button");
-        await expect(pressed).toHaveText(allName);
-        await expect(buttons).toHaveText([allName, ...names]);
-        await expect(buttons.and(filter.locator('button[type="button"]'))).toHaveCount(4);
-        await expect(headings).toHaveText(names);
-        const waiting = page.getByRole("region", { name: names[0] });
-        const child = waiting.getByRole("link", { name: /^Аналитик/ });
-        await expect(child).toHaveAttribute("href", `${overviewPath}/outline?session=samples`);
-        await expect(child.locator(".process-status")).toHaveText(names[1]!);
-        await expect(page.getByRole("region", { name: names[1] })).not.toContainText("Аналитик");
-        await expectRegularOverviewLabels(page);
-        const content = page.locator(".processes-content");
-        const fits = () =>
-          content.evaluate((element) => element.scrollWidth <= element.clientWidth);
-        expect(await fits()).toBe(true);
-        await captureProcessPreview(page, info, `all-${width}-${theme}-${language}`);
-
-        await awaitingAnswer.click();
-        await expect(pressed).toHaveText(names[0]!);
-        await expect(headings).toHaveText([names[0]!]);
-        await expect(child.locator(".process-status")).toHaveText(names[1]!);
-        expect(await fits()).toBe(true);
-        await captureProcessPreview(page, info, `filtered-${width}-${theme}-${language}`);
-
-        await child.click();
-        await expect(page).toHaveURL(`${overviewPath}/outline?session=samples`);
-        await expect(page.locator(".process-inspector")).toContainText(
-          "Собрать примеры для каталога",
-        );
-        await expect(filter).toHaveCount(0);
-        if (width < 1440) {
-          await page.locator(".process-breadcrumb a").click();
-        } else {
-          await page.goBack();
-        }
-        await expect(pressed).toHaveText(names[0]!);
-        await expect(headings).toHaveText([names[0]!]);
-
-        await all.click();
-        await expect(pressed).toHaveText(allName);
-        await expect(headings).toHaveText(names);
-
-        if (width < 1440) {
-          const geometry = await filter.evaluate((group) => {
-            const { left, right } = group.getBoundingClientRect();
-            return [...group.querySelectorAll("button")].map((button) => {
-              const box = button.getBoundingClientRect();
-              return {
-                label: button.textContent,
-                y: box.top,
-                height: box.height,
-                insideGroup: box.left >= left && box.right <= right,
-                textFits:
-                  button.scrollWidth <= button.clientWidth &&
-                  button.scrollHeight <= button.clientHeight,
-              };
-            });
-          });
-          expect(new Set(geometry.map(({ y }) => y)).size).toBeGreaterThan(1);
-          for (const { label, height, insideGroup, textFits } of geometry) {
-            expect(height, label ?? undefined).toBeGreaterThanOrEqual(34);
-            expect(insideGroup, label ?? undefined).toBe(true);
-            expect(textFits, label ?? undefined).toBe(true);
-          }
-          await all.focus();
-          for (const button of (await buttons.all()).slice(1)) {
-            await page.keyboard.press("Tab");
-            await expect(button).toBeFocused();
-          }
-          await expect(buttons.last()).toHaveCSS("outline-style", "solid");
-          await captureProcessPreview(page, info, `focus-${width}-${theme}-${language}`);
-        }
-      });
-    }
-  }
+async function expectDots(container: Locator, colors: string[]) {
+  await expect(container.locator(".process-signal-dots > span")).toHaveClass(
+    colors.map((color) => `status ${color}`),
+  );
 }
 
-test("regroups a whole branch after polling and only shows statuses present in the overview", async ({
-  page,
-}, info) => {
-  const entries: WorkerProcess[] = [
-    asking,
-    {
-      ...project,
-      id: "answered",
-      sessions: [
-        session("answered", "Консультант", "Уточнить правила", {
-          kind: "question",
-          status: "completed",
-        }),
-        session("check", "Проверяющий", "Проверить правила", { parentId: "answered" }),
-      ],
-    },
-    {
-      projectKey: null,
-      projectName: null,
-      id: "failed",
-      sessions: [
-        session("failed", "Сборщик", "Собрать каталог", { status: "failed" }),
-        session("retry", "Проверяющий", "Проверить сборку", {
-          parentId: "failed",
-          status: "queued",
-        }),
-      ],
-    },
-    {
-      ...project,
-      id: "queued",
-      sessions: [session("queued", "Тестировщик", "Проверить каталог", { status: "queued" })],
-    },
-  ];
-  await page.clock.install();
+for (const width of [1440, 390, 320]) {
+  test.describe(`process cards at ${width}px`, () => {
+    test.use({ hasTouch: width !== 1440 });
+    for (const theme of ["light", "dark"] as const) {
+      for (const language of ["ru", "en"] as const) {
+        test(`${theme}, ${language}`, async ({ page }, info) => {
+          await page.setViewportSize({ width, height: width === 1440 ? 1000 : 844 });
+          await installProcessesFixture(page, theme, entries, language);
+          await page.goto(overviewPath);
+
+          const copy =
+            language === "ru"
+              ? {
+                  filter: "Статус",
+                  all: "Все",
+                  waiting: "Ждёт ответа",
+                  running: "В работе",
+                  done: "Готово",
+                  action: "Требуется действие",
+                  result: "Новый результат",
+                  open: "Открыть сессию",
+                }
+              : {
+                  filter: "Status",
+                  all: "All",
+                  waiting: "Awaiting an answer",
+                  running: "In progress",
+                  done: "Ready",
+                  action: "Action required",
+                  result: "New result",
+                  open: "Open session",
+                };
+          const filter = page.getByRole("group", { name: copy.filter });
+          const all = filter.getByRole("button", { name: copy.all, exact: true });
+          const waiting = filter.getByRole("button", { name: copy.waiting, exact: true });
+          const headings = page.locator(".process-section > h2");
+          const cards = page.locator(".process-card");
+          const issueCard = cards.filter({ hasText: "Подготовить весенний выпуск каталога" });
+          const question = issueCard.getByRole("link", { name: new RegExp(`^${copy.action}`) });
+          const result = issueCard.getByRole("link", { name: new RegExp(`^${copy.result}`) });
+          const activate = async (link: Locator) =>
+            width === 1440 ? link.press("Enter") : link.tap();
+
+          await expect(headings).toHaveText([copy.waiting, copy.running, copy.done]);
+          await expect(cards).toHaveCount(5);
+          await expect(all).toHaveAttribute("aria-pressed", "true");
+          await expectDots(all, []);
+          await expectDots(waiting, [amber, green]);
+          await expect(waiting).toHaveAccessibleDescription(`${copy.action}. ${copy.result}`);
+          await expectDots(headings.first(), [amber, green]);
+          await expectDots(headings.last(), [green]);
+          await expectDots(headings.nth(1), []);
+          await expect(issueCard.getByText(copy.waiting, { exact: true })).toHaveCount(1);
+          await expect(issueCard).not.toContainText(sourceDescription);
+          await expect(question).toContainText(questionTitle);
+          await expect(result).toContainText(resultText);
+          await expect(question.locator(`.${amber}`)).toBeVisible();
+          await expect(result.locator(`.${green}`)).toBeVisible();
+          await expect(
+            cards.filter({ hasText: archiveTitle }).getByText(archiveTitle, { exact: true }),
+          ).toHaveCount(1);
+          await expect(headings.first()).toHaveCSS("border-bottom-width", "0px");
+          await expect(cards.first()).toHaveCSS("border-radius", "20px");
+          await expect(issueCard).toContainText("Минеральный атлас · Тимлид каталога");
+          const geometry = await page.locator(".processes-content").evaluate((content) => {
+            const cards = [...content.querySelectorAll(".process-card")];
+            return {
+              fits:
+                content.scrollWidth <= content.clientWidth &&
+                cards.every((card) => card.scrollWidth <= card.clientWidth),
+              typography: [
+                ...content.querySelectorAll(".process-card a, .process-card p, h2, button"),
+              ].every(
+                (el) =>
+                  getComputedStyle(el).fontFamily.startsWith("Onest") &&
+                  getComputedStyle(el).fontWeight === "400",
+              ),
+              aligned: cards.every((card) => {
+                const title = card.querySelector(".process-card-title")!.getBoundingClientRect();
+                const arrow = card
+                  .querySelector(".process-card-title svg")!
+                  .getBoundingClientRect();
+                const status = card
+                  .querySelector("footer .process-status")!
+                  .getBoundingClientRect();
+                return (
+                  Math.abs(title.left - status.left) < 1 && Math.abs(title.right - arrow.right) < 1
+                );
+              }),
+            };
+          });
+          expect(geometry).toEqual({ fits: true, typography: true, aligned: true });
+          await captureProcessPreview(page, info, `all-${width}-${theme}-${language}`);
+
+          await activate(waiting);
+          await expect(headings).toHaveText([copy.waiting]);
+          await expect(cards).toHaveCount(3);
+          await captureProcessPreview(page, info, `filtered-${width}-${theme}-${language}`);
+
+          await activate(question);
+          await expect(page).toHaveURL(`${overviewPath}/issue?session=title-question`);
+          const inspector = page.locator(".process-inspector");
+          const opened = inspector.locator("details[open]");
+          await expect(opened).toContainText(questionTitle);
+          await expect(opened.getByText(copy.action, { exact: true })).toBeVisible();
+          await expect(opened.getByRole("link", { name: copy.open })).toHaveAttribute(
+            "href",
+            "/threads/title-question",
+          );
+          if (width !== 1440) await expect(inspector).toBeFocused();
+          await page.goBack();
+          await expect(waiting).toHaveAttribute("aria-pressed", "true");
+
+          await activate(result);
+          await expect(page).toHaveURL(`${overviewPath}/issue?session=references`);
+          await expect(opened).toContainText(resultText);
+          await expect(opened.getByText(copy.result, { exact: true })).toBeVisible();
+          await expect(inspector).toContainText("ClaudeNest");
+          await expect(inspector.getByText("Архивные примеры для обложки")).toBeVisible();
+          const open = opened.getByRole("link", { name: copy.open });
+          await expect(open).toHaveAttribute("href", resultUrl);
+          if (width === 390 && theme === "light" && language === "ru") {
+            await page.route(resultUrl, (route) => route.fulfill({ body: "ClaudeNest" }));
+            await open.tap();
+            await expect(page).toHaveURL(resultUrl);
+          } else {
+            await page.goBack();
+            await expect(waiting).toHaveAttribute("aria-pressed", "true");
+            await activate(all);
+            await expect(cards).toHaveCount(5);
+          }
+        });
+      }
+    }
+  });
+}
+
+test("process cards preserve focus, hover and pressed states", async ({ page }, info) => {
   await installProcessesFixture(page, "light", entries);
   await page.goto(overviewPath);
+  const card = page.locator(".process-card").first();
+  const title = card.getByRole("link").first();
+  await expect(card).toBeVisible();
+  const rest = await card.evaluate((element) => getComputedStyle(element).boxShadow);
+  await title.focus();
+  await expect(card).toHaveCSS("outline-style", "solid");
+  await page.keyboard.press("Tab");
+  await expect(card.getByRole("link", { name: /^Требуется действие/ })).toBeFocused();
+  await captureProcessPreview(page, info, "focus-1440-light-ru");
+  await card.hover();
+  await expect
+    .poll(() => card.evaluate((element) => getComputedStyle(element).boxShadow))
+    .not.toBe(rest);
+  await page.mouse.down();
+  await expect(card).toHaveCSS("box-shadow", /inset/);
+  await page.mouse.move(1400, 800);
+  await page.mouse.up();
+  const meta = (await card.locator(".process-card-meta").boundingBox())!;
+  await page.mouse.click(meta.x + meta.width / 2, meta.y + meta.height / 2);
+  await expect(page).toHaveURL(`${overviewPath}/issue`);
+});
 
-  const headings = page.locator(".process-section").getByRole("heading", { level: 2 });
-  await expect(headings).toHaveText(["Ждёт ответа", "В очереди", "Ошибка", "Готово"]);
-  const done = page.getByRole("region", { name: "Готово" });
-  await expect(done.getByRole("link", { name: /^Консультант/ })).toContainText("Ответил");
-  await expect(done.getByRole("link", { name: /^Проверяющий/ })).toContainText("В работе");
-  await expect(page.getByRole("region", { name: "Ошибка" })).toContainText("Без проекта");
-
+test("card signals follow the GET response and the focused filter survives polling", async ({
+  page,
+}) => {
+  const response = [...entries];
+  await page.clock.install();
+  await installProcessesFixture(page, "light", response);
+  await page.goto(overviewPath);
   const filter = page.getByRole("group", { name: "Статус" });
-  const awaitingAnswer = filter.getByRole("button", { name: "Ждёт ответа", exact: true });
-  const pressed = filter.getByRole("button", { pressed: true });
-  await awaitingAnswer.focus();
-  await page.keyboard.press("Space");
-  await expect(pressed).toHaveText("Ждёт ответа");
-  await expect(headings).toHaveText(["Ждёт ответа"]);
-
-  const [root, child] = asking.sessions as [WorkerProcessSession, WorkerProcessSession];
-  entries[0] = { ...asking, sessions: [{ ...root, waitingFor: [child.id] }, child] };
-  await page.clock.fastForward(4_000);
-  await expect(page.locator(".process-overview").getByRole("status")).toHaveText(
-    "Нет процессов с этим статусом",
+  const waiting = filter.getByRole("button", { name: "Ждёт ответа", exact: true });
+  const done = filter.getByRole("button", { name: "Готово", exact: true });
+  const verification = page.locator(".process-card").filter({ hasText: "Собрать выпуск каталога" });
+  await expect(verification.getByRole("link", { name: "Новый результат" })).toHaveAttribute(
+    "href",
+    `${overviewPath}/catalogue?session=verification`,
   );
-  await expect(pressed).toHaveText("Ждёт ответа");
-  await expect(awaitingAnswer).toBeFocused();
-  await expect(awaitingAnswer).toHaveCSS("outline-style", "solid");
-  await expect(filter.getByRole("button")).toHaveText([
-    "Все",
-    "Ждёт ответа",
-    "Ждёт результата",
-    "В очереди",
-    "Ошибка",
-    "Готово",
-  ]);
-  await expect(headings).toHaveCount(0);
-  await captureProcessPreview(page, info, "filtered-empty-1440-light-ru");
-
-  await filter.getByRole("button", { name: "Все", exact: true }).click();
-  await expect(pressed).toHaveText("Все");
-  await expect(awaitingAnswer).toHaveCount(0);
-  await expect(headings).toHaveText(["Ждёт результата", "В очереди", "Ошибка", "Готово"]);
-  const waitingForResult = page.getByRole("region", { name: "Ждёт результата" });
-  await expect(waitingForResult.getByRole("link", { name: /^Аналитик/ })).toContainText("В работе");
-
-  entries[0] = { ...asking, sessions: [{ ...root, status: "running" }, child] };
+  await waiting.press("Enter");
   await page.clock.fastForward(4_000);
-  await expect(headings).toHaveText(["В работе", "В очереди", "Ошибка", "Готово"]);
-  await expect(page.getByRole("region", { name: "В работе" }).getByRole("link")).toHaveCount(2);
+  await expectDots(waiting, [amber, green]);
 
-  entries.length = 0;
+  response[0] = {
+    ...issue,
+    sessions: issue.sessions.map((value) =>
+      value.signal === "unseenCompletion" ? { ...value, signal: undefined } : value,
+    ),
+  };
+  response.pop();
   await page.clock.fastForward(4_000);
-  await expect(page.getByText("Нет активных процессов")).toBeVisible();
-  await expect(headings).toHaveCount(0);
+  await expectDots(waiting, [amber]);
+  await expect(done).toHaveCount(0);
+  await expect(page.getByText(resultText)).toHaveCount(0);
+  await expect(waiting).toBeFocused();
+
+  response.splice(0, response.length, entries[3]!);
+  await page.clock.fastForward(4_000);
+  await expect(page.getByText("Нет процессов с этим статусом")).toBeVisible();
+  await expectDots(waiting, []);
+  await expect(waiting).toHaveAttribute("aria-pressed", "true");
+  await expect(waiting).toBeFocused();
+  await filter.getByRole("button", { name: "Все", exact: true }).press("Enter");
+  await expect(
+    page.getByRole("heading", { level: 2, name: "В работе", exact: true }),
+  ).toBeVisible();
 });

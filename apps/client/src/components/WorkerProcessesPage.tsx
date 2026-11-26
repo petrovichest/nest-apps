@@ -156,6 +156,47 @@ const overviewStatuses = [
 type ProcessStatus = (typeof overviewStatuses)[number];
 type ProcessStatusFilter = ProcessStatus | "all";
 
+type ProcessSignal = NonNullable<WorkerProcessSession["signal"]>;
+
+const signalKinds = ["actionRequired", "unseenCompletion"] as const;
+const signalStyles = {
+  actionRequired: { className: "status-needsAttention", label: "Требуется действие" },
+  unseenCompletion: { className: "status-completed-unread", label: "Новый результат" },
+} as const;
+
+function describeSignals(signals: ReadonlySet<ProcessSignal> | undefined, t: Translate) {
+  return (
+    signalKinds
+      .filter((signal) => signals?.has(signal))
+      .map((signal) => t(signalStyles[signal].label))
+      .join(". ") || undefined
+  );
+}
+
+function ProcessSignalDots({ signals }: { signals: ReadonlySet<ProcessSignal> | undefined }) {
+  if (!signals?.size) return null;
+  return (
+    <span className="process-signal-dots" aria-hidden="true">
+      {signalKinds.map((signal) =>
+        signals.has(signal) ? (
+          <span className={`status ${signalStyles[signal].className}`} key={signal} />
+        ) : null,
+      )}
+    </span>
+  );
+}
+
+function ProcessSignalLabel({ signal }: { signal: ProcessSignal }) {
+  const { t } = useI18n();
+  const { className, label } = signalStyles[signal];
+  return (
+    <span className="process-signal-label">
+      <span className={`status ${className}`} aria-hidden="true" />
+      {t(label)}
+    </span>
+  );
+}
+
 function overviewStatus(session: WorkerProcessSession): ProcessStatus {
   switch (session.status) {
     case "waiting":
@@ -201,6 +242,7 @@ function ProcessOverview({
     ProcessStatus,
     Map<string | null, { process: WorkerProcess; root: WorkerProcessSession }[]>
   >();
+  const signalsByStatus = new Map<ProcessStatus, Set<ProcessSignal>>();
   for (const process of processes) {
     const root = process.sessions.find(({ id }) => id === process.id);
     if (!root) continue;
@@ -211,6 +253,11 @@ function ProcessOverview({
     group.push({ process, root });
     projects.set(process.projectKey, group);
     sections.set(status, projects);
+    const signals = signalsByStatus.get(status) ?? new Set<ProcessSignal>();
+    for (const { signal } of process.sessions) {
+      if (signal) signals.add(signal);
+    }
+    signalsByStatus.set(status, signals);
   }
   const options = overviewStatuses.filter((status) => sections.has(status) || status === filter);
   const visibleStatuses = filter === "all" ? options : [filter];
@@ -218,16 +265,21 @@ function ProcessOverview({
   return (
     <div className="process-overview">
       <div className="process-filter" role="group" aria-label={t("Статус")}>
-        {(["all", ...options] as const).map((status) => (
-          <button
-            type="button"
-            key={status}
-            aria-pressed={filter === status}
-            onClick={() => onFilterChange(status)}
-          >
-            {t(status === "all" ? "Все" : status)}
-          </button>
-        ))}
+        {(["all", ...options] as const).map((status) => {
+          const signals = status === "all" ? undefined : signalsByStatus.get(status);
+          return (
+            <button
+              type="button"
+              key={status}
+              aria-pressed={filter === status}
+              aria-description={describeSignals(signals, t)}
+              onClick={() => onFilterChange(status)}
+            >
+              {t(status === "all" ? "Все" : status)}
+              <ProcessSignalDots signals={signals} />
+            </button>
+          );
+        })}
       </div>
       {filter === "all" && !sections.size && <p>{t("Нет активных процессов")}</p>}
       {filter !== "all" && !sections.has(filter) && (
@@ -237,24 +289,18 @@ function ProcessOverview({
         const projects = sections.get(status);
         if (!projects) return null;
         const label = t(status);
+        const signals = signalsByStatus.get(status);
         return (
           <section className="process-section" key={status} aria-label={label}>
-            <h2>{label}</h2>
-            {[...projects].map(([key, group]) => {
-              const name = group[0]!.process.projectName ?? t("Без проекта");
-              return (
-                <section className="process-project" key={key ?? ""} aria-label={name}>
-                  <h3>{name}</h3>
-                  <ul className="process-worker-list">
-                    {group.map(({ process, root }) => (
-                      <li className="process-overview-run" key={root.id}>
-                        <ProcessRow processId={root.id} node={branch(process, [root])} />
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              );
-            })}
+            <h2 aria-description={describeSignals(signals, t)}>
+              {label}
+              <ProcessSignalDots signals={signals} />
+            </h2>
+            <ul className="process-cards" role="list">
+              {[...projects.values()].flat().map(({ process, root }) => (
+                <ProcessCard key={root.id} process={process} root={root} />
+              ))}
+            </ul>
           </section>
         );
       })}
@@ -262,46 +308,48 @@ function ProcessOverview({
   );
 }
 
-function hasActiveWork(node: Participant): boolean {
-  return node.sessions.some(active) || node.children.some(hasActiveWork);
-}
-
-function ProcessRow({ processId, node }: { processId: string; node: Participant }) {
+function ProcessCard({ process, root }: { process: WorkerProcess; root: WorkerProcessSession }) {
   const { t } = useI18n();
-  const first = current(node);
-  const running = node.sessions.filter(active);
-  const visible = running.length ? running : [first];
-  const children = node.children.filter(hasActiveWork);
+  const signals = signalKinds.flatMap((signal) => {
+    const session = process.sessions.find((candidate) => candidate.signal === signal);
+    return session ? [{ signal, session }] : [];
+  });
   return (
-    <>
-      <Link className="process-worker-row" to={processLink(processId, first)}>
-        <span className="process-worker-label">
-          <strong>{first.workerName}</strong>
-          {visible.length > 1 && <small>{sessionsText(t, visible.length)}</small>}
-        </span>
-        <ul className="process-session-list">
-          {visible.map((session) => (
-            <li key={session.id}>
-              {(session.parentId !== null || session.title !== session.workerName) && (
-                <span className="process-session-name">{session.title}</span>
-              )}
-              <span className="process-provider">{apps[session.provider]}</span>
-              <WorkStatus session={session} />
-            </li>
-          ))}
-        </ul>
-        <ChevronRightIcon className="process-row-chevron" />
+    <li className="kanban-card process-card">
+      <Link className="process-card-title" to={processLink(process.id, root)}>
+        <span>{root.title}</span>
+        <ChevronRightIcon aria-hidden="true" />
       </Link>
-      {children.length > 0 && (
-        <ul className="process-overview-members" aria-label={t("Подключённые работники")}>
-          {children.map((child) => (
-            <li key={current(child).workerId}>
-              <ProcessRow processId={processId} node={child} />
-            </li>
-          ))}
-        </ul>
+      <p className="process-card-meta">
+        {process.projectName ?? t("Без проекта")} · {root.workerName}
+      </p>
+      {signals.length > 0 && (
+        <div className="process-card-signals">
+          {signals.map(({ signal, session }) => {
+            const excerpt =
+              signal === "unseenCompletion"
+                ? session.result?.trim()
+                : session.title === root.title
+                  ? undefined
+                  : session.title;
+            return (
+              <Link
+                key={signal}
+                className="process-card-signal"
+                to={processLink(process.id, session)}
+                aria-description={excerpt ? undefined : session.title}
+              >
+                <ProcessSignalLabel signal={signal} />
+                {excerpt && <span className="process-card-excerpt">{excerpt}</span>}
+              </Link>
+            );
+          })}
+        </div>
       )}
-    </>
+      <footer>
+        <WorkStatus session={root} />
+      </footer>
+    </li>
   );
 }
 
@@ -329,6 +377,7 @@ function ProcessDetail({ process }: { process: WorkerProcess }) {
   const { t } = useI18n();
   const [params, setParams] = useSearchParams();
   const inspector = useRef<HTMLElement>(null);
+  const linkedSession = useRef(params.has("session"));
   const root = process.sessions.find(({ id }) => id === process.id)!;
   const graph = branch(process, [root]);
   const others = descendants(graph);
@@ -337,6 +386,20 @@ function ProcessDetail({ process }: { process: WorkerProcess }) {
     others.find(({ sessions }) => sessions.some(({ id }) => id === selectedId)) ?? graph;
   const children = process.sessions.filter(({ parentId }) => parentId !== null);
   const workerCount = new Set(children.map(({ workerId }) => workerId)).size;
+
+  useEffect(() => {
+    if (!linkedSession.current) return;
+    const panel = inspector.current;
+    const layout = panel?.parentElement;
+    if (
+      panel &&
+      layout &&
+      panel.getBoundingClientRect().top > layout.getBoundingClientRect().top + 1
+    ) {
+      panel.focus({ preventScroll: true });
+      panel.scrollIntoView({ block: "start" });
+    }
+  }, []);
 
   function select(participant: Participant, event: MouseEvent<HTMLButtonElement>) {
     setParams({ session: current(participant).id }, { replace: true, preventScrollReset: true });
@@ -389,6 +452,7 @@ function ProcessDetail({ process }: { process: WorkerProcess }) {
             id="process-worker-detail"
             aria-labelledby="process-worker-name"
             ref={inspector}
+            tabIndex={-1}
           >
             <WorkerDetails
               key={current(selected).id}
@@ -420,6 +484,7 @@ function ProcessNode({
   const work = current(participant);
   const waiting = new Set(participant.sessions.flatMap(({ waitingFor }) => waitingFor));
   const { children } = participant;
+  const signals = new Set(participant.sessions.flatMap(({ signal }) => (signal ? [signal] : [])));
   const awaitedChildren = children.map(({ sessions }) =>
     sessions.some(({ id }) => waiting.has(id)),
   );
@@ -435,6 +500,7 @@ function ProcessNode({
         type="button"
         aria-controls="process-worker-detail"
         aria-pressed={selected === participant}
+        aria-description={describeSignals(signals, t)}
         onClick={(event) => onSelect(participant, event)}
       >
         <span className="process-node-heading">
@@ -451,6 +517,7 @@ function ProcessNode({
         )}
         <span className="process-node-meta">
           <WorkStatus session={work} />
+          <ProcessSignalDots signals={signals} />
           {root && <small>{apps[work.provider]}</small>}
           {awaited && <small className="process-node-wait">{t("Ждут результата")}</small>}
         </span>
@@ -492,10 +559,7 @@ function WorkerDetails({
   initialSession: string;
 }) {
   const { t } = useI18n();
-  const work = current(participant);
-  const opened = participant.sessions.some(({ id }) => id === initialSession)
-    ? initialSession
-    : work.id;
+  const work = participant.sessions.find(({ id }) => id === initialSession) ?? current(participant);
   const sessions = [work, ...participant.sessions.filter(({ id }) => id !== work.id)];
   const sender = process.sessions.find(({ id }) => id === work.parentId);
   return (
@@ -509,38 +573,45 @@ function WorkerDetails({
         {sender &&
           ` · ${t(work.kind === "question" ? "Спросил {{worker}}" : "Поручил {{worker}}", { worker: sender.workerName })}`}
       </p>
-      {sessions.map((session) => (
-        <details className="process-work" key={session.id} open={session.id === opened}>
-          <summary>
-            <span>
-              <span className="process-work-meta">
-                {session.kind !== "session" && (
-                  <small>{t(session.kind === "question" ? "Вопрос" : "Поручение")}</small>
-                )}
-                <WorkStatus session={session} />
+      {sessions.map((session) => {
+        const parent = process.sessions.find(({ id }) => id === session.parentId);
+        return (
+          <details className="process-work" key={session.id} open={session.id === work.id}>
+            <summary>
+              <span>
+                <span className="process-work-meta">
+                  {session.kind !== "session" && (
+                    <small>{t(session.kind === "question" ? "Вопрос" : "Поручение")}</small>
+                  )}
+                  {session.signal ? (
+                    <ProcessSignalLabel signal={session.signal} />
+                  ) : (
+                    <WorkStatus session={session} />
+                  )}
+                </span>
+                {session.title}
               </span>
-              {session.title}
-            </span>
-            <ChevronDownIcon />
-          </summary>
-          <div className="process-work-detail">
-            {sender?.waitingFor.includes(session.id) && (
-              <p className="process-inspector-wait">
-                {t("{{worker}} ждёт результата", { worker: sender.workerName })}
-              </p>
-            )}
-            {session.description && <p>{session.description}</p>}
-            {session.expectedResult && <p>{session.expectedResult}</p>}
-            {(session.result || session.error) && (
-              <div className="process-work-result">
-                <strong>{t(session.error ? "Ошибка" : "Результат")}</strong>
-                <p>{session.error ?? session.result}</p>
-              </div>
-            )}
-            <SessionLink session={session} />
-          </div>
-        </details>
-      ))}
+              <ChevronDownIcon />
+            </summary>
+            <div className="process-work-detail">
+              {parent?.waitingFor.includes(session.id) && (
+                <p className="process-inspector-wait">
+                  {t("{{worker}} ждёт результата", { worker: parent.workerName })}
+                </p>
+              )}
+              {session.description && <p>{session.description}</p>}
+              {session.expectedResult && <p>{session.expectedResult}</p>}
+              {(session.result || session.error) && (
+                <div className="process-work-result">
+                  <strong>{t(session.error ? "Ошибка" : "Результат")}</strong>
+                  <p>{session.error ?? session.result}</p>
+                </div>
+              )}
+              <SessionLink session={session} />
+            </div>
+          </details>
+        );
+      })}
     </>
   );
 }

@@ -31,6 +31,8 @@ const ENGLISH: Record<string, string> = {
   "Не удалось загрузить процессы": "Could not load processes",
   "Нет активных процессов": "No active processes",
   "Нет процессов с этим статусом": "No processes with this status",
+  "Требуется действие": "Action required",
+  "Новый результат": "New result",
   Все: "All",
   "Подключённые работники": "Delegated workers",
   "Дополнительных работников пока нет": "No additional workers yet",
