@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { WorkerProcess, WorkerProcessSession } from "@codexnest/protocol";
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { installVisualFixture, waitForVisualReady } from "./fixtures";
 
 function session(
@@ -206,6 +206,38 @@ const overviewPreview: WorkerProcess[] = [
 
 const overviewPath = "/workers/processes";
 
+async function expectRegularOverviewLabels(page: Page) {
+  const labels = page.locator(
+    [
+      ".workers-tabs a",
+      ".process-project > h2",
+      ".process-worker-label > *",
+      ".process-session-list > li > span",
+    ].join(", "),
+  );
+  await expect(labels).toHaveCount(22);
+  const styles = await labels.evaluateAll((elements) =>
+    elements.map((element) => {
+      const { fontFamily, fontWeight } = getComputedStyle(element);
+      return { label: element.textContent, fontFamily, fontWeight };
+    }),
+  );
+  for (const { label, fontFamily, fontWeight } of styles) {
+    expect(fontFamily, label ?? undefined).toMatch(/^Onest\b/);
+    expect(fontWeight, label ?? undefined).toBe("400");
+  }
+}
+
+async function expectPressedOverviewLabels(page: Page, link: Locator) {
+  await link.evaluate((element) =>
+    element.addEventListener("click", (event) => event.preventDefault(), { once: true }),
+  );
+  await page.mouse.down();
+  await expect(link).toHaveCSS("box-shadow", /inset/);
+  await expectRegularOverviewLabels(page);
+  await page.mouse.up();
+}
+
 for (const theme of ["light", "dark"] as const) {
   test(`process overview states on desktop in ${theme}`, async ({ page }, info) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -231,6 +263,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(activeTab).toHaveCSS("background-color", surface);
     await expect(workersTab).toHaveCSS("box-shadow", "none");
     await expect(row).toHaveCSS("box-shadow", "none");
+    await expectRegularOverviewLabels(page);
     await captureProcessPreview(page, info, `desktop-${theme}-rest`);
 
     const rowBounds = await row.boundingBox();
@@ -238,21 +271,34 @@ for (const theme of ["light", "dark"] as const) {
     await expect(row).toHaveCSS("background-color", surface);
     await expect(row).toHaveCSS("box-shadow", elevation);
     expect(await row.boundingBox()).toEqual(rowBounds);
+    await expectRegularOverviewLabels(page);
     await captureProcessPreview(page, info, `desktop-${theme}-hover`);
 
-    await workersTab.hover();
-    await expect(workersTab).toHaveCSS("box-shadow", elevation);
-    await activeTab.hover();
-    await page.mouse.down();
-    await expect(activeTab).toHaveCSS("box-shadow", /inset/);
-    await page.mouse.up();
+    await expectPressedOverviewLabels(page, row);
+
+    for (const tab of [workersTab, activeTab]) {
+      await tab.hover();
+      await expect(tab).toHaveCSS("box-shadow", elevation);
+      await expectRegularOverviewLabels(page);
+      await expectPressedOverviewLabels(page, tab);
+    }
     await expect(activeTab).toHaveCSS("box-shadow", elevation);
     await page.mouse.move(1360, 700);
-    await activeTab.focus();
+    await workersTab.focus();
+    await page.keyboard.press("Tab");
+    await expect(activeTab).toBeFocused();
+    await expect(activeTab).toHaveCSS("outline-style", "solid");
+    await expectRegularOverviewLabels(page);
+    await page.keyboard.press("Shift+Tab");
+    await expect(workersTab).toBeFocused();
+    await expect(workersTab).toHaveCSS("outline-style", "solid");
+    await expectRegularOverviewLabels(page);
+    await page.keyboard.press("Tab");
     await page.keyboard.press("Tab");
     await expect(row).toBeFocused();
     await expect(row).toHaveCSS("outline-style", "solid");
     await expect(row).toHaveCSS("box-shadow", elevation);
+    await expectRegularOverviewLabels(page);
     await captureProcessPreview(page, info, `desktop-${theme}-focus`);
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(new RegExp(`${overviewPath}/architect$`));
@@ -287,6 +333,7 @@ test.describe("process overview on touch", () => {
         .getByRole("navigation", { name: "Раздел работников" })
         .getByRole("link", { name: "Процессы" });
       await expect(row).toHaveCSS("box-shadow", "none");
+      await expectRegularOverviewLabels(page);
       await captureProcessPreview(page, info, `touch-${width}-${theme}-rest`);
       const elevation = await activeTab.evaluate((element) => getComputedStyle(element).boxShadow);
       await activeTab.tap();

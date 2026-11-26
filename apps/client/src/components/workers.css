@@ -27,7 +27,7 @@
   border-radius: 999px;
   color: var(--color-muted-strong);
   font-size: var(--text-label);
-  font-weight: var(--weight-medium);
+  font-weight: var(--weight-regular);
   text-decoration: none;
   white-space: nowrap;
 }
@@ -84,8 +84,9 @@
   width: min(100%, 1120px);
 }
 
-.process-project > h2 {
+.processes-content .process-project > h2 {
   padding-inline: var(--space-3);
+  font-weight: var(--weight-regular);
   line-height: 24px;
   overflow-wrap: anywhere;
 }
@@ -159,7 +160,7 @@
 }
 
 .process-worker-label strong {
-  font-weight: var(--weight-semibold);
+  font-weight: var(--weight-regular);
 }
 
 .process-worker-label small,
