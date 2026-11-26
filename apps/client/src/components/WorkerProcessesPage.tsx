@@ -217,20 +217,18 @@ function ProcessOverview({
 
   return (
     <div className="process-overview">
-      <label className="process-filter">
-        <span>{t("Статус")}</span>
-        <select
-          value={filter}
-          onChange={(event) => onFilterChange(event.currentTarget.value as ProcessStatusFilter)}
-        >
-          <option value="all">{t("Все")}</option>
-          {options.map((status) => (
-            <option key={status} value={status}>
-              {t(status)}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="process-filter" role="group" aria-label={t("Статус")}>
+        {(["all", ...options] as const).map((status) => (
+          <button
+            type="button"
+            key={status}
+            aria-pressed={filter === status}
+            onClick={() => onFilterChange(status)}
+          >
+            {t(status === "all" ? "Все" : status)}
+          </button>
+        ))}
+      </div>
       {filter === "all" && !sections.size && <p>{t("Нет активных процессов")}</p>}
       {filter !== "all" && !sections.has(filter) && (
         <p role="status">{t("Нет процессов с этим статусом")}</p>

@@ -207,8 +207,7 @@ async function expectRegularOverviewLabels(page: Page) {
   const labels = page.locator(
     [
       ".workers-tabs a",
-      ".process-filter span",
-      ".process-filter select",
+      ".process-filter button",
       ".process-section > h2",
       ".process-project > h3",
       ".process-worker-label > *",
@@ -227,12 +226,12 @@ async function expectRegularOverviewLabels(page: Page) {
   }
 }
 
-async function expectPressedOverviewLabels(page: Page, link: Locator) {
-  await link.evaluate((element) =>
+async function expectPressedOverviewLabels(page: Page, control: Locator) {
+  await control.evaluate((element) =>
     element.addEventListener("click", (event) => event.preventDefault(), { once: true }),
   );
   await page.mouse.down();
-  await expect(link).toHaveCSS("box-shadow", /inset/);
+  await expect(control).toHaveCSS("box-shadow", /inset/);
   await expectRegularOverviewLabels(page);
   await page.mouse.up();
 }
@@ -296,15 +295,27 @@ for (const theme of ["light", "dark"] as const) {
     await expectRegularOverviewLabels(page);
     await page.keyboard.press("Tab");
     await page.keyboard.press("Tab");
-    const filter = page.getByRole("combobox", { name: "Статус" });
-    await expect(filter).toBeFocused();
-    await expect(filter).toHaveCSS("outline-style", "solid");
-    await page.keyboard.press("ArrowDown");
-    await expect(filter).toHaveValue("В работе");
-    await expect(page.locator(".process-section > h2")).toHaveText(["В работе"]);
-    await page.keyboard.press("Home");
-    await expect(filter).toHaveValue("all");
+    const filter = page.getByRole("group", { name: "Статус" });
+    const all = filter.getByRole("button", { name: "Все", exact: true });
+    const running = filter.getByRole("button", { name: "В работе" });
+    await expect(all).toBeFocused();
+    await expect(all).toHaveCSS("outline-style", "solid");
+    await expect(all).toHaveCSS("box-shadow", elevation);
     await page.keyboard.press("Tab");
+    await expect(running).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(filter.getByRole("button", { pressed: true })).toHaveText("В работе");
+    await expect(page.locator(".process-section > h2")).toHaveText(["В работе"]);
+    await running.hover();
+    await expectPressedOverviewLabels(page, running);
+    await page.keyboard.press("Shift+Tab");
+    await expect(all).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(filter.getByRole("button", { pressed: true })).toHaveText("Все");
+    for (const button of await filter.getByRole("button").all()) {
+      await expect(button).toBeFocused();
+      await page.keyboard.press("Tab");
+    }
     await expect(row).toBeFocused();
     await expect(row).toHaveCSS("outline-style", "solid");
     await expect(row).toHaveCSS("box-shadow", elevation);
@@ -345,9 +356,10 @@ test.describe("process overview on touch", () => {
       await expect(row).toHaveCSS("box-shadow", "none");
       await expectRegularOverviewLabels(page);
       await captureProcessPreview(page, info, `touch-${width}-${theme}-rest`);
-      const filter = page.getByRole("combobox", { name: "Статус" });
-      await filter.tap();
-      await filter.selectOption("Ждёт результата");
+      const filter = page.getByRole("group", { name: "Статус" });
+      const waiting = filter.getByRole("button", { name: "Ждёт результата" });
+      await waiting.tap();
+      await expect(filter.getByRole("button", { pressed: true })).toHaveText("Ждёт результата");
       await expect(page.locator(".process-section > h2")).toHaveText(["Ждёт результата"]);
       const elevation = await activeTab.evaluate((element) => getComputedStyle(element).boxShadow);
       await activeTab.tap();
@@ -376,7 +388,7 @@ const asking: WorkerProcess = {
   ],
 };
 
-for (const width of [1440, 390]) {
+for (const width of [1440, 390, 320]) {
   for (const theme of ["light", "dark"] as const) {
     for (const language of ["ru", "en"] as const) {
       test(`process status sections at ${width}px, ${theme}, ${language}`, async ({
@@ -391,14 +403,17 @@ for (const width of [1440, 390]) {
             ? ["Ждёт ответа", "В работе", "Ждёт результата"]
             : ["Awaiting an answer", "In progress", "Awaiting result"];
         const headings = page.locator(".process-section > h2");
-        const filter = page.getByRole("combobox", {
+        const filter = page.getByRole("group", {
           name: language === "ru" ? "Статус" : "Status",
         });
-        await expect(filter).toHaveValue("all");
-        await expect(filter.locator("option")).toHaveText([
-          language === "ru" ? "Все" : "All",
-          ...names,
-        ]);
+        const allName = language === "ru" ? "Все" : "All";
+        const all = filter.getByRole("button", { name: allName, exact: true });
+        const awaitingAnswer = filter.getByRole("button", { name: names[0], exact: true });
+        const pressed = filter.getByRole("button", { pressed: true });
+        const buttons = filter.getByRole("button");
+        await expect(pressed).toHaveText(allName);
+        await expect(buttons).toHaveText([allName, ...names]);
+        await expect(buttons.and(filter.locator('button[type="button"]'))).toHaveCount(4);
         await expect(headings).toHaveText(names);
         const waiting = page.getByRole("region", { name: names[0] });
         const child = waiting.getByRole("link", { name: /^Аналитик/ });
@@ -412,7 +427,8 @@ for (const width of [1440, 390]) {
         expect(await fits()).toBe(true);
         await captureProcessPreview(page, info, `all-${width}-${theme}-${language}`);
 
-        await filter.selectOption({ label: names[0]! });
+        await awaitingAnswer.click();
+        await expect(pressed).toHaveText(names[0]!);
         await expect(headings).toHaveText([names[0]!]);
         await expect(child.locator(".process-status")).toHaveText(names[1]!);
         expect(await fits()).toBe(true);
@@ -424,16 +440,48 @@ for (const width of [1440, 390]) {
           "Собрать примеры для каталога",
         );
         await expect(filter).toHaveCount(0);
-        if (width === 390) {
+        if (width < 1440) {
           await page.locator(".process-breadcrumb a").click();
         } else {
           await page.goBack();
         }
-        await expect(filter).toHaveValue("Ждёт ответа");
+        await expect(pressed).toHaveText(names[0]!);
         await expect(headings).toHaveText([names[0]!]);
 
-        await filter.selectOption("all");
+        await all.click();
+        await expect(pressed).toHaveText(allName);
         await expect(headings).toHaveText(names);
+
+        if (width < 1440) {
+          const geometry = await filter.evaluate((group) => {
+            const { left, right } = group.getBoundingClientRect();
+            return [...group.querySelectorAll("button")].map((button) => {
+              const box = button.getBoundingClientRect();
+              return {
+                label: button.textContent,
+                y: box.top,
+                height: box.height,
+                insideGroup: box.left >= left && box.right <= right,
+                textFits:
+                  button.scrollWidth <= button.clientWidth &&
+                  button.scrollHeight <= button.clientHeight,
+              };
+            });
+          });
+          expect(new Set(geometry.map(({ y }) => y)).size).toBeGreaterThan(1);
+          for (const { label, height, insideGroup, textFits } of geometry) {
+            expect(height, label ?? undefined).toBeGreaterThanOrEqual(34);
+            expect(insideGroup, label ?? undefined).toBe(true);
+            expect(textFits, label ?? undefined).toBe(true);
+          }
+          await all.focus();
+          for (const button of (await buttons.all()).slice(1)) {
+            await page.keyboard.press("Tab");
+            await expect(button).toBeFocused();
+          }
+          await expect(buttons.last()).toHaveCSS("outline-style", "solid");
+          await captureProcessPreview(page, info, `focus-${width}-${theme}-${language}`);
+        }
       });
     }
   }
@@ -484,9 +532,12 @@ test("regroups a whole branch after polling and only shows statuses present in t
   await expect(done.getByRole("link", { name: /^Проверяющий/ })).toContainText("В работе");
   await expect(page.getByRole("region", { name: "Ошибка" })).toContainText("Без проекта");
 
-  const filter = page.getByRole("combobox", { name: "Статус" });
-  await filter.selectOption("Ждёт ответа");
-  await filter.focus();
+  const filter = page.getByRole("group", { name: "Статус" });
+  const awaitingAnswer = filter.getByRole("button", { name: "Ждёт ответа", exact: true });
+  const pressed = filter.getByRole("button", { pressed: true });
+  await awaitingAnswer.focus();
+  await page.keyboard.press("Space");
+  await expect(pressed).toHaveText("Ждёт ответа");
   await expect(headings).toHaveText(["Ждёт ответа"]);
 
   const [root, child] = asking.sessions as [WorkerProcessSession, WorkerProcessSession];
@@ -495,9 +546,10 @@ test("regroups a whole branch after polling and only shows statuses present in t
   await expect(page.locator(".process-overview").getByRole("status")).toHaveText(
     "Нет процессов с этим статусом",
   );
-  await expect(filter).toHaveValue("Ждёт ответа");
-  await expect(filter).toBeFocused();
-  await expect(filter.locator("option")).toHaveText([
+  await expect(pressed).toHaveText("Ждёт ответа");
+  await expect(awaitingAnswer).toBeFocused();
+  await expect(awaitingAnswer).toHaveCSS("outline-style", "solid");
+  await expect(filter.getByRole("button")).toHaveText([
     "Все",
     "Ждёт ответа",
     "Ждёт результата",
@@ -508,8 +560,9 @@ test("regroups a whole branch after polling and only shows statuses present in t
   await expect(headings).toHaveCount(0);
   await captureProcessPreview(page, info, "filtered-empty-1440-light-ru");
 
-  await filter.selectOption("all");
-  await expect(filter.locator("option", { hasText: "Ждёт ответа" })).toHaveCount(0);
+  await filter.getByRole("button", { name: "Все", exact: true }).click();
+  await expect(pressed).toHaveText("Все");
+  await expect(awaitingAnswer).toHaveCount(0);
   await expect(headings).toHaveText(["Ждёт результата", "В очереди", "Ошибка", "Готово"]);
   const waitingForResult = page.getByRole("region", { name: "Ждёт результата" });
   await expect(waitingForResult.getByRole("link", { name: /^Аналитик/ })).toContainText("В работе");
