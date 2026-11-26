@@ -289,10 +289,22 @@ it("routes simultaneous assignments of one project worker to their original sess
     expectedResult: "Report findings",
   });
   expect(
+    await f.workerTool("codex", a.id, "worker_delegate", {
+      ...request("Wrong card"),
+      cardId: b.cardIds[0],
+    }),
+  ).toMatchObject({ ok: false, code: "worker_task_required" });
+  expect(
     await f.workerTool("codex", a.id, "worker_delegate", request("Import review"), ids[0]),
   ).toMatchObject({ ok: true, result: { id: ids[0] } });
   expect(
-    await f.workerTool("claude", b.id, "worker_delegate", request("Release review"), ids[1]),
+    await f.workerTool(
+      "claude",
+      b.id,
+      "worker_delegate",
+      { ...request("Release review"), cardId: b.cardIds[0] },
+      ids[1],
+    ),
   ).toMatchObject({ ok: true, result: { id: ids[1] } });
   expect(
     await f.workerTool("codex", a.id, "worker_delegate", request("Import review"), ids[0]),
@@ -398,6 +410,136 @@ it("routes simultaneous assignments of one project worker to their original sess
   expect(f.prompts.get(ids[1])).toContain("Release diff missing");
 });
 
+it("delegates from an existing project worker session without a board", async () => {
+  const f = await fixture();
+  const service = f.services.codex;
+  const projectKey = await service.workers.projectKey(f.project);
+  const settings = {
+    collaborationMode: "default",
+    model: "codex-model",
+    reasoningEffort: "high",
+  } as const;
+  const lead = await service.workers.create(
+    {
+      name: "Lead",
+      role: "Coordinates",
+      instructions: "",
+      settings: { codex: { collaborationMode: "default" } },
+    },
+    projectKey,
+  );
+  const reviewer = await service.workers.create(
+    {
+      name: "Reviewer",
+      role: "Reviews",
+      instructions: "Review the changes in this project.",
+      settings: { codex: settings },
+    },
+    projectKey,
+  );
+  await service.workers.changeMemory(reviewer.id, projectKey, {
+    action: "add",
+    kind: "notes",
+    scope: "project",
+    text: "Run the Kanban tests.",
+  });
+  const source = randomUUID();
+  const { threadId } = await service.startWorker(lead.id, f.project, source);
+  expect(f.prompts.get(source)).not.toContain("worker_delegate");
+  const request = {
+    workerId: reviewer.id,
+    title: "Review the patch",
+    description: "Check the change",
+    expectedResult: "Report findings",
+  };
+  expect(await f.workerTool("codex", source, "worker_delegate", request)).toMatchObject({
+    ok: false,
+    code: "worker_cannot_delegate",
+  });
+  const coordinator = await service.workers.edit(lead.id, projectKey, lead.revision, {
+    ...lead,
+    coordinates: true,
+  });
+  await service.close();
+  await service.initialize();
+  const listed = await f.workerTool("codex", source, "worker_list", {});
+  expect(listed).toMatchObject({
+    ok: true,
+    result: {
+      workers: expect.arrayContaining([{ id: reviewer.id, name: "Reviewer", role: "Reviews" }]),
+      cards: [],
+      delegation: expect.stringMatching(/worker_delegate.*опусти cardId/),
+    },
+  });
+  expect(
+    await f.workerTool("codex", source, "worker_delegate", { ...request, workerId: "architect" }),
+  ).toMatchObject({ ok: false, code: "worker_task_required" });
+  expect(
+    await f.workerTool("codex", source, "worker_delegate", { ...request, workerId: lead.id }),
+  ).toMatchObject({ ok: false, code: "worker_cycle" });
+
+  const childId = randomUUID();
+  const processUrl = `/workers/processes/${source}?session=${childId}`;
+  await service.notifyThread(threadId, "running");
+  expect(await f.workerTool("codex", source, "worker_delegate", request, childId)).toEqual({
+    ok: true,
+    result: { id: childId, status: "queued", processUrl },
+  });
+  const child = await until(
+    async () => (await service.processes.read())[childId],
+    (session) => Boolean(session?.threadId && service.workerSession(session.threadId)),
+  );
+  expect(child).toMatchObject({
+    kind: "assignment",
+    parentId: source,
+    processId: source,
+    workerId: reviewer.id,
+  });
+  expect(child?.threadId).not.toBe(threadId);
+  const childInput = f.inputs.codex.find(({ id }) => id === childId);
+  expect(childInput).toMatchObject({ cwd: f.project, title: request.title, settings });
+  expect(childInput?.prompt).toContain("Review the changes in this project.");
+  expect(childInput?.prompt).toContain("Run the Kanban tests.");
+  expect(childInput?.prompt).toContain("Поручение от «Lead»");
+  expect(childInput?.prompt).toContain("worker_finish");
+
+  await service.notifyThread(threadId, "completed");
+  expect((await service.processes.list(source))[0]?.sessions[0]).toMatchObject({
+    status: "waiting",
+    waitingFor: [childId],
+  });
+  expect(
+    await f.workerTool("codex", childId, "worker_finish", { result: "Patch approved" }),
+  ).toEqual({
+    ok: true,
+    result: { accepted: true },
+  });
+  await service.notifyThread(child!.threadId!, "completed");
+  await until(
+    async () => f.resumes.codex,
+    (resumes) => resumes.length === 1,
+  );
+  expect(f.resumes.codex).toEqual([threadId]);
+  expect(f.prompts.get(childId)).toContain("Patch approved");
+
+  expect(
+    await f.workerTool("codex", source, "worker_delegate", { ...request, cardId: randomUUID() }),
+  ).toMatchObject({ ok: false, code: "invalid_request", error: expect.stringContaining("cardId") });
+  await service.workers.edit(coordinator.id, projectKey, coordinator.revision, {
+    ...coordinator,
+    coordinates: false,
+  });
+  expect((await f.workerTool("codex", source, "worker_list", {}))?.result).not.toHaveProperty(
+    "delegation",
+  );
+  expect(await f.workerTool("codex", source, "worker_delegate", request)).toMatchObject({
+    ok: false,
+    code: "worker_cannot_delegate",
+  });
+  expect(f.launches.codex).toEqual([source, childId]);
+  expect(await service.store.list()).toEqual([]);
+});
+
 it.each(["full", "mixed"] as const)("queues follow-ups (%s summaries)", async (mode) => {
   const f = await fixture(undefined, undefined, () => false);
   const service = f.services.codex;
@@ -429,10 +571,6 @@ it.each(["full", "mixed"] as const)("queues follow-ups (%s summaries)", async (m
     description: "What should I run?",
     expectedResult: "A command",
   };
-  expect(await f.workerTool("codex", source, "worker_delegate", request)).toMatchObject({
-    ok: false,
-    code: "worker_task_required",
-  });
   const asked = await f.workerTool("codex", source, "worker_ask", request);
   expect(asked?.ok).toBe(true);
   const childId = asked!.result!.id!;

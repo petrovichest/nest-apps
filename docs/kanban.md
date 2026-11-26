@@ -108,10 +108,12 @@ profile and uses relevant files and conventions in its proposal. During the
 transition, cards assigned to former shared workers switch to the standard
 session for future launches and retain their existing sessions. Use the Architect to grant or revoke permission to coordinate tasks,
 then approve the proposal. Workers can ask a colleague a question from a project
-session. A coordinator working on a Kanban card can also start a linked task for
-a colleague. The colleague gets a separate session and sends the result or error
-back to the requesting session. A session waiting for the reply resumes when it
-arrives. To clarify an answer or request rework, the lead can use `worker_follow_up`
+session. A coordinator can delegate work to a colleague from a direct project
+chat or a Kanban card. Direct assignments stay entirely in the worker process.
+Assignments from cards create linked tasks on the board. The colleague gets a
+separate session and sends the result or error back to the requesting session.
+A session waiting for the reply resumes when it arrives. To clarify an answer
+or request rework, the lead can use `worker_follow_up`
 with a child session ID from `worker_results`. Follow-ups run in order in that
 session and keep its conversation history. Only the session that started the
 child can send them. Each recipient uses its own profile, memory, and settings for the

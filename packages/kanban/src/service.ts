@@ -435,7 +435,7 @@ export class KanbanService {
           ...(skill ? [skill] : []),
           "Опирайся на проверенные в проекте команды, пути и соглашения при составлении постоянных инструкций. Создавай работника для текущего проекта.",
           "Согласуй имя, роль, постоянные инструкции, модель и уровень рассуждений.",
-          "Уточни, может ли работник как координатор сам поручать подзадачи на Kanban. Передай coordinates: true только при согласии пользователя.",
+          "Уточни, может ли работник как координатор поручать подзадачи в проектном чате и на Kanban. Передай coordinates: true только при согласии пользователя.",
           "Модель и уровень рассуждений подбирай по назначению работника из доступных вариантов.",
           "В конце предложи профиль через инструмент propose и покажи возвращённую ссылку для утверждения.",
           ...(models?.length
@@ -492,7 +492,7 @@ export class KanbanService {
       'Для уточнения в уже открытой дочерней сессии вызови worker_follow_up с {"sessionId":"ID сессии из worker_results","message":"что уточнить или доработать"}. У работника сохранится история разговора.',
       ...(profile.coordinates
         ? [
-            'Для поручения из карточки вызови worker_delegate с {"workerId":"ID исполнителя","title":"название карточки","description":"что сделать","expectedResult":"что вернуть","cardId":"ID исходной карточки"}.',
+            'Для поручения коллеге вызови worker_delegate с {"workerId":"ID исполнителя","title":"название поручения","description":"что сделать","expectedResult":"что вернуть"}. Если работаешь над задачей на доске, передай cardId из списка карточек worker_list. В чате без доски опусти cardId.',
           ]
         : []),
       "Запрос ставится в очередь. Если ждёшь результата, закончи текущий ход: результат вернётся в эту сессию. Для фонового поручения укажи wait: false и проверь результат через worker_results с {}.",
@@ -854,6 +854,10 @@ export class KanbanService {
     if (request.command === "worker_list") {
       const profiles = await this.workers.list(scope.projectKey);
       const board = sender.boardId ? await this.store.readById(sender.boardId) : null;
+      const canDelegateDirectly =
+        sender.projectPath &&
+        !sender.boardId &&
+        profiles.some(({ id, coordinates }) => id === sender.workerId && coordinates);
       return {
         workers: profiles
           .filter(({ id }) => id !== sender.workerId)
@@ -864,6 +868,9 @@ export class KanbanService {
               ({ id, archivedAt }) => sender.cardIds?.includes(id) && archivedAt === undefined,
             )
             .map(({ id, title }) => ({ id, title })) ?? [],
+        delegation: canDelegateDirectly
+          ? "Для поручения коллеге вызови worker_delegate с workerId, title, description и expectedResult. В этой сессии опусти cardId."
+          : undefined,
       };
     }
     if (request.command === "worker_results")
@@ -964,18 +971,32 @@ export class KanbanService {
           "Only a worker authorized to coordinate can delegate tasks",
           403,
         );
-      if (!sender.boardId || !sender.cardIds?.length || target.profile.id === WORKER_ARCHITECT_ID)
-        throw new KanbanError("worker_task_required", "Delegate from a task on Kanban", 400);
-      sourceCardId =
-        input.cardId === undefined && sender.cardIds.length === 1
-          ? sender.cardIds[0]
-          : text(input.cardId, "Source card", 120);
-      if (!sourceCardId || !sender.cardIds.includes(sourceCardId))
+      if (target.profile.id === WORKER_ARCHITECT_ID)
         throw new KanbanError(
           "worker_task_required",
-          "Choose a card assigned to this session",
+          "The system Architect cannot receive assignments",
           400,
         );
+      if (sender.boardId) {
+        if (!sender.cardIds?.length)
+          throw new KanbanError("worker_task_required", "Delegate from a task on Kanban", 400);
+        sourceCardId =
+          input.cardId === undefined && sender.cardIds.length === 1
+            ? sender.cardIds[0]
+            : text(input.cardId, "Source card", 120);
+        if (!sourceCardId || !sender.cardIds.includes(sourceCardId))
+          throw new KanbanError(
+            "worker_task_required",
+            "Choose a card assigned to this session",
+            400,
+          );
+      } else if (input.cardId !== undefined) {
+        throw new KanbanError(
+          "invalid_request",
+          "Omit cardId when delegating from a session without a Kanban board",
+          400,
+        );
+      }
     }
     const title = text(input.title, "Worker request title", 160);
     const description = text(input.description, "Worker request", 16_000);
@@ -1007,9 +1028,7 @@ export class KanbanService {
         projectKey: sender.projectKey,
         projectName: sender.projectName,
         kind: assignment ? "assignment" : "question",
-        boardId: assignment ? sender.boardId : undefined,
-        sourceCardId,
-        cardIds: assignment ? [request.id] : undefined,
+        ...(sourceCardId ? { boardId: sender.boardId, sourceCardId, cardIds: [request.id] } : {}),
         title,
         description,
         expectedResult,
@@ -1241,7 +1260,7 @@ export class KanbanService {
     this.changed(board);
   }
 
-  private async launchQuestion(session: WorkerSession, sender: WorkerSession): Promise<void> {
+  private async launchWorkerRequest(session: WorkerSession, sender: WorkerSession): Promise<void> {
     await this.processes.exclusive(session.id, async () => {
       const current = (await this.processes.read())[session.id];
       if (!current || current.status !== "queued" || current.threadId) return;
@@ -1258,7 +1277,10 @@ export class KanbanService {
         projectPath,
         cwd: projectPath,
         title: session.title,
-        prompt: `${context}\n\nВопрос от «${sender.workerName}»\n${session.description}\n\nОжидаемый результат: ${session.expectedResult}\nОтветь отправителю через worker_finish.`,
+        prompt:
+          `${context}\n\n${session.kind === "assignment" ? "Поручение" : "Вопрос"} от «${sender.workerName}»\n` +
+          `${session.description}\n\nОжидаемый результат: ${session.expectedResult}\n` +
+          "Ответь отправителю через worker_finish.",
         ...(settings ? { settings } : {}),
       });
     });
@@ -1388,14 +1410,14 @@ export class KanbanService {
       }
       if (!sender) continue;
       if (session.status === "queued" && !session.threadId) {
-        if (session.kind === "assignment") {
+        if (session.kind === "assignment" && session.boardId) {
           if (!this.launching.has(session.id))
             await this.queueAssignment(session, sender).catch((error) =>
               this.failWorker(session.id, message(error)),
             );
         } else {
           this.runWorkerOperation(session.id, () =>
-            this.launchQuestion(session, sender).catch((error) =>
+            this.launchWorkerRequest(session, sender).catch((error) =>
               this.failWorker(session.id, message(error)),
             ),
           );
