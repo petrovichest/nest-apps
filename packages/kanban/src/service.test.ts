@@ -6,11 +6,28 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WORKER_MEMORY_SAVED_MARKER, type KanbanBoard, type KanbanRun } from "@codexnest/protocol";
+import {
+  WORKER_MEMORY_SAVED_MARKER,
+  type KanbanBoard,
+  type KanbanRun,
+  type WorkerProcess,
+} from "@codexnest/protocol";
 import { PUBLISH_PROMPT } from "./agent.js";
 import { atomicJson, type KanbanDocument } from "./store.js";
 import type { ReplyVerdict } from "./reply.js";
+import { registerKanbanRoutes } from "./routes.js";
+import type { WorkerSession } from "./worker-processes.js";
 import { KanbanService, readArchitectSkill, type KanbanLaunch } from "./service.js";
+
+type ObservedThread = NonNullable<Parameters<KanbanService["notifyThread"]>[2]>;
+const completedThread = (id: string, updatedAt: number): ObservedThread => ({
+  id,
+  updatedAt,
+  state: "completed",
+  currentTurnId: null,
+  unread: true,
+  unseen: true,
+});
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -44,6 +61,7 @@ async function fixture(
   const prompts = new Map<string, string>();
   // The fast check of a finished turn: what the agent asks, by session.
   const questions = new Map<string, string | null>();
+  const threadSummaries = new Map<string, ObservedThread>();
   // Sessions whose last reply says the work was pushed.
   const pushed = new Set<string>();
   // The operator's first message, by session.
@@ -94,6 +112,7 @@ async function fixture(
         interrupt: async (threadId) => {
           interrupted[provider].push(threadId);
         },
+        threadSummary: (threadId) => threadSummaries.get(threadId),
         readReply: async (threadId) => ({
           question: questions.get(threadId) ?? null,
           published: pushed.has(threadId),
@@ -215,6 +234,7 @@ async function fixture(
     interrupted,
     prompts,
     questions,
+    threadSummaries,
     pushed,
     requests,
     running,
@@ -313,6 +333,7 @@ it("routes simultaneous assignments of one project worker to their original sess
       workerId: team[2]!.id,
     }),
   ]);
+  expect(processes.find(({ id }) => id === a.id)?.sessions[0]?.signal).toBeUndefined();
   expect(processes.find(({ id }) => id === b.id)?.sessions.map(({ id }) => id)).toEqual([
     b.id,
     ids[1],
@@ -446,7 +467,8 @@ it("queues follow-ups in the same child session and keeps the dialogue with its 
   expect(
     await f.workerTool("codex", childId, "worker_finish", { result: "Run npm test" }),
   ).toMatchObject({ ok: true });
-  await service.notifyThread(childThreadId, "completed");
+  const previousResult = completedThread(childThreadId, 100);
+  await service.notifyThread(childThreadId, previousResult.state, previousResult);
   await until(
     async () => f.resumes.codex,
     (resumes) => resumes.length === 2,
@@ -455,8 +477,11 @@ it("queues follow-ups in the same child session and keeps the dialogue with its 
   expect(f.prompts.get(childId)).toContain("Run npm test");
   expect(f.prompts.get(first)).toContain("Can I run only the Kanban tests?");
   await service.notifyThread(childThreadId, "idle");
-  await service.notifyThread(childThreadId, "completed");
-  expect((await service.processes.read())[childId]?.status).toBe("queued");
+  await service.notifyThread(childThreadId, previousResult.state, previousResult);
+  expect((await service.processes.read())[childId]).toMatchObject({ status: "queued" });
+  expect(
+    (await service.processes.list(source))[0]?.sessions.find(({ id }) => id === childId)?.signal,
+  ).toBeUndefined();
   await service.notifyThread(threadId, "running");
   await service.notifyThread(threadId, "completed");
 
@@ -477,9 +502,11 @@ it("queues follow-ups in the same child session and keeps the dialogue with its 
   expect(
     await f.workerTool("codex", childId, "worker_finish", {
       result: "npm test -w @nest-apps/kanban",
+      signal: "unseenCompletion",
     }),
   ).toMatchObject({ ok: true });
-  await service.notifyThread(childThreadId, "completed");
+  const latestResult = completedThread(childThreadId, 200);
+  await service.notifyThread(childThreadId, latestResult.state, latestResult);
   await until(
     async () => f.resumes.codex,
     (resumes) => resumes.length === 5,
@@ -497,6 +524,192 @@ it("queues follow-ups in the same child session and keeps the dialogue with its 
   ]);
   expect(f.launches.codex).toEqual([source, childId, other]);
   expect((await service.read(f.project)).cards).toHaveLength(0);
+});
+
+it.each(["codex", "open"] as const)(
+  "retains signalled descendants in the shared endpoint and acknowledges only the owning %s thread",
+  async (provider) => {
+    const f = await fixture(undefined, undefined, () => false);
+    const { codex, claude } = f.services;
+    const owner =
+      provider === "codex"
+        ? codex
+        : new KanbanService({
+            provider,
+            dataDir: codex.store.directory,
+            adapter: {
+              launch: async () => {
+                throw new Error("Unexpected launch");
+              },
+              resume: async () => {
+                throw new Error("Unexpected resume");
+              },
+              threadSummary: (id) => f.threadSummaries.get(id),
+            },
+          });
+    if (provider === "open") cleanups.push(() => owner.close());
+    const session = (id: string, parentId: string | null): WorkerSession => ({
+      id,
+      processId: "root",
+      parentId,
+      workerId: id,
+      workerName: id,
+      projectKey: null,
+      projectPath: null,
+      projectName: null,
+      threadId: id,
+      provider,
+      kind: "session",
+      status: "completed",
+      title: id,
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    await owner.processes.update((sessions) => {
+      sessions.root = session("root", null);
+      sessions.child = session("child", "root");
+      sessions.leaf = session("leaf", "child");
+    });
+    const app = Fastify();
+    cleanups.push(() => app.close());
+    registerKanbanRoutes(app, claude, () => f.project, "claude");
+    const url = "/api/v1/workers/processes";
+    async function get(path = url) {
+      const response = await app.inject(path);
+      expect(response.statusCode).toBe(200);
+      return response.json<WorkerProcess[]>();
+    }
+    expect(await get()).toEqual([]);
+    expect((await get(url + "?processId=root"))[0]?.sessions.map(({ signal }) => signal)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+
+    const result = completedThread("leaf", 2);
+    f.threadSummaries.set("leaf", result);
+    await owner.close();
+    await owner.initialize();
+    const sessions = (await get())[0]?.sessions;
+    expect(sessions?.map(({ id, status, signal }) => [id, status, signal])).toEqual([
+      ["root", "completed", undefined],
+      ["child", "completed", undefined],
+      ["leaf", "completed", "unseenCompletion"],
+    ]);
+    const ownerPort = provider === "open" ? 4313 : 4310;
+    expect(sessions?.[2]?.sessionUrl).toContain(`:${ownerPort}/threads/leaf`);
+
+    const viewed = { ...result, unseen: false, updatedAt: provider === "open" ? 1 : 2 };
+    await claude.notifyThread(result.id, result.state, viewed);
+    expect((await get())[0]?.sessions[2]?.signal).toBe("unseenCompletion");
+
+    f.threadSummaries.delete("leaf");
+    await owner.close();
+    await owner.initialize();
+    expect((await get())[0]?.sessions[2]?.signal).toBe("unseenCompletion");
+
+    await owner.notifyThread(result.id, result.state, viewed);
+    const update = vi.spyOn(owner.processes, "update");
+    await owner.notifyThread(result.id, result.state, viewed);
+    await owner.notifyThread(result.id, result.state, {
+      ...result,
+      updatedAt: provider === "open" ? 3 : 2,
+    });
+    expect(update).not.toHaveBeenCalled();
+    update.mockRestore();
+    expect(await get()).toEqual([]);
+
+    await owner.notifyThread(result.id, result.state, { ...viewed, awaitingPlanResponse: true });
+    expect((await get())[0]?.sessions[2]).toMatchObject({
+      status: "completed",
+      waitingFor: [],
+      signal: "actionRequired",
+    });
+    await owner.notifyThread(result.id, result.state, viewed);
+    expect(await get()).toEqual([]);
+    expect((await get(url + "?processId=root"))[0]?.sessions).toHaveLength(3);
+    await owner.notifyThread(result.id, "running", {
+      ...viewed,
+      state: "running",
+      currentTurnId: "next",
+    });
+    await owner.notifyThread(result.id, result.state, result);
+    expect((await get())[0]?.sessions[2]?.signal).toBe("unseenCompletion");
+  },
+);
+
+it("keeps thread and card action sources independent and ignores a late unread completion", async () => {
+  const f = await fixture(undefined, undefined, () => false);
+  const { codex, claude } = f.services;
+  const worker = await codex.workers.create(
+    { name: "Reviewer", role: "Review", instructions: "", settings: {} },
+    await codex.workers.projectKey(f.project),
+  );
+  const board = await codex.createCard(f.project, {
+    description: "Review",
+    workerId: worker.id,
+    clientCreationId: randomUUID(),
+  });
+  const cardId = board.cards[0]!.id;
+  await codex.action(f.project, {
+    action: "execute",
+    cardIds: [cardId],
+    clientActionId: randomUUID(),
+  });
+  const run = await f.running("execute", cardId);
+  const threadId = run.threadId!;
+  const first = completedThread(threadId, 10);
+  const active = { ...first, currentTurnId: "first", state: "running" } as const;
+  const readSession = async () => (await codex.processes.list(run.id))[0]?.sessions[0];
+
+  await codex.notifyThread(threadId, "needsAttention", { ...active, state: "needsAttention" });
+  expect(await readSession()).toMatchObject({ status: "waiting", signal: "actionRequired" });
+  await codex.notifyThread(threadId, "needsAttention", {
+    ...active,
+    state: "needsAttention",
+    unseen: false,
+  });
+  expect((await readSession())?.signal).toBe("actionRequired");
+  await codex.notifyThread(threadId, "running", active);
+  expect((await readSession())?.signal).toBeUndefined();
+
+  f.questions.set(threadId, "Which branch should I check?");
+  await codex.notifyThread(threadId, first.state, first);
+  expect(await readSession()).toMatchObject({ status: "waiting", signal: "actionRequired" });
+  await codex.notifyThread(threadId, first.state, {
+    ...first,
+    awaitingPlanResponse: true,
+    unseen: false,
+  });
+  const readyStage = board.stages.find(({ role }) => role === "ready")!;
+  await claude.updateCard(f.project, cardId, { stageId: readyStage.id });
+  await until(
+    async () => (await codex.processes.read())[run.id]?.cardQuestion,
+    (question) => question === undefined,
+  );
+  expect((await readSession())?.signal).toBe("actionRequired");
+  await codex.notifyThread(threadId, first.state, { ...first, unseen: false });
+  expect((await readSession())?.signal).toBeUndefined();
+
+  const next = completedThread(threadId, 20);
+  await codex.notifyThread(threadId, "running", { ...active, updatedAt: 15 });
+  let finish!: (reply: ReplyVerdict) => void;
+  const service = codex as unknown as {
+    options: { adapter: { readReply: (id: string) => Promise<ReplyVerdict | null> } };
+  };
+  service.options.adapter.readReply = () =>
+    new Promise((resolve) => {
+      finish = resolve;
+    });
+  const settling = codex.notifyThread(threadId, next.state, next);
+  await until(async () => finish, Boolean);
+  await codex.notifyThread(threadId, next.state, { ...next, unread: false, unseen: false });
+  finish({ question: null, published: false });
+  await settling;
+  await codex.notifyThread(threadId, next.state, first);
+  expect(await readSession()).toMatchObject({ status: "completed" });
+  expect((await readSession())?.signal).toBeUndefined();
+  expect(await codex.processes.list()).toEqual([]);
 });
 
 it("creates a worker with explicit approval, groups its tasks and shares its project memory across apps", async () => {

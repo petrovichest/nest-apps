@@ -96,6 +96,7 @@ export type WorkerProcessSession = {
   expectedResult?: string;
   status: "queued" | "running" | "waiting" | "completed" | "failed";
   waitingFor: string[];
+  signal?: "actionRequired" | "unseenCompletion";
   result?: string;
   error?: string;
   createdAt: number;

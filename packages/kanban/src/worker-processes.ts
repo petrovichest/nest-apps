@@ -5,7 +5,7 @@ import { atomicJson, KanbanError, KanbanStore } from "./store.js";
 
 type WorkerFollowUp = { id: string; message: string; wait: boolean };
 
-export type WorkerSession = Omit<WorkerProcessSession, "waitingFor"> & {
+export type WorkerSession = Omit<WorkerProcessSession, "waitingFor" | "signal"> & {
   processId: string;
   projectKey: string | null;
   projectPath: string | null;
@@ -19,6 +19,8 @@ export type WorkerSession = Omit<WorkerProcessSession, "waitingFor"> & {
   delivering?: boolean;
   delivered?: boolean;
   reported?: { result?: string; error?: string };
+  threadSignal?: WorkerProcessSession["signal"];
+  cardQuestion?: { runId: string; revision: number };
   followUps?: WorkerFollowUp[];
   /** Keep the request ID for result delivery. Text is needed until the engine admits the turn. */
   followUp?: { id: string; message?: string };
@@ -28,6 +30,12 @@ type Sessions = Record<string, WorkerSession>;
 
 export function unfinished(session: WorkerSession): boolean {
   return session.status !== "completed" && session.status !== "failed";
+}
+
+function sessionSignal(session: WorkerSession): WorkerProcessSession["signal"] {
+  if (session.cardQuestion || session.threadSignal === "actionRequired") return "actionRequired";
+  if (session.status === "completed") return session.threadSignal;
+  return undefined;
 }
 
 function awaitsResult(session: WorkerSession): boolean {
@@ -98,7 +106,10 @@ export class WorkerProcessStore {
       const root = sessions[id];
       if (
         !root ||
-        (!processId && !group.some((session) => unfinished(session) || session.followUps?.length))
+        (!processId &&
+          !group.some(
+            (session) => unfinished(session) || session.followUps?.length || sessionSignal(session),
+          ))
       )
         continue;
       processes.push({
@@ -118,6 +129,7 @@ export class WorkerProcessStore {
           expectedResult: session.expectedResult,
           status: session.status,
           waitingFor: waiting.get(session.id) ?? [],
+          signal: sessionSignal(session),
           result: session.result,
           error: session.error,
           createdAt: session.createdAt,

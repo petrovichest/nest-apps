@@ -86,6 +86,7 @@ export async function registerGeminiKanban(
           clientMessageId: `kanban:${job.id}:resume`,
         });
       },
+      threadSummary: (id) => (engine.data.threads[id] ? engine.summary(id) : undefined),
       async threadState(id) {
         return engine.data.threads[id] ? boardThreadState(engine.summary(id)) : null;
       },
@@ -112,9 +113,8 @@ export async function registerGeminiKanban(
   registerKanbanRoutes(app, service, (id) => engine.project(id).path, "gemini");
   const observe = (frame: ServerFrame) => {
     if (frame.type === "event" && frame.event.type === "thread.upserted") {
-      void service
-        .notifyThread(frame.event.thread.id, boardThreadState(frame.event.thread))
-        .catch(() => undefined);
+      const { thread } = frame.event;
+      void service.notifyThread(thread.id, boardThreadState(thread), thread).catch(() => undefined);
     }
   };
   engine.on("frame", observe);

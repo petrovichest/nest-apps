@@ -77,6 +77,7 @@ export async function registerOpenKanban(
           clientMessageId: `kanban:${job.id}:resume`,
         });
       },
+      threadSummary: (id) => (engine.data.threads[id] ? engine.summary(id) : undefined),
       threadState(id) {
         return engine.data.threads[id] ? engine.summary(id).state : null;
       },
@@ -113,10 +114,13 @@ export async function registerOpenKanban(
   engine.setWorkerSessionProvider((id) => service.workerSession(id));
   registerKanbanRoutes(app, service, (id) => engine.project(id).path, "open");
   const observe = (frame: ServerFrame) => {
-    if (frame.type === "event" && frame.event.type === "thread.upserted")
-      void service
-        .notifyThread(frame.event.thread.id, frame.event.thread.state)
-        .catch(() => undefined);
+    if (frame.type !== "event") return;
+    if (frame.event.type === "thread.upserted") {
+      const { thread } = frame.event;
+      void service.notifyThread(thread.id, thread.state, thread).catch(() => undefined);
+    } else if (frame.event.type === "resync.required") {
+      void service.refreshWorkerSignals().catch(() => undefined);
+    }
   };
   engine.on("frame", observe);
   app.addHook("onReady", async () => {

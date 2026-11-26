@@ -4262,6 +4262,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           app.log.warn({ err: safeError(error), threadId: job.threadId }, "Kanban delivery failed");
         });
       },
+      threadSummary: (threadId) => projection.summary(threadId),
       async threadState(threadId) {
         const classifier = kanbanClassifiers.get(threadId);
         if (classifier) {
@@ -4346,8 +4347,14 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           app.log.warn({ err: safeError(error) }, "Kanban session could not be archived");
         });
       }
-      void kanban.notifyThread(event.thread.id, event.thread.state).catch((error: unknown) => {
-        app.log.warn({ err: safeError(error) }, "Kanban session state could not be saved");
+      void kanban
+        .notifyThread(event.thread.id, event.thread.state, event.thread)
+        .catch((error: unknown) => {
+          app.log.warn({ err: safeError(error) }, "Kanban session state could not be saved");
+        });
+    } else if (event.type === "resync.required") {
+      void kanban.refreshWorkerSignals().catch((error: unknown) => {
+        app.log.warn({ err: safeError(error) }, "Kanban session signals could not be refreshed");
       });
     }
   };

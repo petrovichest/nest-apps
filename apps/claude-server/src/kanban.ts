@@ -94,6 +94,7 @@ export async function registerClaudeKanban(
           clientMessageId: `kanban:${job.id}:resume`,
         });
       },
+      threadSummary: (id) => (ui.store.data.threads[id] ? ui.summary(id) : undefined),
       async threadState(id) {
         return ui.store.data.threads[id] ? boardThreadState(ui.summary(id)) : null;
       },
@@ -123,9 +124,8 @@ export async function registerClaudeKanban(
   registerKanbanRoutes(app, service, (id) => ui.project(id).path, provider);
   const observe = (frame: ServerFrame) => {
     if (frame.type === "event" && frame.event.type === "thread.upserted") {
-      void service
-        .notifyThread(frame.event.thread.id, boardThreadState(frame.event.thread))
-        .catch(() => undefined);
+      const { thread } = frame.event;
+      void service.notifyThread(thread.id, boardThreadState(thread), thread).catch(() => undefined);
     }
   };
   ui.on("frame", observe);

@@ -17,6 +17,7 @@ import type {
   Project,
   SessionSettings,
   SkillCatalogItem,
+  ThreadSummary,
   UpdateKanbanCardRequest,
   UpdateKanbanStageRequest,
   WorkerProfile,
@@ -82,6 +83,19 @@ export type KanbanLaunch = {
   /** Settings chosen with the task in this application; absent means new-session defaults. */
   settings?: SessionSettings;
 };
+type WorkerThreadSummary = Pick<
+  ThreadSummary,
+  "id" | "state" | "currentTurnId" | "awaitingPlanResponse" | "unread" | "unseen" | "updatedAt"
+>;
+type ThreadObservation = { state: string };
+type ThreadSignal = {
+  threadId: string;
+  sessionId: string;
+  updatedAt: number;
+  completed: boolean;
+  signal: WorkerSession["threadSignal"];
+};
+
 export type KanbanProviderAdapter = {
   models?(): readonly ModelOption[];
   projects?(): readonly Project[];
@@ -93,6 +107,8 @@ export type KanbanProviderAdapter = {
   archive?(threadId: string): Promise<void>;
   /** Stops a replaced task session or a classifier that exceeded its deadline. */
   interrupt?(threadId: string): Promise<void>;
+  /** Read only the owning application's already loaded projection. */
+  threadSummary?(threadId: string): WorkerThreadSummary | undefined;
   threadState?(threadId: string): Promise<string | null> | string | null;
   /**
    * Reads the session's last reply after a finished turn: a short reason when the agent waits
@@ -370,7 +386,8 @@ export class KanbanService {
   >();
   private workerMemoryFailures = new Map<string, number>();
   private revisions = new Map<string, number>();
-  private observedStates = new Map<string, string>();
+  private observedStates = new Map<string, ThreadObservation>();
+  private observedSignals = new Map<string, ThreadSignal>();
   private scheduled: ReturnType<typeof setTimeout> | null = null;
   private classificationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   constructor(private readonly options: KanbanServiceOptions) {
@@ -1098,10 +1115,14 @@ export class KanbanService {
   private async observeWorker(
     id: string,
     threadId: string,
-    state: string,
+    observation: ThreadObservation,
     waitingForOperator = false,
+    cardQuestion?: NonNullable<WorkerSession["cardQuestion"]> | null,
   ): Promise<void> {
-    const stable = () => this.observedStates.get(threadId) === state;
+    const { state } = observation;
+    const stable = () =>
+      this.observedStates.get(threadId) === observation &&
+      this.workerThreads.get(threadId)?.id === id;
     if (!stable()) return;
     if (["running", "queued", "needsAttention"].includes(state)) {
       await this.processes.update((sessions) => {
@@ -1109,6 +1130,7 @@ export class KanbanService {
         if (!own || !stable()) return;
         own.started = true;
         own.status = state === "needsAttention" ? "waiting" : "running";
+        if (own.threadSignal === "unseenCompletion") delete own.threadSignal;
         delete own.awaitingWorkers;
         delete own.error;
         own.updatedAt = Date.now();
@@ -1151,6 +1173,8 @@ export class KanbanService {
       const own = sessions[id]!;
       if (!stable() || !unfinished(own) || own.followUp?.id !== session.followUp?.id) return;
       const pending = waitingFor(sessions, id).length > 0;
+      if (cardQuestion && !own.reported) own.cardQuestion = cardQuestion;
+      else if (cardQuestion !== undefined) delete own.cardQuestion;
       if (pending || (waitingForOperator && !own.reported)) {
         own.status = "waiting";
         own.awaitingWorkers = pending;
@@ -1255,6 +1279,7 @@ export class KanbanService {
           session.updatedAt = Date.now();
           delete session.started;
           delete session.delivered;
+          if (session.threadSignal === "unseenCompletion") delete session.threadSignal;
           delete session.result;
           delete session.error;
         }
@@ -1337,9 +1362,10 @@ export class KanbanService {
     this.pending.add(pending);
   }
 
-  private async pumpWorkers(): Promise<void> {
-    if (this.options.adapter.available?.() === false) return;
+  private async pumpWorkers(boards: KanbanBoard[]): Promise<void> {
     const sessions = await this.processes.read();
+    await this.clearReleasedCardQuestions(boards, sessions);
+    if (this.options.adapter.available?.() === false) return;
     for (const session of Object.values(sessions)) {
       if (session.provider !== this.options.provider) continue;
       const sender = session.parentId ? sessions[session.parentId] : undefined;
@@ -1385,6 +1411,37 @@ export class KanbanService {
       }
     }
   }
+  private async clearReleasedCardQuestions(
+    boards: KanbanBoard[],
+    sessions: Record<string, WorkerSession>,
+  ): Promise<void> {
+    const released = Object.values(sessions).flatMap(({ id, provider, boardId, cardQuestion }) => {
+      if (provider !== this.options.provider || !cardQuestion) return [];
+      const board = boards.find(({ id }) => id === boardId);
+      // The pump can be looking at a board snapshot from before the question was saved.
+      if (!board || board.revision < cardQuestion.revision) return [];
+      const run = board.runs.find(({ id }) => id === cardQuestion.runId);
+      const stillWaiting =
+        run?.status === "waiting" &&
+        board.cards.some(
+          (card) => run.cardIds.includes(card.id) && card.archivedAt === undefined && card.question,
+        );
+      return stillWaiting ? [] : [{ id, cardQuestion }];
+    });
+    if (!released.length) return;
+    await this.processes.update((current) => {
+      for (const { id, cardQuestion } of released) {
+        const session = current[id];
+        if (
+          session?.cardQuestion?.runId === cardQuestion.runId &&
+          session.cardQuestion.revision === cardQuestion.revision
+        ) {
+          delete session.cardQuestion;
+        }
+      }
+    });
+  }
+
   /** Recover only OpenNest's own work from the board formerly shared by the applications. */
   async importOpenNestBoards(
     projects: string[],
@@ -1479,6 +1536,7 @@ export class KanbanService {
     this.workerThreads.clear();
     this.workerMemoryFailures.clear();
     this.observedStates.clear();
+    this.observedSignals.clear();
     // Index persisted sessions before accepting HTTP requests so early events are not lost.
     const retiredWorkers = await this.workers.retiredIds();
     for (const document of await this.store.list()) {
@@ -1494,6 +1552,7 @@ export class KanbanService {
     }
     const sessions = await this.processes.read();
     for (const session of Object.values(sessions)) this.indexWorkerThread(session, sessions);
+    await this.refreshWorkerSignals().catch((error) => this.options.onError?.(error));
     for (const path of [this.store.boardsDirectory, join(this.store.directory, "inbox")]) {
       const watcher = watch(path, (_event, name) => {
         if (name?.toString().endsWith(".json")) this.schedule();
@@ -2417,39 +2476,148 @@ export class KanbanService {
     });
     this.changed(board);
   }
+  private stageThreadSignal(
+    summary: WorkerThreadSummary,
+    sessionId: string,
+  ): ThreadSignal | undefined {
+    const { id: threadId, state, updatedAt, awaitingPlanResponse } = summary;
+    const previous = this.observedSignals.get(threadId);
+    if (
+      !awaitingPlanResponse &&
+      (state === "unavailable" ||
+        (state === "idle" &&
+          (previous?.sessionId !== sessionId || previous.signal !== "actionRequired")))
+    )
+      return;
+    const completed = state === "completed" && !summary.currentTurnId;
+    const signal =
+      state === "needsAttention" || awaitingPlanResponse
+        ? "actionRequired"
+        : completed && summary.unread && summary.unseen
+          ? "unseenCompletion"
+          : undefined;
+    if (previous?.sessionId === sessionId) {
+      // Open can replace the local completion time with the native session timestamp.
+      const open = this.options.provider === "open";
+      if (!open && updatedAt < previous.updatedAt) return;
+      // Open also publishes both idle notifications for the same turn, stamping each anew.
+      // For Open a live state, rather than that timestamp, identifies another turn.
+      if (
+        signal === "unseenCompletion" &&
+        previous.completed &&
+        !previous.signal &&
+        (open || updatedAt === previous.updatedAt)
+      )
+        return;
+      if (previous.signal === signal) {
+        previous.updatedAt = updatedAt;
+        previous.completed = completed;
+        return;
+      }
+    }
+    const change: ThreadSignal = { threadId, sessionId, updatedAt, completed, signal };
+    this.observedSignals.set(threadId, change);
+    return change;
+  }
+
+  private async saveThreadSignals(changes: ThreadSignal[]): Promise<void> {
+    if (!changes.length) return;
+    try {
+      await this.processes.update((sessions) => {
+        for (const change of changes) {
+          const { sessionId, threadId, signal } = change;
+          const own = sessions[sessionId];
+          if (
+            this.observedSignals.get(threadId) !== change ||
+            this.workerThreads.get(threadId)?.id !== sessionId ||
+            own?.threadId !== threadId ||
+            own.provider !== this.options.provider
+          )
+            continue;
+          // An admitted follow-up can still report the previous turn until it starts.
+          if (
+            signal === "unseenCompletion" &&
+            own.status === "queued" &&
+            own.followUp &&
+            !own.started
+          )
+            continue;
+          if (signal) own.threadSignal = signal;
+          else delete own.threadSignal;
+        }
+      });
+    } catch (error) {
+      for (const change of changes)
+        if (this.observedSignals.get(change.threadId) === change)
+          this.observedSignals.delete(change.threadId);
+      throw error;
+    }
+  }
+
+  /** Use already loaded owner summaries on startup and after the owner's existing resync. */
+  async refreshWorkerSignals(): Promise<void> {
+    if (this.closed || !this.options.adapter.threadSummary) return;
+    const changes: ThreadSignal[] = [];
+    for (const [threadId, { id }] of this.workerThreads) {
+      const summary = this.options.adapter.threadSummary(threadId);
+      if (!summary || (summary.state === "idle" && !summary.awaitingPlanResponse)) continue;
+      const change = this.stageThreadSignal(summary, id);
+      if (change) changes.push(change);
+    }
+    if (!changes.length) return;
+    const pending = this.saveThreadSignals(changes).finally(() => this.pending.delete(pending));
+    this.pending.add(pending);
+    await pending;
+  }
+
   /** Called from local session notifications; unknown sessions are a constant-time no-op. */
-  notifyThread(threadId: string, state: string): Promise<void> {
+  notifyThread(threadId: string, state: string, summary?: WorkerThreadSummary): Promise<void> {
     const known = this.threads.get(threadId);
     const workerSessionId = this.workerThreads.get(threadId)?.id;
-    if ((!known && !workerSessionId) || this.closed || this.observedStates.get(threadId) === state)
+    if ((!known && !workerSessionId) || this.closed) return Promise.resolve();
+
+    const previousSignal = this.observedSignals.get(threadId);
+    if (
+      this.options.provider !== "open" &&
+      summary &&
+      previousSignal &&
+      summary.updatedAt < previousSignal.updatedAt
+    )
       return Promise.resolve();
-    this.observedStates.set(threadId, state);
+    const change = workerSessionId && summary && this.stageThreadSignal(summary, workerSessionId);
+    const previous = this.observedStates.get(threadId);
+    if (previous?.state === state && !change) return Promise.resolve();
+    const observation = previous?.state === state ? previous : { state };
+    this.observedStates.set(threadId, observation);
     if (
       workerSessionId &&
       ["completed", "idle", "interrupted", "failed", "unavailable"].includes(state)
     )
       this.workerMemoryFailures.delete(workerSessionId);
-    // Remember the initial idle state until a real turn transition arrives.
-    if (state === "idle" && this.launching.has(known?.runId ?? workerSessionId!))
-      return Promise.resolve();
-    const pending = (
-      known
-        ? this.saveThreadState(known, threadId, state, workerSessionId)
-        : this.observeWorker(workerSessionId!, threadId, state)
-    ).finally(() => this.pending.delete(pending));
+    const pending = (async () => {
+      if (change)
+        await this.saveThreadSignals([change]).catch((error) => this.options.onError?.(error));
+      if (previous === observation || this.observedStates.get(threadId) !== observation) return;
+      // Remember the initial idle state until a real turn transition arrives.
+      if (state === "idle" && this.launching.has(known?.runId ?? workerSessionId!)) return;
+      if (known) await this.saveThreadState(known, threadId, observation, workerSessionId);
+      else await this.observeWorker(workerSessionId!, threadId, observation);
+    })().finally(() => this.pending.delete(pending));
     this.pending.add(pending);
     return pending;
   }
   private async saveThreadState(
     known: { boardId: string; runId: string },
     threadId: string,
-    state: string,
+    observation: ThreadObservation,
     workerSessionId?: string,
   ): Promise<void> {
+    const { state } = observation;
     let classifierFailed = false;
     let awaitingText: string[] = [];
     let target = known;
     const { board, result: finished } = await this.store.updateById(known.boardId, (data) => {
+      if (this.observedStates.get(threadId) !== observation) return false;
       // A turn the operator started in the session may have registered a new run meanwhile.
       target = this.threads.get(threadId) ?? target;
       let run = data.board.runs.find((run) => run.id === target.runId);
@@ -2521,9 +2689,9 @@ export class KanbanService {
       await this.describe(target.boardId, cardId, threadId).catch((error) =>
         this.options.onError?.(error),
       );
-    if (finished) await this.settle(target, threadId, state, workerSessionId);
+    if (finished) await this.settle(target, threadId, observation, workerSessionId);
     else if (workerSessionId && state !== "completed" && state !== "idle")
-      await this.observeWorker(workerSessionId, threadId, state);
+      await this.observeWorker(workerSessionId, threadId, observation);
   }
   /** A session's card takes its text from the session's first message, then is classified. */
   private async describe(boardId: string, cardId: string, threadId: string): Promise<void> {
@@ -2564,7 +2732,7 @@ export class KanbanService {
       run.kind === "classify" ||
       !["running", "queued"].includes(state) ||
       // The turn already ended while the board was busy.
-      this.observedStates.get(threadId) !== state
+      this.observedStates.get(threadId)?.state !== state
     )
       return undefined;
     const ids = run.cardIds.filter((id) => {
@@ -2584,10 +2752,11 @@ export class KanbanService {
   private async settle(
     known: { boardId: string; runId: string },
     threadId: string,
-    state: string,
+    observation: ThreadObservation,
     workerSessionId?: string,
   ): Promise<void> {
     let question: string | null = null;
+    let operatorQuestion = false;
     let published = false;
     let error: string | null = null;
     const sessions = workerSessionId ? await this.processes.read() : undefined;
@@ -2601,6 +2770,7 @@ export class KanbanService {
       try {
         const reply = await this.options.adapter.readReply?.(threadId);
         question = reply?.question ?? null;
+        operatorQuestion = Boolean(question);
         published = reply?.published ?? false;
       } catch (failure) {
         this.options.onError?.(failure);
@@ -2608,10 +2778,10 @@ export class KanbanService {
       }
     }
     // The operator may have answered while the reply was being read.
-    if (this.observedStates.get(threadId) !== state) return;
-    const { board } = await this.store.updateById(known.boardId, (data) => {
+    const { board, result: settled } = await this.store.updateById(known.boardId, (data) => {
+      if (this.observedStates.get(threadId) !== observation) return false;
       const run = data.board.runs.find((run) => run.id === known.runId);
-      if (!run || !active(run)) return;
+      if (!run || !active(run)) return false;
       const waiting = Boolean(question || error);
       run.status = waiting ? "waiting" : "completed";
       run.error = error;
@@ -2630,15 +2800,21 @@ export class KanbanService {
         card.question = question;
         card.error = error;
       }
+      return true;
     });
     this.changed(board);
-    if (workerSessionId)
+    if (workerSessionId) {
+      const cardQuestion = operatorQuestion
+        ? { runId: known.runId, revision: board.revision }
+        : null;
       await this.observeWorker(
         workerSessionId,
         threadId,
-        state,
+        observation,
         !pending.length && Boolean(question || error),
+        settled ? cardQuestion : undefined,
       );
+    }
   }
   private async pump(): Promise<void> {
     if (this.closed) return;
@@ -2702,7 +2878,7 @@ export class KanbanService {
           }
         }
         await this.consumeRequests();
-        await this.pumpWorkers();
+        await this.pumpWorkers(documents.map(({ board }) => board));
       } while (this.again && !this.closed);
     } finally {
       this.pumping = false;
