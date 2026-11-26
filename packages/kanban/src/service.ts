@@ -1056,6 +1056,7 @@ export class KanbanService {
       previous.summary.parentThreadId === (parentThreadId ?? undefined)
     )
       return false;
+    if (previous && previous.id !== session.id) this.observedStates.delete(session.threadId);
     this.workerThreads.set(session.threadId, {
       id: session.id,
       workerId: session.workerId,
@@ -2576,7 +2577,8 @@ export class KanbanService {
     const workerSessionId = this.workerThreads.get(threadId)?.id;
     if ((!known && !workerSessionId) || this.closed) return Promise.resolve();
 
-    const previousSignal = this.observedSignals.get(threadId);
+    const lastSignal = this.observedSignals.get(threadId);
+    const previousSignal = lastSignal?.sessionId === workerSessionId ? lastSignal : undefined;
     if (
       this.options.provider !== "open" &&
       summary &&
@@ -2584,6 +2586,18 @@ export class KanbanService {
       summary.updatedAt < previousSignal.updatedAt
     )
       return Promise.resolve();
+    if (!summary && previousSignal && ["running", "queued", "needsAttention"].includes(state)) {
+      // A state-only start also retires the last completion. Keep its version for replay checks.
+      if (previousSignal.signal === "unseenCompletion") {
+        this.observedSignals.set(threadId, {
+          ...previousSignal,
+          signal: undefined,
+          completed: false,
+        });
+      } else {
+        previousSignal.completed = false;
+      }
+    }
     const change = workerSessionId && summary && this.stageThreadSignal(summary, workerSessionId);
     const previous = this.observedStates.get(threadId);
     if (previous?.state === state && !change) return Promise.resolve();

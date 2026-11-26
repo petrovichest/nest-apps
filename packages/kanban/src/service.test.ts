@@ -47,6 +47,7 @@ async function fixture(
   transcribe?: (audio: Buffer, contentType: string, durationMs: number) => Promise<string>,
   classifies?: () => boolean,
   architectSkill?: (cwd: string) => Promise<string | undefined>,
+  threads?: { ids: ReadonlyMap<string, string>; states: ReadonlyMap<string, string> },
 ) {
   const directory = await mkdtemp(join(tmpdir(), "kanban-service-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
@@ -97,7 +98,7 @@ async function fixture(
           launches[provider].push(input.id);
           inputs[provider].push(input);
           return {
-            threadId: `${provider}-${input.id}`,
+            threadId: threads?.ids.get(input.id) ?? `${provider}-${input.id}`,
             sessionUrl: `/threads/${provider}-${input.id}`,
           };
         },
@@ -113,6 +114,7 @@ async function fixture(
           interrupted[provider].push(threadId);
         },
         threadSummary: (threadId) => threadSummaries.get(threadId),
+        ...(threads ? { threadState: (id: string) => threads.states.get(id) ?? null } : {}),
         readReply: async (threadId) => ({
           question: questions.get(threadId) ?? null,
           published: pushed.has(threadId),
@@ -396,7 +398,7 @@ it("routes simultaneous assignments of one project worker to their original sess
   expect(f.prompts.get(ids[1])).toContain("Release diff missing");
 });
 
-it("queues follow-ups in the same child session and keeps the dialogue with its own parent", async () => {
+it.each(["full", "mixed"] as const)("queues follow-ups (%s summaries)", async (mode) => {
   const f = await fixture(undefined, undefined, () => false);
   const service = f.services.codex;
   const projectKey = await service.workers.projectKey(f.project);
@@ -468,6 +470,14 @@ it("queues follow-ups in the same child session and keeps the dialogue with its 
     await f.workerTool("codex", childId, "worker_finish", { result: "Run npm test" }),
   ).toMatchObject({ ok: true });
   const previousResult = completedThread(childThreadId, 100);
+  const runningChild = (updatedAt: number) =>
+    service.notifyThread(
+      childThreadId,
+      "running",
+      mode === "full"
+        ? { ...previousResult, updatedAt, state: "running", currentTurnId: String(updatedAt) }
+        : undefined,
+    );
   await service.notifyThread(childThreadId, previousResult.state, previousResult);
   await until(
     async () => f.resumes.codex,
@@ -485,11 +495,12 @@ it("queues follow-ups in the same child session and keeps the dialogue with its 
   await service.notifyThread(threadId, "running");
   await service.notifyThread(threadId, "completed");
 
-  await service.notifyThread(childThreadId, "running");
+  await runningChild(110);
   expect(await f.workerTool("codex", childId, "worker_finish", { result: "Yes" })).toMatchObject({
     ok: true,
   });
-  await service.notifyThread(childThreadId, "completed");
+  const firstResult = completedThread(childThreadId, 150);
+  await service.notifyThread(childThreadId, "completed", mode === "full" ? firstResult : undefined);
   await until(
     async () => f.resumes.codex,
     (resumes) => resumes.length === 4,
@@ -498,32 +509,70 @@ it("queues follow-ups in the same child session and keeps the dialogue with its 
   expect(f.prompts.get(`${first}:result`)).toContain('"result":"Yes"');
   expect(f.prompts.get(second)).toContain("Show the full command then");
 
-  await service.notifyThread(childThreadId, "running");
+  await runningChild(160);
   expect(
     await f.workerTool("codex", childId, "worker_finish", {
       result: "npm test -w @nest-apps/kanban",
-      signal: "unseenCompletion",
     }),
   ).toMatchObject({ ok: true });
   const latestResult = completedThread(childThreadId, 200);
   await service.notifyThread(childThreadId, latestResult.state, latestResult);
+  await service.notifyThread(childThreadId, previousResult.state, previousResult);
   await until(
     async () => f.resumes.codex,
     (resumes) => resumes.length === 5,
   );
   expect(f.resumes.codex.at(-1)).toBe(threadId);
   expect(f.prompts.get(`${second}:result`)).toContain("npm test -w @nest-apps/kanban");
-  expect((await service.processes.list(source))[0]?.sessions).toMatchObject([
+  const app = Fastify();
+  cleanups.push(() => app.close());
+  registerKanbanRoutes(app, service, () => f.project, "codex");
+  const response = await app.inject(`/api/v1/workers/processes?processId=${source}`);
+  expect(response.statusCode).toBe(200);
+  expect(response.json<WorkerProcess[]>()[0]?.sessions).toMatchObject([
     { id: source, waitingFor: [] },
     {
       id: childId,
       threadId: childThreadId,
       status: "completed",
       result: "npm test -w @nest-apps/kanban",
+      signal: "unseenCompletion",
     },
   ]);
   expect(f.launches.codex).toEqual([source, childId, other]);
   expect((await service.read(f.project)).cards).toHaveLength(0);
+});
+
+it("accepts a quick completion when a worker attaches to a thread used by another session", async () => {
+  const oldId = randomUUID();
+  const newId = randomUUID();
+  const threadId = "reused-thread";
+  const states = new Map<string, string>();
+  const f = await fixture(undefined, undefined, () => false, undefined, {
+    ids: new Map([
+      [oldId, threadId],
+      [newId, threadId],
+    ]),
+    states,
+  });
+  const service = f.services.codex;
+  const worker = await service.workers.create(
+    { name: "Reviewer", role: "Review", instructions: "", settings: {} },
+    await service.workers.projectKey(f.project),
+  );
+  await service.startWorker(worker.id, f.project, oldId);
+  const oldSummary = completedThread(threadId, 200);
+  await service.notifyThread(threadId, oldSummary.state, oldSummary);
+
+  // Launch attaches before reading threadState. The fast second result has no summary yet.
+  states.set(threadId, "completed");
+  await service.startWorker(worker.id, f.project, newId);
+  expect((await service.processes.list(newId))[0]?.sessions[0]?.status).toBe("completed");
+  const newSummary = completedThread(threadId, 100);
+  await service.notifyThread(threadId, newSummary.state, newSummary);
+  expect((await service.processes.list(newId))[0]?.sessions).toMatchObject([
+    { id: newId, status: "completed", signal: "unseenCompletion" },
+  ]);
 });
 
 it.each(["codex", "open"] as const)(
@@ -628,11 +677,11 @@ it.each(["codex", "open"] as const)(
     await owner.notifyThread(result.id, result.state, viewed);
     expect(await get()).toEqual([]);
     expect((await get(url + "?processId=root"))[0]?.sessions).toHaveLength(3);
-    await owner.notifyThread(result.id, "running", {
-      ...viewed,
-      state: "running",
-      currentTurnId: "next",
-    });
+    await owner.notifyThread(
+      result.id,
+      "running",
+      provider === "open" ? undefined : { ...viewed, state: "running", currentTurnId: "next" },
+    );
     await owner.notifyThread(result.id, result.state, result);
     expect((await get())[0]?.sessions[2]?.signal).toBe("unseenCompletion");
   },
