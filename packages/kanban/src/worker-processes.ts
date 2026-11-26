@@ -3,6 +3,8 @@ import { join } from "node:path";
 import type { WorkerProcess, WorkerProcessSession } from "@codexnest/protocol";
 import { atomicJson, KanbanError, KanbanStore } from "./store.js";
 
+type WorkerFollowUp = { id: string; message: string; wait: boolean };
+
 export type WorkerSession = Omit<WorkerProcessSession, "waitingFor"> & {
   processId: string;
   projectKey: string | null;
@@ -17,6 +19,9 @@ export type WorkerSession = Omit<WorkerProcessSession, "waitingFor"> & {
   delivering?: boolean;
   delivered?: boolean;
   reported?: { result?: string; error?: string };
+  followUps?: WorkerFollowUp[];
+  /** Keep the request ID for result delivery. Text is needed until the engine admits the turn. */
+  followUp?: { id: string; message?: string };
 };
 
 type Sessions = Record<string, WorkerSession>;
@@ -25,10 +30,15 @@ export function unfinished(session: WorkerSession): boolean {
   return session.status !== "completed" && session.status !== "failed";
 }
 
-export function waitingFor(sessions: Sessions, id: string): WorkerSession[] {
-  return Object.values(sessions).filter(
-    (child) => child.parentId === id && child.wait && !child.delivered && !child.delivering,
+function awaitsResult(session: WorkerSession): boolean {
+  return Boolean(
+    (session.wait && !session.delivered && !session.delivering) ||
+    session.followUps?.some(({ wait }) => wait),
   );
+}
+
+export function waitingFor(sessions: Sessions, id: string): WorkerSession[] {
+  return Object.values(sessions).filter((child) => child.parentId === id && awaitsResult(child));
 }
 
 /** Work is shared with the registry of profiles, even for applications with their own boards. */
@@ -77,7 +87,7 @@ export class WorkerProcessStore {
       const group = groups.get(session.processId) ?? [];
       group.push(session);
       groups.set(session.processId, group);
-      if (session.parentId && session.wait && !session.delivered && !session.delivering) {
+      if (session.parentId && awaitsResult(session)) {
         const pending = waiting.get(session.parentId) ?? [];
         pending.push(session.id);
         waiting.set(session.parentId, pending);
@@ -86,7 +96,11 @@ export class WorkerProcessStore {
     const processes: WorkerProcess[] = [];
     for (const [id, group] of groups) {
       const root = sessions[id];
-      if (!root || (!processId && !group.some(unfinished))) continue;
+      if (
+        !root ||
+        (!processId && !group.some((session) => unfinished(session) || session.followUps?.length))
+      )
+        continue;
       processes.push({
         id,
         projectKey: root.projectKey,

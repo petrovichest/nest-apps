@@ -330,6 +330,39 @@ it("routes simultaneous assignments of one project worker to their original sess
   expect(f.resumes.claude).toEqual([]);
   expect(f.prompts.get(ids[0])).toContain("Import approved");
 
+  const clarify = randomUUID();
+  expect(
+    await f.workerTool(
+      "codex",
+      a.id,
+      "worker_follow_up",
+      { sessionId: ids[0], message: "Check the import rollback too" },
+      clarify,
+    ),
+  ).toMatchObject({ ok: true, result: { id: ids[0] } });
+  await until(
+    async () => f.resumes.codex,
+    (resumes) => resumes.length === 2,
+  );
+  expect(f.resumes.codex[1]).toBe(reviewA.threadId);
+  expect(f.prompts.get(clarify)).toContain("Check the import rollback too");
+  await codex.notifyThread(reviewA.threadId!, "running");
+  expect(
+    await f.workerTool("codex", reviewA.id, "worker_finish", { result: "Rollback verified" }),
+  ).toMatchObject({ ok: true });
+  await codex.notifyThread(reviewA.threadId!, "completed");
+  await until(
+    async () => f.resumes.codex,
+    (resumes) => resumes.length === 3,
+  );
+  expect(f.resumes.codex[2]).toBe(a.threadId);
+  expect(f.prompts.get(`${clarify}:result`)).toContain("Rollback verified");
+  const afterFollowUp = await codex.read(f.project);
+  expect(afterFollowUp.cards.filter(({ parentCardId }) => parentCardId)).toHaveLength(2);
+  expect(
+    afterFollowUp.runs.filter(({ threadId }) => threadId === reviewA.threadId).at(-1),
+  ).toMatchObject({ cardIds: [ids[0]], workerId: team[2]!.id, status: "completed" });
+
   expect(
     await f.workerTool("claude", reviewB.id, "worker_finish", { error: "Release diff missing" }),
   ).toMatchObject({ ok: true });
@@ -342,7 +375,7 @@ it("routes simultaneous assignments of one project worker to their original sess
   expect(f.prompts.get(ids[1])).toContain("Release diff missing");
 });
 
-it("answers a direct worker question in a separate session without creating a Kanban card", async () => {
+it("queues follow-ups in the same child session and keeps the dialogue with its own parent", async () => {
   const f = await fixture(undefined, undefined, () => false);
   const service = f.services.codex;
   const projectKey = await service.workers.projectKey(f.project);
@@ -385,18 +418,85 @@ it("answers a direct worker question in a separate session without creating a Ka
       (await service.processes.list(source))[0]?.sessions.find(({ id }) => id === childId),
     (session) => Boolean(session?.threadId),
   );
+  const childThreadId = child!.threadId!;
+  expect(await f.workerTool("codex", source, "worker_results", {})).toMatchObject({
+    ok: true,
+    result: [{ id: childId, followUp: { command: "worker_follow_up", sessionId: childId } }],
+  });
+  const other = randomUUID();
+  await service.startWorker(asker.id, f.project, other);
+  expect(
+    await f.workerTool("codex", other, "worker_follow_up", {
+      sessionId: childId,
+      message: "Try to address another process's child",
+    }),
+  ).toMatchObject({ ok: false, code: "worker_session_not_found" });
+  const first = randomUUID();
+  const second = randomUUID();
+  const followUp = (id: string, message: string) =>
+    f.workerTool("codex", source, "worker_follow_up", { sessionId: childId, message }, id);
+  expect(await followUp(first, "Can I run only the Kanban tests?")).toMatchObject({ ok: true });
+  expect(await followUp(second, "Show the full command then")).toMatchObject({ ok: true });
+  expect(await followUp(first, "Can I run only the Kanban tests?")).toMatchObject({ ok: true });
+
+  await service.close();
+  await service.initialize();
   await service.notifyThread(threadId, "completed");
-  expect((await service.read(f.project)).cards).toHaveLength(0);
+  expect(f.resumes.codex).toEqual([]);
   expect(
     await f.workerTool("codex", childId, "worker_finish", { result: "Run npm test" }),
   ).toMatchObject({ ok: true });
-  await service.notifyThread(child!.threadId!, "completed");
+  await service.notifyThread(childThreadId, "completed");
   await until(
     async () => f.resumes.codex,
-    (resumes) => resumes.length === 1,
+    (resumes) => resumes.length === 2,
   );
-  expect(f.resumes.codex).toEqual([threadId]);
+  expect(f.resumes.codex).toEqual([threadId, childThreadId]);
   expect(f.prompts.get(childId)).toContain("Run npm test");
+  expect(f.prompts.get(first)).toContain("Can I run only the Kanban tests?");
+  await service.notifyThread(childThreadId, "idle");
+  await service.notifyThread(childThreadId, "completed");
+  expect((await service.processes.read())[childId]?.status).toBe("queued");
+  await service.notifyThread(threadId, "running");
+  await service.notifyThread(threadId, "completed");
+
+  await service.notifyThread(childThreadId, "running");
+  expect(await f.workerTool("codex", childId, "worker_finish", { result: "Yes" })).toMatchObject({
+    ok: true,
+  });
+  await service.notifyThread(childThreadId, "completed");
+  await until(
+    async () => f.resumes.codex,
+    (resumes) => resumes.length === 4,
+  );
+  expect(f.resumes.codex).toEqual([threadId, childThreadId, threadId, childThreadId]);
+  expect(f.prompts.get(`${first}:result`)).toContain('"result":"Yes"');
+  expect(f.prompts.get(second)).toContain("Show the full command then");
+
+  await service.notifyThread(childThreadId, "running");
+  expect(
+    await f.workerTool("codex", childId, "worker_finish", {
+      result: "npm test -w @nest-apps/kanban",
+    }),
+  ).toMatchObject({ ok: true });
+  await service.notifyThread(childThreadId, "completed");
+  await until(
+    async () => f.resumes.codex,
+    (resumes) => resumes.length === 5,
+  );
+  expect(f.resumes.codex.at(-1)).toBe(threadId);
+  expect(f.prompts.get(`${second}:result`)).toContain("npm test -w @nest-apps/kanban");
+  expect((await service.processes.list(source))[0]?.sessions).toMatchObject([
+    { id: source, waitingFor: [] },
+    {
+      id: childId,
+      threadId: childThreadId,
+      status: "completed",
+      result: "npm test -w @nest-apps/kanban",
+    },
+  ]);
+  expect(f.launches.codex).toEqual([source, childId, other]);
+  expect((await service.read(f.project)).cards).toHaveLength(0);
 });
 
 it("creates a worker with explicit approval, groups its tasks and shares its project memory across apps", async () => {

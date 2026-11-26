@@ -111,7 +111,10 @@ then approve the proposal. Workers can ask a colleague a question from a project
 session. A coordinator working on a Kanban card can also start a linked task for
 a colleague. The colleague gets a separate session and sends the result or error
 back to the requesting session. A session waiting for the reply resumes when it
-arrives. Each recipient uses its own profile, memory, and settings for the
+arrives. To clarify an answer or request rework, the lead can use `worker_follow_up`
+with a child session ID from `worker_results`. Follow-ups run in order in that
+session and keep its conversation history. Only the session that started the
+child can send them. Each recipient uses its own profile, memory, and settings for the
 application where the work started. The sidebar groups related sessions under
 their team lead. Open the lead's row to go to its conversation, or use the
 arrow to show the related sessions.

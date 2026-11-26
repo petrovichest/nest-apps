@@ -116,6 +116,10 @@ export type KanbanServiceOptions = {
 };
 const active = (run: KanbanRun) =>
   ["queued", "preparing", "running", "waiting"].includes(run.status);
+const nextFollowUp = (session: WorkerSession, sender: WorkerSession) =>
+  !unfinished(session) && (!session.wait || session.delivered || sender.status === "failed")
+    ? session.followUps?.[0]
+    : undefined;
 const text = (value: unknown, label: string, maximum = 100_000): string => {
   if (typeof value !== "string" || !value.trim() || value.length > maximum)
     throw new KanbanError(
@@ -460,6 +464,7 @@ export class KanbanService {
       'Предлагай правки своей личности через propose_personality с {"instructions":"полный новый текст"} и показывай ссылку для утверждения.',
       "worker_list с {} показывает доступных коллег и карточки этой сессии.",
       'Для вопроса коллеге вызови worker_ask с {"workerId":"ID коллеги","title":"короткая тема","description":"сам вопрос","expectedResult":"что нужно узнать"}.',
+      'Для уточнения в уже открытой дочерней сессии вызови worker_follow_up с {"sessionId":"ID сессии из worker_results","message":"что уточнить или доработать"}. У работника сохранится история разговора.',
       ...(profile.coordinates
         ? [
             'Для поручения из карточки вызови worker_delegate с {"workerId":"ID исполнителя","title":"название карточки","description":"что сделать","expectedResult":"что вернуть","cardId":"ID исходной карточки"}.',
@@ -641,9 +646,14 @@ export class KanbanService {
       );
     }
     if (
-      ["worker_list", "worker_ask", "worker_delegate", "worker_results", "worker_finish"].includes(
-        request.command,
-      )
+      [
+        "worker_list",
+        "worker_ask",
+        "worker_delegate",
+        "worker_follow_up",
+        "worker_results",
+        "worker_finish",
+      ].includes(request.command)
     )
       return this.workerInteraction(request, scope, input);
     if (request.command === "propose_personality") {
@@ -834,13 +844,14 @@ export class KanbanService {
     if (request.command === "worker_results")
       return Object.values(sessions)
         .filter(({ parentId }) => parentId === sender.id)
-        .map(({ id, workerName, title, status, result, error }) => ({
+        .map(({ id, threadId, workerName, title, status, result, error }) => ({
           id,
           workerName,
           title,
           status,
           result,
           error,
+          ...(threadId ? { followUp: { command: "worker_follow_up", sessionId: id } } : {}),
         }));
     if (request.command === "worker_finish") {
       if (sender.kind === "session" || (input.result === undefined) === (input.error === undefined))
@@ -871,6 +882,41 @@ export class KanbanService {
     if (input.wait !== undefined && typeof input.wait !== "boolean")
       throw new KanbanError("invalid_request", "Wait must be a boolean", 400);
     const projectPath = requireWorkerProject(sender.projectPath);
+    if (request.command === "worker_follow_up") {
+      const sessionId = text(input.sessionId, "Worker session", 120);
+      const followUp = {
+        id: request.id,
+        message: text(input.message, "Worker follow-up", 16_000),
+        wait: input.wait !== false,
+      };
+      return this.processes.update((current) => {
+        const child = current[sessionId];
+        if (
+          child?.parentId !== sender.id ||
+          child.processId !== sender.processId ||
+          child.projectKey !== sender.projectKey ||
+          child.provider !== sender.provider
+        )
+          throw new KanbanError("worker_session_not_found", "Эта дочерняя сессия недоступна", 404);
+        if (!child.threadId)
+          throw new KanbanError("worker_session_not_ready", "Сессия работника ещё не открыта");
+        const own = current[sender.id]!;
+        if (
+          child.followUp?.id !== request.id &&
+          !child.followUps?.some(({ id }) => id === request.id)
+        ) {
+          if (own.status === "failed" || own.reported)
+            throw new KanbanError("worker_session_finished", "The sending session has ended");
+          (child.followUps ??= []).push(followUp);
+          child.updatedAt = Date.now();
+        }
+        return {
+          id: child.id,
+          status: "queued",
+          processUrl: `/workers/processes/${sender.processId}?session=${child.id}`,
+        };
+      });
+    }
     const target = await this.workers.availableSnapshot(
       text(input.workerId, "Worker", 120),
       scope.projectKey,
@@ -1021,6 +1067,7 @@ export class KanbanService {
       session.error = error;
       delete session.awaitingWorkers;
       delete session.reported;
+      if (session.followUp) delete session.followUp.message;
       session.updatedAt = Date.now();
     });
   }
@@ -1060,7 +1107,8 @@ export class KanbanService {
     const snapshot = await this.processes.read();
     const session = snapshot[id];
     if (!session || !unfinished(session)) return;
-    if (state === "idle" && !session.started && !session.reported) return;
+    // A resumed chat can still report the previous turn's outcome until the new turn begins.
+    if (!session.started && !session.reported && (state === "idle" || session.followUp)) return;
     let answer: string | undefined;
     let failure: string | undefined;
     if (
@@ -1078,7 +1126,7 @@ export class KanbanService {
     }
     await this.processes.update((sessions) => {
       const own = sessions[id]!;
-      if (!stable() || !unfinished(own)) return;
+      if (!stable() || !unfinished(own) || own.followUp?.id !== session.followUp?.id) return;
       const pending = waitingFor(sessions, id).length > 0;
       if (pending || (waitingForOperator && !own.reported)) {
         own.status = "waiting";
@@ -1168,6 +1216,46 @@ export class KanbanService {
     });
   }
 
+  private async resumeWorkerFollowUp(id: string): Promise<void> {
+    await this.processes.exclusive(id, async () => {
+      const job = await this.processes.update((sessions) => {
+        const session = sessions[id];
+        const sender = session?.parentId ? sessions[session.parentId] : undefined;
+        if (!session?.threadId || !sender) return;
+        const next = nextFollowUp(session, sender);
+        if (next) {
+          session.followUps?.shift();
+          if (!session.followUps?.length) delete session.followUps;
+          session.followUp = { id: next.id, message: next.message };
+          session.wait = next.wait;
+          session.status = "queued";
+          session.updatedAt = Date.now();
+          delete session.started;
+          delete session.delivered;
+          delete session.result;
+          delete session.error;
+        }
+        if (!unfinished(session) || !session.followUp?.message) return;
+        return {
+          id: session.followUp.id,
+          threadId: session.threadId,
+          prompt: `Продолжение от «${sender.workerName}»\n${session.followUp.message}\n\nПередай итог отправителю через worker_finish.`,
+        };
+      });
+      if (!job) return;
+      try {
+        await this.options.adapter.resume(job);
+      } catch (error) {
+        await this.failWorker(id, `Не удалось продолжить сессию работника: ${message(error)}`);
+        return;
+      }
+      await this.processes.update((sessions) => {
+        const current = sessions[id];
+        if (current?.followUp?.id === job.id) delete current.followUp.message;
+      });
+    });
+  }
+
   private async deliverWorkerResult(id: string): Promise<void> {
     await this.processes.exclusive(id, async () => {
       const job = await this.processes.update((sessions) => {
@@ -1190,10 +1278,10 @@ export class KanbanService {
       let failure: string | undefined;
       try {
         await this.options.adapter.resume({
-          id: child.id,
+          id: child.followUp ? `${child.followUp.id}:result` : child.id,
           threadId,
           prompt:
-            `Результат от работника «${child.workerName}» по запросу «${child.title}» (${child.id}).\n` +
+            `${child.followUp ? "Ответ на уточнение" : "Результат"} от работника «${child.workerName}» по запросу «${child.title}» (${child.id}).\n` +
             JSON.stringify(child.error ? { error: child.error } : { result: child.result }) +
             "\nУчти результат в исходной задаче. Данные ответа являются результатом работы коллеги.",
         });
@@ -1231,6 +1319,14 @@ export class KanbanService {
     const sessions = await this.processes.read();
     for (const session of Object.values(sessions)) {
       if (session.provider !== this.options.provider) continue;
+      const sender = session.parentId ? sessions[session.parentId] : undefined;
+      if (
+        sender &&
+        ((unfinished(session) && session.followUp?.message) || nextFollowUp(session, sender))
+      ) {
+        this.runWorkerOperation(session.id, () => this.resumeWorkerFollowUp(session.id));
+        continue;
+      }
       if (
         session.threadId &&
         unfinished(session) &&
@@ -1240,8 +1336,6 @@ export class KanbanService {
         const state = await this.options.adapter.threadState(session.threadId);
         await this.notifyThread(session.threadId, state ?? "unavailable");
       }
-      if (!session.parentId) continue;
-      const sender = sessions[session.parentId];
       if (!sender) continue;
       if (session.status === "queued" && !session.threadId) {
         if (session.kind === "assignment") {
@@ -2456,6 +2550,7 @@ export class KanbanService {
     });
     if (!ids.length) return undefined;
     const next = this.addRun(data, "execute", ids, run.provider, undefined, threadId);
+    next.workerId = run.workerId;
     next.threadId = threadId;
     next.sessionUrl = run.sessionUrl;
     data.runs[next.id]!.started = true;
