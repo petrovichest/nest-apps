@@ -350,6 +350,28 @@ describe("MessageQueue", () => {
     expect(delivery.steer).toHaveBeenCalledOnce();
   });
 
+  it("queues an automatic worker result behind the active turn and preserves the draft", async () => {
+    const { queue, store, delivery, setCurrentTurn } = await setup("active");
+    delivery.shouldSteerQueuedMessage.mockReturnValue(true);
+    const draft = { input: "Черновик", images: [], annotations: [], goalMode: false, updatedAt: 1 };
+    await store.update((state) => {
+      state.threadMeta.thread!.draft = draft;
+    });
+
+    const result = await queue.enqueue("thread", "Результат работника", [], "worker-result", {
+      automatic: true,
+    });
+    await queue.drain("thread");
+    expect(queue.list("thread")).toEqual([result]);
+    expect(delivery.start).not.toHaveBeenCalled();
+    expect(delivery.steer).not.toHaveBeenCalled();
+
+    setCurrentTurn(null);
+    await queue.drain("thread");
+    expect(delivery.start).toHaveBeenCalledWith("thread", result);
+    expect(store.snapshot().threadMeta.thread?.draft).toEqual(draft);
+  });
+
   it("returns a failed delivery to queued state", async () => {
     const { queue, delivery } = await setup("active");
     delivery.steer.mockRejectedValueOnce(new Error("offline"));

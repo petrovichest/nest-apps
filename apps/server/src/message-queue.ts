@@ -75,6 +75,8 @@ export class MessageQueue {
       replyToAsyncQuestion?: AsyncQuestionReference;
       replyToUserInput?: UserInputReply;
       dismissUserInput?: AsyncQuestionReference;
+      /** Background system messages keep the user's draft and wait for the next turn. */
+      automatic?: boolean;
     } = {},
   ): Promise<QueuedMessage> {
     const message: QueuedMessage = {
@@ -174,7 +176,8 @@ export class MessageQueue {
       }
       queue.push(message);
       const meta = state.threadMeta[threadId];
-      if (meta && !message.replyToAsyncQuestion && !message.replyToUserInput) delete meta.draft;
+      if (meta && !options.automatic && !message.replyToAsyncQuestion && !message.replyToUserInput)
+        delete meta.draft;
       if (
         options.completeVoiceTranscriptionId &&
         state.voiceTranscriptions?.[threadId]?.id === options.completeVoiceTranscriptionId
@@ -185,6 +188,7 @@ export class MessageQueue {
     this.publish(threadId);
     const activeTurnId = this.delivery.currentTurnId(threadId);
     if (
+      !options.automatic &&
       !stored.replyToAsyncQuestion &&
       !stored.planImplementationMode &&
       activeTurnId &&

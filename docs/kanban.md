@@ -111,8 +111,11 @@ then approve the proposal. Workers can ask a colleague a question from a project
 session. A coordinator can delegate work to a colleague from a direct project
 chat or a Kanban card. Direct assignments stay entirely in the worker process.
 Assignments from cards create linked tasks on the board. The colleague gets a
-separate session and sends the result or error back to the requesting session.
-A session waiting for the reply resumes when it arrives. To clarify an answer
+separate session. On completion, Nest queues the result or error in the session
+that made the request. It uses the worker's last reply when there is no
+`worker_finish` report and signals completion if there is no reply. The result
+arrives after any active turn. With `wait: false`, the result is still queued
+and the requesting session can continue before it arrives. To clarify an answer
 or request rework, the lead can use `worker_follow_up`
 with a child session ID from `worker_results`. Follow-ups run in order in that
 session and keep its conversation history. Only the session that started the

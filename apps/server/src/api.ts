@@ -3142,6 +3142,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         if (lifecycle?.updatePending) return;
         teamContinuationsPaused = false;
         await queue.resume();
+        wakeKanban();
         resumeTeamContinuations();
         const deferred = [...deferredServerRequests.values()];
         deferredServerRequests.clear();
@@ -4257,9 +4258,8 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       },
       async resume(job) {
         if (!projection.summary(job.threadId)) throw new ProjectNotFoundError("Session not found");
-        await queue.enqueue(job.threadId, job.prompt, job.images ?? [], `kanban:${job.id}:resume`);
-        void queue.drain(job.threadId).catch((error: unknown) => {
-          app.log.warn({ err: safeError(error), threadId: job.threadId }, "Kanban delivery failed");
+        await queue.enqueue(job.threadId, job.prompt, job.images ?? [], `kanban:${job.id}:resume`, {
+          automatic: job.workerResult,
         });
       },
       threadSummary: (threadId) => projection.summary(threadId),

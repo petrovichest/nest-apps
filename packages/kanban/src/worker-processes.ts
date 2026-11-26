@@ -17,6 +17,7 @@ export type WorkerSession = Omit<WorkerProcessSession, "waitingFor" | "signal"> 
   started?: boolean;
   awaitingWorkers?: boolean;
   delivering?: boolean;
+  /** False when a finished turn awaits admission to the sender's queue, true after admission. */
   delivered?: boolean;
   reported?: { result?: string; error?: string };
   threadSignal?: WorkerProcessSession["signal"];

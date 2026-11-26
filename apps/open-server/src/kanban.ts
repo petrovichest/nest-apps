@@ -71,11 +71,15 @@ export async function registerOpenKanban(
         return { threadId: thread.id, sessionUrl: `/threads/${encodeURIComponent(thread.id)}` };
       },
       async resume(job) {
-        await engine.send(job.threadId, {
-          input: job.prompt,
-          ...(job.images?.length ? { images: job.images } : {}),
-          clientMessageId: `kanban:${job.id}:resume`,
-        });
+        await engine.send(
+          job.threadId,
+          {
+            input: job.prompt,
+            ...(job.images?.length ? { images: job.images } : {}),
+            clientMessageId: `kanban:${job.id}:resume`,
+          },
+          job.workerResult,
+        );
       },
       threadSummary: (id) => (engine.data.threads[id] ? engine.summary(id) : undefined),
       threadState(id) {

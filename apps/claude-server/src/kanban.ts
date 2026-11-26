@@ -92,6 +92,7 @@ export async function registerClaudeKanban(
           input: job.prompt,
           ...(job.images?.length ? { images: job.images } : {}),
           clientMessageId: `kanban:${job.id}:resume`,
+          ...(job.workerResult ? { draftUpdatedAt: null } : {}),
         });
       },
       threadSummary: (id) => (ui.store.data.threads[id] ? ui.summary(id) : undefined),

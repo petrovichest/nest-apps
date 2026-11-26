@@ -17,7 +17,12 @@ import { atomicJson, type KanbanDocument } from "./store.js";
 import type { ReplyVerdict } from "./reply.js";
 import { registerKanbanRoutes } from "./routes.js";
 import type { WorkerSession } from "./worker-processes.js";
-import { KanbanService, readArchitectSkill, type KanbanLaunch } from "./service.js";
+import {
+  KanbanService,
+  readArchitectSkill,
+  type KanbanLaunch,
+  type KanbanProviderAdapter,
+} from "./service.js";
 
 type ObservedThread = NonNullable<Parameters<KanbanService["notifyThread"]>[2]>;
 const completedThread = (id: string, updatedAt: number): ObservedThread => ({
@@ -55,18 +60,25 @@ async function fixture(
   await mkdir(project);
   const launches = { codex: [] as string[], claude: [] as string[] };
   const inputs = { codex: [] as KanbanLaunch[], claude: [] as KanbanLaunch[] };
-  const resumedInputs: { images?: string[] }[] = [];
+  type ResumeInput = Parameters<KanbanProviderAdapter["resume"]>[0];
+  const resumedInputs: ResumeInput[] = [];
   const resumes = { codex: [] as string[], claude: [] as string[] };
   const archived = { codex: [] as string[], claude: [] as string[] };
   const interrupted = { codex: [] as string[], claude: [] as string[] };
   const prompts = new Map<string, string>();
   // The fast check of a finished turn: what the agent asks, by session.
   const questions = new Map<string, string | null>();
+  const answers = new Map<string, string>();
   const threadSummaries = new Map<string, ObservedThread>();
   // Sessions whose last reply says the work was pushed.
   const pushed = new Set<string>();
   // The operator's first message, by session.
   const requests = new Map<string, string>();
+  const resume = vi.fn(async (provider: "codex" | "claude", input: ResumeInput) => {
+    prompts.set(input.id, input.prompt);
+    resumes[provider].push(input.threadId);
+    resumedInputs.push(input);
+  });
   const services = {} as Record<"codex" | "claude", KanbanService>;
   for (const provider of ["codex", "claude"] as const) {
     const service = new KanbanService({
@@ -94,19 +106,22 @@ async function fixture(
           JSON.stringify({ model: provider + "-model", reasoningEffort: "high" }),
         ...(available ? { available } : {}),
         launch: async (input) => {
+          const threadId = threads?.ids.get(input.id) ?? `${provider}-${input.id}`;
           prompts.set(input.id, input.prompt);
           launches[provider].push(input.id);
           inputs[provider].push(input);
+          threadSummaries.set(threadId, {
+            ...completedThread(threadId, Date.now()),
+            state: "idle",
+            unread: false,
+            unseen: false,
+          });
           return {
-            threadId: threads?.ids.get(input.id) ?? `${provider}-${input.id}`,
+            threadId,
             sessionUrl: `/threads/${provider}-${input.id}`,
           };
         },
-        resume: async (input) => {
-          prompts.set(input.id, input.prompt);
-          resumes[provider].push(input.threadId);
-          resumedInputs.push(input);
-        },
+        resume: (input) => resume(provider, input),
         archive: async (threadId) => {
           archived[provider].push(threadId);
         },
@@ -119,6 +134,7 @@ async function fixture(
           question: questions.get(threadId) ?? null,
           published: pushed.has(threadId),
         }),
+        readAnswer: async (threadId) => answers.get(threadId) ?? null,
         readRequest: async (threadId) => requests.get(threadId) ?? null,
       },
     });
@@ -232,10 +248,12 @@ async function fixture(
     inputs,
     resumedInputs,
     resumes,
+    resume,
     archived,
     interrupted,
     prompts,
     questions,
+    answers,
     threadSummaries,
     pushed,
     requests,
@@ -503,10 +521,17 @@ it("delegates from an existing project worker session without a board", async ()
   expect(childInput?.prompt).toContain("Поручение от «Lead»");
   expect(childInput?.prompt).toContain("worker_finish");
 
-  await service.notifyThread(threadId, "completed");
+  const secondId = randomUUID();
+  expect(await f.workerTool("codex", source, "worker_delegate", request, secondId)).toMatchObject({
+    ok: true,
+  });
+  const second = await until(
+    async () => (await service.processes.read())[secondId],
+    (session) => Boolean(session?.threadId && service.workerSession(session.threadId)),
+  );
   expect((await service.processes.list(source))[0]?.sessions[0]).toMatchObject({
-    status: "waiting",
-    waitingFor: [childId],
+    status: "running",
+    waitingFor: [childId, secondId],
   });
   expect(
     await f.workerTool("codex", childId, "worker_finish", { result: "Patch approved" }),
@@ -514,13 +539,29 @@ it("delegates from an existing project worker session without a board", async ()
     ok: true,
     result: { accepted: true },
   });
-  await service.notifyThread(child!.threadId!, "completed");
+  await Promise.all([
+    service.notifyThread(child!.threadId!, "completed"),
+    service.notifyThread(second!.threadId!, "completed"),
+  ]);
   await until(
     async () => f.resumes.codex,
-    (resumes) => resumes.length === 1,
+    (resumes) => resumes.length === 2,
   );
-  expect(f.resumes.codex).toEqual([threadId]);
-  expect(f.prompts.get(childId)).toContain("Patch approved");
+  expect(f.resumes.codex).toEqual([threadId, threadId]);
+  expect(f.resumedInputs).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: childId,
+        workerResult: true,
+        prompt: expect.stringContaining("Patch approved"),
+      }),
+      expect.objectContaining({
+        id: secondId,
+        workerResult: true,
+        prompt: expect.stringContaining("Работник завершил ход без результата"),
+      }),
+    ]),
+  );
 
   expect(
     await f.workerTool("codex", source, "worker_delegate", { ...request, cardId: randomUUID() }),
@@ -536,9 +577,67 @@ it("delegates from an existing project worker session without a board", async ()
     ok: false,
     code: "worker_cannot_delegate",
   });
-  expect(f.launches.codex).toEqual([source, childId]);
+  expect(f.launches.codex).toEqual([source, childId, secondId]);
   expect(await service.store.list()).toEqual([]);
 });
+
+it.each(["after a retry", "after restarting"])(
+  "delivers a background worker's final reply without worker_finish %s",
+  async (recovery) => {
+    const f = await fixture();
+    const service = f.services.codex;
+    const projectKey = await service.workers.projectKey(f.project);
+    const worker = (name: string) =>
+      service.workers.create({ name, role: name, instructions: "", settings: {} }, projectKey);
+    const sender = await worker("Sender");
+    const reviewer = await worker("Reviewer");
+    const source = randomUUID();
+    const { threadId } = await service.startWorker(sender.id, f.project, source);
+    await service.notifyThread(threadId, "running");
+
+    const child = randomUUID();
+    expect(
+      await f.workerTool(
+        "codex",
+        source,
+        "worker_ask",
+        {
+          workerId: reviewer.id,
+          title: "Check the release",
+          description: "Review the release notes",
+          expectedResult: "A verdict",
+          wait: false,
+        },
+        child,
+      ),
+    ).toMatchObject({ ok: true });
+    const readChild = async () => (await service.processes.read())[child];
+    const reply = await until(readChild, (session) => Boolean(session?.threadId));
+    const childThreadId = reply!.threadId!;
+    f.answers.set(childThreadId, "Release verified.");
+    f.resume.mockRejectedValueOnce(new Error("Queue temporarily unavailable"));
+    await service.notifyThread(childThreadId, "completed");
+    expect(
+      await until(readChild, (session) => f.resume.mock.calls.length === 1 && !session?.delivering),
+    ).toMatchObject({ status: "completed", result: "Release verified.", delivered: false });
+    expect((await service.processes.list(source))[0]?.sessions[0]?.waitingFor).toEqual([]);
+
+    if (recovery === "after restarting") {
+      await service.close();
+      await service.initialize();
+    }
+    await until(readChild, (session) => session?.delivered === true);
+    expect(f.resume.mock.calls).toEqual([
+      ["codex", expect.objectContaining({ id: child, threadId, workerResult: true })],
+      ["codex", expect.objectContaining({ id: child, threadId, workerResult: true })],
+    ]);
+    expect(f.resume.mock.calls[1]).toEqual(f.resume.mock.calls[0]);
+    expect(f.prompts.get(child)).toContain('"result":"Release verified."');
+    await service.notifyThread(childThreadId, "completed");
+    await service.close();
+    expect(f.resumes.codex).toEqual([threadId]);
+  },
+);
 
 it.each(["full", "mixed"] as const)("queues follow-ups (%s summaries)", async (mode) => {
   const f = await fixture(undefined, undefined, () => false);

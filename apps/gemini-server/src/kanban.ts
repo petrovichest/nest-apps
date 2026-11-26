@@ -80,11 +80,18 @@ export async function registerGeminiKanban(
         return { threadId: thread.id, sessionUrl: `/threads/${encodeURIComponent(thread.id)}` };
       },
       async resume(job) {
-        await engine.send(job.threadId, {
-          input: job.prompt,
-          ...(job.images?.length ? { images: job.images } : {}),
-          clientMessageId: `kanban:${job.id}:resume`,
-        });
+        const clientMessageId = `kanban:${job.id}:resume`;
+        // An old result may already have been admitted in the legacy delivery mode.
+        const previous = engine.data.threads[job.threadId]?.receipts[clientMessageId];
+        await engine.send(
+          job.threadId,
+          {
+            input: job.prompt,
+            ...(job.images?.length ? { images: job.images } : {}),
+            clientMessageId,
+          },
+          Boolean(job.workerResult && previous?.message.deliveryMode !== "steer"),
+        );
       },
       threadSummary: (id) => (engine.data.threads[id] ? engine.summary(id) : undefined),
       async threadState(id) {
@@ -112,9 +119,12 @@ export async function registerGeminiKanban(
   engine.setWorkerSessionProvider((id) => service.workerSession(id));
   registerKanbanRoutes(app, service, (id) => engine.project(id).path, "gemini");
   const observe = (frame: ServerFrame) => {
-    if (frame.type === "event" && frame.event.type === "thread.upserted") {
+    if (frame.type !== "event") return;
+    if (frame.event.type === "thread.upserted") {
       const { thread } = frame.event;
       void service.notifyThread(thread.id, boardThreadState(thread), thread).catch(() => undefined);
+    } else if (frame.event.type === "connection.changed") {
+      service.wake();
     }
   };
   engine.on("frame", observe);

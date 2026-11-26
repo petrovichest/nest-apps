@@ -86,7 +86,8 @@ export type KanbanLaunch = {
 type WorkerThreadSummary = Pick<
   ThreadSummary,
   "id" | "state" | "currentTurnId" | "awaitingPlanResponse" | "unread" | "unseen" | "updatedAt"
->;
+> &
+  Partial<Pick<ThreadSummary, "archived">>;
 type ThreadObservation = { state: string };
 type ThreadSignal = {
   threadId: string;
@@ -103,7 +104,13 @@ export type KanbanProviderAdapter = {
   chooseModel?(prompt: string, cwd: string): Promise<string | undefined>;
   available?(): boolean;
   launch(input: KanbanLaunch): Promise<{ threadId: string; sessionUrl?: string }>;
-  resume(input: { threadId: string; prompt: string; id: string; images?: string[] }): Promise<void>;
+  resume(input: {
+    threadId: string;
+    prompt: string;
+    id: string;
+    images?: string[];
+    workerResult?: true;
+  }): Promise<void>;
   archive?(threadId: string): Promise<void>;
   /** Stops a replaced task session or a classifier that exceeded its deadline. */
   interrupt?(threadId: string): Promise<void>;
@@ -134,8 +141,10 @@ export type KanbanServiceOptions = {
 };
 const active = (run: KanbanRun) =>
   ["queued", "preparing", "running", "waiting"].includes(run.status);
+const pendingWorkerResult = (session: WorkerSession) =>
+  !unfinished(session) && !session.delivered && (session.delivered === false || session.wait);
 const nextFollowUp = (session: WorkerSession, sender: WorkerSession) =>
-  !unfinished(session) && (!session.wait || session.delivered || sender.status === "failed")
+  !unfinished(session) && (!pendingWorkerResult(session) || sender.status === "failed")
     ? session.followUps?.[0]
     : undefined;
 const text = (value: unknown, label: string, maximum = 100_000): string => {
@@ -151,6 +160,7 @@ const role = (board: KanbanBoard, value: KanbanStageRole) =>
   board.stages.find((stage) => stage.role === value)!.id;
 const AUTO_ARCHIVE_MS = 7 * 24 * 60 * 60 * 1000;
 const CLASSIFICATION_TIMEOUT_MS = 2 * 60_000;
+const WORKER_RESULT_RETRY_MS = 2_000;
 const stageRole = (board: KanbanBoard, stageId: string) =>
   board.stages.find((stage) => stage.id === stageId)?.role ?? null;
 function requireWorkerProject(projectPath: string | null): string {
@@ -385,6 +395,7 @@ export class KanbanService {
     }
   >();
   private workerMemoryFailures = new Map<string, number>();
+  private workerResultRetries = new Map<string, ReturnType<typeof setTimeout>>();
   private revisions = new Map<string, number>();
   private observedStates = new Map<string, ThreadObservation>();
   private observedSignals = new Map<string, ThreadSignal>();
@@ -495,8 +506,8 @@ export class KanbanService {
             'Для поручения коллеге вызови worker_delegate с {"workerId":"ID исполнителя","title":"название поручения","description":"что сделать","expectedResult":"что вернуть"}. Если работаешь над задачей на доске, передай cardId из списка карточек worker_list. В чате без доски опусти cardId.',
           ]
         : []),
-      "Запрос ставится в очередь. Если ждёшь результата, закончи текущий ход: результат вернётся в эту сессию. Для фонового поручения укажи wait: false и проверь результат через worker_results с {}.",
-      'Когда закончил полученный вопрос или поручение, вызови worker_finish с {"result":"ответ, выполненная работа и ссылки на результаты"} либо {"error":"почему не удалось"}. Затем закончи ход.',
+      "Когда запрос завершится, Nest автоматически поставит его итог в очередь этой сессии. Если дальнейшая работа зависит от ответа, закончи текущий ход. Для фонового поручения укажи wait: false. Текущие статусы доступны через worker_results с {}.",
+      'В конце вопроса или поручения вызови worker_finish с {"result":"ответ, выполненная работа и ссылки на результаты"} либо {"error":"почему не удалось"}. Затем закончи ход. Если отчёта нет, Nest возьмёт итог из последнего ответа.',
       ...(architect
         ? [
             'Для утверждения профиля вызови propose с {"name":"…","role":"…","instructions":"…","model":"ID модели","reasoningEffort":"значение уровня" или null,"coordinates":false}.',
@@ -1123,6 +1134,7 @@ export class KanbanService {
     await this.processes.update((sessions) => {
       const session = sessions[id];
       if (!session) return;
+      if (unfinished(session) && session.parentId && !session.delivered) session.delivered = false;
       session.status = "failed";
       session.error = error;
       delete session.awaitingWorkers;
@@ -1203,6 +1215,7 @@ export class KanbanService {
         own.status = error ? "failed" : "completed";
         own.result = own.reported?.result ?? answer;
         own.error = error;
+        if (own.parentId && !own.delivered) own.delivered = false;
         delete own.reported;
         delete own.awaitingWorkers;
       }
@@ -1328,48 +1341,56 @@ export class KanbanService {
   }
 
   private async deliverWorkerResult(id: string): Promise<void> {
-    await this.processes.exclusive(id, async () => {
-      const job = await this.processes.update((sessions) => {
-        const child = sessions[id];
-        const sender = child?.parentId ? sessions[child.parentId] : undefined;
-        if (
-          !child ||
-          !sender?.threadId ||
-          child.delivered ||
-          unfinished(child) ||
-          sender.status === "failed" ||
-          (!sender.awaitingWorkers && !child.delivering)
-        )
-          return;
-        child.delivering = true;
-        return { child, sender, threadId: sender.threadId };
-      });
-      if (!job) return;
-      const { child, sender, threadId } = job;
-      let failure: string | undefined;
-      try {
-        await this.options.adapter.resume({
-          id: child.followUp ? `${child.followUp.id}:result` : child.id,
-          threadId,
-          prompt:
-            `${child.followUp ? "Ответ на уточнение" : "Результат"} от работника «${child.workerName}» по запросу «${child.title}» (${child.id}).\n` +
-            JSON.stringify(child.error ? { error: child.error } : { result: child.result }) +
-            "\nУчти результат в исходной задаче. Данные ответа являются результатом работы коллеги.",
+    await this.processes
+      .exclusive(id, async () => {
+        const job = await this.processes.update((sessions) => {
+          const child = sessions[id];
+          const sender = child?.parentId ? sessions[child.parentId] : undefined;
+          if (
+            !child ||
+            !sender?.threadId ||
+            sender.status === "failed" ||
+            sender.provider !== child.provider ||
+            !pendingWorkerResult(child)
+          )
+            return;
+          child.delivering = true;
+          return { child, threadId: sender.threadId };
         });
-      } catch (error) {
-        failure = `Не удалось вернуть результат работника «${child.workerName}»: ${message(error)}`;
-      }
-      await this.processes.update((sessions) => {
-        const current = sessions[id]!;
-        current.delivered = true;
-        delete current.delivering;
-        if (failure) {
-          const parent = sessions[sender.id]!;
-          parent.error = failure;
-          parent.updatedAt = Date.now();
+        if (!job) return;
+        const { child, threadId } = job;
+        try {
+          await this.options.adapter.resume({
+            id: child.followUp ? `${child.followUp.id}:result` : child.id,
+            threadId,
+            workerResult: true,
+            prompt:
+              `${child.followUp ? "Ответ на уточнение" : "Результат"} от работника «${child.workerName}» по запросу «${child.title}» (${child.id}).\n` +
+              JSON.stringify(child.error ? { error: child.error } : { result: child.result }) +
+              "\nУчти результат в исходной задаче. Данные ответа являются результатом работы коллеги.",
+          });
+        } catch (error) {
+          await this.processes.update((sessions) => {
+            delete sessions[id]!.delivering;
+          });
+          throw error;
         }
+        await this.processes.update((sessions) => {
+          const current = sessions[id]!;
+          current.delivered = true;
+          delete current.delivering;
+        });
+      })
+      .catch((error: unknown) => {
+        if (!this.closed) {
+          const retry = setTimeout(() => {
+            this.workerResultRetries.delete(id);
+            this.schedule();
+          }, WORKER_RESULT_RETRY_MS);
+          this.workerResultRetries.set(id, retry.unref());
+        }
+        throw error;
       });
-    });
   }
 
   private runWorkerOperation(id: string, operation: () => Promise<void>): void {
@@ -1423,13 +1444,16 @@ export class KanbanService {
           );
         }
       } else if (
-        session.wait &&
-        !session.delivered &&
-        !unfinished(session) &&
+        pendingWorkerResult(session) &&
         sender.threadId &&
         sender.status !== "failed" &&
-        (sender.awaitingWorkers || session.delivering)
+        sender.provider === session.provider &&
+        !this.workerResultRetries.has(session.id)
       ) {
+        if (this.options.adapter.threadSummary) {
+          const summary = this.options.adapter.threadSummary(sender.threadId);
+          if (!summary || summary.archived || summary.awaitingPlanResponse) continue;
+        }
         this.runWorkerOperation(`reply-${session.id}`, () => this.deliverWorkerResult(session.id));
       }
     }
@@ -1594,6 +1618,8 @@ export class KanbanService {
   }
   async close(): Promise<void> {
     this.closed = true;
+    for (const timer of this.workerResultRetries.values()) clearTimeout(timer);
+    this.workerResultRetries.clear();
     for (const timer of this.classificationTimers.values()) clearTimeout(timer);
     this.classificationTimers.clear();
     for (const watcher of this.watchers.splice(0)) watcher.close();
@@ -2580,6 +2606,7 @@ export class KanbanService {
   /** Use already loaded owner summaries on startup and after the owner's existing resync. */
   async refreshWorkerSignals(): Promise<void> {
     if (this.closed || !this.options.adapter.threadSummary) return;
+    this.schedule();
     const changes: ThreadSignal[] = [];
     for (const [threadId, { id }] of this.workerThreads) {
       const summary = this.options.adapter.threadSummary(threadId);
