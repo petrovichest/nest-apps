@@ -187,6 +187,14 @@ const issue: WorkerProcess = {
       signal: "actionRequired",
       description: sourceDescription,
     }),
+    session("color-question", "Дизайнер", "Какой цвет взять для обложки?", {
+      parentId: "issue",
+      kind: "question",
+      provider: "open",
+      sessionUrl: "https://opennest.visual/threads/color-question",
+      status: "waiting",
+      signal: "actionRequired",
+    }),
     session("design", "Исследователь", "Проверить обложку", {
       parentId: "title-question",
       workerId: "researcher",
@@ -205,6 +213,8 @@ const issue: WorkerProcess = {
     session("extra", "Исследователь", "Архивные примеры для обложки", {
       parentId: "title-question",
       workerId: "researcher",
+      provider: "open",
+      sessionUrl: "https://opennest.visual/threads/extra",
       status: "completed",
       signal: "unseenCompletion",
     }),
@@ -442,8 +452,39 @@ test("card signals follow the GET response and the focused filter survives polli
     `${overviewPath}/catalogue?session=verification`,
   );
   await waiting.press("Enter");
+  const more = page.getByRole("button", { name: "Показать ещё 2" });
+  const less = page.getByRole("button", { name: "Показать меньше" });
+  await more.press("Space");
   await page.clock.fastForward(4_000);
   await expectDots(waiting, [amber, green]);
+
+  response[0] = {
+    ...issue,
+    sessions: issue.sessions.map((value) =>
+      value.id === "references" ? { ...value, signal: undefined } : value,
+    ),
+  };
+  await page.clock.fastForward(4_000);
+  await expect(page.getByText(resultText)).toHaveCount(0);
+  await expect(less).toHaveAttribute("aria-expanded", "true");
+  await expect(less).toBeFocused();
+  await expect(page.getByRole("link", { name: /Какой цвет взять для обложки/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Архивные примеры для обложки/ })).toHaveAttribute(
+    "href",
+    `${overviewPath}/issue?session=extra`,
+  );
+
+  response[0] = {
+    ...response[0],
+    sessions: response[0].sessions.map((value) =>
+      value.id === "title-question" ? { ...value, signal: undefined } : value,
+    ),
+  };
+  await page.clock.fastForward(4_000);
+  await expect(less).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Какой цвет взять для обложки/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Архивные примеры для обложки/ })).toBeVisible();
+  await waiting.focus();
 
   response[0] = {
     ...issue,
@@ -469,3 +510,79 @@ test("card signals follow the GET response and the focused filter survives polli
     page.getByRole("heading", { level: 2, name: "В работе", exact: true }),
   ).toBeVisible();
 });
+
+for (const width of [1440, 390]) {
+  test.describe(`multiple card signals at ${width}px`, () => {
+    test.use({ hasTouch: width === 390 });
+    test("opens each additional target and restores the expanded card", async ({ page }, info) => {
+      await page.setViewportSize({ width, height: width === 1440 ? 1000 : 844 });
+      await installProcessesFixture(page, "light", entries);
+      await page.goto(overviewPath);
+      const filter = page.getByRole("group", { name: "Статус" });
+      const waiting = filter.getByRole("button", { name: "Ждёт ответа", exact: true });
+      const done = filter.getByRole("button", { name: "Готово", exact: true });
+      const card = page.locator(".process-card").filter({ hasText: "Подготовить весенний выпуск" });
+      const more = card.getByRole("button", { name: "Показать ещё 2", exact: true });
+      const less = card.getByRole("button", { name: "Показать меньше", exact: true });
+      const secondQuestion = card.getByRole("link", { name: /Какой цвет взять для обложки/ });
+      const secondResult = card.getByRole("link", { name: /Архивные примеры для обложки/ });
+      const activate = async (control: Locator) =>
+        width === 1440 ? control.press("Enter") : control.tap();
+
+      await activate(waiting);
+      await more.blur();
+      await expect(more).toHaveAttribute("aria-expanded", "false");
+      await expect(more).toHaveCSS("font-weight", "400");
+      await expect(secondQuestion).toBeHidden();
+      await expect(secondResult).toBeHidden();
+      await captureProcessPreview(page, info, `multiple-collapsed-${width}`);
+
+      if (width === 1440) {
+        await more.focus();
+        await expect(more).toHaveCSS("outline-style", "solid");
+        await page.keyboard.press("Space");
+        await expect(less).toBeFocused();
+        await page.keyboard.press("Tab");
+        await expect(secondQuestion).toBeFocused();
+        await secondQuestion.blur();
+      } else {
+        await activate(more);
+      }
+      await expect(less).toHaveAttribute("aria-expanded", "true");
+      await expect(secondQuestion).toBeVisible();
+      await expect(secondResult).toBeVisible();
+      await captureProcessPreview(page, info, `multiple-expanded-${width}`);
+
+      for (const [link, id, title] of [
+        [secondResult, "extra", "Архивные примеры для обложки"],
+        [secondQuestion, "color-question", "Какой цвет взять для обложки?"],
+      ] as const) {
+        await activate(link);
+        await expect(page).toHaveURL(`${overviewPath}/issue?session=${id}`);
+        const inspector = page.locator(".process-inspector");
+        const opened = inspector.locator("details[open]");
+        await expect(opened).toContainText(title);
+        await expect(inspector).toContainText("OpenNest");
+        await expect(opened.getByRole("link", { name: "Открыть сессию" })).toHaveAttribute(
+          "href",
+          `https://opennest.visual/threads/${id}`,
+        );
+        await page.goBack();
+        await expect(waiting).toHaveAttribute("aria-pressed", "true");
+        await expect(less).toHaveAttribute("aria-expanded", "true");
+      }
+
+      await activate(less);
+      await expect(more).toHaveAttribute("aria-expanded", "false");
+      await activate(done);
+      await expect(page.locator(".process-card-more")).toHaveCount(0);
+      await expect(
+        page
+          .locator(".process-card")
+          .getByRole("link", { name: /Новый результат.*Сверить страницы/ }),
+      ).toBeVisible();
+      await done.blur();
+      await captureProcessPreview(page, info, `no-additional-${width}`);
+    });
+  });
+}

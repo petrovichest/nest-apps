@@ -1,5 +1,5 @@
 import type { WorkerProcess, WorkerProcessSession } from "@codexnest/protocol";
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n, type Translate } from "../i18n";
@@ -72,6 +72,7 @@ export function WorkerProcessesPage({ onOpenNavigation }: { onOpenNavigation(): 
   const { language, t } = useI18n();
   const { processId } = useParams();
   const [statusFilter, setStatusFilter] = useState<ProcessStatusFilter>("all");
+  const [expandedCards, setExpandedCards] = useState<ReadonlySet<string>>(() => new Set());
   const [view, setView] = useState<{
     id: string | undefined;
     processes?: WorkerProcess[];
@@ -88,7 +89,21 @@ export function WorkerProcessesPage({ onOpenNavigation }: { onOpenNavigation(): 
       inFlight = true;
       try {
         const processes = await api.workerProcesses(processId);
-        if (mounted) setView({ id: processId, processes });
+        if (mounted) {
+          setView({ id: processId, processes });
+          if (!processId) {
+            setExpandedCards((previous) => {
+              if (!previous.size) return previous;
+              const retained = new Set<string>();
+              for (const process of processes) {
+                if (previous.has(process.id) && cardSignals(process.sessions).additional.length) {
+                  retained.add(process.id);
+                }
+              }
+              return retained.size === previous.size ? previous : retained;
+            });
+          }
+        }
       } catch (error) {
         if (mounted)
           setView((previous) => ({
@@ -136,6 +151,15 @@ export function WorkerProcessesPage({ onOpenNavigation }: { onOpenNavigation(): 
               processes={visible.processes}
               filter={statusFilter}
               onFilterChange={setStatusFilter}
+              expandedCards={expandedCards}
+              onToggleCard={(id) => {
+                setExpandedCards((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(id)) next.delete(id);
+                  else next.add(id);
+                  return next;
+                });
+              }}
             />
           ) : null}
         </div>
@@ -232,10 +256,14 @@ function ProcessOverview({
   processes,
   filter,
   onFilterChange,
+  expandedCards,
+  onToggleCard,
 }: {
   processes: WorkerProcess[];
   filter: ProcessStatusFilter;
   onFilterChange(filter: ProcessStatusFilter): void;
+  expandedCards: ReadonlySet<string>;
+  onToggleCard(id: string): void;
 }) {
   const { t } = useI18n();
   const sections = new Map<
@@ -298,7 +326,13 @@ function ProcessOverview({
             </h2>
             <ul className="process-cards" role="list">
               {[...projects.values()].flat().map(({ process, root }) => (
-                <ProcessCard key={root.id} process={process} root={root} />
+                <ProcessCard
+                  key={root.id}
+                  process={process}
+                  root={root}
+                  expanded={expandedCards.has(process.id)}
+                  onToggle={() => onToggleCard(process.id)}
+                />
               ))}
             </ul>
           </section>
@@ -308,12 +342,51 @@ function ProcessOverview({
   );
 }
 
-function ProcessCard({ process, root }: { process: WorkerProcess; root: WorkerProcessSession }) {
+type CardSignal = { signal: ProcessSignal; session: WorkerProcessSession };
+
+function cardSignals(sessions: WorkerProcessSession[]) {
+  const primary: CardSignal[] = [];
+  const additional: CardSignal[] = [];
+  for (const signal of signalKinds) {
+    const [first, ...rest] = sessions.filter((session) => session.signal === signal);
+    if (first) primary.push({ signal, session: first });
+    additional.push(...rest.map((session) => ({ signal, session })));
+  }
+  return { primary, additional };
+}
+
+function ProcessCard({
+  process,
+  root,
+  expanded,
+  onToggle,
+}: {
+  process: WorkerProcess;
+  root: WorkerProcessSession;
+  expanded: boolean;
+  onToggle(): void;
+}) {
   const { t } = useI18n();
-  const signals = signalKinds.flatMap((signal) => {
-    const session = process.sessions.find((candidate) => candidate.signal === signal);
-    return session ? [{ signal, session }] : [];
-  });
+  const additionalId = useId();
+  const { primary, additional } = cardSignals(process.sessions);
+
+  function renderSignal({ signal, session }: CardSignal) {
+    const excerpt =
+      signal === "unseenCompletion" ? session.result?.trim() || session.title : session.title;
+    const showExcerpt = excerpt !== root.title;
+    return (
+      <Link
+        key={session.id}
+        className="process-card-signal"
+        to={processLink(process.id, session)}
+        aria-description={excerpt !== session.title || !showExcerpt ? session.title : undefined}
+      >
+        <ProcessSignalLabel signal={signal} />
+        {showExcerpt && <span className="process-card-excerpt">{excerpt}</span>}
+      </Link>
+    );
+  }
+
   return (
     <li className="kanban-card process-card">
       <Link className="process-card-title" to={processLink(process.id, root)}>
@@ -323,27 +396,27 @@ function ProcessCard({ process, root }: { process: WorkerProcess; root: WorkerPr
       <p className="process-card-meta">
         {process.projectName ?? t("Без проекта")} · {root.workerName}
       </p>
-      {signals.length > 0 && (
+      {primary.length > 0 && (
         <div className="process-card-signals">
-          {signals.map(({ signal, session }) => {
-            const excerpt =
-              signal === "unseenCompletion"
-                ? session.result?.trim()
-                : session.title === root.title
-                  ? undefined
-                  : session.title;
-            return (
-              <Link
-                key={signal}
-                className="process-card-signal"
-                to={processLink(process.id, session)}
-                aria-description={excerpt ? undefined : session.title}
+          {primary.map(renderSignal)}
+          {additional.length > 0 && (
+            <>
+              <button
+                type="button"
+                className="show-more process-card-more"
+                aria-expanded={expanded}
+                aria-controls={additionalId}
+                onClick={onToggle}
               >
-                <ProcessSignalLabel signal={signal} />
-                {excerpt && <span className="process-card-excerpt">{excerpt}</span>}
-              </Link>
-            );
-          })}
+                {expanded
+                  ? t("Показать меньше")
+                  : t("Показать ещё {{count}}", { count: additional.length })}
+              </button>
+              <div id={additionalId} className="process-card-extra-signals" hidden={!expanded}>
+                {additional.map(renderSignal)}
+              </div>
+            </>
+          )}
         </div>
       )}
       <footer>

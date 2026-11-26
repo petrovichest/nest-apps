@@ -221,14 +221,26 @@
   overflow-wrap: anywhere;
 }
 
-.process-card-signals {
+.process-card-signals,
+.process-card-extra-signals:not([hidden]) {
   display: grid;
   align-content: start;
   gap: var(--space-1);
 }
 
+.process-card-more.show-more {
+  position: relative;
+  z-index: 1;
+  width: fit-content;
+  min-height: var(--control-height);
+  margin: 0;
+  padding-inline: var(--space-2);
+  font-weight: var(--weight-regular);
+}
+
 .process-card-signal {
   position: relative;
+  z-index: 1;
   display: grid;
   align-content: center;
   justify-items: start;
