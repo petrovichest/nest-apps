@@ -18,6 +18,7 @@ import {
   KanbanService,
   lastReply,
   registerKanbanRoutes,
+  WORKER_MEMORY_GUIDANCE,
 } from "@nest-apps/kanban";
 import { constants, createReadStream, type Stats } from "node:fs";
 import { access, lstat, mkdir, realpath, stat } from "node:fs/promises";
@@ -818,11 +819,11 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         assertDirectInput(summary);
       };
       const cwd = summary.cwd;
+      const kanbanStart = /^kanban:[\da-f-]{36}:start$/i.test(clientMessageId ?? "");
       let skillCatalog = skillsByCwd.get(cwd);
       if (
         !skillCatalog &&
-        clientMessageId &&
-        /^kanban:[\da-f-]{36}:start$/i.test(clientMessageId) &&
+        kanbanStart &&
         turnInput.startsWith(`${ARCHITECT_PROMPT_HEADER}\n`) &&
         turnInput.includes(`$${ARCHITECT_SKILL_NAME}`)
       ) {
@@ -832,6 +833,12 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         });
         if (skillCatalog) skillsByCwd.set(cwd, skillCatalog);
       }
+      const workerMemory = kanbanStart
+        ? undefined
+        : await kanban.workerTurnMemory(threadId, cwd).catch((error: unknown) => {
+            app.log.warn({ err: safeError(error), threadId }, "Worker memory unavailable");
+            return undefined;
+          });
       const startParams = {
         threadId,
         clientUserMessageId: teamMarkerId ?? clientMessageId,
@@ -847,6 +854,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           summary.settings,
           projection.availableModels,
           teamClaim ? teamContinuationContext(store, threadId, teamClaim) : undefined,
+          workerMemory,
         ),
       };
       const send = async () => {
@@ -9108,6 +9116,7 @@ function turnSettings(
   settings: SessionSettings,
   models: ModelOption[],
   continuationContext?: string,
+  workerMemory?: string,
 ): Record<string, unknown> {
   const model = effectiveModel(settings, models);
   if (!model) throw new ProjectValidationError("No model is available for collaboration mode");
@@ -9131,6 +9140,15 @@ function turnSettings(
     additionalContext: {
       "codexnest.images": { kind: "application", value: IMAGE_DELIVERY_CONTEXT },
       "codexnest.questions": { kind: "application", value: QUESTION_CONTEXT },
+      ...(workerMemory
+        ? {
+            "codexnest.worker.memory-guidance": {
+              kind: "application",
+              value: WORKER_MEMORY_GUIDANCE,
+            },
+            "codexnest.worker.memory": { kind: "untrusted", value: workerMemory },
+          }
+        : {}),
       ...(settings.collaborationMode === "plan"
         ? {
             "codexnest.plan": {

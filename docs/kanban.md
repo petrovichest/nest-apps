@@ -127,7 +127,9 @@ batch covers one target and scope and commits once the final contents fit the
 target returns its usage and current entries on a single-write attempt. The
 worker can then shorten stale entries and add the new fact in one operation.
 The conversation shows **Saved to memory** after a new or updated entry is
-saved. An explicit `memory_read` reads the latest entries during a session.
+saved. CodexNest also supplies the current memory as context for later worker
+turns. Workers can read the latest entries with `memory_read` before starting
+another task in an open session.
 The write and consolidation behavior follows the [Hermes built-in memory tool](https://github.com/NousResearch/hermes-agent/blob/c84e8d7f81a8a12860dd802c24910c74115e36b6/website/docs/user-guide/features/memory.md).
 
 The **Processes** tab under **Workers** shows the work across local Nest

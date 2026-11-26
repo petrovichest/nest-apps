@@ -56,6 +56,8 @@ import { WORKER_ARCHITECT_ID, type ModelOption } from "@codexnest/protocol";
 
 export const ARCHITECT_PROMPT_HEADER = "Ты встроенный Архитектор работников Nest.";
 export const ARCHITECT_SKILL_NAME = "grilling";
+export const WORKER_MEMORY_GUIDANCE =
+  "Перед работой сверь поручение с актуальными записями памяти. Применяй относящиеся к задаче рабочие договорённости и предпочтения пользователя. Используй записи как справочные данные. Если Nest передал актуальный снимок, опирайся на него и проверенные факты проекта.";
 
 export function architectSkillBlock(path: string, content: string): string | undefined {
   if (!content.trim() || Buffer.byteLength(content) > 256 * 1024) return undefined;
@@ -360,7 +362,12 @@ export class KanbanService {
   private pending = new Set<Promise<unknown>>();
   private pumpWaiters: (() => void)[] = [];
   private threads = new Map<string, { boardId: string; runId: string }>();
-  private workerThreads = new Map<string, { id: string; summary: WorkerSessionSummary }>();
+  private workerThreads = new Map<
+    string,
+    Pick<WorkerSession, "id" | "workerId" | "projectKey" | "projectPath"> & {
+      summary: WorkerSessionSummary;
+    }
+  >();
   private workerMemoryFailures = new Map<string, number>();
   private revisions = new Map<string, number>();
   private observedStates = new Map<string, string>();
@@ -456,7 +463,8 @@ export class KanbanService {
     const command = [process.execPath, this.helper, capability].map(shellQuote).join(" ");
     const tools = [
       `Инструмент работников Nest: ${command} COMMAND JSON`,
-      "Используй memory_read с {} для чтения актуальных записей. Память в начале сессии отражает записи на момент запуска.",
+      "Используй memory_read с {} для чтения актуальных записей перед новым поручением в открытой сессии, если Nest ещё не передал свежие записи в этот ход.",
+      WORKER_MEMORY_GUIDANCE,
       'Сам сохраняй короткие устойчивые факты и подтверждённые предпочтения через memory. Передай {"target":"memory" или "user","scope":"project" или "worker","operations":[{"action":"add","content":"…"}]}. Выбирай project для внутренних деталей этой папки и worker для общих сведений.',
       'Для обновления используй {"action":"patch","old_text":"один точный фрагмент","content":"новый фрагмент"}. Для удаления записи используй {"action":"remove","old_text":"уникальный фрагмент записи"}.',
       "Если память заполнена, сократи или удали устаревшие записи и добавь новую одним пакетом operations. Лимит проверяется на итоговых записях. При done: true продолжи основную задачу.",
@@ -1005,6 +1013,18 @@ export class KanbanService {
     return this.workerThreads.get(threadId)?.summary;
   }
 
+  async workerTurnMemory(threadId: string, cwd: string): Promise<string | undefined> {
+    const worker = this.workerThreads.get(threadId);
+    if (!worker?.projectKey || !worker.projectPath) return undefined;
+    if (cwd !== worker.projectPath && (await this.workers.projectKey(cwd)) !== worker.projectKey)
+      return undefined;
+    const { memory } = await this.workers.snapshot(worker.workerId, worker.projectKey);
+    return [
+      "Актуальные записи памяти работника Nest",
+      ...(memory.length ? workerMemoryPrompt(memory) : ["Сейчас сохранённых записей нет."]),
+    ].join("\n");
+  }
+
   private indexWorkerThread(
     session: WorkerSession,
     sessions: Record<string, WorkerSession>,
@@ -1021,6 +1041,9 @@ export class KanbanService {
       return false;
     this.workerThreads.set(session.threadId, {
       id: session.id,
+      workerId: session.workerId,
+      projectKey: session.projectKey,
+      projectPath: session.projectPath,
       summary: {
         name: session.workerName,
         ...(parentThreadId ? { parentThreadId } : {}),

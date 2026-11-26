@@ -30,6 +30,7 @@ import {
   BROWSER_TOOL_NAMES,
   type ServerEvent,
 } from "@codexnest/protocol";
+import { WorkerStore } from "@nest-apps/kanban";
 
 import { buildApp } from "./app";
 import { triggerTeamWatchdogs } from "./api";
@@ -2993,6 +2994,80 @@ describe("skills API and explicit invocation", () => {
       expect(bridge.request.mock.calls.filter(([method]) => method === "skills/list")).toEqual([
         ["skills/list", { cwds: [projectPath], forceReload: false }],
       ]);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("worker memory on continued turns", () => {
+  it("passes fresh project memory to an open worker session as separate context", async () => {
+    const { app, bridge, headers, projectPath } = await createSkillsHarness({ realProject: true });
+    try {
+      const workers = new WorkerStore(join(projectPath, "kanban", "workers"));
+      const projectKey = await workers.projectKey(projectPath);
+      const started = await app.inject({
+        method: "POST",
+        url: "/api/v1/workers/architect/sessions?projectId=project",
+        headers,
+        payload: { creationId: "d8c2ac49-a589-4386-88c4-f137d9fe6f78" },
+      });
+      expect(started.statusCode).toBe(200);
+      const { threadId } = started.json<{ threadId: string }>();
+      await vi.waitFor(() => expect(bridge.threadTurns.get(threadId)).toHaveLength(1));
+      const first = { ...bridge.threadTurns.get(threadId)![0]!, status: "completed" as const };
+      bridge.threadTurns.set(threadId, [first]);
+      bridge.emit("notification", {
+        method: "turn/completed",
+        params: { threadId, turn: first },
+      } satisfies ServerNotification);
+
+      const note = "Use the isolated fixtures in this project.";
+      for (const [key, content] of [
+        [projectKey, note],
+        ["other-project", "Use the production tenant in the other project."],
+      ] as const) {
+        expect(
+          await workers.curate("architect", key, {
+            target: "memory",
+            operations: [{ action: "add", content }],
+          }),
+        ).toMatchObject({ success: true });
+      }
+      const input = "Continue reviewing the worker setup";
+      const resumed = await app.inject({
+        method: "POST",
+        url: `/api/v1/threads/${threadId}/turns`,
+        headers,
+        payload: { clientMessageId: "worker-memory-continued", input },
+      });
+      expect(resumed.statusCode).toBe(201);
+      const params = bridge.request.mock.calls.find(
+        ([method, params]) =>
+          method === "turn/start" && params.clientUserMessageId === "worker-memory-continued",
+      )?.[1];
+      expect(params).toMatchObject({
+        input: [{ type: "text", text: input }],
+        additionalContext: {
+          "codexnest.worker.memory-guidance": { kind: "application" },
+          "codexnest.worker.memory": { kind: "untrusted", value: expect.stringContaining(note) },
+        },
+      });
+      expect(JSON.stringify(params)).not.toContain("production tenant");
+
+      const ordinary = await app.inject({
+        method: "POST",
+        url: "/api/v1/threads/thread/turns",
+        headers,
+        payload: { clientMessageId: "ordinary-no-worker-memory", input },
+      });
+      expect(ordinary.statusCode).toBe(201);
+      expect(
+        bridge.request.mock.calls.find(
+          ([method, params]) =>
+            method === "turn/start" && params.clientUserMessageId === "ordinary-no-worker-memory",
+        )?.[1].additionalContext,
+      ).not.toHaveProperty(["codexnest.worker.memory"]);
     } finally {
       await app.close();
     }
