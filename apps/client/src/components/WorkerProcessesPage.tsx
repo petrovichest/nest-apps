@@ -214,7 +214,9 @@ function ProcessRow({ processId, node }: { processId: string; node: Participant 
         <ul className="process-session-list">
           {visible.map((session) => (
             <li key={session.id}>
-              <span className="process-session-name">{session.title}</span>
+              {(session.parentId !== null || session.title !== session.workerName) && (
+                <span className="process-session-name">{session.title}</span>
+              )}
               <span className="process-provider">{apps[session.provider]}</span>
               <WorkStatus session={session} />
             </li>
