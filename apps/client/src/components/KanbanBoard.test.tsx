@@ -140,9 +140,10 @@ function show(
 }
 beforeEach(() => {
   api = {
-    workerCatalogue: vi
-      .fn()
-      .mockResolvedValue({ common: [{ id: "reviewer", name: "Reviewer" }], projects: [] }),
+    workerCatalogue: vi.fn().mockResolvedValue({
+      common: [{ id: "legacy", name: "Shared reviewer" }],
+      projects: [{ projectId: "project", workers: [{ id: "reviewer", name: "Reviewer" }] }],
+    }),
     readKanbanImage: vi.fn(),
     readKanban: vi.fn().mockResolvedValue(board()),
     createKanbanCard: vi.fn().mockResolvedValue(board()),
@@ -339,10 +340,11 @@ describe("KanbanBoard", () => {
     fireEvent.change(within(dialog).getByRole("textbox", { name: "Сообщение для Codex" }), {
       target: { value: "Ask the reviewer" },
     });
-    await within(dialog).findByRole("option", { name: "Reviewer" });
-    fireEvent.change(within(dialog).getByRole("combobox", { name: "Исполнитель" }), {
-      target: { value: "reviewer" },
-    });
+    fireEvent.click(within(dialog).getByLabelText("Исполнитель", { selector: "summary" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Reviewer" }));
+    expect(
+      within(dialog).queryByRole("button", { name: "Shared reviewer" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Отправить" }));
     await waitFor(() =>
       expect(api.createKanbanCard).toHaveBeenCalledWith("project", {

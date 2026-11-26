@@ -23,7 +23,15 @@ it("shares profiles across app owners and confines memory to the canonical proje
     ]);
     const fields = { name: "Lead", role: "Plan work", instructions: "Check results", settings: {} };
     const projectWorker = await first.create(fields, projectKey);
-    const shared = await first.create(fields, null);
+    const architect = WORKER_ARCHITECT_ID;
+    await expect(
+      first.propose({
+        ...fields,
+        provider: "codex",
+        projectKey: null,
+        settings: { collaborationMode: "default" },
+      }),
+    ).rejects.toMatchObject({ code: "worker_project_required" });
     expect((await second.list(sameProjectKey)).map((worker) => worker.id)).toContain(
       projectWorker.id,
     );
@@ -31,13 +39,13 @@ it("shares profiles across app owners and confines memory to the canonical proje
       code: "worker_not_found",
     });
     await Promise.all([
-      first.changeMemory(shared.id, projectKey, {
+      first.changeMemory(architect, projectKey, {
         action: "add",
         scope: "project",
         kind: "notes",
         text: "Use npm test",
       }),
-      second.changeMemory(shared.id, otherKey, {
+      second.changeMemory(architect, otherKey, {
         action: "add",
         scope: "worker",
         kind: "user",
@@ -45,13 +53,18 @@ it("shares profiles across app owners and confines memory to the canonical proje
       }),
     ]);
     expect(
-      (await first.snapshot(shared.id, sameProjectKey)).memory.map((entry) => entry.text).sort(),
+      (await first.snapshot(architect, sameProjectKey)).memory.map((entry) => entry.text).sort(),
     ).toEqual(["Keep replies short", "Use npm test"]);
-    expect((await first.snapshot(shared.id, otherKey)).memory.map((entry) => entry.text)).toEqual([
+    expect((await first.snapshot(architect, otherKey)).memory.map((entry) => entry.text)).toEqual([
       "Keep replies short",
     ]);
-    await second.edit(shared.id, null, shared.revision, { ...fields, name: "Team lead" });
-    await expect(first.edit(shared.id, null, shared.revision, fields)).rejects.toMatchObject({
+    await second.edit(projectWorker.id, sameProjectKey, projectWorker.revision, {
+      ...fields,
+      name: "Team lead",
+    });
+    await expect(
+      first.edit(projectWorker.id, sameProjectKey, projectWorker.revision, fields),
+    ).rejects.toMatchObject({
       code: "worker_changed",
     });
     await first.edit(WORKER_ARCHITECT_ID, null, 0, {
@@ -70,10 +83,7 @@ it("fits an atomic consolidation against the final budget and preserves existing
     const first = new WorkerStore(directory);
     const second = new WorkerStore(directory);
     const project = "this-project";
-    const { id } = await first.create(
-      { name: "Reviewer", role: "Review", instructions: "", settings: {} },
-      null,
-    );
+    const id = WORKER_ARCHITECT_ID;
     const keep = "Default command: npm test. Reports include file paths.";
     const obsolete = "x".repeat(2200 - keep.length - 2);
     for (const text of [keep, obsolete])
@@ -164,10 +174,10 @@ it("uses whole-entry matches before substrings and rejects an ambiguous patch or
     const workers = new WorkerStore(directory);
     const { id } = await workers.create(
       { name: "Reviewer", role: "Review", instructions: "", settings: {} },
-      null,
+      "project",
     );
     const call = (operations: unknown[]) =>
-      workers.curate(id, null, { target: "user", scope: "worker", operations });
+      workers.curate(id, "project", { target: "user", scope: "worker", operations });
     const add = (content: string) => ({ action: "add", content });
     const remove = (old_text: string) => ({ action: "remove", old_text });
     expect(
@@ -198,7 +208,7 @@ it("uses whole-entry matches before substrings and rejects an ambiguous patch or
       success: false,
       code: "memory_unsafe",
     });
-    expect((await workers.snapshot(id, null)).memory.map(({ text }) => text)).toEqual([
+    expect((await workers.snapshot(id, "project")).memory.map(({ text }) => text)).toEqual([
       "tea is the default",
     ]);
   } finally {

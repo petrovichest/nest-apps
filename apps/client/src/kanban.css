@@ -579,22 +579,22 @@
   scrollbar-width: thin;
 }
 
-.kanban-category-options button {
+:is(.kanban-category-options, .kanban-assignee-options) button {
   gap: var(--space-2);
   text-align: left;
 }
 
-.kanban-category-options button > svg {
+:is(.kanban-category-options, .kanban-assignee-options) button > svg {
   flex: none;
   width: 18px;
   height: 18px;
 }
 
-.kanban-category-options button:not([aria-pressed="true"]) > svg {
+:is(.kanban-category-options, .kanban-assignee-options) button:not([aria-pressed="true"]) > svg {
   visibility: hidden;
 }
 
-.kanban-category-options button > span {
+:is(.kanban-category-options, .kanban-assignee-options) button > span {
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -741,12 +741,77 @@ textarea.kanban-edit-field {
   gap: var(--space-3);
 }
 
-.kanban-panel-fields label {
+.kanban-panel-fields :is(label, .kanban-assignee-field) {
   display: grid;
   gap: var(--space-1-5);
   min-width: 0;
   color: var(--muted);
   font-size: var(--text-small);
+}
+
+.kanban-assignee-field > span {
+  font-weight: var(--weight-action);
+}
+
+.kanban-assignee-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  padding: 9px 12px 9px 16px;
+  border-radius: var(--chat-radius-control);
+  background: var(--color-floating);
+  box-shadow: var(--sidebar-surface-shadow);
+  color: var(--muted-strong);
+  font-size: var(--text-input);
+  font-weight: var(--weight-action);
+}
+
+.kanban-assignee-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kanban-assignee-trigger > svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.kanban-assignee-trigger[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.52;
+}
+
+.kanban-assignee-trigger:focus-visible {
+  outline: 2px solid var(--color-lapis);
+  outline-offset: 2px;
+}
+
+.kanban-assignee > .kanban-assignee-options {
+  width: 100%;
+  max-height: min(280px, 38dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.kanban-assignee-options button {
+  color: var(--color-ink-strong);
+}
+
+.kanban-assignee-options button[aria-pressed="true"],
+.thread-workspace .session-inspector .kanban-assignee-options button[aria-pressed="true"] {
+  --inspector-button-shadow: var(--sidebar-surface-shadow);
+  box-shadow: var(--sidebar-surface-shadow);
+  font-weight: var(--weight-action);
+}
+
+@media (pointer: coarse) {
+  .kanban-assignee > .kanban-assignee-options button {
+    min-height: 44px;
+  }
 }
 
 .kanban-panel-actions {

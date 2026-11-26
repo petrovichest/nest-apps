@@ -99,7 +99,7 @@ export function registerWorkerRoutes(
   );
   app.get<WorkerRequest>(`${root}/:workerId`, (request, reply) =>
     handle(reply, async () =>
-      workers.snapshot(request.params.workerId, await projectKey(request.query.projectId)),
+      workers.availableSnapshot(request.params.workerId, await projectKey(request.query.projectId)),
     ),
   );
   const checkedProposal = async (id: string) => {
@@ -175,7 +175,7 @@ export function registerWorkerRoutes(
       handle(reply, async () => {
         const key = await projectKey(request.query.projectId);
         const id = request.params.workerId;
-        const { profile } = await workers.snapshot(id, key);
+        const { profile } = await workers.availableSnapshot(id, key);
         const { revision, name, role, instructions, settings: choice } = request.body;
         const settings = { ...profile.settings };
         if (choice === null) delete settings[provider];
@@ -199,14 +199,16 @@ export function registerWorkerRoutes(
       },
     },
     (request, reply) =>
-      handle(reply, async () =>
-        workers.changeMemory(request.params.workerId, await projectKey(request.query.projectId), {
+      handle(reply, async () => {
+        const key = await projectKey(request.query.projectId);
+        await workers.availableSnapshot(request.params.workerId, key);
+        return workers.changeMemory(request.params.workerId, key, {
           action: "edit",
           id: request.params.entryId,
           expectedText: request.body.expectedText,
           text: request.body.text,
-        }),
-      ),
+        });
+      }),
   );
   app.delete<MemoryRequest & { Body: { expectedText: string } }>(
     `${root}/:workerId/memory/:entryId`,
@@ -220,12 +222,14 @@ export function registerWorkerRoutes(
       },
     },
     (request, reply) =>
-      handle(reply, async () =>
-        workers.changeMemory(request.params.workerId, await projectKey(request.query.projectId), {
+      handle(reply, async () => {
+        const key = await projectKey(request.query.projectId);
+        await workers.availableSnapshot(request.params.workerId, key);
+        return workers.changeMemory(request.params.workerId, key, {
           action: "remove",
           id: request.params.entryId,
           expectedText: request.body.expectedText,
-        }),
-      ),
+        });
+      }),
   );
 }

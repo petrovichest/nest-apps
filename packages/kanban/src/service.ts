@@ -371,9 +371,11 @@ export class KanbanService {
     this.processes = new WorkerProcessStore(this.workers.directory);
   }
 
-  private async prepareWorker(id: string, projectPath: string, runId: string) {
+  private async prepareWorker(id: string, projectPath: string, runId: string, existingRun = false) {
     const projectKey = await this.workers.projectKey(projectPath);
-    const { profile, memory } = await this.workers.snapshot(id, projectKey);
+    const { profile, memory } = existingRun
+      ? await this.workers.snapshot(id, projectKey)
+      : await this.workers.availableSnapshot(id, projectKey);
     const architect = id === WORKER_ARCHITECT_ID;
     const models = this.options.adapter.models?.();
     const settings = architect
@@ -403,12 +405,11 @@ export class KanbanService {
           `Вызови $${ARCHITECT_SKILL_NAME} для согласования профиля и следуй инструкциям скилла. Используй найденные в проекте факты. Выясни задачи работника и способ проверить его результат.`,
           "Если скилл недоступен, скажи об этом и задай вопросы раундом. Предложи вариант для каждого открытого решения, а зависимые вопросы отложи до следующего раунда.",
           ...(skill ? [skill] : []),
-          "Опирайся на проверенные в проекте команды, пути и соглашения при составлении постоянных инструкций. Для роли под этот проект предложи область текущего проекта.",
-          "Согласуй имя, роль, постоянные инструкции, область доступности, модель и уровень рассуждений.",
+          "Опирайся на проверенные в проекте команды, пути и соглашения при составлении постоянных инструкций. Создавай работника для текущего проекта.",
+          "Согласуй имя, роль, постоянные инструкции, модель и уровень рассуждений.",
           "Уточни, может ли работник как координатор сам поручать подзадачи на Kanban. Передай coordinates: true только при согласии пользователя.",
           "Модель и уровень рассуждений подбирай по назначению работника из доступных вариантов.",
           "В конце предложи профиль через инструмент propose и покажи возвращённую ссылку для утверждения.",
-          `Проекты: ${JSON.stringify(projects.map(({ id, displayName }) => ({ id, displayName })))}`,
           ...(models?.length
             ? [
                 `Модели этого Nest: ${JSON.stringify(
@@ -468,8 +469,8 @@ export class KanbanService {
       'Когда закончил полученный вопрос или поручение, вызови worker_finish с {"result":"ответ, выполненная работа и ссылки на результаты"} либо {"error":"почему не удалось"}. Затем закончи ход.',
       ...(architect
         ? [
-            'Для утверждения профиля вызови propose с {"name":"…","role":"…","instructions":"…","projectId":null или ID проекта,"model":"ID модели","reasoningEffort":"значение уровня" или null,"coordinates":false}.',
-            'Чтобы изменить право существующего работника поручать задачи, вызови propose_coordination с {"workerId":"ID работника","projectId":null или ID проекта,"coordinates":true}, затем покажи ссылку для утверждения.',
+            'Для утверждения профиля вызови propose с {"name":"…","role":"…","instructions":"…","model":"ID модели","reasoningEffort":"значение уровня" или null,"coordinates":false}.',
+            'Чтобы изменить право существующего работника поручать задачи, вызови propose_coordination с {"workerId":"ID работника","coordinates":true}, затем покажи ссылку для утверждения.',
             "Покажи ссылку из результата. Профиль появляется после подтверждения пользователем на странице работников.",
           ]
         : []),
@@ -675,17 +676,20 @@ export class KanbanService {
           "Choose a worker and set its coordination permission",
           400,
         );
-      const project = this.options.adapter.projects?.().find(({ id }) => id === input.projectId);
-      if (!project && input.projectId != null)
+      const project = this.options.adapter
+        .projects?.()
+        .find(({ path }) => path === scope.projectPath);
+      if (!project || !projectKey || (input.projectId != null && input.projectId !== project.id))
         throw new KanbanError("not_found", "Project not found", 404);
-      const { profile } = await this.workers.snapshot(
+      const { profile } = await this.workers.availableSnapshot(
         text(input.workerId, "Worker", 120),
-        project ? await this.workers.projectKey(project.path) : null,
+        projectKey,
       );
       const proposal = await this.workers.propose({
         provider: this.options.provider,
-        ...(project ? { projectId: project.id, projectName: project.displayName } : {}),
-        projectKey: profile.projectKey,
+        projectId: project.id,
+        projectName: project.displayName,
+        projectKey,
         name: profile.name,
         role: profile.role,
         instructions: profile.instructions,
@@ -713,13 +717,16 @@ export class KanbanService {
           "Select an available model and level of reasoning",
           400,
         );
-      const project = this.options.adapter.projects?.().find(({ id }) => id === input.projectId);
-      if (!project && input.projectId != null)
+      const project = this.options.adapter
+        .projects?.()
+        .find(({ path }) => path === scope.projectPath);
+      if (!project || !projectKey || (input.projectId != null && input.projectId !== project.id))
         throw new KanbanError("not_found", "Project not found", 404);
       const proposal = await this.workers.propose({
         provider: this.options.provider,
-        ...(project ? { projectId: project.id, projectName: project.displayName } : {}),
-        projectKey: project ? await this.workers.projectKey(project.path) : null,
+        projectId: project.id,
+        projectName: project.displayName,
+        projectKey,
         name: text(input.name, "Worker name", 120),
         role: text(input.role, "Worker role", 500),
         instructions: text(input.instructions, "Worker instructions", 16_000),
@@ -738,7 +745,7 @@ export class KanbanService {
   private async requireAssignableWorker(id: string, projectPath: string) {
     if (id === WORKER_ARCHITECT_ID || typeof id !== "string")
       throw new KanbanError("invalid_worker", "Select a worker for this task", 400);
-    await this.workers.snapshot(id, await this.workers.projectKey(projectPath));
+    await this.workers.availableSnapshot(id, await this.workers.projectKey(projectPath));
   }
 
   private async registerWorkerSession(input: {
@@ -864,7 +871,7 @@ export class KanbanService {
     if (input.wait !== undefined && typeof input.wait !== "boolean")
       throw new KanbanError("invalid_request", "Wait must be a boolean", 400);
     const projectPath = requireWorkerProject(sender.projectPath);
-    const target = await this.workers.snapshot(
+    const target = await this.workers.availableSnapshot(
       text(input.workerId, "Worker", 120),
       scope.projectKey,
     );
@@ -1147,6 +1154,7 @@ export class KanbanService {
         session.workerId,
         projectPath,
         session.id,
+        true,
       );
       await this.launchWorker({
         id: session.id,
@@ -1355,7 +1363,18 @@ export class KanbanService {
     this.workerMemoryFailures.clear();
     this.observedStates.clear();
     // Index persisted sessions before accepting HTTP requests so early events are not lost.
-    for (const document of await this.store.list()) this.indexThreads(document);
+    const retiredWorkers = await this.workers.retiredIds();
+    for (const document of await this.store.list()) {
+      const wasAssignedToRetiredWorker = ({ workerId }: KanbanCard) =>
+        workerId !== undefined && retiredWorkers.has(workerId);
+      if (document.board.cards.some(wasAssignedToRetiredWorker)) {
+        await this.store.updateById(document.board.id, ({ board }) => {
+          for (const card of board.cards)
+            if (wasAssignedToRetiredWorker(card)) delete card.workerId;
+        });
+      }
+      this.indexThreads(document);
+    }
     const sessions = await this.processes.read();
     for (const session of Object.values(sessions)) this.indexWorkerThread(session, sessions);
     for (const path of [this.store.boardsDirectory, join(this.store.directory, "inbox")]) {
@@ -2721,7 +2740,7 @@ export class KanbanService {
       workerLaunch = run.kind === "execute" && !runtime.resumeThreadId && Boolean(run.workerId);
       const worker =
         run.kind === "execute" && !runtime.resumeThreadId && run.workerId
-          ? await this.prepareWorker(run.workerId, document.board.projectPath, run.id)
+          ? await this.prepareWorker(run.workerId, document.board.projectPath, run.id, true)
           : undefined;
       if (runtime.interruptThreadId) {
         const replaced = this.workerThreads.get(runtime.interruptThreadId)?.id;

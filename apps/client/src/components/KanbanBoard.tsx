@@ -30,7 +30,6 @@ import {
   KANBAN_IMAGE_LIMIT,
   KANBAN_IMAGE_MAX_BYTES,
   rebasePastedText,
-  WORKER_ARCHITECT_ID,
 } from "@codexnest/protocol";
 import { MessageImageGallery, MessageImageProvider } from "./MessageImageGallery";
 import { onBeforeAppReload } from "../app-reload";
@@ -286,8 +285,9 @@ export function KanbanBoard({
   const [stageDropId, setStageDropId] = useState<string | null>(null);
   const [workerOptions, setWorkerOptions] = useState<{
     projectId: string;
-    options: WorkerProfile[];
+    options?: WorkerProfile[];
   }>();
+  const workerPickerId = useId();
   const [taskDraft, setTaskDraft] = useState<BoardTaskDraft>(EMPTY_TASK_DRAFT);
   const pickWorker = dialog === "create" || cardId !== null;
   useEffect(() => {
@@ -298,13 +298,11 @@ export function KanbanBoard({
         if (active)
           setWorkerOptions({
             projectId,
-            options: [...data.common, ...(data.projects[0]?.workers ?? [])].filter(
-              ({ id }) => id !== WORKER_ARCHITECT_ID,
-            ),
+            options: data.projects.find(({ projectId: id }) => id === projectId)?.workers ?? [],
           });
       },
       () => {
-        if (active) setWorkerOptions({ projectId, options: [] });
+        if (active) setWorkerOptions({ projectId });
       },
     );
     return () => {
@@ -312,27 +310,91 @@ export function KanbanBoard({
     };
   }, [api, pickWorker, projectId, workerOptions?.projectId]);
 
-  function workerPicker(value: string | undefined, onChange: (id: string) => void) {
-    const options = workerOptions?.projectId === projectId ? workerOptions.options : [];
+  const projectWorkers = workerOptions?.projectId === projectId ? workerOptions.options : undefined;
+  function availableWorkerId(id: string | undefined) {
+    return !projectWorkers || projectWorkers.some((worker) => worker.id === id) ? id : undefined;
+  }
+
+  function workerPicker(value: string | undefined, onChange: (id: string) => void, field: string) {
+    const workers = projectWorkers ?? [];
+    value = availableWorkerId(value);
+    const options = [{ id: "", name: t("Стандартная сессия") }, ...workers];
+    if (value && !options.some(({ id }) => id === value))
+      options.push({ id: value, name: t("Назначенный работник") });
+    const selected = options.find(({ id }) => id === (value ?? ""))!;
+    const valueId = `${workerPickerId}-${field}-value`;
+    const label = t("Исполнитель");
     return (
-      <label>
-        {t("Исполнитель")}
-        <select
-          value={value ?? ""}
-          disabled={busy}
-          onChange={(event) => onChange(event.target.value)}
+      <div className="kanban-assignee-field">
+        <span>{label}</span>
+        <details
+          className="thread-action-menu kanban-assignee"
+          data-dismiss-on-outside-click
+          onBlur={(event) => {
+            if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
+              event.currentTarget.open = false;
+          }}
+          onKeyDown={(event) => {
+            const menu = event.currentTarget;
+            const trigger = menu.querySelector("summary");
+            if (event.key === "Escape" && menu.open) {
+              event.preventDefault();
+              event.stopPropagation();
+              menu.open = false;
+              trigger?.focus();
+              return;
+            }
+            if (busy || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            menu.open = true;
+            const items = [...menu.querySelectorAll("button")];
+            const current = items.findIndex((item) => item === document.activeElement);
+            let next = event.key === "ArrowUp" ? items.length - 1 : 0;
+            if (event.key === "End") next = items.length - 1;
+            if (current >= 0 && event.key.startsWith("Arrow")) {
+              const direction = event.key === "ArrowDown" ? 1 : -1;
+              next = (current + direction + items.length) % items.length;
+            }
+            items[next]?.focus();
+          }}
         >
-          <option value="">{t("Стандартная сессия")}</option>
-          {value && !options.some(({ id }) => id === value) && (
-            <option value={value}>{t("Назначенный работник")}</option>
-          )}
-          {options.map((worker) => (
-            <option key={worker.id} value={worker.id}>
-              {worker.name}
-            </option>
-          ))}
-        </select>
-      </label>
+          <summary
+            className="kanban-assignee-trigger"
+            aria-label={label}
+            aria-describedby={valueId}
+            aria-disabled={busy || undefined}
+            onClick={(event) => {
+              if (busy) event.preventDefault();
+            }}
+          >
+            <span id={valueId}>{selected.name}</span>
+            <ChevronDownIcon />
+          </summary>
+          <div
+            className="action-menu-popover kanban-assignee-options"
+            role="group"
+            aria-label={label}
+          >
+            {options.map(({ id, name }) => (
+              <button
+                key={id}
+                type="button"
+                disabled={busy}
+                aria-pressed={id === selected.id}
+                onClick={(event) => {
+                  const menu = event.currentTarget.closest("details")!;
+                  menu.open = false;
+                  menu.querySelector("summary")?.focus();
+                  if (id !== selected.id) onChange(id);
+                }}
+              >
+                <CheckIcon aria-hidden="true" />
+                <span>{name}</span>
+              </button>
+            ))}
+          </div>
+        </details>
+      </div>
     );
   }
 
@@ -555,12 +617,13 @@ export function KanbanBoard({
   /** Sends the task field like a session's first message; a recording goes with it at once. */
   async function submitTask(recording?: ComposerRecording): Promise<boolean> {
     const draft = taskDraftRef.current;
+    const workerId = availableWorkerId(draft.workerId);
     const ok = await createTask({
       id: recording ? `${taskCreationId.current}:${recording.id}` : taskCreationId.current,
       text: copyPastedMessage(draft.input.trim(), draft).trim(),
       images: draft.images.map(({ name, url }) => ({ name, url })),
       ...(recording ? { recording } : {}),
-      ...(draft.workerId ? { workerId: draft.workerId } : {}),
+      ...(workerId ? { workerId } : {}),
     });
     if (!ok) return false;
     // Text typed while the task was being sent stays for the next task.
@@ -1706,6 +1769,7 @@ export function KanbanBoard({
                     void mutate(() =>
                       api.updateKanbanCard(projectId, card.id, { workerId: id || null }),
                     ),
+                  "card",
                 )}
               </div>
               {card.question && <p className="kanban-card-question">{card.question}</p>}
@@ -2076,8 +2140,10 @@ export function KanbanBoard({
             </button>
           </div>
           <div className="kanban-panel-fields kanban-worker-picker">
-            {workerPicker(taskDraft.workerId, (id) =>
-              editTaskDraft({ ...taskDraftRef.current, workerId: id || undefined }),
+            {workerPicker(
+              taskDraft.workerId,
+              (id) => editTaskDraft({ ...taskDraftRef.current, workerId: id || undefined }),
+              "draft",
             )}
           </div>
           <Composer

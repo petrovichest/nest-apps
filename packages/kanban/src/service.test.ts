@@ -225,9 +225,10 @@ async function fixture(
   };
 }
 
-it("routes simultaneous assignments of one shared worker to their original sessions", async () => {
+it("routes simultaneous assignments of one project worker to their original sessions", async () => {
   const f = await fixture(undefined, undefined, () => false);
   const { codex, claude } = f.services;
+  const projectKey = await codex.workers.projectKey(f.project);
   const team = await Promise.all(
     ["Import lead", "Release lead", "Reviewer"].map((name, index) =>
       codex.workers.create(
@@ -238,7 +239,7 @@ it("routes simultaneous assignments of one shared worker to their original sessi
           settings: {},
           coordinates: index < 2,
         },
-        null,
+        projectKey,
       ),
     ),
   );
@@ -344,6 +345,7 @@ it("routes simultaneous assignments of one shared worker to their original sessi
 it("answers a direct worker question in a separate session without creating a Kanban card", async () => {
   const f = await fixture(undefined, undefined, () => false);
   const service = f.services.codex;
+  const projectKey = await service.workers.projectKey(f.project);
   const asker = await service.workers.create(
     {
       name: "Asker",
@@ -352,7 +354,7 @@ it("answers a direct worker question in a separate session without creating a Ka
       settings: {},
       coordinates: true,
     },
-    null,
+    projectKey,
   );
   const responder = await service.workers.create(
     {
@@ -361,7 +363,7 @@ it("answers a direct worker question in a separate session without creating a Ka
       instructions: "",
       settings: {},
     },
-    null,
+    projectKey,
   );
   const source = randomUUID();
   const { threadId } = await service.startWorker(asker.id, f.project, source);
@@ -424,11 +426,14 @@ it("creates a worker with explicit approval, groups its tasks and shares its pro
     name: "Lead",
     role: "Check work",
     instructions: "Review changes",
-    projectId: "project",
     model: "codex-model",
     reasoningEffort: "high",
   });
   const proposal = await f.services.codex.workers.proposal(draft.url!.split("=")[1]!);
+  expect(proposal).toMatchObject({
+    projectId: "project",
+    projectKey: await f.services.codex.workers.projectKey(f.project),
+  });
   expect(await f.services.codex.workers.list(proposal.projectKey)).toHaveLength(1);
   const profile = await f.services.codex.workers.approveProposal(proposal);
   expect(await f.services.codex.workers.approveProposal(proposal)).toEqual(profile);
@@ -475,6 +480,82 @@ it("creates a worker with explicit approval, groups its tasks and shares its pro
   expect(input.prompt).toContain("Run npm test before review");
 });
 
+it("retires shared workers from assignments while preserving a waiting session", async () => {
+  const f = await fixture(undefined, undefined, () => false);
+  const { codex, claude } = f.services;
+  const projectKey = await codex.workers.projectKey(f.project);
+  const fields = { name: "Reviewer", role: "Review", instructions: "", settings: {} };
+  const profile = await codex.workers.create(fields, projectKey);
+  const projectWorker = await codex.workers.create(fields, projectKey);
+  const cardFor = async (workerId: string) =>
+    (
+      await codex.createCard(f.project, {
+        description: "Review changes",
+        clientCreationId: randomUUID(),
+        workerId,
+      })
+    ).cards[0]!.id;
+  const waiting = await cardFor(profile.id);
+  const future = await cardFor(profile.id);
+  const projectCard = await cardFor(projectWorker.id);
+  await codex.action(f.project, {
+    action: "execute",
+    cardIds: [waiting],
+    clientActionId: randomUUID(),
+  });
+  const run = await f.running("execute", waiting);
+  await codex.notifyThread(run.threadId!, "needsAttention");
+  await until(
+    () => codex.read(f.project),
+    (board) => board.runs.some(({ id, status }) => id === run.id && status === "waiting"),
+  );
+
+  await codex.close();
+  await claude.close();
+  const registry = join(codex.workers.directory, "workers.json");
+  const state = JSON.parse(await readFile(registry, "utf8"));
+  state[profile.id].profile.projectKey = null;
+  await atomicJson(registry, state);
+  await codex.initialize();
+  const board = await codex.read(f.project);
+  expect(board.cards.find(({ id }) => id === waiting)?.workerId).toBeUndefined();
+  expect(board.cards.find(({ id }) => id === future)?.workerId).toBeUndefined();
+  expect(board.cards.find(({ id }) => id === projectCard)?.workerId).toBe(projectWorker.id);
+  expect(board.runs.find(({ id }) => id === run.id)).toMatchObject({
+    threadId: run.threadId,
+    workerId: profile.id,
+    status: "waiting",
+  });
+  expect((await codex.workers.list(projectKey)).map(({ id }) => id)).toEqual([
+    "architect",
+    projectWorker.id,
+  ]);
+  await expect(codex.startWorker(profile.id, f.project, randomUUID())).rejects.toMatchObject({
+    code: "worker_not_found",
+  });
+  await expect(codex.updateCard(f.project, future, { workerId: profile.id })).rejects.toMatchObject(
+    {
+      code: "worker_not_found",
+    },
+  );
+  expect(await f.workerTool("codex", run.id, "memory_read", {})).toMatchObject({ ok: true });
+  await codex.action(f.project, {
+    action: "rework",
+    cardIds: [waiting],
+    comment: "Continue reviewing",
+    clientActionId: randomUUID(),
+  });
+  await f.running("execute", waiting);
+  expect(f.resumes.codex).toEqual([run.threadId]);
+
+  await codex.action(f.project, {
+    action: "execute",
+    cardIds: [future],
+    clientActionId: randomUUID(),
+  });
+  expect((await f.running("execute", future)).workerId).toBeUndefined();
+});
+
 it("includes the discovered grilling instructions in the Architect startup prompt", async () => {
   const resolver = vi.fn(async (cwd: string) => {
     const path = join(cwd, ".claude", "skills", "grilling", "SKILL.md");
@@ -509,7 +590,7 @@ it("lets a worker curate memory and ends repeated consolidation failures for tha
   const { codex, claude } = f.services;
   const worker = await codex.workers.create(
     { name: "Reviewer", role: "Review", instructions: "", settings: {} },
-    null,
+    await codex.workers.projectKey(f.project),
   );
   const runId = randomUUID();
   const { threadId } = await codex.startWorker(worker.id, f.project, runId);

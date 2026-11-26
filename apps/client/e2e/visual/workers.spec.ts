@@ -101,7 +101,9 @@ for (const width of [1440, 390]) {
     await page.goto("/workers");
     await expect(page.getByRole("heading", { name: "Работники" })).toBeVisible();
     const tiles = page.locator(".worker-tile");
-    await expect(tiles).toHaveCount(3);
+    await expect(tiles).toHaveCount(2);
+    await expect(page.getByRole("heading", { name: "Общие", exact: true })).toHaveCount(0);
+    await expect(tiles.filter({ hasText: "Ревьюер" })).toHaveCount(0);
     await expect(tiles.first()).toContainText("Архитектор");
     expect(
       await tiles.evaluateAll((nodes) =>

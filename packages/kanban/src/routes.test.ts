@@ -38,7 +38,7 @@ function fixture() {
       list: vi.fn(async () => []),
       projectKey: vi.fn(async () => "canonical-project"),
       listForProjects: vi.fn(async () => [
-        { id: "reviewer", projectKey: null },
+        { id: "architect", projectKey: null },
         { id: "lead", projectKey: "canonical-project" },
       ]),
     },
@@ -66,7 +66,7 @@ function fixture() {
   return { app, service };
 }
 describe("shared board HTTP routes", () => {
-  it("returns the common catalogue and the requested local projects in one read", async () => {
+  it("returns the Architect and the requested local projects in one read", async () => {
     const { app, service } = fixture();
     const response = await app.inject({
       method: "POST",
@@ -75,7 +75,7 @@ describe("shared board HTTP routes", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      common: [{ id: "reviewer", projectKey: null }],
+      common: [{ id: "architect", projectKey: null }],
       projects: [
         {
           projectId: "local-project-id",
@@ -87,7 +87,7 @@ describe("shared board HTTP routes", () => {
     expect(service.read).not.toHaveBeenCalled();
   });
 
-  it("lists common workers without reading the board", async () => {
+  it("lists the global catalogue without reading the board", async () => {
     const { app, service } = fixture();
     const response = await app.inject({ method: "GET", url: "/api/v1/workers" });
     expect(response.statusCode).toBe(200);

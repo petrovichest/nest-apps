@@ -30,7 +30,7 @@ export function isWorkerMemorySave(item: ActivityItem): boolean {
 
 export type WorkerProfile = {
   id: string;
-  /** Canonical project identity. Null denotes a worker available in every project. */
+  /** Canonical project identity. Null is reserved for the Architect and legacy profiles. */
   projectKey: string | null;
   name: string;
   role: string;

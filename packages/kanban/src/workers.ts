@@ -66,7 +66,16 @@ function visible(profile: WorkerProfile, projectKey: string | null): boolean {
   return profile.projectKey === null || profile.projectKey === projectKey;
 }
 
-/** The common profiles and memory are local to the operating-system user, independent of boards. */
+function retired(profile: WorkerProfile): boolean {
+  return profile.projectKey === null && profile.id !== WORKER_ARCHITECT_ID;
+}
+
+function requireProposalProject(proposal: Omit<WorkerProposal, "id">): void {
+  if (proposal.projectKey === null && proposal.target?.id !== WORKER_ARCHITECT_ID)
+    throw new KanbanError("worker_project_required", "Choose a project to create the worker", 400);
+}
+
+/** Profiles and memory are shared by Nest apps running as the same user. */
 export class WorkerStore {
   private readonly lock: KanbanStore;
   private readonly path: string;
@@ -88,6 +97,7 @@ export class WorkerStore {
   }
 
   async propose(fields: Omit<WorkerProposal, "id">): Promise<WorkerProposal> {
+    requireProposalProject(fields);
     const proposal = { ...fields, id: randomUUID() };
     profileFields({ ...proposal, settings: { [proposal.provider]: proposal.settings } });
     await this.lock.initialize();
@@ -99,9 +109,11 @@ export class WorkerStore {
     if (!/^[0-9a-f-]{36}$/.test(id))
       throw new KanbanError("worker_proposal_not_found", "Worker proposal not found", 404);
     try {
-      return JSON.parse(
+      const proposal = JSON.parse(
         await readFile(join(this.lock.directory, `proposal-${id}.json`), "utf8"),
       ) as WorkerProposal;
+      requireProposalProject(proposal);
+      return proposal;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT")
         throw new KanbanError("worker_proposal_not_found", "Worker proposal not found", 404);
@@ -110,10 +122,13 @@ export class WorkerStore {
   }
 
   async approveProposal(proposal: WorkerProposal): Promise<WorkerProfile> {
+    requireProposalProject(proposal);
     return this.update((data) => {
       if (proposal.target) {
         const { id, revision } = proposal.target;
         const worker = this.require(data, id, proposal.projectKey);
+        if (retired(worker.profile))
+          throw new KanbanError("worker_not_found", "Worker not found in this project", 404);
         if (
           worker.profile.instructions === proposal.instructions &&
           (proposal.coordinates === undefined ||
@@ -131,7 +146,11 @@ export class WorkerStore {
         return worker.profile;
       }
       const prior = data[proposal.id];
-      if (prior) return prior.profile;
+      if (prior) {
+        if (retired(prior.profile))
+          throw new KanbanError("worker_not_found", "Worker not found in this project", 404);
+        return prior.profile;
+      }
       const profile = {
         ...profileFields({ ...proposal, settings: { [proposal.provider]: proposal.settings } }),
         id: proposal.id,
@@ -213,11 +232,28 @@ export class WorkerStore {
         .filter(
           (profile) =>
             profile.id !== WORKER_ARCHITECT_ID &&
-            (profile.projectKey === null || keys.has(profile.projectKey)),
+            profile.projectKey !== null &&
+            keys.has(profile.projectKey),
         ),
     ];
   }
 
+  async retiredIds(): Promise<Set<string>> {
+    return new Set(
+      Object.values(await this.read())
+        .filter(({ profile }) => retired(profile))
+        .map(({ profile }) => profile.id),
+    );
+  }
+
+  async availableSnapshot(id: string, projectKey: string | null): Promise<WorkerDocument> {
+    const worker = await this.snapshot(id, projectKey);
+    if (retired(worker.profile))
+      throw new KanbanError("worker_not_found", "Worker not found in this project", 404);
+    return worker;
+  }
+
+  // Historical profiles still back their existing sessions and their memory.
   async snapshot(id: string, projectKey: string | null): Promise<WorkerDocument> {
     const worker = this.require(await this.read(), id, projectKey);
     return {
@@ -228,7 +264,13 @@ export class WorkerStore {
     };
   }
 
-  async create(fields: ProfileFields, projectKey: string | null): Promise<WorkerProfile> {
+  async create(fields: ProfileFields, projectKey: string): Promise<WorkerProfile> {
+    if (!projectKey)
+      throw new KanbanError(
+        "worker_project_required",
+        "Choose a project to create the worker",
+        400,
+      );
     const profile = { ...profileFields(fields), id: randomUUID(), projectKey, revision: 1 };
     return this.update((data) => {
       data[profile.id] = { profile, memory: [] };

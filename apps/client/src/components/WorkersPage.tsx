@@ -100,11 +100,11 @@ export function WorkersPage({
     }
   }
 
-  function group(name: string, workers: WorkerProfile[], projectId?: string) {
+  function group(name: string | undefined, workers: WorkerProfile[], projectId?: string) {
     if (!workers.length) return null;
     return (
       <section key={projectId ?? "common"}>
-        <h2>{name}</h2>
+        {name && <h2>{name}</h2>}
         <ul className="workers-grid">
           {workers.map((worker) => {
             const starting = opening?.workerId === worker.id && opening.projectId === projectId;
@@ -187,7 +187,11 @@ export function WorkersPage({
               {t("Загружаем работников…")}
             </p>
           )}
-          {catalogue && group(t("Общие"), catalogue.common)}
+          {catalogue &&
+            group(
+              undefined,
+              catalogue.common.filter(({ id }) => id === WORKER_ARCHITECT_ID),
+            )}
           {catalogue?.projects.map(({ projectId, workers }) => {
             const name = projects.find(({ id }) => id === projectId)?.displayName;
             return name ? group(name, workers, projectId) : null;
@@ -422,7 +426,8 @@ function WorkerProposalDialog({
         {proposal && (
           <>
             <p>
-              {proposal.role} · {proposal.projectName ?? t("Все проекты")}
+              {proposal.role}
+              {proposal.projectName && ` · ${proposal.projectName}`}
             </p>
             {proposal.target && (
               <label>

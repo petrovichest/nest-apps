@@ -97,15 +97,16 @@ standard session for the unassigned cards. Sessions run independently. Tasks
 that share a session get one first message with a heading per task and all their
 pictures. The task panel lists the other tasks in the same session.
 
-Open **Workers** from the sidebar to browse the shared workers and the workers of
-each project. Click the Architect to design a worker and approve its proposed
-profile. Each application uses its own model catalogue. An unavailable saved
+Open **Workers** from the sidebar to browse each project's workers. Open the
+Architect and select a project, then design a worker and approve its proposed
+profile for that project. Each application uses its own model catalogue. An unavailable saved
 model is reported on the card so you can retry or change the worker's settings.
 
-A project worker opens directly in its project. For a shared worker, select
-a project registered in the application. The Architect inspects the selected
-project when designing a profile and uses relevant files and conventions in its
-proposal. Use the Architect to grant or revoke permission to coordinate tasks,
+Workers open directly in their project and can be assigned to cards on that
+project's board. The Architect inspects the selected project when designing a
+profile and uses relevant files and conventions in its proposal. During the
+transition, cards assigned to former shared workers switch to the standard
+session for future launches and retain their existing sessions. Use the Architect to grant or revoke permission to coordinate tasks,
 then approve the proposal. Workers can ask a colleague a question from a project
 session. A coordinator working on a Kanban card can also start a linked task for
 a colleague. The colleague gets a separate session and sends the result or error
