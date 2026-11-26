@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { WorkerProcess, WorkerProcessSession } from "@codexnest/protocol";
 import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
-import { installVisualFixture, waitForVisualReady } from "./fixtures";
+import { installVisualFixture, snapshot, waitForVisualReady } from "./fixtures";
 
 function session(
   id: string,
@@ -86,8 +86,9 @@ async function installProcessesFixture(
   page: Page,
   theme: "light" | "dark",
   entries: WorkerProcess[],
+  language: "ru" | "en" = "ru",
 ) {
-  await installVisualFixture(page, { theme });
+  await installVisualFixture(page, { theme, snapshot: { ...snapshot, uiLanguage: language } });
   await page.route("http://127.0.0.1:4173/api/**", (route) => route.abort());
   await page.route("https://codexnest.visual/api/v1/workers/processes**", (route) => {
     const headers = {
@@ -117,19 +118,18 @@ for (const width of [1440, 390]) {
   test(`renders separate process branches and waiting paths at ${width}px`, async ({
     page,
   }, info) => {
-    await page.setViewportSize({ width, height: width === 1440 ? 900 : 844 });
+    await page.setViewportSize({ width, height: width === 1440 ? 1000 : 844 });
     await installProcessesFixture(page, "light", processes);
     await page.goto("/workers/processes");
     const rows = page.locator(".process-overview-run");
     await expect(rows).toHaveCount(2);
-    await expect(rows.first()).toContainText("Тимлид импорта");
-    await expect(rows.last()).toContainText("Тимлид релиза");
-    await expect(rows.last()).toContainText("ClaudeNest");
+    const importing = page.getByRole("region", { name: "Ждёт результата" });
+    const releasing = page.getByRole("region", { name: "В работе" });
+    await expect(importing).toContainText("Тимлид импорта");
+    await expect(releasing).toContainText("Тимлид релиза");
+    await expect(releasing).toContainText("ClaudeNest");
     await captureProcessPreview(page, info, `overview-${width}`);
-    await rows
-      .first()
-      .getByRole("link", { name: /^Тимлид импорта/ })
-      .click();
+    await importing.getByRole("link", { name: /^Тимлид импорта/ }).click();
     const graph = page.getByRole("region", { name: "Схема процесса" });
     const inspector = graph.locator(".process-inspector");
     await expect(graph.getByText("3 дополнительных работника · 4 сессии")).toBeVisible();
@@ -157,10 +157,7 @@ for (const width of [1440, 390]) {
     await expect(developer).toHaveAttribute("aria-pressed", "true");
     await expect(inspector.getByText(/Проверки импорта прошли/)).toBeVisible();
     await page.getByRole("navigation", { name: "Раздел работников" }).getByText("Процессы").click();
-    await rows
-      .last()
-      .getByRole("link", { name: /^Ревьюер/ })
-      .click();
+    await releasing.getByRole("link", { name: /^Ревьюер/ }).click();
     await expect(inspector.getByText("Поручил Тимлид релиза", { exact: false })).toBeVisible();
     await expect(inspector.getByRole("link", { name: "Открыть сессию" })).toHaveAttribute(
       "href",
@@ -210,12 +207,12 @@ async function expectRegularOverviewLabels(page: Page) {
   const labels = page.locator(
     [
       ".workers-tabs a",
-      ".process-project > h2",
+      ".process-section > h2",
+      ".process-project > h3",
       ".process-worker-label > *",
       ".process-session-list > li > span",
     ].join(", "),
   );
-  await expect(labels).toHaveCount(22);
   const styles = await labels.evaluateAll((elements) =>
     elements.map((element) => {
       const { fontFamily, fontWeight } = getComputedStyle(element);
@@ -240,7 +237,7 @@ async function expectPressedOverviewLabels(page: Page, link: Locator) {
 
 for (const theme of ["light", "dark"] as const) {
   test(`process overview states on desktop in ${theme}`, async ({ page }, info) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await installProcessesFixture(page, theme, overviewPreview);
     await page.goto(overviewPath);
 
@@ -251,7 +248,9 @@ for (const theme of ["light", "dark"] as const) {
     const sidebar = page.locator(".sidebar");
     await expect(activeTab).toHaveAttribute("aria-current", "page");
     await expect(row).toHaveAccessibleName(`${architect} CodexNest В работе`);
-    await expect(page.getByRole("heading", { name: strategy.projectName })).toBeVisible();
+    await expect(page.getByRole("heading", { name: strategy.projectName, level: 3 })).toHaveCount(
+      2,
+    );
     await expect(page.getByText("Редактор", { exact: true })).toHaveCount(2);
     await expect(page.getByText("2 сессии")).toBeVisible();
     await expect(page.getByText("Подготовить обзор источников")).toBeVisible();
@@ -346,4 +345,113 @@ test.describe("process overview on touch", () => {
       ).toBeVisible();
     });
   }
+});
+
+const asking: WorkerProcess = {
+  ...strategy,
+  id: "outline",
+  sessions: [
+    session("outline", "Редактор каталога", "Согласовать структуру каталога", {
+      status: "waiting",
+    }),
+    session("samples", "Аналитик", "Собрать примеры для каталога", {
+      parentId: "outline",
+      kind: "assignment",
+    }),
+  ],
+};
+
+for (const width of [1440, 390]) {
+  for (const theme of ["light", "dark"] as const) {
+    for (const language of ["ru", "en"] as const) {
+      test(`process status sections at ${width}px, ${theme}, ${language}`, async ({
+        page,
+      }, info) => {
+        await page.setViewportSize({ width, height: width === 1440 ? 1000 : 844 });
+        await installProcessesFixture(page, theme, [...overviewPreview, asking], language);
+        await page.goto(overviewPath);
+
+        const names =
+          language === "ru"
+            ? ["Ждёт ответа", "В работе", "Ждёт результата"]
+            : ["Awaiting an answer", "In progress", "Awaiting result"];
+        const sections = page.locator(".process-section");
+        await expect(sections.getByRole("heading", { level: 2 })).toHaveText(names);
+        const waiting = page.getByRole("region", { name: names[0] });
+        const child = waiting.getByRole("link", { name: /^Аналитик/ });
+        await expect(child).toHaveAttribute("href", `${overviewPath}/outline?session=samples`);
+        await expect(child.locator(".process-status")).toHaveText(names[1]!);
+        await expect(page.getByRole("region", { name: names[1] })).not.toContainText("Аналитик");
+        await expectRegularOverviewLabels(page);
+        const content = page.locator(".processes-content");
+        expect(
+          await content.evaluate((element) => element.scrollWidth <= element.clientWidth),
+        ).toBe(true);
+        await captureProcessPreview(page, info, `statuses-${width}-${theme}-${language}`);
+      });
+    }
+  }
+}
+
+test("regroups a whole branch after polling and only shows statuses present in the overview", async ({
+  page,
+}) => {
+  const entries: WorkerProcess[] = [
+    asking,
+    {
+      ...project,
+      id: "answered",
+      sessions: [
+        session("answered", "Консультант", "Уточнить правила", {
+          kind: "question",
+          status: "completed",
+        }),
+        session("check", "Проверяющий", "Проверить правила", { parentId: "answered" }),
+      ],
+    },
+    {
+      projectKey: null,
+      projectName: null,
+      id: "failed",
+      sessions: [
+        session("failed", "Сборщик", "Собрать каталог", { status: "failed" }),
+        session("retry", "Проверяющий", "Проверить сборку", {
+          parentId: "failed",
+          status: "queued",
+        }),
+      ],
+    },
+    {
+      ...project,
+      id: "queued",
+      sessions: [session("queued", "Тестировщик", "Проверить каталог", { status: "queued" })],
+    },
+  ];
+  await page.clock.install();
+  await installProcessesFixture(page, "light", entries);
+  await page.goto(overviewPath);
+
+  const headings = page.locator(".process-section").getByRole("heading", { level: 2 });
+  await expect(headings).toHaveText(["Ждёт ответа", "В очереди", "Ошибка", "Готово"]);
+  const done = page.getByRole("region", { name: "Готово" });
+  await expect(done.getByRole("link", { name: /^Консультант/ })).toContainText("Ответил");
+  await expect(done.getByRole("link", { name: /^Проверяющий/ })).toContainText("В работе");
+  await expect(page.getByRole("region", { name: "Ошибка" })).toContainText("Без проекта");
+
+  const [root, child] = asking.sessions as [WorkerProcessSession, WorkerProcessSession];
+  entries[0] = { ...asking, sessions: [{ ...root, waitingFor: [child.id] }, child] };
+  await page.clock.fastForward(4_000);
+  await expect(headings).toHaveText(["Ждёт результата", "В очереди", "Ошибка", "Готово"]);
+  const waitingForResult = page.getByRole("region", { name: "Ждёт результата" });
+  await expect(waitingForResult.getByRole("link", { name: /^Аналитик/ })).toContainText("В работе");
+
+  entries[0] = { ...asking, sessions: [{ ...root, status: "running" }, child] };
+  await page.clock.fastForward(4_000);
+  await expect(headings).toHaveText(["В работе", "В очереди", "Ошибка", "Готово"]);
+  await expect(page.getByRole("region", { name: "В работе" }).getByRole("link")).toHaveCount(2);
+
+  entries.length = 0;
+  await page.clock.fastForward(4_000);
+  await expect(page.getByText("Нет активных процессов")).toBeVisible();
+  await expect(headings).toHaveCount(0);
 });

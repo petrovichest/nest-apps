@@ -139,56 +139,87 @@ export function WorkerProcessesPage({ onOpenNavigation }: { onOpenNavigation(): 
   );
 }
 
+const overviewStatuses = [
+  "Ждёт ответа",
+  "В работе",
+  "Ждёт результата",
+  "В очереди",
+  "Ошибка",
+  "Готово",
+] as const;
+
+function overviewStatus(session: WorkerProcessSession): (typeof overviewStatuses)[number] {
+  switch (session.status) {
+    case "waiting":
+      return session.waitingFor.length ? "Ждёт результата" : "Ждёт ответа";
+    case "running":
+      return "В работе";
+    case "queued":
+      return "В очереди";
+    case "failed":
+      return "Ошибка";
+    case "completed":
+      return "Готово";
+  }
+}
+
 function WorkStatus({ session }: { session: WorkerProcessSession }) {
   const { t } = useI18n();
-  const state =
-    session.status === "queued"
-      ? "В очереди"
-      : session.status === "waiting"
-        ? session.waitingFor.length
-          ? "Ждёт результата"
-          : "Ждёт ответа"
-        : session.status === "completed"
-          ? session.kind === "question"
-            ? "Ответил"
-            : "Готово"
-          : session.status === "failed"
-            ? "Ошибка"
-            : "В работе";
+  const label =
+    session.status === "completed" && session.kind === "question"
+      ? "Ответил"
+      : overviewStatus(session);
   return (
     <span
       className="process-status"
       data-phase={session.status === "completed" ? "done" : session.status}
     >
-      {t(state)}
+      {t(label)}
     </span>
   );
 }
 
 function ProcessOverview({ processes }: { processes: WorkerProcess[] }) {
   const { t } = useI18n();
-  const projects = new Map<string | null, WorkerProcess[]>();
+  const sections = new Map<
+    ReturnType<typeof overviewStatus>,
+    Map<string | null, { process: WorkerProcess; root: WorkerProcessSession }[]>
+  >();
   for (const process of processes) {
+    const root = process.sessions.find(({ id }) => id === process.id);
+    if (!root) continue;
+
+    const status = overviewStatus(root);
+    const projects = sections.get(status) ?? new Map();
     const group = projects.get(process.projectKey) ?? [];
-    group.push(process);
+    group.push({ process, root });
     projects.set(process.projectKey, group);
+    sections.set(status, projects);
   }
-  if (!projects.size) return <p>{t("Нет активных процессов")}</p>;
-  return [...projects].map(([key, group]) => {
-    const name = group[0]!.projectName ?? t("Без проекта");
+  if (!sections.size) return <p>{t("Нет активных процессов")}</p>;
+
+  return overviewStatuses.map((status) => {
+    const projects = sections.get(status);
+    if (!projects) return null;
+    const label = t(status);
     return (
-      <section className="process-project" key={key ?? ""} aria-label={name}>
-        <h2>{name}</h2>
-        <ul className="process-worker-list">
-          {group.map((process) => {
-            const root = process.sessions.find(({ id }) => id === process.id);
-            return root ? (
-              <li className="process-overview-run" key={root.id}>
-                <ProcessRow processId={root.id} node={branch(process, [root])} />
-              </li>
-            ) : null;
-          })}
-        </ul>
+      <section className="process-section" key={status} aria-label={label}>
+        <h2>{label}</h2>
+        {[...projects].map(([key, group]) => {
+          const name = group[0]!.process.projectName ?? t("Без проекта");
+          return (
+            <section className="process-project" key={key ?? ""} aria-label={name}>
+              <h3>{name}</h3>
+              <ul className="process-worker-list">
+                {group.map(({ process, root }) => (
+                  <li className="process-overview-run" key={root.id}>
+                    <ProcessRow processId={root.id} node={branch(process, [root])} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          );
+        })}
       </section>
     );
   });
