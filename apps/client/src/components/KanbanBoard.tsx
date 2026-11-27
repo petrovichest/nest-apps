@@ -2341,17 +2341,40 @@ function fitAssigneePopover(picker: HTMLDetailsElement, popover: HTMLDivElement)
   const viewportTop = viewport?.offsetTop ?? 0;
   const viewportHeight = viewport?.height ?? window.innerHeight;
   const viewportBottom = viewportTop + viewportHeight;
+  const gutter = 8;
   const scrollArea = picker.closest(".kanban-panel-body");
   if (!scrollArea) {
-    // Creation reserves space for the list inside the dialog, including above the keyboard.
-    const backdrop = picker.closest<HTMLElement>(".kanban-task-backdrop");
-    backdrop?.style.setProperty("--kanban-task-view-top", `${viewportTop}px`);
-    backdrop?.style.setProperty(
-      "--kanban-task-view-bottom",
-      `${window.innerHeight - viewportBottom}px`,
-    );
-    popover.style.setProperty("--kanban-assignee-room", `${Math.max(0, viewportHeight - 76)}px`);
-    popover.scrollIntoView?.({ block: "nearest" });
+    const dialog = picker.closest(".kanban-task-dialog");
+    const origin = popover.offsetParent?.getBoundingClientRect();
+    const header = dialog?.querySelector(".dialog-header")?.getBoundingClientRect();
+    const toolbar = dialog?.querySelector(".composer-toolbar")?.getBoundingClientRect();
+    if (!dialog || !origin || !header) return;
+
+    const anchor = picker.getBoundingClientRect();
+    const form = dialog.getBoundingClientRect();
+    const top = viewportTop + gutter;
+    const bottom = Math.min(toolbar?.top ?? viewportBottom, viewportBottom) - gutter;
+    const aboveEnd = form.top - gutter;
+    const belowStart = Math.max(anchor.bottom + gutter, top);
+    const above = aboveEnd - top;
+    const below = bottom - belowStart;
+    // Search and one touch row need room before placement next to the trigger is useful.
+    const minimumRoom = 120;
+    const sideStart = form.right + gutter;
+    const visualRight = (viewport?.offsetLeft ?? 0) + (viewport?.width ?? window.innerWidth);
+    const sideWidth = visualRight - sideStart - gutter;
+    const sideTop = Math.max(anchor.top, top);
+    const sideRoom = viewportBottom - sideTop - gutter;
+    const opensBeside = sideWidth >= 320 && sideRoom >= minimumRoom;
+    const opensAbove = !opensBeside && above >= minimumRoom && above > below;
+    const start = below >= minimumRoom ? belowStart : Math.max(top, header.bottom + gutter);
+    const room = opensBeside ? sideRoom : opensAbove ? above : bottom - start;
+    popover.style.left = `${(opensBeside ? sideStart : anchor.left) - origin.left}px`;
+    popover.style.width = `${opensBeside ? Math.min(anchor.width, sideWidth) : anchor.width}px`;
+    popover.style.top = opensAbove
+      ? `calc(${aboveEnd - origin.top}px - var(--kanban-assignee-limit))`
+      : `${(opensBeside ? sideTop : start) - origin.top}px`;
+    popover.style.setProperty("--kanban-assignee-room", `${Math.max(0, room)}px`);
     return;
   }
 
@@ -2362,7 +2385,6 @@ function fitAssigneePopover(picker: HTMLDetailsElement, popover: HTMLDivElement)
     return;
   }
 
-  const gutter = 8;
   const top = Math.max(area.top, viewportTop) + gutter;
   const bottom = Math.min(area.bottom, viewportBottom) - gutter;
   const belowStart = Math.max(anchor.bottom, top) + gutter;
@@ -2421,23 +2443,33 @@ function KanbanWorkerPicker({
   useLayoutEffect(() => {
     const picker = menu.current;
     const popup = popover.current;
-    if (!open || !picker?.open || !popup) return;
-    const area = picker.closest(".kanban-panel-body");
+    if (!picker || !popup) return;
     const backdrop = picker.closest<HTMLElement>(".kanban-task-backdrop");
+    if (!open && !backdrop) return;
+    const dialog = picker.closest(".kanban-task-dialog");
+    const area = dialog ?? picker.closest(".kanban-panel-body");
     const viewport = window.visualViewport;
-    const fit = () => fitAssigneePopover(picker, popup);
+    const fit = () => {
+      if (backdrop) {
+        const top = viewport?.offsetTop ?? 0;
+        const bottom = top + (viewport?.height ?? window.innerHeight);
+        backdrop.style.setProperty("--kanban-task-view-top", `${top}px`);
+        backdrop.style.setProperty("--kanban-task-view-bottom", `${window.innerHeight - bottom}px`);
+      }
+      if (picker.open) fitAssigneePopover(picker, popup);
+    };
     fit();
     area?.addEventListener("scroll", fit, { passive: true });
+    dialog?.addEventListener("animationend", fit);
     window.addEventListener("resize", fit);
     viewport?.addEventListener("resize", fit);
     viewport?.addEventListener("scroll", fit);
     return () => {
       area?.removeEventListener("scroll", fit);
+      dialog?.removeEventListener("animationend", fit);
       window.removeEventListener("resize", fit);
       viewport?.removeEventListener("resize", fit);
       viewport?.removeEventListener("scroll", fit);
-      backdrop?.style.removeProperty("--kanban-task-view-top");
-      backdrop?.style.removeProperty("--kanban-task-view-bottom");
     };
   }, [open]);
 
@@ -2502,7 +2534,7 @@ function KanbanWorkerPicker({
         className="thread-action-menu kanban-assignee"
         data-dismiss-on-outside-click
         onBlur={(event) => {
-          // Let an outside pointer click finish before shrinking the creation dialog.
+          // Outside pointer clicks are handled after their target runs.
           if (
             tabbing.current &&
             event.relatedTarget &&

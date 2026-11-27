@@ -1135,12 +1135,16 @@ for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT, { width: 320, height: 
               labels.defaultWorker,
               ...workers.map(({ name }) => name),
             ]);
-            const panelBounds = (await panel.boundingBox())!;
-            const listBounds = (await list.boundingBox())!;
-            expect(listBounds.y).toBeGreaterThanOrEqual(panelBounds.y);
-            expect(listBounds.y + listBounds.height).toBeLessThanOrEqual(
-              panelBounds.y + panelBounds.height,
-            );
+            if (editing) {
+              const panelBounds = (await panel.boundingBox())!;
+              const listBounds = (await list.boundingBox())!;
+              expect(listBounds.y).toBeGreaterThanOrEqual(panelBounds.y);
+              expect(listBounds.y + listBounds.height).toBeLessThanOrEqual(
+                panelBounds.y + panelBounds.height,
+              );
+            } else {
+              await expect(list).toBeInViewport({ ratio: 1 });
+            }
             const searchY = (await search.boundingBox())!.y;
             await scrollWorkerList(
               page,
@@ -1402,7 +1406,7 @@ test("Kanban worker search keeps its result above the reduced visual viewport", 
     [card.title, card.title],
     [labels.add, labels.add],
   ] as const) {
-    await page.getByRole("button", { name: opener, exact: true }).first().press("Enter");
+    await page.getByRole("button", { name: opener, exact: true }).first().click();
     const surface = page.getByRole("dialog", { name: surfaceName });
     const trigger = surface.locator(".kanban-assignee-trigger");
     await trigger.scrollIntoViewIfNeeded();
@@ -1572,7 +1576,12 @@ test("Kanban keeps action and refresh errors until their own retry", async ({ pa
   await expect(banner).toBeHidden();
 });
 
-for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT, { width: 390, height: 500 }]) {
+for (const viewport of [
+  DESKTOP_VIEWPORT,
+  PHONE_VIEWPORT,
+  { width: 390, height: 500 },
+  { width: 320, height: 480 },
+]) {
   const touch = viewport.width < 821;
   test.describe(`Kanban creation actions at ${viewport.width}x${viewport.height}`, () => {
     test.use({ viewport, hasTouch: touch, isMobile: touch });
@@ -1589,21 +1598,48 @@ for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT, { width: 390, height: 
       const trigger = dialog.locator(".kanban-assignee-trigger");
       const search = dialog.getByRole("searchbox", { name: labels.search });
       const choice = dialog.getByRole("button", { name: "Анна Морозова", exact: true });
+      const field = dialog.getByRole("textbox", { name: labels.message });
+      const plus = dialog.getByRole("button", { name: "Добавить изображения", exact: true });
+      const close = dialog.getByRole("button", { name: labels.close, exact: true });
+      const submit = dialog.getByRole("button", { name: labels.submit, exact: true });
+      const geometry = () =>
+        Promise.all([dialog, field, plus, close, submit].map((target) => target.boundingBox()));
+      const pointerAtCenter = async (target: Locator) => {
+        const box = (await target.boundingBox())!;
+        const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+        expect(
+          await target.evaluate(
+            (element, { x, y }) => element.contains(document.elementFromPoint(x, y)),
+            point,
+          ),
+        ).toBe(true);
+        if (touch) await page.touchscreen.tap(point.x, point.y);
+        else await page.mouse.click(point.x, point.y);
+      };
+      await field.fill("Описание задачи");
+      const closed = await geometry();
       await activate(trigger);
       await expect(choice).toBeAttached();
+      expect(await geometry()).toEqual(closed);
+      await search.fill("неизвестный работник");
+      await expect(dialog.getByText("Совпадений нет")).toBeVisible();
+      expect(await geometry()).toEqual(closed);
       await search.fill("мороз");
       await expect(choice).toBeInViewport({ ratio: 1 });
+      expect(await geometry()).toEqual(closed);
       await page.screenshot({ path: info.outputPath("creation-search.png") });
-      await activate(dialog.getByRole("button", { name: "Добавить изображения", exact: true }));
+      await pointerAtCenter(plus);
       const attachments = dialog.getByRole("dialog", { name: "Вложения", exact: true });
       await expect(attachments).toBeVisible();
       await expect(search).toBeHidden();
       await page.screenshot({ path: info.outputPath("creation-attachments.png") });
       await page.keyboard.press("Escape");
       await expect(attachments).toBeHidden();
+      expect(await geometry()).toEqual(closed);
       await activate(trigger);
       await expect(choice).toBeAttached();
-      await activate(dialog.getByRole("button", { name: labels.close, exact: true }));
+      await expect(field).toHaveValue("Описание задачи");
+      await pointerAtCenter(close);
       await expect(dialog).toBeHidden();
     });
   });

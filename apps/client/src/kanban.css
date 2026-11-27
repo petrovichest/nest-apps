@@ -1031,10 +1031,13 @@ textarea.kanban-edit-field {
   max-height: 100%;
 }
 
-/* Creation lays out the opened picker between the trigger and the composer. */
-.kanban-task-dialog .kanban-assignee > .kanban-assignee-popover {
+/* Position the creation menu in the backdrop, outside the form's scroll area. */
+.kanban-task-dialog .kanban-assignee {
   position: static;
-  margin-block-start: var(--space-2);
+}
+
+.kanban-task-dialog .kanban-assignee-popover {
+  right: auto;
 }
 
 .kanban-assignee-options {
