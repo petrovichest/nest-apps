@@ -23,6 +23,9 @@ const questionId = "10000000-0000-4000-8000-000000000001";
 const assignmentId = "10000000-0000-4000-8000-000000000002";
 const now = Date.UTC(2026, 7, 3, 11, 32);
 const journalId = "handoff-turn";
+const assignmentCard = ".worker-handoff-card:not(.worker-handoff-reply)";
+const reportPath = `${mainThread.cwd}/reports/visual-audit.md`;
+const reportEnd = "Last line of the worker report.";
 const headers = {
   "access-control-allow-origin": "*",
   "access-control-allow-headers": "Authorization, Content-Type",
@@ -279,19 +282,45 @@ for (const theme of ["light", "dark"] as const) {
           theme,
           language,
         );
+        const answer = question.result!;
+        const longPath = `/work/${"LongSegment".repeat(16)}.md`;
+        question.result = [
+          answer,
+          "",
+          "| Item | Path |",
+          "| --- | --- |",
+          `| Report | \`${longPath}\` |`,
+          "",
+          "- Check the result",
+          `- [Project report](${reportPath})`,
+          "- [Documentation](https://example.com/docs)",
+          "",
+          reportEnd,
+        ].join("\n");
+        if (width === 320) {
+          question.workerName += "-" + "LongWorkerName".repeat(6);
+          question.title += " " + "LongAssignmentTitle".repeat(5);
+        }
         await page.goto(parentPath);
 
         const entries = page.locator(".worker-handoff-entry");
         await expect(entries).toHaveCount(3);
         await expect(entries.nth(0)).toContainText(question.title);
-        await expect(entries.nth(1)).toContainText(question.result!);
+        const reply = entries.nth(1).locator(".worker-handoff-reply");
+        const replyTrigger = reply.locator("summary");
+        await expect(replyTrigger).toContainText(question.workerName);
+        await expect(replyTrigger).toContainText(question.title);
+        await expect(replyTrigger).toContainText(language === "ru" ? "Ответ от" : "Reply from");
+        await expect(reply).not.toHaveAttribute("open");
+        const report = reply.locator(".worker-handoff-report");
+        await expect(report).toHaveCount(0);
         await expect(entries.nth(2)).toContainText(assignment.title);
         await expect(entries.nth(2)).toContainText(language === "ru" ? "В работе" : "In progress");
         await expect(page.getByText("Скрытое поручение")).toHaveCount(0);
         expect(requests).toEqual([processId]);
         expect(journalRequests()).toBe(0);
 
-        const card = page.locator(".worker-handoff-card");
+        const card = page.locator(assignmentCard);
         const trigger = card.locator("summary");
         const activity = page.getByRole("button", {
           name: language === "ru" ? "Журнал действий" : "Activity log",
@@ -398,10 +427,83 @@ for (const theme of ["light", "dark"] as const) {
           await page.setViewportSize({ width: 821, height });
           await expect(trigger).toHaveCSS("padding", "16px 22px");
         }
+
+        await trigger.focus();
+        await page.keyboard.press("Shift+Tab");
+        await expect(replyTrigger).toBeFocused();
+        await expect(reply).toHaveCSS("outline-width", "2px");
+        await expect(reply).toHaveCSS("border-radius", "20px");
+        await expect(reply).not.toHaveCSS("box-shadow", "none");
+        await expect(reply).toHaveCSS("font-family", /Onest/);
+        await expect(reply).toHaveCSS("font-weight", "400");
+        await page.keyboard.press("Enter");
+        await expect(reply).toHaveAttribute("open", "");
+        await expect(report.getByText(answer, { exact: true })).toBeVisible();
+        await expect(report.getByRole("listitem")).toHaveCount(3);
+        await expect(report.getByText(reportEnd)).toBeVisible();
+        await expect(report.getByRole("link", { name: "Documentation" })).toHaveAttribute(
+          "href",
+          "https://example.com/docs",
+        );
+        const projectReport = report.getByRole("button", {
+          name: language === "ru" ? "Открыть visual-audit.md" : "Open visual-audit.md",
+        });
+        await expect(projectReport).toBeVisible();
+        const table = report.getByRole("region", { name: language === "ru" ? "Таблица" : "Table" });
+        await expect(table.getByRole("cell", { name: longPath })).toHaveCount(1);
+        await page.keyboard.press("Tab");
+        await expect(table).toBeFocused();
+        if (width === 320) {
+          expect(await table.evaluate((node) => node.scrollWidth)).toBeGreaterThan(
+            await table.evaluate((node) => node.clientWidth),
+          );
+          await page.keyboard.press("ArrowRight");
+          await expect.poll(() => table.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
+        }
+        expect(await scroll.evaluate((node) => node.scrollWidth)).toBeLessThanOrEqual(
+          await scroll.evaluate((node) => node.clientWidth),
+        );
+        if (width === 1440 && theme === "light" && language === "en") {
+          const download = page.waitForRequest(
+            "https://codexnest.visual/api/v1/threads/session-main/downloads",
+          );
+          await projectReport.click();
+          expect((await download).postDataJSON()).toEqual({ path: reportPath });
+          await expect(page.locator(".artifact-viewer")).toContainText("Успешные операции");
+          await page.keyboard.press("Escape");
+          await expect(projectReport).toBeFocused();
+        }
+        await replyTrigger.click();
+        await expect(reply).not.toHaveAttribute("open");
+        await expect(report).toHaveCount(0);
       });
     }
   }
 }
+
+test("keeps the start of a long worker report in view when it opens at the tail", async ({
+  page,
+}) => {
+  await page.setViewportSize(PHONE_VIEWPORT);
+  const { question } = await installHandoffFixture(page, "light", "en");
+  const start = "Start of the worker report.";
+  question.result = [start, ...Array(40).fill("A paragraph of the report."), reportEnd].join(
+    "\n\n",
+  );
+  await page.goto(parentPath);
+  const reply = page.locator(".worker-handoff-reply");
+  const trigger = reply.locator("summary");
+  const toBottom = page.getByRole("button", { name: "Scroll to latest message" });
+  await expect(trigger).toBeInViewport({ ratio: 1 });
+  await expect(toBottom).toHaveCount(0);
+  await trigger.click();
+  await expect(reply.getByText(start)).toBeInViewport({ ratio: 1 });
+  await expect(trigger).toBeInViewport({ ratio: 1 });
+  await expect(toBottom).toBeVisible();
+  await trigger.click();
+  await expect(reply.locator(".worker-handoff-report")).toHaveCount(0);
+  await expect(toBottom).toHaveCount(0);
+});
 
 test("refreshes the selected process and replaces its reply when delivery reaches the transcript", async ({
   page,
@@ -416,7 +518,7 @@ test("refreshes the selected process and replaces its reply when delivery reache
   assignment.status = "queued";
   assignment.threadId = null;
   await page.goto(parentPath);
-  const card = page.locator(".worker-handoff-card");
+  const card = page.locator(assignmentCard);
   await expect(card).toContainText("В очереди");
   await card.locator("summary").click();
   await expect(card.getByRole("link")).toHaveCount(0);
@@ -444,16 +546,39 @@ test("refreshes the selected process and replaces its reply when delivery reache
     document.dispatchEvent(new Event("visibilitychange"));
   });
   await expect(card).toContainText("Ошибка");
+  const errorReply = page.locator(".worker-handoff-reply[data-status=failed]");
+  await expect(errorReply.locator("summary")).toContainText("Ошибка в ответе от «Фронтенд»");
+  await expect(errorReply.locator("summary")).toContainText(assignment.title);
+  await expect(errorReply).not.toHaveAttribute("open");
   const replies = page.getByText(error, { exact: true });
+  await expect(replies).toHaveCount(0);
+  await errorReply.locator("summary").click();
   await expect(replies).toHaveCount(1);
   // Send the delivery on the recovered stream, after its snapshot.
   await expect.poll(snapshotsSent).toBe(2);
   const delivery = turn("delivery-turn", now + 6000, [workerDelivery(assignment, { error })]);
   detail.turns.push(delivery);
   send({ type: "turn.replaced", threadId: detail.summary.id, turn: delivery });
-  await expect(page.locator('[data-turn-id="delivery-turn"]').getByText(error)).toBeVisible();
+  const delivered = page.locator('[data-turn-id="delivery-turn"]').locator(".worker-handoff-reply");
+  await expect(delivered).toHaveCount(1);
+  await expect(errorReply).toHaveCount(1);
+  await delivered.locator("summary").click();
+  await expect(delivered.getByText(error)).toBeVisible();
   await expect(replies).toHaveCount(1);
   await expect(card).toHaveAttribute("open", "");
+  const leadNote = "Проверю причину и повторю запуск.";
+  delivery.items.push({
+    type: "agentMessage",
+    id: "lead-note",
+    status: "completed",
+    text: leadNote,
+    images: [],
+    timestamp: now + 7000,
+    phase: "final_answer",
+  });
+  send({ type: "turn.replaced", threadId: detail.summary.id, turn: delivery });
+  await expect(page.locator(".message.agentMessage").getByText(leadNote)).toBeVisible();
+  await expect(delivered.getByText(error)).toBeVisible();
 
   // Foreground and stream recovery can share a read or issue one each, one interval apart.
   await page.clock.runFor(4100);
@@ -470,12 +595,17 @@ test("refreshes the selected process and replaces its reply when delivery reache
   await expect(page).toHaveURL(new RegExp(childPath + "$"));
 });
 
-test("keeps the legacy worker journal readable without requesting process data", async ({
+test("keeps legacy replies and the worker journal readable without requesting process data", async ({
   page,
 }) => {
-  const { detail, journal, question, requests } = await installHandoffFixture(page, "light", "en");
+  const { assignment, detail, journal, question, requests } = await installHandoffFixture(
+    page,
+    "light",
+    "en",
+  );
   detail.turns.push(
     turn("old-result", now + 6000, [workerDelivery(question, { result: "Saved worker reply." })]),
+    turn("empty-result", now + 7000, [workerDelivery(assignment, { result: "  " })]),
   );
   const attempt = command(
     "delegate",
@@ -516,10 +646,16 @@ test("keeps the legacy worker journal readable without requesting process data",
   await expect(page.locator(".worker-activity-journal pre")).toContainText(
     "$ printf 'worker_delegate git status'\nUnknown output",
   );
-  await expect(page.locator(".worker-handoff-card")).toHaveCount(0);
-  const historicalReply = page.locator(".worker-handoff-event");
+  await expect(page.locator(assignmentCard)).toHaveCount(0);
+  const historicalReply = page.locator(".worker-handoff-reply");
   await expect(historicalReply).toHaveCount(1);
   await expect(historicalReply).toContainText("Result from Backend");
-  await expect(historicalReply).toContainText("Saved worker reply.");
+  await expect(historicalReply).toContainText(question.title);
+  await expect(historicalReply.getByText("Saved worker reply.")).toHaveCount(0);
+  await historicalReply.locator("summary").click();
+  await expect(historicalReply.getByText("Saved worker reply.")).toBeVisible();
+  const emptyResult = page.locator(".worker-handoff-event");
+  await expect(emptyResult).toContainText(assignment.title);
+  await expect(emptyResult.locator("summary")).toHaveCount(0);
   expect(requests).toEqual([]);
 });

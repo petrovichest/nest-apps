@@ -2706,6 +2706,20 @@ export function ThreadPage({
     setShowScrollToBottom(true);
   }
 
+  function syncWorkerReplyScroll() {
+    const node = scrollRef.current;
+    if (searchTarget || !node) return;
+    // Opening a report is a reading action. Keep the header in view when the
+    // report extends beyond the transcript's current scroll position.
+    if (node.scrollHeight - node.scrollTop - node.clientHeight > TAIL_FOLLOW_THRESHOLD_PX) {
+      pauseTailFollowing();
+    } else if (!followsTail.current) {
+      waitingForScrollAway.current = false;
+      followsTail.current = true;
+      setShowScrollToBottom(false);
+    }
+  }
+
   function cancelTailCorrection() {
     if (tailCorrectionFrame.current === null) return;
     window.cancelAnimationFrame(tailCorrectionFrame.current);
@@ -4108,6 +4122,18 @@ export function ThreadPage({
     }
   }
 
+  function renderWorkerReply(text: string) {
+    return (
+      <MarkdownContent
+        text={text}
+        cwd={workspaceSummary.cwd}
+        onDownload={downloadFile}
+        onOpenArtifact={openLinkedArtifact}
+        onLoadImage={loadLocalImage}
+      />
+    );
+  }
+
   return (
     <div className="thread-workspace">
       <div className="conversation-pane">
@@ -4540,7 +4566,11 @@ export function ThreadPage({
                       <div className="turn">
                         {handoffTimeline.withoutTurn.map((event) => (
                           <div className="worker-handoff-entry" key={event.id}>
-                            <WorkerHandoff event={event} />
+                            <WorkerHandoff
+                              event={event}
+                              renderReply={renderWorkerReply}
+                              onReplyLayoutChange={syncWorkerReplyScroll}
+                            />
                           </div>
                         ))}
                       </div>
@@ -4658,7 +4688,11 @@ export function ThreadPage({
                                     style={{ gridRow: index + leadingPendingRows + 1 }}
                                     key={entry.id}
                                   >
-                                    <WorkerHandoff event={entry} />
+                                    <WorkerHandoff
+                                      event={entry}
+                                      renderReply={renderWorkerReply}
+                                      onReplyLayoutChange={syncWorkerReplyScroll}
+                                    />
                                   </div>
                                 ) : (
                                   <div
