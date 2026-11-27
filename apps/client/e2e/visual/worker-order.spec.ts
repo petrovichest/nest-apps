@@ -379,7 +379,7 @@ for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT]) {
           await page.keyboard.press("Escape");
           await page.getByRole("button", { name: cardTitle, exact: true }).click();
           await checkPicker(page.locator(".kanban-panel"), "kanban-edit.png");
-          expect(catalogueReads()).toBe(beforeKanban + 1);
+          expect(catalogueReads()).toBe(beforeKanban + 2);
 
           await page.goto("/workers");
           if (touch) await cards.first().tap();

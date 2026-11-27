@@ -910,7 +910,15 @@ async function installKanbanAccessFixture(
     theme = "light",
     language = "ru",
     manyCards = false,
-  }: { theme?: "light" | "dark"; language?: "ru" | "en"; manyCards?: boolean } = {},
+    query = "",
+    configureBoard,
+  }: {
+    theme?: "light" | "dark";
+    language?: "ru" | "en";
+    manyCards?: boolean;
+    query?: string;
+    configureBoard?: (board: KanbanBoard) => void;
+  } = {},
 ) {
   const board = seedBoard();
   const ru = language === "ru";
@@ -991,8 +999,9 @@ async function installKanbanAccessFixture(
     }
     await route.fulfill({ headers, json: board });
   });
-  await page.goto(accessRoute);
-  await expect(page.getByRole("button", { name: card.title, exact: true })).toBeVisible();
+  configureBoard?.(board);
+  await page.goto(accessRoute + query);
+  await expect(query ? page.locator(".kanban-panel") : page.locator(".kanban-board")).toBeVisible();
   await waitForVisualReady(page);
   return {
     card,
@@ -1155,7 +1164,7 @@ for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT, { width: 320, height: 
               ]);
             }
           }
-          expect(catalogueReads()).toBe(1);
+          expect(catalogueReads()).toBe(2);
         });
       }
     }
@@ -1242,7 +1251,7 @@ for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT]) {
       await expect(dialog).toBeVisible();
       await page.keyboard.press("Escape");
       await expect(dialog).toBeHidden();
-      expect(catalogueReads()).toBe(1);
+      expect(catalogueReads()).toBe(4);
     });
 
     test("archive focus returns to the visible opener", async ({ page }, info) => {
@@ -1551,4 +1560,300 @@ test("Kanban keeps action and refresh errors until their own retry", async ({ pa
   await expect(actionAlert).toBeHidden();
   await expect(stage).toHaveValue("ready");
   await expect(banner).toBeHidden();
+});
+
+for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT, { width: 390, height: 500 }]) {
+  const touch = viewport.width < 821;
+  test.describe(`Kanban creation actions at ${viewport.width}x${viewport.height}`, () => {
+    test.use({ viewport, hasTouch: touch, isMobile: touch });
+
+    test("a single pointer action opens attachments or closes the form with the picker open", async ({
+      page,
+    }, info) => {
+      const { labels } = await installKanbanAccessFixture(page, {
+        theme: touch ? "dark" : "light",
+      });
+      const activate = (locator: Locator) => (touch ? locator.tap() : locator.click());
+      await activate(page.getByRole("button", { name: labels.add, exact: true }));
+      const dialog = page.getByRole("dialog", { name: labels.add, exact: true });
+      const trigger = dialog.locator(".kanban-assignee-trigger");
+      const search = dialog.getByRole("searchbox", { name: labels.search });
+      const choice = dialog.getByRole("button", { name: "Анна Морозова", exact: true });
+      await activate(trigger);
+      await expect(choice).toBeAttached();
+      await search.fill("мороз");
+      await expect(choice).toBeInViewport({ ratio: 1 });
+      await page.screenshot({ path: info.outputPath("creation-search.png") });
+      await activate(dialog.getByRole("button", { name: "Добавить изображения", exact: true }));
+      const attachments = dialog.getByRole("dialog", { name: "Вложения", exact: true });
+      await expect(attachments).toBeVisible();
+      await expect(search).toBeHidden();
+      await page.screenshot({ path: info.outputPath("creation-attachments.png") });
+      await page.keyboard.press("Escape");
+      await expect(attachments).toBeHidden();
+      await activate(trigger);
+      await expect(choice).toBeAttached();
+      await activate(dialog.getByRole("button", { name: labels.close, exact: true }));
+      await expect(dialog).toBeHidden();
+    });
+  });
+}
+
+test("Kanban retries the unavailable catalogue and refreshes order on each opening", async ({
+  page,
+}, info) => {
+  const { labels, workers, catalogueReads, creations } = await installKanbanAccessFixture(page);
+  let unavailable = true;
+  await page.route("**/api/v1/workers/catalog", (route) => {
+    if (route.request().method() === "OPTIONS" || !unavailable) return route.fallback();
+    unavailable = false;
+    return route.fulfill({
+      status: 503,
+      headers: { "access-control-allow-origin": "*" },
+      json: { error: { code: "fixture", message: "Catalogue unavailable" } },
+    });
+  });
+  await page.getByRole("button", { name: labels.add, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: labels.add });
+  const trigger = dialog.locator(".kanban-assignee-trigger");
+  const options = dialog.locator(".kanban-assignee-options").getByRole("button");
+  const names = () => [labels.defaultWorker, ...workers.map((worker) => worker.name)];
+  expect(catalogueReads()).toBe(0);
+  await trigger.press("Enter");
+  await expect(
+    dialog.getByRole("status").filter({ hasText: "Каталог работников недоступен." }),
+  ).toBeVisible();
+  await page.screenshot({ path: info.outputPath("catalogue-retry.png") });
+  await dialog.getByRole("button", { name: "Повторить", exact: true }).click();
+  await expect(options).toHaveText(names());
+  const selected = workers.at(-1)!;
+  await dialog.getByRole("searchbox").fill(selected.name);
+  await dialog.getByRole("searchbox").press("Enter");
+  await expect(trigger).toContainText(selected.name);
+  workers.unshift(workers.pop()!);
+  await trigger.press("Enter");
+  await expect(options).toHaveText(names());
+  await expect(options.nth(1)).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("Escape");
+  workers.shift();
+  await trigger.press("Enter");
+  await expect(options).toHaveText(names());
+  await expect(trigger).toContainText("Назначенный работник");
+  await page.keyboard.press("Escape");
+
+  const message = dialog.getByRole("textbox", { name: labels.message });
+  await message.fill("Оставить назначенного исполнителя");
+  await message.press("Control+Enter");
+  await expect(dialog).toBeHidden();
+  expect(creations[0]?.workerId).toBe(selected.id);
+  expect(catalogueReads()).toBe(3);
+});
+
+for (const { query, target, viewport = DESKTOP_VIEWPORT } of [
+  { query: "?card=card-0", target: '.kanban-card[data-card-id="card-0"] button.kanban-card-open' },
+  { query: "?thread=session-3", target: '.kanban-card[data-card-id="card-3"] .kanban-card-edit' },
+  { query: "?card=archived", target: ".kanban-add-button" },
+  { query: "?card=card-3", target: ".kanban-add-button", viewport: PHONE_VIEWPORT },
+]) {
+  test(`Kanban restores focus after ${query} at width ${viewport.width}`, async ({
+    page,
+  }, info) => {
+    await page.setViewportSize(viewport);
+    await installKanbanAccessFixture(page, {
+      query,
+      configureBoard(board) {
+        if (query !== "?thread=session-3") return;
+        const group = board.runs.find((run) => run.threadId === "session-3")!;
+        group.cardIds.unshift("card-0");
+        board.runs.push({
+          ...group,
+          id: "new-session",
+          cardIds: ["card-0"],
+          threadId: "other-thread",
+        });
+      },
+    });
+    const panel = page.locator(".kanban-panel");
+    await expect(panel.locator("#kanban-card-title")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    await expect(page.locator(target)).toBeFocused();
+    await expect(page.locator(target)).toBeInViewport();
+    await page.screenshot({ path: info.outputPath("deep-link-focus.png") });
+  });
+}
+
+test("Kanban locks stage and worker during work and deletion during classification", async ({
+  page,
+}, info) => {
+  const { card, archived, patches, catalogueReads } = await installKanbanAccessFixture(page, {
+    configureBoard(board) {
+      board.runs.push(
+        {
+          ...board.runs[0]!,
+          id: "execute-queued",
+          cardIds: ["card-0"],
+          status: "queued",
+          threadId: null,
+          sessionUrl: null,
+        },
+        {
+          ...board.runs[0]!,
+          id: "classify-preparing",
+          kind: "classify",
+          cardIds: ["archived"],
+          status: "preparing",
+          threadId: null,
+          sessionUrl: null,
+        },
+      );
+    },
+  });
+  await page.getByRole("button", { name: card.title, exact: true }).click();
+  const panel = page.getByRole("complementary", { name: card.title });
+  await expect(panel.getByRole("combobox", { name: "Стадия" })).toBeDisabled();
+  await expect(panel.getByRole("combobox", { name: "Категория" })).toBeEnabled();
+  await expect(panel.locator(".kanban-assignee-trigger")).toHaveAttribute("aria-disabled", "true");
+  await panel.locator(".kanban-assignee-trigger").press("Enter");
+  await expect(panel.getByRole("searchbox")).toBeHidden();
+  expect(catalogueReads()).toBe(0);
+  await panel.getByRole("button", { name: "Закрыть", exact: true }).click();
+
+  await page.locator(".kanban-archive-button").click();
+  const archive = page.getByRole("complementary", { name: "Архив" });
+  const remove = archive.getByRole("button", { name: "Удалить навсегда" });
+  await expect(remove).toBeDisabled();
+  await expect(remove).toHaveAccessibleDescription(
+    "Дождитесь завершения работы с задачей, чтобы удалить её.",
+  );
+  await expect(archive.getByRole("button", { name: "Вернуть" })).toBeEnabled();
+  await page.screenshot({ path: info.outputPath("archive-classifying.png") });
+  await archive.getByRole("button", { name: "Вернуть" }).click();
+  await expect(archive.getByText(archived.title)).toBeHidden();
+  expect(patches).toEqual([{ archived: false }]);
+});
+
+for (const knownThread of [true, false]) {
+  test(`Kanban shows only partners that still share the current session (thread: ${knownThread})`, async ({
+    page,
+  }, info) => {
+    const { card } = await installKanbanAccessFixture(page, {
+      configureBoard(board) {
+        board.cards[0]!.description = "Проверить текущий состав группы.";
+        const lead = board.cards[0]!;
+        const joined = ["same-run", "same-thread", "moved", "other-provider", "archived"];
+        board.cards.push(
+          ...joined.slice(0, 4).map((id, index) => ({
+            ...lead,
+            id,
+            title: [
+              "Проверить сохранение в группе",
+              "Добавить отчёт проверки",
+              "Отдельная задача",
+              "В другой сессии",
+            ][index]!,
+          })),
+        );
+        const group = {
+          ...board.runs[0]!,
+          id: "group",
+          cardIds: [lead.id, ...joined],
+          status: "completed" as const,
+          threadId: knownThread ? "session-main" : null,
+        };
+        board.runs.push(
+          group,
+          {
+            ...group,
+            id: "same-thread-turn",
+            cardIds: ["same-thread"],
+            createdAt: group.createdAt - 1,
+          },
+          {
+            ...group,
+            id: "moved-turn",
+            cardIds: ["moved"],
+            threadId: null,
+            sessionUrl: null,
+            createdAt: group.createdAt - 1,
+          },
+          { ...group, id: "other-provider-turn", cardIds: ["other-provider"], provider: "claude" },
+          { ...group, id: "classify", cardIds: ["same-run"], kind: "classify" },
+        );
+      },
+    });
+    await page
+      .locator('.kanban-card[data-card-id="card-0"]')
+      .locator(knownThread ? ".kanban-card-edit" : ".kanban-card-open")
+      .click();
+    const panel = page.getByRole("complementary", { name: card.title });
+    const partners = panel
+      .locator(".kanban-panel-section")
+      .filter({ has: page.getByRole("heading", { name: "В той же сессии" }) });
+    await expect(partners.getByRole("button")).toHaveText(
+      knownThread
+        ? ["Проверить сохранение в группеК выполнению", "Добавить отчёт проверкиК выполнению"]
+        : ["Проверить сохранение в группеК выполнению"],
+    );
+    await page.screenshot({ path: info.outputPath("session-partners.png") });
+  });
+}
+
+test("Kanban ignores a late catalogue response from the previous project", async ({ page }) => {
+  const { labels } = await installKanbanAccessFixture(page);
+  const projects: string[][] = [];
+  let finishOld!: () => void;
+  const oldResponse = new Promise<void>((resolve) => {
+    finishOld = resolve;
+  });
+  const headers = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": "Authorization, Content-Type",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+  };
+  await page.route("**/api/v1/projects/project-mineral/kanban", (route) =>
+    route.fulfill({ headers, json: { ...seedBoard(), id: "mineral-board" } }),
+  );
+  await page.route("**/api/v1/workers/catalog", async (route) => {
+    if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+    const { projectIds } = route.request().postDataJSON() as { projectIds: string[] };
+    projects.push(projectIds);
+    const projectId = projectIds[0]!;
+    if (projectId === "project-nest") await oldResponse;
+    const name = projectId === "project-nest" ? "Работник первого проекта" : "Геолог";
+    await route.fulfill({
+      headers,
+      json: { projects: [{ projectId, workers: [{ id: projectId, name }] }] },
+    });
+  });
+
+  const openCreate = page.getByRole("button", { name: labels.add, exact: true });
+  const dialog = page.getByRole("dialog", { name: labels.add });
+  try {
+    await openCreate.click();
+    await dialog.locator(".kanban-assignee-trigger").press("Enter");
+    await expect.poll(() => projects.length).toBe(1);
+    await dialog.getByRole("button", { name: labels.close, exact: true }).click();
+    const projectsMenu = page.locator(".kanban-project-picker");
+    await projectsMenu.locator("summary").press("Enter");
+    await projectsMenu.getByRole("button", { name: "Минеральный атлас", exact: true }).click();
+    await expect(page).toHaveURL(/project-mineral\/kanban$/);
+    expect(projects).toEqual([["project-nest"]]);
+    await openCreate.click();
+    await dialog.locator(".kanban-assignee-trigger").press("Enter");
+    const workers = dialog.locator(".kanban-assignee-options").getByRole("button");
+    await expect(workers).toHaveText([labels.defaultWorker, "Геолог"]);
+    const oldLoaded = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.request().url().endsWith("/workers/catalog") &&
+        response.request().postDataJSON().projectIds[0] === "project-nest",
+    );
+    finishOld();
+    await (await oldLoaded).finished();
+    await expect(workers).toHaveText([labels.defaultWorker, "Геолог"]);
+    expect(projects).toEqual([["project-nest"], ["project-mineral"]]);
+  } finally {
+    finishOld();
+  }
 });

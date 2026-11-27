@@ -124,7 +124,7 @@ function overlayPanelLayout() {
 
 function restorePanelFocus(...candidates: (HTMLElement | null)[]) {
   requestAnimationFrame(() => {
-    candidates.find((element) => element?.getClientRects().length)?.focus({ preventScroll: true });
+    candidates.find((element) => element?.getClientRects().length)?.focus();
   });
 }
 const clampLane = (value: number) =>
@@ -244,9 +244,11 @@ const classified = (card: KanbanCard) => card.classification === "ready" && !car
 const startable = (board: Board, card: KanbanCard) => classified(card) && selectable(board, card);
 
 export function latestRun(board: Board, cardId: string): KanbanRun | undefined {
-  return board.runs
-    .filter((run) => run.cardIds.includes(cardId) && run.kind !== "classify")
-    .sort((a, b) => b.createdAt - a.createdAt)[0];
+  for (let index = board.runs.length - 1; index >= 0; index--) {
+    const run = board.runs[index]!;
+    if (run.kind !== "classify" && run.cardIds.includes(cardId)) return run;
+  }
+  return undefined;
 }
 
 /** A card's marker colour: a recording being transcribed, else its newest session's state. */
@@ -320,36 +322,36 @@ function ProjectKanbanBoard({
     setPendingRecordings((count) => count + delta);
   }, []);
   const [stageDropId, setStageDropId] = useState<string | null>(null);
-  const [workerOptions, setWorkerOptions] = useState<{
-    projectId: string;
-    options?: WorkerProfile[];
-  }>();
+  const [projectWorkers, setProjectWorkers] = useState<WorkerProfile[]>();
+  const workerRequest = useRef<Promise<boolean> | null>(null);
   const [taskDraft, setTaskDraft] = useState<BoardTaskDraft>(EMPTY_TASK_DRAFT);
-  const pickWorker = dialog === "create" || cardId !== null;
-  useEffect(() => {
-    if (!pickWorker || !projectId || workerOptions?.projectId === projectId) return;
-    let active = true;
-    void api.workerCatalogue([projectId]).then(
-      (data) => {
-        if (active)
-          setWorkerOptions({
-            projectId,
-            options: data.projects.find(({ projectId: id }) => id === projectId)?.workers ?? [],
-          });
-      },
-      () => {
-        if (active) setWorkerOptions({ projectId });
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [api, pickWorker, projectId, workerOptions?.projectId]);
+  const loadWorkers = useCallback(() => {
+    if (workerRequest.current) return workerRequest.current;
+    const request = api
+      .workerCatalogue([projectId])
+      .then(
+        (catalogue) => {
+          setProjectWorkers(
+            catalogue.projects.find((project) => project.projectId === projectId)?.workers ?? [],
+          );
+          return true;
+        },
+        () => false,
+      )
+      .finally(() => {
+        workerRequest.current = null;
+      });
+    workerRequest.current = request;
+    return request;
+  }, [api, projectId]);
 
-  const projectWorkers = workerOptions?.projectId === projectId ? workerOptions.options : undefined;
-  function availableWorkerId(id: string | undefined) {
-    return !projectWorkers || projectWorkers.some((worker) => worker.id === id) ? id : undefined;
-  }
+  const assignedWorkerId =
+    dialog === "create"
+      ? taskDraft.workerId
+      : board?.cards.find((item) => item.id === cardId)?.workerId;
+  useEffect(() => {
+    if (assignedWorkerId && !projectWorkers) void loadWorkers();
+  }, [assignedWorkerId, projectWorkers, loadWorkers]);
 
   const taskDraftRef = useRef(taskDraft);
   const taskDraftSave = useRef<{ projectId: string; timer: number } | null>(null);
@@ -496,8 +498,23 @@ function ProjectKanbanBoard({
   // the board arrives.
   useEffect(() => {
     if (!board || (!threadParam && !cardParam)) return;
-    const run = threadParam ? board.runs.find((item) => item.threadId === threadParam) : undefined;
-    const id = board.cards.some((item) => item.id === cardParam) ? cardParam : run?.cardIds[0];
+    const runs = threadParam
+      ? board.runs.filter((run) => run.threadId === threadParam).reverse()
+      : [];
+    const run = runs.find((item) => item.provider === application.provider) ?? runs[0];
+    const activeCard = run?.cardIds.find((id) => {
+      const item = board.cards.find((candidate) => candidate.id === id);
+      const current = latestRun(board, id);
+      return (
+        item &&
+        item.archivedAt === undefined &&
+        current?.provider === run.provider &&
+        current.threadId === run.threadId
+      );
+    });
+    const id = board.cards.some((item) => item.id === cardParam)
+      ? cardParam
+      : (activeCard ?? run?.cardIds[0]);
     if (id) {
       cardOpener.current = null;
       setArchiveOpen(false);
@@ -580,7 +597,7 @@ function ProjectKanbanBoard({
   /** Sends the task field like a session's first message; a recording goes with it at once. */
   async function submitTask(recording?: ComposerRecording): Promise<boolean> {
     const draft = taskDraftRef.current;
-    const workerId = availableWorkerId(draft.workerId);
+    const workerId = draft.workerId;
     const ok = await createTask({
       id: recording ? `${taskCreationId.current}:${recording.id}` : taskCreationId.current,
       text: copyPastedMessage(draft.input.trim(), draft).trim(),
@@ -678,8 +695,16 @@ function ProjectKanbanBoard({
   };
   const closeCard = useCallback(() => {
     setCardId(null);
-    restorePanelFocus(cardOpener.current, addTaskButton.current);
-  }, []);
+    const targetCard =
+      cardId &&
+      Array.from(boardScroll.current?.querySelectorAll<HTMLElement>("[data-card-id]") ?? []).find(
+        (element) => element.dataset.cardId === cardId,
+      );
+    const cardTarget =
+      targetCard &&
+      targetCard.querySelector<HTMLElement>(".kanban-card-edit, button.kanban-card-open");
+    restorePanelFocus(cardOpener.current, cardTarget || null, addTaskButton.current);
+  }, [cardId]);
   const openArchive = (from: HTMLElement | null) => {
     archiveOpener.current = from;
     setCardId(null);
@@ -724,27 +749,44 @@ function ProjectKanbanBoard({
   const cardRuns = card
     ? board!.runs
         .filter((run) => run.cardIds.includes(card.id) && run.kind !== "classify")
-        .sort((a, b) => b.createdAt - a.createdAt)
+        .reverse()
     : [];
   const cardWorking = cardRuns.some((run) => busyStatuses.has(run.status));
   const role = board?.stages.find((stage) => stage.id === card?.stageId)?.role;
   // Continuations and publications are turns of the same session: list each session once.
   const cardSessions = cardRuns.filter(
     (run, index) =>
-      !run.threadId || cardRuns.findIndex((other) => other.threadId === run.threadId) === index,
+      !run.threadId ||
+      cardRuns.findIndex(
+        (other) => other.provider === run.provider && other.threadId === run.threadId,
+      ) === index,
   );
   const session = cardSessions[0];
   // Tasks started together share their session and move with it.
   const sessionPartners = session
     ? session.cardIds.flatMap((id) => {
         const item = board!.cards.find((value) => value.id === id);
-        return item && item.id !== card!.id && item.archivedAt === undefined ? [item] : [];
+        if (!item || id === card!.id || item.archivedAt !== undefined) return [];
+        const current = latestRun(board!, id);
+        return current &&
+          (current.id === session.id ||
+            (session.threadId &&
+              current.provider === session.provider &&
+              current.threadId === session.threadId))
+          ? [item]
+          : [];
       })
     : [];
   const editStage = board?.stages.find((stage) => stage.id === editStageId) ?? null;
   const archived = (board?.cards ?? [])
     .filter((item) => item.archivedAt !== undefined)
     .sort((a, b) => b.archivedAt! - a.archivedAt!);
+  const busyArchiveIds = new Set(
+    archiveVisible
+      ? board!.runs.flatMap((run) => (busyStatuses.has(run.status) ? run.cardIds : []))
+      : [],
+  );
+  const deletionBlockedReason = t("Дождитесь завершения работы с задачей, чтобы удалить её.");
   const confirmation = (() => {
     if (!board || !confirm) return null;
     if (confirm.kind === "stage") {
@@ -756,7 +798,7 @@ function ProjectKanbanBoard({
         text: count
           ? t("Задачи из неё ({{count}}) переедут в «К выполнению».", { count })
           : t("В стадии нет задач."),
-        warning: null,
+        blocked: false,
         label: t("Удалить стадию"),
         run: () => api.deleteKanbanStage(projectId, stage.id),
       };
@@ -768,7 +810,7 @@ function ProjectKanbanBoard({
       text: t("«{{title}}» исчезнет с доски, а её сессии в этом приложении уйдут в архив сессий.", {
         title: item.title,
       }),
-      warning: null,
+      blocked: busyArchiveIds.has(item.id),
       label: t("Удалить навсегда"),
       run: () => api.deleteKanbanCard(projectId, item.id),
     };
@@ -1760,7 +1802,7 @@ function ProjectKanbanBoard({
                 <label>
                   {t("Стадия")}
                   <select
-                    disabled={busy}
+                    disabled={busy || cardWorking}
                     value={card.stageId}
                     onChange={(event) => void move(card.id, event.target.value)}
                   >
@@ -1794,9 +1836,10 @@ function ProjectKanbanBoard({
                 </label>
                 <KanbanWorkerPicker
                   key={card.id}
-                  value={availableWorkerId(card.workerId)}
+                  value={card.workerId}
                   workers={projectWorkers}
-                  busy={busy}
+                  loadWorkers={loadWorkers}
+                  busy={busy || cardWorking}
                   onChange={(id) =>
                     void mutate(() =>
                       api.updateKanbanCard(projectId, card.id, { workerId: id || null }),
@@ -2062,6 +2105,8 @@ function ProjectKanbanBoard({
                 <ul className="kanban-archive-list">
                   {archived.map((item) => {
                     const stage = board.stages.find((value) => value.id === item.stageId);
+                    const blocked = busyArchiveIds.has(item.id);
+                    const reasonId = `kanban-archive-busy-${item.id}`;
                     return (
                       <li key={item.id}>
                         <span className="kanban-archive-title">{item.title}</span>
@@ -2086,12 +2131,14 @@ function ProjectKanbanBoard({
                           </button>
                           <button
                             className="danger"
-                            disabled={busy}
+                            disabled={busy || blocked}
+                            aria-describedby={blocked ? reasonId : undefined}
                             onClick={() => setConfirm({ kind: "card", id: item.id })}
                           >
                             <TrashIcon /> {t("Удалить навсегда")}
                           </button>
                         </span>
+                        {blocked && <small id={reasonId}>{deletionBlockedReason}</small>}
                       </li>
                     );
                   })}
@@ -2119,7 +2166,7 @@ function ProjectKanbanBoard({
             <h2 id="kanban-confirm-title">{confirmation.title}</h2>
           </div>
           <p>{confirmation.text}</p>
-          {confirmation.warning && <p className="kanban-card-error">{confirmation.warning}</p>}
+          {confirmation.blocked && <p className="kanban-muted">{deletionBlockedReason}</p>}
           {error && (
             <p className="kanban-card-error" role="alert">
               {error}
@@ -2131,7 +2178,7 @@ function ProjectKanbanBoard({
             </button>
             <button
               className="danger"
-              disabled={busy}
+              disabled={busy || confirmation.blocked}
               onClick={() =>
                 void mutate(confirmation.run).then((ok) => {
                   if (!ok) return;
@@ -2187,8 +2234,9 @@ function ProjectKanbanBoard({
           </div>
           <div className="kanban-panel-fields kanban-worker-picker">
             <KanbanWorkerPicker
-              value={availableWorkerId(taskDraft.workerId)}
+              value={taskDraft.workerId}
               workers={projectWorkers}
+              loadWorkers={loadWorkers}
               busy={busy}
               onChange={(id) =>
                 editTaskDraft({ ...taskDraftRef.current, workerId: id || undefined })
@@ -2336,11 +2384,13 @@ function KanbanWorkerPicker({
   workers = [],
   value,
   busy,
+  loadWorkers,
   onChange,
 }: {
   workers?: WorkerProfile[];
   value?: string;
   busy: boolean;
+  loadWorkers(): Promise<boolean>;
   onChange(id: string): void;
 }) {
   const { t } = useI18n();
@@ -2349,15 +2399,19 @@ function KanbanWorkerPicker({
   const search = useRef<HTMLInputElement>(null);
   const results = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [catalogueStatus, setCatalogueStatus] = useState<"loading" | "ready" | "unavailable">(
+    "loading",
+  );
+  const tabbing = useRef(false);
   const [query, setQuery] = useState("");
   const valueId = useId();
   const resultsId = `${valueId}-options`;
   const label = t("Исполнитель");
   const searchLabel = t("Найти работника");
   const options = [{ id: "", name: t("Стандартная сессия") }, ...workers];
-  if (value && !options.some(({ id }) => id === value))
-    options.push({ id: value, name: t("Назначенный работник") });
-  const selected = options.find(({ id }) => id === (value ?? ""))!;
+  const selectedId = value ?? "";
+  const selectedName =
+    options.find(({ id }) => id === selectedId)?.name ?? t("Назначенный работник");
   const term = query.trim().toLowerCase();
   const matches = term ? options.filter(({ name }) => name.toLowerCase().includes(term)) : options;
 
@@ -2384,6 +2438,11 @@ function KanbanWorkerPicker({
     };
   }, [open]);
 
+  async function refresh() {
+    setCatalogueStatus("loading");
+    setCatalogueStatus((await loadWorkers()) ? "ready" : "unavailable");
+  }
+
   function openPicker(picker: HTMLDetailsElement) {
     setQuery("");
     if (results.current) results.current.scrollTop = 0;
@@ -2391,17 +2450,24 @@ function KanbanWorkerPicker({
     if (popover.current) fitAssigneePopover(picker, popover.current);
     // iOS only opens the keyboard when the search receives focus in the opening gesture.
     search.current?.focus({ preventScroll: true });
+    void refresh();
   }
 
   function choose(id: string) {
     const picker = menu.current;
-    if (busy || !picker?.open) return;
+    if (busy || catalogueStatus !== "ready" || !picker?.open) return;
     picker.open = false;
     picker.querySelector("summary")?.focus({ preventScroll: true });
-    if (id !== selected.id) onChange(id);
+    if (id !== selectedId) onChange(id);
   }
 
   function handleKey(event: ReactKeyboardEvent<HTMLDetailsElement>) {
+    if (event.key === "Tab") {
+      tabbing.current = true;
+      requestAnimationFrame(() => {
+        tabbing.current = false;
+      });
+    }
     if (event.nativeEvent.isComposing || event.keyCode === 229) {
       if (event.key === "Escape") event.stopPropagation();
       return;
@@ -2433,7 +2499,12 @@ function KanbanWorkerPicker({
         className="thread-action-menu kanban-assignee"
         data-dismiss-on-outside-click
         onBlur={(event) => {
-          if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
+          // Let an outside pointer click finish before shrinking the creation dialog.
+          if (
+            tabbing.current &&
+            event.relatedTarget &&
+            !event.currentTarget.contains(event.relatedTarget)
+          )
             event.currentTarget.open = false;
         }}
         onKeyDown={handleKey}
@@ -2454,7 +2525,7 @@ function KanbanWorkerPicker({
             } else openPicker(picker);
           }}
         >
-          <span id={valueId}>{selected.name}</span>
+          <span id={valueId}>{selectedName}</span>
           <ChevronDownIcon />
         </summary>
         <div
@@ -2483,19 +2554,41 @@ function KanbanWorkerPicker({
             />
           </div>
           <div id={resultsId} ref={results} className="kanban-assignee-options">
-            {matches.map(({ id, name }) => (
-              <button
-                key={id}
-                type="button"
-                disabled={busy}
-                aria-pressed={id === selected.id}
-                onClick={() => choose(id)}
-              >
-                <CheckIcon aria-hidden="true" />
-                <span>{name}</span>
-              </button>
-            ))}
-            {matches.length === 0 && (
+            {catalogueStatus === "loading" && (
+              <div className="kanban-picker-note kanban-muted" role="status">
+                {t("Загружаем работников…")}
+              </div>
+            )}
+            {catalogueStatus === "unavailable" && (
+              <>
+                <div className="kanban-picker-note kanban-muted" role="status">
+                  {t("Каталог работников недоступен.")}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    search.current?.focus({ preventScroll: true });
+                    void refresh();
+                  }}
+                >
+                  {t("Повторить")}
+                </button>
+              </>
+            )}
+            {catalogueStatus === "ready" &&
+              matches.map(({ id, name }) => (
+                <button
+                  key={id}
+                  type="button"
+                  disabled={busy}
+                  aria-pressed={id === selectedId}
+                  onClick={() => choose(id)}
+                >
+                  <CheckIcon aria-hidden="true" />
+                  <span>{name}</span>
+                </button>
+              ))}
+            {catalogueStatus === "ready" && matches.length === 0 && (
               <div className="kanban-picker-note kanban-muted" role="status">
                 {t("Совпадений нет")}
               </div>

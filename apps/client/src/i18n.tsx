@@ -60,6 +60,9 @@ const ENGLISH: Record<string, string> = {
   "Запустить «{{name}}»": "Start “{{name}}”",
   "Найти проект": "Find a project",
   "Найти работника": "Find a worker",
+  "Каталог работников недоступен.": "The worker catalogue is unavailable.",
+  "Дождитесь завершения работы с задачей, чтобы удалить её.":
+    "Wait until work on this task finishes before deleting it.",
   "Проект работника больше недоступен.": "The worker’s project is no longer available.",
   "Добавьте проект, чтобы запустить работника.": "Add a project to start a worker.",
   "Загружаем работников…": "Loading workers…",
