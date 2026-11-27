@@ -824,10 +824,19 @@ for (const width of [390, 1440]) {
       await expect(attachments).toBeHidden();
       await expect(create).toBeVisible();
       await field.fill("Исправить по скриншоту");
-      await create
-        .locator('input[type="file"]')
-        .setInputFiles({ name: "screenshot.png", mimeType: "image/png", buffer: png });
-      await expect(create.getByRole("img", { name: "screenshot.png", exact: true })).toBeVisible();
+      await create.locator('input[type="file"]').setInputFiles([
+        { name: "screenshot.png", mimeType: "image/png", buffer: png },
+        { name: "extra.png", mimeType: "image/png", buffer: png },
+      ]);
+      const preview = create.getByRole("button", { name: "Открыть изображение screenshot.png" });
+      await expect(preview).toHaveCSS("border-radius", "20px");
+      await preview.click();
+      const viewer = page.getByRole("dialog", { name: "Просмотр изображений" });
+      await expect(viewer.getByRole("img", { name: "screenshot.png" })).toBeVisible();
+      await viewer.getByRole("button", { name: "Закрыть", exact: true }).click();
+      await expect(viewer).toBeHidden();
+      await create.getByRole("button", { name: "Удалить изображение extra.png" }).click();
+      await expect(create.getByRole("img", { name: "extra.png" })).toHaveCount(0);
       expect(imageReads).toBe(0);
       await page.screenshot({ path: info.outputPath(`kanban-create-${width}-${theme}.png`) });
       await create.getByRole("button", { name: "Отправить", exact: true }).click();

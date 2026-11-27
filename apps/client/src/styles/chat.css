@@ -127,7 +127,7 @@
   )
   :is(button, summary):not(:where(.paste-card-toggle, .kanban-card-open)),
 .thread-workspace :is(.new-session-retry, .team-session-upgrade, .scroll-to-bottom),
-.chat-dialog button,
+.chat-dialog button:not(:where(.composer-attachment-preview)),
 .chat-image-viewer .image-viewer-control {
   --chat-button-rest: transparent;
   --chat-button-hover: var(--color-floating);

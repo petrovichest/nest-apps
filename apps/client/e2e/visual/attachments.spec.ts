@@ -110,7 +110,16 @@ test("files dropped on history attach to the draft with upload feedback and imag
   finishUpload();
   await expect(page.getByText("Прикрепляем файлы…", { exact: true })).toBeHidden();
   await expect(page.locator(".composer-file-summary")).toContainText("notes.txt");
-  await expect(page.getByRole("button", { name: "Открыть изображение screen.png" })).toBeVisible();
+  const preview = page.getByRole("button", { name: "Открыть изображение screen.png" });
+  await expect(preview).toHaveCSS("border-radius", "20px");
+  await preview.click();
+  const viewer = page.getByRole("dialog", { name: "Просмотр изображений" });
+  await expect(viewer.getByRole("img", { name: "screen.png" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(viewer).toBeHidden();
+  await page.getByRole("button", { name: "Удалить изображение screen.png" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(page.locator(".composer-file-summary")).toContainText("notes.txt");
   expect(uploads).toEqual(["notes.txt"]);
   await expect(page.locator(".composer-box textarea")).toHaveValue(originalInput);
   await dataTransfer.dispose();
