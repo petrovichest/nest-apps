@@ -1,6 +1,12 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import type { CreateKanbanCardRequest, KanbanBoard } from "@codexnest/protocol";
-import { installVisualFixture, waitForVisualReady } from "./fixtures";
+import {
+  DESKTOP_VIEWPORT,
+  PHONE_VIEWPORT,
+  installVisualFixture,
+  snapshot,
+  waitForVisualReady,
+} from "./fixtures";
 
 function seedBoard(): KanbanBoard {
   const now = Date.UTC(2026, 10, 3, 12);
@@ -70,6 +76,237 @@ function seedBoard(): KanbanBoard {
       updatedAt: now,
     })),
   };
+}
+
+async function mockProjectBoards(page: Page) {
+  const nest = seedBoard();
+  const mineralCard = "Проверить данные по месторождениям";
+  const mineral = {
+    ...nest,
+    id: "board-mineral",
+    projectPath: "/work/mineral-atlas",
+    cards: [{ ...nest.cards[0]!, title: mineralCard, description: mineralCard }],
+    runs: [],
+  };
+  const reads: string[] = [];
+  for (const [id, board] of [
+    ["project-nest", nest],
+    ["project-mineral", mineral],
+  ] as const) {
+    await page.route(`https://codexnest.visual/api/v1/projects/${id}/kanban`, (route) => {
+      const headers = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Authorization, Content-Type",
+        "access-control-allow-methods": "GET, OPTIONS",
+      };
+      const method = route.request().method();
+      if (method === "OPTIONS") return route.fulfill({ status: 204, headers });
+      expect(method).toBe("GET");
+      reads.push(id);
+      return route.fulfill({ contentType: "application/json", headers, json: board });
+    });
+  }
+  return { reads, nestCard: nest.cards[0]!.title, mineralCard };
+}
+
+for (const [device, viewport] of [
+  ["desktop", DESKTOP_VIEWPORT],
+  ["phone", PHONE_VIEWPORT],
+] as const) {
+  const isPhone = device === "phone";
+  test.describe(`kanban project switcher on ${device}`, () => {
+    test.use({ viewport, hasTouch: isPhone, isMobile: isPhone });
+
+    for (const theme of ["light", "dark"] as const) {
+      for (const language of ["ru", "en"] as const) {
+        test(`${theme} ${language}`, async ({ page }, info) => {
+          await installVisualFixture(page, { theme, language, preserveLocalStorage: true });
+          await page.addInitScript(() =>
+            localStorage.setItem("codexnest.boardProject", "project-mineral"),
+          );
+          const { reads, nestCard, mineralCard } = await mockProjectBoards(page);
+          const boardLabel = language === "ru" ? "Доска задач" : "Task board";
+          const pickerLabel = language === "ru" ? "Выбрать проект" : "Choose project";
+          const header = page.locator(".kanban-pane .workspace-header");
+          const trigger = header.locator(`summary[aria-label="${pickerLabel}"]`);
+          const options = header.getByRole("group", { name: pickerLabel });
+          const nestOption = options.getByRole("button", { name: "CodexNest" });
+          const mineralOption = options.getByRole("button", { name: "Минеральный атлас" });
+          const readSavedProject = () =>
+            page.evaluate(() => localStorage.getItem("codexnest.boardProject"));
+          const capture = async (step: string) => {
+            await waitForVisualReady(page);
+            await page.screenshot({
+              path: info.outputPath(`${device}-${theme}-${language}-${step}.png`),
+            });
+          };
+
+          await page.goto("/threads/session-active");
+          await expect(page.getByRole("heading", { name: "Сверка токенов темы" })).toBeVisible();
+          if (isPhone) {
+            await page
+              .getByRole("button", {
+                name: language === "ru" ? "Открыть список задач" : "Open task list",
+              })
+              .tap();
+          }
+          const controls = page.locator(".sidebar-controls");
+          const boardLink = controls.getByRole("link", { name: boardLabel, exact: true });
+          const workers = language === "ru" ? "Работники" : "Workers";
+          await expect(boardLink).toHaveAttribute("href", "/projects/project-nest/kanban");
+          await expect(
+            controls.getByRole("link", { name: workers }).locator("xpath=following-sibling::*[1]"),
+          ).toHaveText(boardLabel);
+          await expect(boardLink.locator("svg")).toHaveCount(1);
+          expect(await readSavedProject()).toBe("project-mineral");
+          expect(reads).toEqual([]);
+          await capture("01-menu");
+          if (isPhone) await boardLink.tap();
+          else await boardLink.click();
+
+          await expect(page).toHaveURL(/\/projects\/project-nest\/kanban$/);
+          await expect(
+            header.getByRole("heading", { name: boardLabel, exact: true }),
+          ).toBeVisible();
+          await expect(page.getByRole("button", { name: nestCard, exact: true })).toBeVisible();
+          await expect(trigger).toHaveText("CodexNest");
+          await expect(trigger).toHaveCSS("font-family", /^"?Onest/);
+          await expect(trigger).toHaveCSS("font-weight", "400");
+          const projectNameFits = () =>
+            trigger
+              .locator("span")
+              .evaluate((element) => element.scrollWidth <= element.clientWidth + 1);
+          expect(await projectNameFits()).toBe(true);
+          await expect(options).toBeHidden();
+          await capture("02-nest");
+
+          if (isPhone) await trigger.tap();
+          else await trigger.click();
+          await expect(options.getByRole("button")).toHaveText(["CodexNest", "Минеральный атлас"]);
+          const menu = (await options.boundingBox())!;
+          expect(menu.width).toBeGreaterThanOrEqual(210);
+          expect(menu.y).toBeGreaterThanOrEqual((await trigger.boundingBox())!.y + 24);
+          await expect(nestOption).toHaveAttribute("aria-pressed", "true");
+          await expect(mineralOption).toHaveAttribute("aria-pressed", "false");
+          if (isPhone) await expect(nestOption).toHaveCSS("min-height", "44px");
+          expect([...new Set(reads)]).toEqual(["project-nest"]);
+          await capture("03-picker");
+
+          const beforeSelectingCurrent = await page.evaluate(() => history.length);
+          if (isPhone) await nestOption.tap();
+          else await nestOption.click();
+          await expect(trigger).toBeFocused();
+          await expect(options).toBeHidden();
+          await expect(page).toHaveURL(/\/projects\/project-nest\/kanban$/);
+          expect(await page.evaluate(() => history.length)).toBe(beforeSelectingCurrent);
+          await trigger.click();
+          await header.getByRole("heading", { name: boardLabel, exact: true }).click();
+          await expect(options).toBeHidden();
+
+          if (isPhone) {
+            await trigger.tap();
+            await mineralOption.tap();
+          } else {
+            const filter = header.locator(".kanban-category-filter summary");
+            await filter.click();
+            await header.getByRole("button", { name: "Фронтенд", exact: true }).click();
+            await page.getByRole("button", { name: nestCard, exact: true }).click();
+            const card = page.getByRole("complementary", { name: nestCard });
+            await expect(card).toBeVisible();
+            await trigger.press("ArrowDown");
+            await expect(nestOption).toBeFocused();
+            await page.keyboard.press("End");
+            await expect(mineralOption).toBeFocused();
+            await page.keyboard.press("Escape");
+            await expect(trigger).toBeFocused();
+            await expect(options).toBeHidden();
+            await trigger.press("Space");
+            await expect(options).toBeVisible();
+            await page.keyboard.press("Tab");
+            await expect(nestOption).toBeFocused();
+            await page.keyboard.press("Enter");
+            await expect(card).toBeVisible();
+            await expect(filter).toHaveText("Фронтенд");
+            await expect(options).toBeHidden();
+            await expect(trigger).toBeFocused();
+            await trigger.press("ArrowUp");
+            await expect(mineralOption).toBeFocused();
+            await page.keyboard.press("Enter");
+            await expect(card).toBeHidden();
+          }
+
+          await expect(page).toHaveURL(/\/projects\/project-mineral\/kanban$/);
+          await expect(page.getByRole("button", { name: mineralCard, exact: true })).toBeVisible();
+          await expect(page.getByRole("button", { name: nestCard, exact: true })).toBeHidden();
+          await expect(trigger).toHaveText("Минеральный атлас");
+          expect(await projectNameFits()).toBe(true);
+          await expect(options).toBeHidden();
+          expect(await readSavedProject()).toBe("project-mineral");
+          expect([...new Set(reads)]).toEqual(["project-nest", "project-mineral"]);
+          await capture("04-mineral");
+          const beforeBack = reads.length;
+          await page.goBack();
+          await expect(page).toHaveURL(/\/projects\/project-nest\/kanban$/);
+          await expect(page.getByRole("button", { name: nestCard, exact: true })).toBeVisible();
+          await expect(trigger).toHaveText("CodexNest");
+          expect(reads[beforeBack]).toBe("project-nest");
+          await capture("05-back");
+        });
+      }
+    }
+  });
+}
+
+for (const width of [320, 820, 821]) {
+  test(`kanban project switcher fits long names at ${width}px`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 844 });
+    const longName =
+      "Долгосрочное планирование развития и сопровождения производственной платформы";
+    await installVisualFixture(page, {
+      theme: "light",
+      language: "ru",
+      sidebarSide: "right",
+      preserveLocalStorage: true,
+      snapshot: {
+        ...snapshot,
+        projects: snapshot.projects.map((project, index) => ({
+          ...project,
+          displayName: `${longName} ${index + 1}`,
+        })),
+      },
+    });
+    await page.addInitScript(() => localStorage.setItem("codexnest.sidebarWidth", "440"));
+    const { nestCard, mineralCard } = await mockProjectBoards(page);
+    await page.goto("/projects/project-nest/kanban");
+    await expect(page.getByRole("button", { name: nestCard, exact: true })).toBeVisible();
+    await waitForVisualReady(page);
+    const header = page.locator(".kanban-pane .workspace-header");
+    const title = header.getByRole("heading", { name: "Доска задач", exact: true });
+    expect(await title.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(
+      true,
+    );
+    const trigger = header.locator("summary[aria-label='Выбрать проект']");
+    const add = header.getByRole("button", { name: "Добавить задачу" });
+    const actions = header.locator(".workspace-actions");
+    const triggerBounds = (await trigger.boundingBox())!;
+    expect(triggerBounds.x + triggerBounds.width).toBeLessThanOrEqual(
+      (await actions.boundingBox())!.x,
+    );
+    await expect(add).toBeInViewport();
+    await expect(header.getByLabel("Ещё", { exact: true })).toBeVisible();
+    await trigger.click();
+    const options = header.getByRole("group", { name: "Выбрать проект" });
+    const pane = (await page.locator(".kanban-pane").boundingBox())!;
+    const menu = (await options.boundingBox())!;
+    expect(menu.x).toBeGreaterThanOrEqual(pane.x);
+    expect(menu.x + menu.width).toBeLessThanOrEqual(pane.x + pane.width);
+    expect(await options.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    );
+    await page.screenshot({ path: info.outputPath(`long-project-names-${width}.png`) });
+    await options.getByRole("button", { name: `${longName} 2` }).click();
+    await expect(page.getByRole("button", { name: mineralCard, exact: true })).toBeVisible();
+  });
 }
 
 for (const width of [390, 1440]) {

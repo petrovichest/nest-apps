@@ -1108,18 +1108,25 @@ function Sidebar({
     location.pathname === "/new" ? new URLSearchParams(location.search).get("projectId") : null;
   const knownProject = (id: string | null | undefined) =>
     id && projects.some((project) => project.id === id) ? id : undefined;
-  const viewedProjectId =
-    knownProject(boardRoute?.params.projectId) ??
-    knownProject(allThreads.find((thread) => thread.id === threadRouteId)?.projectId) ??
-    knownProject(newSessionProjectId);
+  const openBoardProjectId = knownProject(boardRoute?.params.projectId);
+  const sessionProjectId = threadRouteId
+    ? (
+        allThreads.find((thread) => thread.id === threadRouteId) ??
+        state.details[threadRouteId]?.summary
+      )?.projectId
+    : undefined;
   const boardProjectId =
-    viewedProjectId ?? knownProject(storedBoardProject) ?? projects[0]?.id ?? null;
+    openBoardProjectId ??
+    knownProject(sessionProjectId) ??
+    knownProject(newSessionProjectId) ??
+    knownProject(storedBoardProject) ??
+    projects[0]?.id;
 
   useEffect(() => {
-    if (!boardProjectId) return;
-    storeText(BOARD_PROJECT_KEY, boardProjectId);
-    setStoredBoardProject(boardProjectId);
-  }, [boardProjectId]);
+    if (!openBoardProjectId) return;
+    storeText(BOARD_PROJECT_KEY, openBoardProjectId);
+    setStoredBoardProject(openBoardProjectId);
+  }, [openBoardProjectId]);
 
   useEffect(() => {
     writeSidebarTreeState(serverBaseUrl, sidebarTree);

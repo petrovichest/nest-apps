@@ -52,6 +52,12 @@ const project: Project = {
   createdAt: "2026-01-01",
   updatedAt: "2026-01-01",
 };
+const secondProject: Project = {
+  ...project,
+  id: "second",
+  path: "/work/second",
+  displayName: "Second project",
+};
 function card(id: string, stageId = "todo"): KanbanCard {
   return {
     id,
@@ -118,6 +124,7 @@ function show(
   config: TranscriptionConfigResponse | null = null,
   path = "/projects/project/kanban",
   threads: ThreadSummary[] = [],
+  projects = [project],
 ) {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -126,7 +133,7 @@ function show(
           path="/projects/:projectId/kanban"
           element={
             <KanbanBoard
-              projects={[project]}
+              projects={projects}
               threads={threads}
               transcriptionConfig={config}
               transcriptionProvider={config?.provider ?? null}
@@ -136,6 +143,16 @@ function show(
         />
       </Routes>
     </MemoryRouter>,
+  );
+}
+
+function chooseProject(target: Project) {
+  const trigger = screen.getByLabelText("Выбрать проект", { selector: "summary" });
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  fireEvent.click(
+    within(screen.getByRole("group", { name: "Выбрать проект" })).getByRole("button", {
+      name: target.displayName,
+    }),
   );
 }
 beforeEach(() => {
@@ -257,6 +274,118 @@ describe("KanbanBoard", () => {
       "Custom operator stage",
     );
     expect(screen.getByText(project.displayName)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Выбрать проект")).not.toBeInTheDocument();
+  });
+
+  it("keeps task drafts and late board refreshes scoped to their projects", async () => {
+    let resolveRefresh!: (value: Board) => void;
+    const refreshing = new Promise<Board>((resolve) => (resolveRefresh = resolve));
+    const secondBoard = { ...board([card("two")]), id: "other", projectPath: secondProject.path };
+    api.readKanban
+      .mockResolvedValueOnce(board())
+      .mockReturnValueOnce(refreshing)
+      .mockResolvedValueOnce(secondBoard)
+      .mockResolvedValueOnce(board());
+    show(null, undefined, [], [project, secondProject]);
+    await screen.findByRole("button", { name: "Task one" });
+    chooseProject(project);
+    expect(api.readKanban).toHaveBeenCalledExactlyOnceWith(project.id);
+    const openDraft = () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Добавить задачу" })[0]);
+      return screen.getByRole("dialog", { name: "Добавить задачу" });
+    };
+    const field = (dialog: HTMLElement) =>
+      within(dialog).getByRole("textbox", { name: "Сообщение для Codex" });
+    const close = (dialog: HTMLElement) =>
+      fireEvent.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+    const first = openDraft();
+    fireEvent.change(field(first), { target: { value: "Only in the first project" } });
+    close(first);
+    act(() => window.dispatchEvent(new Event("focus")));
+
+    chooseProject(secondProject);
+    await screen.findByRole("button", { name: "Task two" });
+    expect(api.readKanban.mock.calls).toEqual([[project.id], [project.id], [secondProject.id]]);
+    await act(async () => resolveRefresh(board([card("late")])));
+    expect(screen.queryByRole("button", { name: "Task late" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Task two" })).toBeInTheDocument();
+    const second = openDraft();
+    expect(field(second)).toHaveValue("");
+    close(second);
+
+    chooseProject(project);
+    await screen.findByRole("button", { name: "Task one" });
+    const restored = openDraft();
+    expect(field(restored)).toHaveValue("Only in the first project");
+    expect(api.createKanbanCard).not.toHaveBeenCalled();
+  });
+
+  it.each(["recording", "failed upload", "pending upload"] as const)(
+    "does not carry a header %s to another project",
+    async (phase) => {
+      const stopTrack = installRecorder();
+      let rejectUpload!: (error: Error) => void;
+      const upload = new Promise<Board>((_resolve, reject) => (rejectUpload = reject));
+      if (phase === "failed upload") {
+        api.createKanbanCard.mockRejectedValueOnce(new Error("Voice upload failed"));
+      } else if (phase === "pending upload") {
+        api.createKanbanCard.mockReturnValueOnce(upload);
+      }
+      show(voice, undefined, [], [project, secondProject]);
+      await screen.findByRole("button", { name: "Task one" });
+      fireEvent.click(screen.getByRole("button", { name: "Надиктовать задачу" }));
+      const stop = await screen.findByRole("button", {
+        name: "Остановить запись и создать задачу",
+      });
+      if (phase !== "recording") {
+        fireEvent.click(stop);
+        await waitFor(() =>
+          expect(api.createKanbanCard).toHaveBeenCalledExactlyOnceWith(
+            project.id,
+            expect.objectContaining({ audio: expect.any(Object) }),
+          ),
+        );
+      }
+      if (phase === "failed upload")
+        await screen.findByRole("button", { name: "Отправить запись ещё раз" });
+
+      chooseProject(secondProject);
+      if (phase === "pending upload")
+        await act(async () => rejectUpload(new Error("Previous project upload failed")));
+
+      expect(await screen.findByRole("button", { name: "Надиктовать задачу" })).toBeEnabled();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Отправить запись ещё раз" })).toBeNull();
+      expect(api.createKanbanCard).toHaveBeenCalledTimes(phase === "recording" ? 0 : 1);
+      expect(stopTrack).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not start uploading audio that finishes encoding after leaving its board", async () => {
+    installRecorder();
+    let reader: FileReader | undefined;
+    const read = vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (
+      this: FileReader,
+    ) {
+      reader = this;
+    });
+    try {
+      show(voice, undefined, [], [project, secondProject]);
+      await screen.findByRole("button", { name: "Task one" });
+      fireEvent.click(screen.getByRole("button", { name: "Надиктовать задачу" }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Остановить запись и создать задачу" }),
+      );
+      expect(reader).toBeDefined();
+      chooseProject(secondProject);
+      await act(async () => {
+        Object.defineProperty(reader!, "result", { value: "data:audio/webm;base64,YXVkaW8=" });
+        reader!.dispatchEvent(new Event("load"));
+      });
+      expect(api.createKanbanCard).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
   });
 
   it("keeps a failed new task editable and sends only its text and creation identity", async () => {
@@ -1162,6 +1291,7 @@ describe("KanbanBoard", () => {
 });
 
 function installRecorder() {
+  const stopTrack = vi.fn();
   class FakeMediaRecorder extends EventTarget {
     static isTypeSupported() {
       return true;
@@ -1181,6 +1311,7 @@ function installRecorder() {
   vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
   Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
-    value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }) },
+    value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: stopTrack }] }) },
   });
+  return stopTrack;
 }

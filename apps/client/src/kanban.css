@@ -541,6 +541,59 @@
   display: none;
 }
 
+.kanban-pane {
+  container-type: inline-size;
+}
+
+.kanban-workspace .workspace-title h1 {
+  flex-shrink: 0;
+}
+
+.kanban-workspace .kanban-project-picker {
+  position: static;
+  min-width: 0;
+}
+
+.kanban-project-picker > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: fit-content;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-1-5);
+  color: var(--muted);
+  font: var(--weight-regular) var(--text-small)/16px var(--font-ui);
+}
+
+.kanban-project-picker > summary > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kanban-project-picker > summary > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.kanban-project-picker .kanban-project-options {
+  right: auto;
+  left: var(--space-2);
+  width: max-content;
+  min-width: min(210px, calc(100% - 2 * var(--space-2)));
+  max-width: min(300px, calc(100% - 2 * var(--space-2)));
+  border-radius: var(--chat-radius-compact);
+}
+
+.kanban-project-picker .kanban-project-options button {
+  padding-block: var(--space-1);
+}
+
+.kanban-project-options button[aria-pressed="true"] {
+  --chat-button-shadow: var(--sidebar-surface-shadow);
+}
+
 /* Header controls inside the right capsule. */
 .kanban-filter {
   display: flex;
@@ -572,29 +625,31 @@
   max-width: min(320px, calc(100vw - 2 * var(--space-5)));
 }
 
-:is(.kanban-category-options, .kanban-filter-menu .action-menu-popover) {
+:is(.kanban-project-options, .kanban-category-options, .kanban-filter-menu .action-menu-popover) {
   max-height: min(480px, 60dvh);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
 }
 
-:is(.kanban-category-options, .kanban-assignee-options) button {
+:is(.kanban-project-options, .kanban-category-options, .kanban-assignee-options) button {
   gap: var(--space-2);
   text-align: left;
 }
 
-:is(.kanban-category-options, .kanban-assignee-options) button > svg {
+:is(.kanban-project-options, .kanban-category-options, .kanban-assignee-options) button > svg {
   flex: none;
   width: 18px;
   height: 18px;
 }
 
-:is(.kanban-category-options, .kanban-assignee-options) button:not([aria-pressed="true"]) > svg {
+:is(.kanban-project-options, .kanban-category-options, .kanban-assignee-options)
+  button:not([aria-pressed="true"])
+  > svg {
   visibility: hidden;
 }
 
-:is(.kanban-category-options, .kanban-assignee-options) button > span {
+:is(.kanban-project-options, .kanban-category-options, .kanban-assignee-options) button > span {
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -616,6 +671,43 @@
 .kanban-filter-menu .action-menu-popover button > span[aria-hidden] {
   width: 18px;
   flex: none;
+}
+
+@media (pointer: coarse) {
+  .kanban-project-picker .kanban-project-options button {
+    min-height: 44px;
+  }
+}
+
+@media (min-width: 821px) {
+  /* With an expanded sidebar or details panel, use the compact header actions. */
+  @container (max-width: 640px) {
+    .kanban-category-filter,
+    .kanban-archive-button,
+    .kanban-add-button > span {
+      display: none;
+    }
+
+    .kanban-filter-menu {
+      display: block;
+    }
+
+    .kanban-add-button {
+      width: var(--control-height);
+      padding: 0;
+      border-radius: 50%;
+    }
+
+    .kanban-workspace .kanban-pane .workspace-header .workspace-title > div:last-child {
+      display: block;
+    }
+  }
+}
+
+@media (max-width: 820px) {
+  .kanban-project-picker > summary {
+    padding-inline-start: 0;
+  }
 }
 
 /* Task details: the session details panel. */
