@@ -465,7 +465,34 @@ for (const width of [320, 820, 821]) {
       );
     }
     await expect(add).toBeInViewport();
-    await expect(header.getByLabel("Ещё", { exact: true })).toBeVisible();
+    const compactFilter = header.locator(".kanban-filter-menu");
+    const more = compactFilter.locator("summary");
+    await expect(more).toBeVisible();
+    if (width >= 820) {
+      const categories = compactFilter.locator(".action-menu-popover");
+      const frontend = categories.getByRole("button", { name: "Фронтенд", exact: true });
+      await more.focus();
+      await page.keyboard.press("ArrowDown");
+      await expect(
+        categories.getByRole("button", { name: "Все категории", exact: true }),
+      ).toBeFocused();
+      await page.keyboard.press("ArrowDown");
+      await expect(frontend).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(categories).toBeHidden();
+      await expect(more).toBeFocused();
+      await expect(more).toHaveCSS("outline-style", "solid");
+      await expect(more).toHaveCSS("outline-width", "2px");
+      await page.screenshot({ path: info.outputPath(`compact-filter-focus-${width}.png`) });
+
+      await more.press("ArrowDown");
+      await expect(frontend).toHaveAttribute("aria-pressed", "true");
+      await page.keyboard.press("Escape");
+      await expect(categories).toBeHidden();
+      await expect(more).toBeFocused();
+      await more.press("ArrowDown");
+      await page.keyboard.press("Enter");
+    }
     await trigger.click();
     const options = header.getByRole("group", { name: "Выбрать проект" });
     const pane = (await page.locator(".kanban-pane").boundingBox())!;
