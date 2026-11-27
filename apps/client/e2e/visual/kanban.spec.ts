@@ -130,6 +130,10 @@ for (const [device, viewport] of [
           const header = page.locator(".kanban-pane .workspace-header");
           const trigger = header.locator(`summary[aria-label="${pickerLabel}"]`);
           const options = header.getByRole("group", { name: pickerLabel });
+          const search = options.getByRole("searchbox", {
+            name: language === "ru" ? "Найти проект" : "Find a project",
+          });
+          const projectOptions = options.getByRole("button");
           const nestOption = options.getByRole("button", { name: "CodexNest" });
           const mineralOption = options.getByRole("button", { name: "Минеральный атлас" });
           const readSavedProject = () =>
@@ -140,6 +144,7 @@ for (const [device, viewport] of [
               path: info.outputPath(`${device}-${theme}-${language}-${step}.png`),
             });
           };
+          const open = () => (isPhone ? trigger.tap() : trigger.click());
 
           await page.goto("/threads/session-active");
           await expect(page.getByRole("heading", { name: "Сверка токенов темы" })).toBeVisible();
@@ -177,21 +182,50 @@ for (const [device, viewport] of [
               .locator("span")
               .evaluate((element) => element.scrollWidth <= element.clientWidth + 1);
           expect(await projectNameFits()).toBe(true);
+          const titleBounds = (await header.locator(".workspace-title").boundingBox())!;
+          const triggerBounds = (await trigger.boundingBox())!;
+          if (isPhone) {
+            expect(triggerBounds.y).toBeGreaterThan(titleBounds.y + titleBounds.height);
+            const stages = (await page.locator(".kanban-stage-bar").boundingBox())!;
+            expect(stages.y).toBeGreaterThan(triggerBounds.y + triggerBounds.height);
+          } else {
+            expect(triggerBounds.x).toBeGreaterThan(titleBounds.x + titleBounds.width);
+            expect(triggerBounds.y).toBe(titleBounds.y);
+          }
           await expect(options).toBeHidden();
-          await capture("02-nest");
+          await capture("02-closed");
 
-          if (isPhone) await trigger.tap();
-          else await trigger.click();
-          await expect(options.getByRole("button")).toHaveText(["CodexNest", "Минеральный атлас"]);
+          await open();
+          await expect(search).toBeFocused();
+          await expect(projectOptions).toHaveText(["CodexNest", "Минеральный атлас"]);
           const menu = (await options.boundingBox())!;
           expect(menu.width).toBeGreaterThanOrEqual(210);
-          expect(menu.y).toBeGreaterThanOrEqual((await trigger.boundingBox())!.y + 24);
+          expect(menu.y).toBeGreaterThan(triggerBounds.y + triggerBounds.height);
+          expect(menu.x).toBeCloseTo(triggerBounds.x, 0);
           await expect(nestOption).toHaveAttribute("aria-pressed", "true");
           await expect(mineralOption).toHaveAttribute("aria-pressed", "false");
           if (isPhone) await expect(nestOption).toHaveCSS("min-height", "44px");
           expect([...new Set(reads)]).toEqual(["project-nest"]);
-          await capture("03-picker");
+          await capture("03-search");
+          const searchTop = (await search.boundingBox())!.y;
+          await page.keyboard.insertText("  мИНЕральный  ");
+          await expect(projectOptions).toHaveText(["Минеральный атлас"]);
+          expect((await search.boundingBox())!.y).toBe(searchTop);
+          await capture("04-filtered");
+          await search.fill("zebra");
+          await expect(options.getByRole("status")).toHaveText(
+            language === "ru" ? "Совпадений нет" : "No matches",
+          );
+          await expect(projectOptions).toHaveCount(0);
+          await search.press("Enter");
+          await expect(page).toHaveURL(/\/projects\/project-nest\/kanban$/);
+          await capture("05-empty");
+          await header.getByRole("heading", { name: boardLabel, exact: true }).click();
+          await expect(options).toBeHidden();
 
+          await open();
+          await expect(search).toBeFocused();
+          await expect(search).toHaveValue("");
           const beforeSelectingCurrent = await page.evaluate(() => history.length);
           if (isPhone) await nestOption.tap();
           else await nestOption.click();
@@ -199,12 +233,11 @@ for (const [device, viewport] of [
           await expect(options).toBeHidden();
           await expect(page).toHaveURL(/\/projects\/project-nest\/kanban$/);
           expect(await page.evaluate(() => history.length)).toBe(beforeSelectingCurrent);
-          await trigger.click();
-          await header.getByRole("heading", { name: boardLabel, exact: true }).click();
-          await expect(options).toBeHidden();
 
           if (isPhone) {
             await trigger.tap();
+            await expect(search).toBeFocused();
+            await search.fill("атлас");
             await mineralOption.tap();
           } else {
             const filter = header.locator(".kanban-category-filter summary");
@@ -213,25 +246,27 @@ for (const [device, viewport] of [
             await page.getByRole("button", { name: nestCard, exact: true }).click();
             const card = page.getByRole("complementary", { name: nestCard });
             await expect(card).toBeVisible();
-            await trigger.press("ArrowDown");
+            await trigger.press("Enter");
+            await expect(search).toBeFocused();
+            await page.keyboard.press("Tab");
             await expect(nestOption).toBeFocused();
-            await page.keyboard.press("End");
+            await page.keyboard.press("ArrowDown");
             await expect(mineralOption).toBeFocused();
             await page.keyboard.press("Escape");
             await expect(trigger).toBeFocused();
             await expect(options).toBeHidden();
             await trigger.press("Space");
-            await expect(options).toBeVisible();
-            await page.keyboard.press("Tab");
-            await expect(nestOption).toBeFocused();
-            await page.keyboard.press("Enter");
+            await expect(search).toBeFocused();
+            await search.fill("codex");
+            await search.press("Enter");
             await expect(card).toBeVisible();
             await expect(filter).toHaveText("Фронтенд");
             await expect(options).toBeHidden();
             await expect(trigger).toBeFocused();
             await trigger.press("ArrowUp");
-            await expect(mineralOption).toBeFocused();
-            await page.keyboard.press("Enter");
+            await expect(search).toBeFocused();
+            await search.fill("  мИНЕральный  ");
+            await search.press("Enter");
             await expect(card).toBeHidden();
           }
 
@@ -243,14 +278,14 @@ for (const [device, viewport] of [
           await expect(options).toBeHidden();
           expect(await readSavedProject()).toBe("project-mineral");
           expect([...new Set(reads)]).toEqual(["project-nest", "project-mineral"]);
-          await capture("04-mineral");
+          await capture("06-mineral");
           const beforeBack = reads.length;
           await page.goBack();
           await expect(page).toHaveURL(/\/projects\/project-nest\/kanban$/);
           await expect(page.getByRole("button", { name: nestCard, exact: true })).toBeVisible();
           await expect(trigger).toHaveText("CodexNest");
           expect(reads[beforeBack]).toBe("project-nest");
-          await capture("05-back");
+          await capture("07-back");
         });
       }
 
@@ -312,6 +347,9 @@ for (const [device, viewport] of [
         const header = page.locator(".kanban-pane .workspace-header");
         const trigger = header.locator(`summary[aria-label="${pickerLabel}"]`);
         const options = header.getByRole("group", { name: pickerLabel });
+        const search = options.getByRole("searchbox", {
+          name: ru ? "Найти проект" : "Find a project",
+        });
         const current = options.getByRole("button", { name: "CodexNest" });
         const alternative = options.getByRole("button", { name: "Минеральный атлас" });
         const open = () => (isPhone ? trigger.tap() : trigger.click());
@@ -330,7 +368,16 @@ for (const [device, viewport] of [
           name: ru ? "Остановить запись и создать задачу" : "Stop recording and create the task",
         });
         await expect(stop).toBeVisible();
+        if (isPhone) {
+          await page.setViewportSize({ width: 320, height: viewport.height });
+          const title = header.getByRole("heading", { level: 1 });
+          expect(
+            await title.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+          ).toBe(true);
+          await page.setViewportSize(viewport);
+        }
         await open();
+        await expect(search).toBeFocused();
         await expect(options).toHaveAccessibleDescription(reason);
         await expect(options).toBeInViewport({ ratio: 1 });
         await expect(current).toBeEnabled();
@@ -339,7 +386,14 @@ for (const [device, viewport] of [
         if (isPhone) await alternative.tap({ force: true });
         else await alternative.click({ force: true });
         await expect(page).toHaveURL(/\/projects\/project-nest\/kanban$/);
-        await trigger.press("End");
+        await search.fill("атлас");
+        await expect(alternative).toBeDisabled();
+        await search.press("Enter");
+        await expect(page).toHaveURL(/\/projects\/project-nest\/kanban$/);
+        await search.fill("");
+        await search.press("Tab");
+        await expect(current).toBeFocused();
+        await page.keyboard.press("End");
         await expect(current).toBeFocused();
         await page.keyboard.press("Escape");
         await expect(options).toBeHidden();
@@ -358,9 +412,9 @@ for (const [device, viewport] of [
         await discard.click();
         await open();
         await expect(options.getByText(reason)).toHaveCount(0);
+        await search.fill("атлас");
         await expect(alternative).toBeEnabled();
-        if (isPhone) await alternative.tap();
-        else await alternative.click();
+        await search.press("Enter");
         await expect(page).toHaveURL(/\/projects\/project-mineral\/kanban$/);
       });
     }
@@ -399,9 +453,17 @@ for (const width of [320, 820, 821]) {
     const add = header.getByRole("button", { name: "Добавить задачу" });
     const actions = header.locator(".workspace-actions");
     const triggerBounds = (await trigger.boundingBox())!;
-    expect(triggerBounds.x + triggerBounds.width).toBeLessThanOrEqual(
-      (await actions.boundingBox())!.x,
-    );
+    const actionsBounds = (await actions.boundingBox())!;
+    if (triggerBounds.y < actionsBounds.y + actionsBounds.height) {
+      expect(triggerBounds.x + triggerBounds.width).toBeLessThanOrEqual(actionsBounds.x);
+    } else {
+      const firstRow = page
+        .locator(width <= 820 ? ".kanban-stage-bar" : ".kanban-lane-head")
+        .first();
+      expect((await firstRow.boundingBox())!.y).toBeGreaterThan(
+        triggerBounds.y + triggerBounds.height,
+      );
+    }
     await expect(add).toBeInViewport();
     await expect(header.getByLabel("Ещё", { exact: true })).toBeVisible();
     await trigger.click();
@@ -418,6 +480,51 @@ for (const width of [320, 820, 821]) {
     await expect(page.getByRole("button", { name: mineralCard, exact: true })).toBeVisible();
   });
 }
+
+test.describe("kanban project switcher above the mobile keyboard", () => {
+  test.use({ viewport: PHONE_VIEWPORT, hasTouch: true, isMobile: true });
+
+  test("scrolls long results under a stationary search field", async ({ page }, info) => {
+    const additionalProjects = Array.from({ length: 18 }, (_, index) => ({
+      ...snapshot.projects[0]!,
+      id: `project-${index}`,
+      displayName: `Проект ${index}`,
+    }));
+    await installVisualFixture(page, {
+      theme: "dark",
+      snapshot: { ...snapshot, projects: [...snapshot.projects, ...additionalProjects] },
+    });
+    await mockProjectBoards(page);
+    await page.goto("/projects/project-nest/kanban");
+    const trigger = page.locator("summary[aria-label='Выбрать проект']");
+    await trigger.tap();
+    const popup = page.getByRole("group", { name: "Выбрать проект" });
+    const search = popup.getByRole("searchbox", { name: "Найти проект" });
+    const results = popup.locator(".kanban-project-results");
+    await expect(search).toBeFocused();
+    await expect(results.getByRole("button")).toHaveCount(20);
+    await page.evaluate(() => {
+      const visual = window.visualViewport!;
+      Object.defineProperty(visual, "height", { configurable: true, value: 260 });
+      visual.dispatchEvent(new Event("resize"));
+    });
+    await expect
+      .poll(async () => {
+        const bounds = (await popup.boundingBox())!;
+        return bounds.y + bounds.height;
+      })
+      .toBeLessThanOrEqual(260);
+    const searchTop = (await search.boundingBox())!.y;
+    await results.evaluate((list) => (list.scrollTop = list.scrollHeight));
+    expect(await results.evaluate((list) => list.scrollTop)).toBeGreaterThan(0);
+    expect((await search.boundingBox())!.y).toBe(searchTop);
+    await search.fill("  ПРОекТ 12  ");
+    await expect(results.getByRole("button")).toHaveText(["Проект 12"]);
+    expect(await results.evaluate((list) => list.scrollTop)).toBe(0);
+    expect((await search.boundingBox())!.y).toBe(searchTop);
+    await page.screenshot({ path: info.outputPath("phone-dark-keyboard-viewport.png") });
+  });
+});
 
 for (const width of [390, 1440]) {
   for (const theme of ["light", "dark"] as const) {
