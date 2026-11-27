@@ -1259,6 +1259,19 @@ export class AppProjection extends EventEmitter {
     return this.publishThread(threadId)!;
   }
 
+  awaitingPlanApproval(threadId: string): boolean {
+    const meta = this.store.view().threadMeta[threadId];
+    if (!meta?.awaitingPlanResponse) return false;
+    const result = meta.lastResult;
+    // A working checklist can need attention without asking the operator to approve a plan.
+    return (
+      meta.settings?.collaborationMode === "plan" ||
+      !result ||
+      result.hasProposedPlan === true ||
+      !latestPlanChecklistIsIncomplete(meta.timelineArtifacts?.[result.turnId])
+    );
+  }
+
   async markViewed(threadId: string, observedUpdatedAt: number): Promise<void> {
     const cached = this.threads.get(threadId);
     if (!cached) throw new Error("Thread not found");
@@ -3026,6 +3039,7 @@ export class AppProjection extends EventEmitter {
         }
         item.awaitingPlanResponse =
           awaitingPlanResponse && item.dismissedPlanTurnId !== lastResult?.turnId;
+        if (awaitingPlanResponse && item.lastResult) item.lastResult.hasProposedPlan = true;
         draft.threadMeta[cached.thread.id] = item;
       });
     };
@@ -3195,6 +3209,7 @@ export class AppProjection extends EventEmitter {
         if (meta.lastResult?.turnId !== turn.id) {
           meta.lastResult = { turnId: turn.id, completedAt: completedAt ?? updatedAt };
         }
+        if (hasPlan) meta.lastResult.hasProposedPlan = true;
         this.updateCapacityRetry(meta, cached, turn, recovered);
         retainedTextChanged = updateInterruptedTextActivities(
           meta,
@@ -5388,7 +5403,9 @@ function turnContainsPlan(turn: Turn): boolean {
   return turn.items.some((item) => item.type === "plan" && item.text.trim());
 }
 
-function latestPlanChecklistIsIncomplete(items: TimelineArtifact[] | undefined): boolean {
+function latestPlanChecklistIsIncomplete(
+  items: readonly DeepReadonly<TimelineArtifact>[] | undefined,
+): boolean {
   if (!items) return false;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];

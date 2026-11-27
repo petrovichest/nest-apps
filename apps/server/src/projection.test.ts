@@ -6027,9 +6027,12 @@ describe("AppProjection", () => {
       ],
     );
 
+    await projection.setSettings("one", { collaborationMode: "default" });
+    expect(projection.awaitingPlanApproval("one")).toBe(true);
     await projection.setCurrentTurn("one", "implementation-turn");
     expect(projection.summary("one")?.state).toBe("running");
     expect(store.snapshot().threadMeta.one?.awaitingPlanResponse).toBe(false);
+    expect(projection.awaitingPlanApproval("one")).toBe(false);
   });
 
   it("uses only the latest checklist to detect an incomplete successful turn", async () => {

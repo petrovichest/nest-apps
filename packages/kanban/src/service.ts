@@ -87,7 +87,10 @@ type WorkerThreadSummary = Pick<
   ThreadSummary,
   "id" | "state" | "currentTurnId" | "awaitingPlanResponse" | "unread" | "unseen" | "updatedAt"
 > &
-  Partial<Pick<ThreadSummary, "archived">>;
+  Partial<Pick<ThreadSummary, "archived">> & {
+    /** Owners can distinguish a plan approval from other attention signals. */
+    awaitingPlanApproval?: boolean;
+  };
 type ThreadObservation = { state: string };
 type ThreadSignal = {
   threadId: string;
@@ -1457,7 +1460,12 @@ export class KanbanService {
       ) {
         if (this.options.adapter.threadSummary) {
           const summary = this.options.adapter.threadSummary(sender.threadId);
-          if (!summary || summary.archived || summary.awaitingPlanResponse) continue;
+          if (
+            !summary ||
+            summary.archived ||
+            (summary.awaitingPlanApproval ?? summary.awaitingPlanResponse)
+          )
+            continue;
         }
         this.runWorkerOperation(`reply-${session.id}`, () => this.deliverWorkerResult(session.id));
       }

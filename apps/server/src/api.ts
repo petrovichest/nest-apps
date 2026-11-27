@@ -4262,7 +4262,12 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           automatic: job.workerResult,
         });
       },
-      threadSummary: (threadId) => projection.summary(threadId),
+      threadSummary(threadId) {
+        const summary = projection.summary(threadId);
+        return summary?.awaitingPlanResponse
+          ? { ...summary, awaitingPlanApproval: projection.awaitingPlanApproval(threadId) }
+          : summary;
+      },
       async threadState(threadId) {
         const classifier = kanbanClassifiers.get(threadId);
         if (classifier) {

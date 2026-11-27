@@ -3000,6 +3000,113 @@ describe("skills API and explicit invocation", () => {
   });
 });
 
+describe("worker result delivery", () => {
+  it("resumes an idle lead with an incomplete working checklist when a worker finishes", async () => {
+    const { app, bridge, projection, store } = await createTeamHarness();
+    const result = "Review passed";
+    const leadTurnId = "lead-checklist-turn";
+    const workerTurnId = "review-turn";
+    const workersDir = join(dirname(store.path), "kanban", "workers");
+    try {
+      await mkdir(workersDir, { recursive: true });
+      const session = {
+        processId: "lead",
+        provider: "codex",
+        projectKey: null,
+        projectPath: null,
+        projectName: null,
+        description: "Review the change",
+        expectedResult: "A verdict",
+        createdAt: 1,
+        updatedAt: 1,
+        started: true,
+      };
+      await writeFile(
+        join(workersDir, "processes.json"),
+        JSON.stringify({
+          lead: {
+            ...session,
+            id: "lead",
+            parentId: null,
+            workerId: "lead",
+            workerName: "Lead",
+            threadId: "thread",
+            kind: "session",
+            title: "Coordinate the review",
+            status: "running",
+          },
+          review: {
+            ...session,
+            id: "review",
+            parentId: "lead",
+            workerId: "reviewer",
+            workerName: "Reviewer",
+            threadId: "reviewer-thread",
+            kind: "assignment",
+            title: "Review",
+            status: "running",
+            wait: true,
+            reported: { result },
+          },
+        }),
+      );
+      await projection.setSettings("thread", { collaborationMode: "default" });
+      await projection.setCurrentTurn("thread", leadTurnId);
+      projection.upsertThread(testThread("reviewer-thread"));
+      await projection.setCurrentTurn("reviewer-thread", workerTurnId);
+      await app.ready();
+
+      bridge.emit("notification", {
+        method: "turn/plan/updated",
+        params: {
+          threadId: "thread",
+          turnId: leadTurnId,
+          explanation: "Waiting for the review",
+          plan: [{ step: "Read the worker's result", status: "pending" }],
+        },
+      } satisfies ServerNotification);
+      await vi.waitFor(() =>
+        expect(store.view().threadMeta.thread?.timelineArtifacts?.[leadTurnId]).toHaveLength(1),
+      );
+      bridge.emit("notification", {
+        method: "turn/completed",
+        params: { threadId: "thread", turn: testTurn(leadTurnId, "completed") },
+      } satisfies ServerNotification);
+      await vi.waitFor(() =>
+        expect(projection.summary("thread")).toMatchObject({
+          currentTurnId: null,
+          awaitingPlanResponse: true,
+          state: "needsAttention",
+        }),
+      );
+      bridge.emit("notification", {
+        method: "turn/completed",
+        params: { threadId: "reviewer-thread", turn: testTurn(workerTurnId, "completed") },
+      } satisfies ServerNotification);
+
+      const messageId = "kanban:review:resume";
+      await vi.waitFor(() =>
+        expect(store.view().messageReceipts?.[messageId]).toMatchObject({
+          threadId: "thread",
+          status: "delivered",
+        }),
+      );
+      expect(bridge.request.mock.calls.filter(([method]) => method === "turn/start")).toEqual([
+        [
+          "turn/start",
+          expect.objectContaining({
+            threadId: "thread",
+            clientUserMessageId: messageId,
+            input: [expect.objectContaining({ text: expect.stringContaining(result) })],
+          }),
+        ],
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("worker memory on continued turns", () => {
   it("passes fresh project memory to an open worker session as separate context", async () => {
     const { app, bridge, headers, projectPath } = await createSkillsHarness({ realProject: true });
