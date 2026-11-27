@@ -425,6 +425,7 @@ describe("App routing and navigation", () => {
       limits,
       status,
       within(controls as HTMLElement).getByRole("link", { name: "Работники" }),
+      within(controls as HTMLElement).getByRole("link", { name: "Доска задач" }),
       addProject,
       search,
     ]);
@@ -519,6 +520,58 @@ describe("App routing and navigation", () => {
     expect(manualNavigationIntent).toHaveBeenCalledTimes(1);
     fireEvent.click(within(nav).getByLabelText("Действия с проектом Проект"));
     expect(within(nav).queryByRole("button", { name: "Доска задач" })).toBeNull();
+  });
+
+  it("opens the current session's project board from the sidebar without preloading it", async () => {
+    localStorage.setItem("codexnest.boardProject", "project");
+    const api = mockConnection(
+      snapshot(
+        [{ ...baseThread, projectId: "second-project" }],
+        [defaultProject(), testProject("second-project", "Второй")],
+      ),
+    );
+    await renderList("/threads/newer");
+
+    const boardLink = screen.getByRole("link", { name: "Доска задач" });
+    expect(boardLink).toHaveAttribute("href", "/projects/second-project/kanban");
+    expect(boardLink).not.toHaveAttribute("aria-current");
+    expect(api.readKanban).not.toHaveBeenCalled();
+
+    fireEvent.click(boardLink);
+
+    expect(await screen.findByRole("heading", { name: "Доска задач" })).toBeVisible();
+    expect(boardLink).toHaveAttribute("aria-current", "page");
+    expect(manualNavigationIntent).toHaveBeenCalledOnce();
+    expect(api.readKanban).toHaveBeenCalledExactlyOnceWith("second-project");
+  });
+
+  it.each([
+    ["/projects/second-project/kanban", "project", "second-project"],
+    ["/new?projectId=second-project", "project", "second-project"],
+    ["/new?projectId=missing", "second-project", "second-project"],
+    ["/new", "second-project", "second-project"],
+    ["/settings", "second-project", "second-project"],
+    ["/projects/missing/kanban", "deleted", "project"],
+  ])("points the sidebar board link on %s to a known project", async (path, stored, expected) => {
+    localStorage.setItem("codexnest.boardProject", stored);
+    mockConnection(snapshot([], [defaultProject(), testProject("second-project", "Второй")]));
+
+    await renderList(path);
+
+    expect(screen.getByRole("link", { name: "Доска задач" })).toHaveAttribute(
+      "href",
+      `/projects/${expected}/kanban`,
+    );
+  });
+
+  it.each(["loading", "empty"])("omits the board link while projects are %s", async (status) => {
+    localStorage.setItem("codexnest.boardProject", "project");
+    mockConnection(status === "loading" ? null : snapshot([], []));
+
+    await renderList("/settings");
+
+    expect(screen.queryByRole("link", { name: "Доска задач" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Добавить проект" })).toBeEnabled();
   });
 
   it("keeps projects open or folded while their board icons remain available", async () => {
@@ -1704,12 +1757,14 @@ describe("App routing and navigation", () => {
         name: "Состояние сервера: Подключено",
       });
       const addProject = within(controls).getByRole("button", { name: "Добавить проект" });
+      const board = within(controls).getByRole("link", { name: "Доска задач" });
       expect(Array.from(controls.children)).toEqual([
         settings,
         update,
         limits,
         status,
         within(controls).getByRole("link", { name: "Работники" }),
+        board,
         addProject,
         search,
       ]);
@@ -1721,6 +1776,7 @@ describe("App routing and navigation", () => {
         settings,
         update,
         within(controls).getByRole("link", { name: "Работники" }),
+        board,
       ]);
 
       search.focus();
@@ -1765,6 +1821,7 @@ describe("App routing and navigation", () => {
       limits,
       status,
       within(controls as HTMLElement).getByRole("link", { name: "Работники" }),
+      within(controls).getByRole("link", { name: "Доска задач" }),
       addProject,
       search,
     ]);
@@ -5275,9 +5332,10 @@ function snapshot(threads: ThreadSummary[], projects: Project[] = [defaultProjec
 }
 
 function mockConnection(
-  appSnapshot: AppSnapshot,
+  appSnapshot: AppSnapshot | null,
   network: "connecting" | "connected" | "offline" = "connected",
 ) {
+  const threads = appSnapshot?.threads ?? [];
   const api = {
     settings: { baseUrl: "https://codexnest.example", token: "token" },
     markRead: vi.fn().mockResolvedValue(undefined),
@@ -5378,7 +5436,7 @@ function mockConnection(
     state: {
       snapshot: appSnapshot,
       details: Object.fromEntries(
-        appSnapshot.threads.map((thread) => [
+        threads.map((thread) => [
           thread.id,
           { summary: thread, turns: [], queuedMessages: [], olderTurnsCursor: null },
         ]),
@@ -5390,7 +5448,7 @@ function mockConnection(
     dispatch: api.dispatch,
     reconnect: vi.fn(),
     refreshDetail: vi.fn().mockImplementation(async (id: string) => ({
-      summary: appSnapshot.threads.find((thread) => thread.id === id),
+      summary: threads.find((thread) => thread.id === id),
       turns: [],
       queuedMessages: [],
       olderTurnsCursor: null,

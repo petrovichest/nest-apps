@@ -72,6 +72,8 @@ for (const { mobile, theme, sidebarSide, updateAvailable } of [
     const connection = controls.getByRole("status", {
       name: "Состояние сервера: Подключено",
     });
+    const workers = controls.getByRole("link", { name: "Работники", exact: true });
+    const board = controls.getByRole("link", { name: "Доска задач", exact: true });
     const addProject = controls.getByRole("button", { name: "Добавить проект", exact: true });
     const search = controls.getByRole("button", { name: "Поиск по диалогам", exact: true });
     await expect(page.locator(".app-frame")).toHaveAttribute("data-sidebar-side", sidebarSide);
@@ -84,25 +86,16 @@ for (const { mobile, theme, sidebarSide, updateAvailable } of [
     await expect(search).toHaveText("");
     await expect(search).toHaveAttribute("title", "Поиск по диалогам");
     await expect(sidebar.getByText("Поиск по диалогам", { exact: true })).toHaveCount(0);
-    expect(await controls.locator(":scope > *").evaluateAll((elements) => elements.length)).toBe(6);
-    expect(
-      await settings.evaluate((element) => element === element.parentElement?.children[0]),
-    ).toBe(true);
-    expect(await update.evaluate((element) => element === element.parentElement?.children[1])).toBe(
-      true,
-    );
-    expect(await limits.evaluate((element) => element === element.parentElement?.children[2])).toBe(
-      true,
-    );
-    expect(
-      await connection.evaluate((element) => element === element.parentElement?.children[3]),
-    ).toBe(true);
-    expect(
-      await addProject.evaluate((element) => element === element.parentElement?.children[4]),
-    ).toBe(true);
-    expect(await search.evaluate((element) => element === element.parentElement?.children[5])).toBe(
-      true,
-    );
+    const cells = [settings, update, limits, connection, workers, board, addProject, search];
+    await expect(controls.locator(":scope > *")).toHaveCount(cells.length);
+    for (const [index, cell] of cells.entries()) {
+      expect(
+        await cell.evaluate(
+          (element, position) => element === element.parentElement?.children[position],
+          index,
+        ),
+      ).toBe(true);
+    }
     expect((await settings.locator("svg").boundingBox())!.x).toBe(
       (await limits.locator("svg").boundingBox())!.x,
     );
@@ -134,6 +127,10 @@ for (const { mobile, theme, sidebarSide, updateAvailable } of [
     await expect(update).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(limits).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(workers).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(board).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(addProject).toBeFocused();
     await page.keyboard.press("Tab");

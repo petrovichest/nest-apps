@@ -91,6 +91,36 @@ for (const width of [320, 390, 1440]) {
       await expect(nav.locator(".show-more")).toHaveCount(0);
       await expect(nav.getByText("Прочитанная сессия")).toHaveCount(0);
       await page.screenshot({ path: info.outputPath(`active-${width}.png`) });
+
+      const sidebar = page.locator(".sidebar");
+      const controls = sidebar.locator(".sidebar-controls");
+      const taskBoard = controls.getByRole("link", { name: "Доска задач" });
+      await expect(taskBoard).toHaveAttribute("href", "/projects/project-nest/kanban");
+      expect(boardReads).toBe(0);
+      if (width <= 820) {
+        await taskBoard.tap();
+      } else {
+        await controls.getByRole("link", { name: "Работники" }).focus();
+        await page.keyboard.press("Tab");
+        await expect(taskBoard).toBeFocused();
+        await expect(taskBoard).toHaveCSS("outline-style", "solid");
+        await page.keyboard.press("Tab");
+        await expect(controls.getByRole("button", { name: "Добавить проект" })).toBeFocused();
+        await page.keyboard.press("Shift+Tab");
+        await page.keyboard.press("Enter");
+      }
+      await expect(page).toHaveURL(/\/projects\/project-nest\/kanban$/);
+      await expect(page.getByRole("heading", { name: "Доска задач", exact: true })).toBeVisible();
+      await expect.poll(() => boardReads).toBeGreaterThan(0);
+      if (width <= 820) await expect(sidebar).not.toHaveClass(/open/);
+      await openDrawer();
+      await expect(taskBoard).toHaveAttribute("aria-current", "page");
+      await page.goBack();
+      await expect(page).toHaveURL(/\/threads\/sidebar-session-2$/);
+      if (width <= 820) await expect(sidebar).not.toHaveClass(/open/);
+      await openDrawer();
+      await expect(taskBoard).not.toHaveAttribute("aria-current");
+
       await page.getByRole("button", { name: "Проекты", exact: true }).click();
       await toggle.click();
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
