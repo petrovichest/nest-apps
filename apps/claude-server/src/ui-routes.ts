@@ -10,6 +10,7 @@ import type {
   QueueMessageRequest,
   SessionSettings,
   SessionReference,
+  ThreadArtifactsResponse,
   ThreadSummary,
   UpdateThreadDraftRequest,
   UpdateTranscriptionSettingsRequest,
@@ -27,6 +28,7 @@ import { transcriptMatch, turnOccurrences } from "./search";
 import { listClaudeSkills, setClaudeSkillEnabled } from "./skills";
 import { ClaudeVoiceService } from "./voice";
 import { UiVoiceJobs } from "./ui-voice";
+import { artifactSessionKey, authorizeArtifactCall, PUBLISH_ARTIFACT_TOOL } from "./artifact-tool";
 
 type Params = {
   id: string;
@@ -135,6 +137,82 @@ function throwDownloadFilesystemError(error: unknown): never {
     throw new AppError("invalid_request", "Invalid file path");
   throw new Error("File could not be opened", { cause: error });
 }
+
+export function registerSessionArtifacts(app: FastifyInstance, ui: UiService) {
+  const resolveArtifact = (cwd: string, path: string) => {
+    if (
+      !isAbsolute(path) &&
+      (path.includes("\\") ||
+        path.split("/").some((part) => !part || part === "." || part === ".."))
+    )
+      throw new AppError("invalid_request", "Use a workspace-relative file path");
+    return resolveDownloadFile(
+      isAbsolute(path) ? path : join(cwd, path),
+      cwd,
+      ui.attachments.root,
+      async () => false,
+    );
+  };
+  app.get("/api/v1/threads/:id/artifacts", async (request): Promise<ThreadArtifactsResponse> => {
+    const thread = ui.thread(params(request).id);
+    if (thread.subagent) return { capability: "unavailable", artifacts: [] };
+    const artifacts: ThreadArtifactsResponse["artifacts"] = [];
+    for (const artifact of thread.sessionArtifacts ?? []) {
+      try {
+        const file = await resolveArtifact(thread.cwd, artifact.path);
+        const relativePath = relative(file.root, file.path);
+        if (relativePath === artifact.path)
+          artifacts.push({ ...artifact, path: file.path, relativePath, fileName: file.fileName });
+      } catch {
+        // Deleted or newly unsafe paths are no longer offered for download.
+      }
+    }
+    return { capability: "explicit", artifacts };
+  });
+  return {
+    definition: PUBLISH_ARTIFACT_TOOL,
+    async available(id: string) {
+      const thread = Object.hasOwn(ui.store.data.threads, id) && ui.store.data.threads[id];
+      if (!thread || thread.archived || thread.subagent) return false;
+      const descriptor = await ui.manager.descriptor(id).catch(() => undefined);
+      return Boolean(descriptor?.artifactSigningKey);
+    },
+    async publish(id: string, args: unknown, metadata: unknown) {
+      if (!ui.manager.accepting)
+        throw new AppError("unavailable", "The application is preparing a restart", 503);
+      const { path, label, turnId, createdAt } = authorizeArtifactCall(
+        artifactSessionKey(ui.manager.config.token, id),
+        args,
+        metadata,
+      );
+      const { cwd } = ui.thread(id);
+      const file = await resolveArtifact(cwd, path);
+      const relativePath = relative(file.root, file.path);
+      const artifact = await ui.store.update((data) => {
+        const thread = data.threads[id];
+        if (!thread || thread.subagent || thread.archived || thread.cwd !== cwd)
+          throw new AppError("conflict", "The publishing session changed", 409);
+        const artifacts = thread.sessionArtifacts ?? [];
+        const prior = artifacts.find((artifact) => artifact.path === relativePath);
+        if (prior && prior.createdAt >= createdAt) return prior;
+        const artifact = {
+          id: prior?.id ?? randomUUID(),
+          path: relativePath,
+          label: label ?? basename(relativePath),
+          turnId,
+          createdAt,
+        };
+        thread.sessionArtifacts = [
+          artifact,
+          ...artifacts.filter((item) => item.path !== relativePath),
+        ];
+        return artifact;
+      });
+      return { published: true, artifact };
+    },
+  };
+}
+
 export async function registerUiRoutes(
   app: FastifyInstance,
   ui: UiService,

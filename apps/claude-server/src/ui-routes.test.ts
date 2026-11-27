@@ -8,6 +8,7 @@ import type {
   QueuedMessage,
   ServerFrame,
   SkillsCatalogResponse,
+  ThreadArtifactsResponse,
   ThreadDetail,
   ThreadDraft,
   ThreadFileAttachment,
@@ -15,6 +16,7 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { buildApp } from "./app";
+import { artifactSessionKey, grantArtifactCall } from "./artifact-tool";
 import type { Config } from "./config";
 import type { SessionManager } from "./manager";
 import type { ClaudeAccounts } from "./accounts";
@@ -59,6 +61,7 @@ async function fixture(configure?: (manager: SessionManager, ui: UiService) => P
     operations.push(name);
     throw new Error(`Unexpected native operation: ${name}`);
   };
+  let mcp: Parameters<SessionManager["setSessionMessagingMcp"]>[0];
   const manager = {
     config,
     accepting: false,
@@ -70,7 +73,13 @@ async function fixture(configure?: (manager: SessionManager, ui: UiService) => P
     snapshot: async () => unexpected("snapshot"),
     command: async () => unexpected("command"),
     close: async () => {},
-    setSessionMessagingMcp: () => {},
+    setSessionMessagingMcp: (provider: typeof mcp) => {
+      mcp = provider;
+    },
+    setWorkerMemorySessions: () => {},
+    get artifactsEnabled() {
+      return Boolean(config.openRouter && mcp);
+    },
     setBrowserLaunch: () => {},
   } as unknown as SessionManager;
   const ui = new UiService(manager);
@@ -101,8 +110,137 @@ async function fixture(configure?: (manager: SessionManager, ui: UiService) => P
     expect(threadResponse.statusCode).toBe(200);
     return { project, id: threadResponse.json<{ thread: { id: string } }>().thread.id };
   };
-  return { app, ui, manager, config, directory, headers, reserve, operations };
+  return {
+    app,
+    ui,
+    manager,
+    config,
+    directory,
+    headers,
+    reserve,
+    operations,
+    mcp: (id: string) => mcp(id),
+  };
 }
+
+describe("OpenNest session artifacts", () => {
+  it("publishes only in the authenticated main session and uses workspace download tickets", async () => {
+    const { app, ui, directory, headers, config, reserve, mcp } = await fixture(async (manager) => {
+      manager.config.openRouter = {
+        keyFile: join(manager.config.configDir, "fixture-key.json"),
+        models: [],
+        endpoints: async () => [],
+        runtimeVersion: "2.1.289",
+      };
+      (manager as { accepting: boolean }).accepting = true;
+    });
+    const { id } = await reserve(),
+      { id: second } = await reserve();
+    const child = randomUUID();
+    const turnId = randomUUID();
+    const oldThread = ui.thread(id);
+    await ui.store.update((data) => {
+      data.threads[child] = {
+        ...oldThread,
+        id: child,
+        subagent: {
+          parentId: id,
+          toolUseId: "toolu_child",
+          agentType: "general-purpose",
+          status: "completed",
+        },
+      };
+    });
+    const workspace = join(directory, "workspace");
+    await mkdir(workspace);
+    await ui.store.update((data) => {
+      data.threads[id]!.cwd = workspace;
+    });
+    const filePath = join(workspace, "report.txt");
+    const outside = join(directory, "outside.txt");
+    await writeFile(filePath, "final deliverable\n");
+    await writeFile(outside, "outside\n");
+    await symlink(outside, join(workspace, "escape.txt"));
+
+    const list = async (threadId: string) => {
+      const response = await app.inject({ url: `/api/v1/threads/${threadId}/artifacts`, headers });
+      expect(response.statusCode).toBe(200);
+      return response.json<ThreadArtifactsResponse>();
+    };
+    expect(ui.snapshot().capabilities.artifacts).toBe(true);
+    expect(await list(id)).toEqual({ capability: "explicit", artifacts: [] });
+    expect(await list(child)).toEqual({ capability: "unavailable", artifacts: [] });
+    const call = (
+      threadId: string,
+      args: unknown,
+      authorization = mcp(threadId).headers.Authorization,
+    ) =>
+      app.inject({
+        method: "POST",
+        url: new URL(mcp(threadId).url).pathname,
+        headers: { authorization },
+        payload: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "publish_artifact",
+            arguments: args,
+            _meta: { "claudecode/toolUseId": "toolu_publish" },
+          },
+        },
+      });
+    const grant = (path: string) =>
+      grantArtifactCall(artifactSessionKey(config.token, id), "toolu_publish", turnId, { path });
+    const authorized = grant(filePath);
+    expect((await call(second, authorized, mcp(id).headers.Authorization)).statusCode).toBe(403);
+    for (const [thread, args] of [
+      [id, { path: "report.txt" }],
+      [second, authorized],
+      [child, authorized],
+      [id, grant("escape.txt")],
+      [id, grant("../outside.txt")],
+    ] as const) {
+      expect((await call(thread, args)).json().result.isError).toBe(true);
+    }
+    const replies = await Promise.all([call(id, authorized), call(id, authorized)]);
+    expect(replies[0]!.json().result).toEqual(replies[1]!.json().result);
+    const {
+      artifacts: [artifact],
+    } = await list(id);
+    expect(artifact).toMatchObject({
+      path: filePath,
+      relativePath: "report.txt",
+      label: "report.txt",
+      turnId,
+    });
+    expect(ui.thread(id).sessionArtifacts).toEqual([
+      {
+        id: artifact!.id,
+        path: "report.txt",
+        label: "report.txt",
+        turnId,
+        createdAt: artifact!.createdAt,
+      },
+    ]);
+    expect(await list(second)).toEqual({ capability: "explicit", artifacts: [] });
+
+    const ticket = await app.inject({
+      method: "POST",
+      url: `/api/v1/threads/${id}/downloads`,
+      headers,
+      payload: { path: artifact!.path },
+    });
+    expect(ticket.statusCode).toBe(200);
+    const { downloadUrl } = ticket.json();
+    expect((await app.inject(downloadUrl)).body).toBe("final deliverable\n");
+    expect((await app.inject(downloadUrl)).statusCode).toBe(404);
+    await rm(filePath);
+    expect((await list(id)).artifacts).toEqual([]);
+    await symlink(outside, filePath);
+    expect((await list(id)).artifacts).toEqual([]);
+  });
+});
 
 describe("project boards", () => {
   it("uses the same project board routes without starting a native session for reads", async () => {

@@ -123,6 +123,8 @@ export async function startClaudeRuntime(config: Config) {
     await ui.initialize({
       probeModels: false,
       pollRateLimits: false,
+      // Restore the Kanban worker index and bind the session MCP before dispatching saved input.
+      deferDispatch: true,
       seed: async () => {
         const legacy = await readJson<{
           version: number;

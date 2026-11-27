@@ -149,6 +149,7 @@ export class UiService extends EventEmitter {
     { fingerprint: string; promise: Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> }
   >();
   private closed = false;
+  private dispatchDeferred = false;
   private reconnect?: NodeJS.Timeout;
   private rateLimits: CodexRateLimitsState = {
     limits: null,
@@ -196,9 +197,11 @@ export class UiService extends EventEmitter {
     options: {
       probeModels?: boolean;
       pollRateLimits?: boolean;
+      deferDispatch?: boolean;
       seed?: Parameters<UiStore["initialize"]>[0];
     } = {},
   ): Promise<void> {
+    this.dispatchDeferred = options.deferDispatch ?? false;
     await this.store.initialize(options.seed);
     if (this.manager.accounts) {
       this.manager.accounts.on("changed", this.accountsChanged);
@@ -378,9 +381,15 @@ export class UiService extends EventEmitter {
   }
   private browserStatus?: (threadId: string) => BrowserThreadStatus;
   private workerSessionProvider?: (id: string) => ThreadSummary["workerSession"];
+  private workerTurnMemory?: (id: string, cwd: string) => Promise<string | undefined>;
 
-  setWorkerSessionProvider(provider: (id: string) => ThreadSummary["workerSession"]): void {
+  setWorkerSessionProvider(
+    provider: (id: string) => ThreadSummary["workerSession"],
+    turnMemory?: NonNullable<UiService["workerTurnMemory"]>,
+  ): void {
     this.workerSessionProvider = provider;
+    this.workerTurnMemory = turnMemory;
+    if (turnMemory) this.manager.setWorkerMemorySessions((id) => Boolean(provider(id)));
   }
 
   setBrowserStatusProvider(provider: (threadId: string) => BrowserThreadStatus): void {
@@ -714,7 +723,7 @@ export class UiService extends EventEmitter {
         sessionApprovalGrants: true,
         skills: true,
         gitChanges: true,
-        artifacts: false,
+        artifacts: this.manager.artifactsEnabled,
         appUpdates: !this.manager.config.openRouter || this.manager.config.managedInstall === true,
         reasoningEffort: true,
       },
@@ -1818,8 +1827,20 @@ export class UiService extends EventEmitter {
     this.publish({ type: "queue.changed", threadId: id, messages: this.thread(id).queue });
     this.publish({ type: "thread.upserted", thread: this.summary(id) });
   }
+  startDispatch(): void {
+    if (!this.dispatchDeferred) return;
+    this.dispatchDeferred = false;
+    for (const thread of Object.values(this.store.data.threads))
+      if (thread.queue.length) this.schedule(thread.id);
+  }
   schedule(id: string): void {
-    if (this.closed || !this.manager.accepting || this.dispatches.has(id) || this.stops.has(id))
+    if (
+      this.dispatchDeferred ||
+      this.closed ||
+      !this.manager.accepting ||
+      this.dispatches.has(id) ||
+      this.stops.has(id)
+    )
       return;
     if (
       this.thread(id).quotaRecovery &&
@@ -1890,6 +1911,7 @@ export class UiService extends EventEmitter {
     }
     if (owner?.state === "interrupted" && owner.awaitingResult) return;
     const idle = owner && ["idle", "interrupted", "failed", "closed"].includes(owner.state);
+    const worker = this.workerTurnMemory && this.workerSessionProvider?.(id);
     const requestedModel = this.manager.config.openRouter
       ? (this.thread(id).settings.model ??
         this.manager.config.openRouter.models.find((item) => item.isDefault)?.id)
@@ -1926,6 +1948,7 @@ export class UiService extends EventEmitter {
       !(
         candidate.deliveryMode === "steer" &&
         owner.capabilities?.steer &&
+        (!worker || owner.capabilities.workerTurnMemory) &&
         ["running", "waiting"].includes(owner.state)
       )
     )
@@ -1939,6 +1962,7 @@ export class UiService extends EventEmitter {
       (owner.state === "failed" ||
         owner.releasePath !== this.manager.config.releasePath ||
         !owner.capabilities?.steer ||
+        (worker && !owner.capabilities.workerTurnMemory) ||
         browserChanged ||
         openRouterConnectionChanged ||
         accountConnectionChanged ||
@@ -1967,15 +1991,19 @@ export class UiService extends EventEmitter {
       const thread = data.threads[id]!,
         message = this.nextMessage(thread);
       if (!message || message.deliveryError) return null;
-      const delivery = Object.values(thread.deliveries).find(
-        (item) => item.messageId === message.id,
+      const delivery = Object.entries(thread.deliveries).find(
+        ([, item]) => item.messageId === message.id,
       );
       if (!delivery) throw new AppError("conflict", "Queued message receipt is missing", 409);
       message.status = "dispatching";
       return { thread, message, delivery };
     });
     if (!admission) return;
-    const { thread, message, delivery } = admission;
+    const {
+      thread,
+      message,
+      delivery: [clientMessageId, delivery],
+    } = admission;
     this.publishQueue(id);
     const known = owner?.commands.find((item) => item.requestId === message.id);
     if (known?.status === "unknown") {
@@ -2005,9 +2033,19 @@ export class UiService extends EventEmitter {
           "The existing owner cannot accept these attachments; finish and release it before using attachments",
           409,
         );
+      // The launch message already contains the initial snapshot. Read later snapshots
+      // at dispatch, so time spent waiting in the queue does not leave them stale.
+      const workerMemory =
+        worker && !/^kanban:[\da-f-]{36}:start$/i.test(clientMessageId)
+          ? await this.workerTurnMemory?.(id, thread.cwd).catch(() => {
+              process.stderr.write("OpenNest: Worker memory is unavailable.\n");
+              return undefined;
+            })
+          : undefined;
       const content = {
         ...(message.files?.length ? { files: message.files } : {}),
         ...(delivery.imageFiles?.length ? { images: delivery.imageFiles } : {}),
+        ...(workerMemory === undefined ? {} : { workerMemory }),
       };
       const prompt = serializePastedMessage(message.text, pastedText(message));
       const result =

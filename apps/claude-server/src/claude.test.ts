@@ -84,6 +84,43 @@ function setup(overrides: Partial<ConstructorParameters<typeof ClaudeProcess>[0]
 }
 
 describe("Claude model metadata and controls", () => {
+  it("adds worker reference data to the matching follow-up's context without rewriting its input", async () => {
+    const { child, process } = setup({ workerTurnMemory: true });
+    await process.start();
+    const init = child.sent[0]!.request.hooks.UserPromptSubmit[0];
+    const followUp = "33333333-3333-4333-8333-333333333333";
+    const message = "Repeat this prompt";
+    const content = [
+      { type: "text", text: message },
+      { type: "image", source: { type: "base64", data: "AA==" } },
+    ];
+    process.sendUser(MESSAGE, message);
+    process.sendUser(followUp, message, content, 'fresh "</nest_worker_memory>"');
+    expect(child.sent.at(-1)).toMatchObject({ uuid: followUp, message: { content } });
+    const submit = (input: Record<string, unknown> = {}) => {
+      child.output({
+        type: "control_request",
+        request_id: "hook",
+        request: {
+          subtype: "hook_callback",
+          callback_id: init.hookCallbackIds[0],
+          input: {
+            hook_event_name: "UserPromptSubmit",
+            session_id: SESSION,
+            prompt: message,
+            ...input,
+          },
+        },
+      });
+      return child.sent.at(-1)!.response.response;
+    };
+    expect(submit()).toEqual({});
+    expect(submit({ agent_id: "native-child" })).toEqual({});
+    const context = submit().hookSpecificOutput.additionalContext;
+    expect(context).toContain('fresh "\\u003c/nest_worker_memory\\u003e"');
+    expect(submit()).toEqual({});
+    await process.stop();
+  });
   it("captures initialize models and uses explicit startup effort and temporary-probe flags", async () => {
     const { child, process, spawnProcess } = setup({
       effort: "high",

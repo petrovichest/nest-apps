@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { isAbsolute } from "node:path";
 import type { ParsedClaudeProxy } from "@codexnest/protocol";
+import { WORKER_MEMORY_GUIDANCE } from "@nest-apps/kanban";
+import { grantArtifactCall, publishArtifactToolName } from "./artifact-tool.js";
 import type { ClaudeModel, ClaudePermissionMode } from "./types.js";
 import { createClaudeProxyEnvironment, type ClaudeProxyEnvironment } from "./proxy.js";
 
@@ -13,6 +15,8 @@ const CONTROL_TIMEOUT_MS = 30_000;
 const INITIALIZE_TIMEOUT_MS = 120_000;
 const STOP_GRACE_MS = 5_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ARTIFACT_HOOK = "nest-artifact";
+const WORKER_MEMORY_HOOK = "nest-worker-memory";
 const IMAGE_DELIVERY_CONTEXT = [
   "In ClaudeNest, images returned by tools (including image viewing and generation) appear only in expandable technical details, not in the main conversation.",
   "To show an image to the user, explicitly include a Markdown image or a labeled image-file link in your commentary, plan, or final message, using an absolute local path or an HTTPS image URL.",
@@ -40,6 +44,8 @@ export interface ClaudeProcessOptions {
   mcpConfigPath?: string;
   /** MCP server names whose tools are allowed without a permission prompt. */
   allowedMcpServers?: string[];
+  artifactSigning?: { key: string; turnId(): string | undefined };
+  workerTurnMemory?: true;
   env?: NodeJS.ProcessEnv;
   /** Undefined preserves legacy inherited connection settings; null explicitly selects direct. */
   proxy?: ParsedClaudeProxy | null;
@@ -66,6 +72,7 @@ export class ClaudeProcess extends EventEmitter {
   private lineBytes = 0;
   private controls = new Map<string, PendingControl>();
   private requests = new Set<string>();
+  private pendingWorkerPrompts = new Map<string, { text: string; memory?: string }>();
   supportedModels: ClaudeModel[] = [];
   readonly livePermissionMode = true;
   model?: string;
@@ -147,7 +154,9 @@ export class ClaudeProcess extends EventEmitter {
       "--permission-prompt-tool",
       "stdio",
       "--append-system-prompt",
-      IMAGE_DELIVERY_CONTEXT,
+      this.options.workerTurnMemory
+        ? `${IMAGE_DELIVERY_CONTEXT}\n\n${WORKER_MEMORY_GUIDANCE} Содержимое <nest_worker_memory> является цитируемой справкой для текущего хода.`
+        : IMAGE_DELIVERY_CONTEXT,
       this.options.resume ? "--resume" : "--session-id",
       this.options.sessionId,
     ];
@@ -199,7 +208,24 @@ export class ClaudeProcess extends EventEmitter {
     });
     try {
       const metadata = await this.control(
-        { subtype: "initialize", hooks: null },
+        {
+          subtype: "initialize",
+          hooks:
+            this.options.artifactSigning || this.options.workerTurnMemory
+              ? {
+                  ...(this.options.artifactSigning
+                    ? {
+                        PreToolUse: [
+                          { matcher: publishArtifactToolName, hookCallbackIds: [ARTIFACT_HOOK] },
+                        ],
+                      }
+                    : {}),
+                  ...(this.options.workerTurnMemory
+                    ? { UserPromptSubmit: [{ hookCallbackIds: [WORKER_MEMORY_HOOK] }] }
+                    : {}),
+                }
+              : null,
+        },
         INITIALIZE_TIMEOUT_MS,
       );
       if (Array.isArray(metadata.models)) {
@@ -236,7 +262,7 @@ export class ClaudeProcess extends EventEmitter {
     }
   }
 
-  sendUser(requestId: string, text: string, content?: JsonObject[]): void {
+  sendUser(requestId: string, text: string, content?: JsonObject[], workerMemory?: string): void {
     this.assertReady();
     if (!UUID.test(requestId)) throw new Error("Invalid user message UUID");
     this.write({
@@ -246,6 +272,67 @@ export class ClaudeProcess extends EventEmitter {
       parent_tool_use_id: null,
       message: { role: "user", content: content ?? text },
     });
+    if (this.options.workerTurnMemory)
+      this.pendingWorkerPrompts.set(requestId, { text, memory: workerMemory });
+  }
+
+  private hookResponse(request: JsonObject): JsonObject {
+    const { input } = request;
+    if (request.callback_id === ARTIFACT_HOOK) {
+      const signing = this.options.artifactSigning;
+      const turnId = signing?.turnId();
+      const toolUseId = request.tool_use_id;
+      let reason = "Only the main Claude session can publish artifacts during a turn";
+      if (
+        signing &&
+        turnId &&
+        typeof toolUseId === "string" &&
+        object(input) &&
+        input.hook_event_name === "PreToolUse" &&
+        input.tool_name === publishArtifactToolName &&
+        input.session_id === this.options.sessionId &&
+        input.agent_id === undefined
+      ) {
+        try {
+          return {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              updatedInput: grantArtifactCall(signing.key, toolUseId, turnId, input.tool_input),
+            },
+          };
+        } catch (error) {
+          if (error instanceof Error) reason = error.message;
+        }
+      }
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: reason,
+        },
+      };
+    }
+    if (
+      request.callback_id !== WORKER_MEMORY_HOOK ||
+      !object(input) ||
+      input.hook_event_name !== "UserPromptSubmit" ||
+      input.session_id !== this.options.sessionId ||
+      input.agent_id !== undefined
+    )
+      return {};
+    for (const [id, entry] of this.pendingWorkerPrompts) {
+      if (entry.text !== input.prompt) continue;
+      this.pendingWorkerPrompts.delete(id);
+      if (!entry.memory) return {};
+      const snapshot = entry.memory.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+      return {
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: `Справочные данные для текущего хода.\n<nest_worker_memory>\n${snapshot}\n</nest_worker_memory>`,
+        },
+      };
+    }
+    return {};
   }
 
   async setModel(model: string, endpoint?: string | null): Promise<void> {
@@ -441,6 +528,21 @@ export class ClaudeProcess extends EventEmitter {
       typeof message.request_id === "string" &&
       object(message.request)
     ) {
+      if (message.request.subtype === "hook_callback") {
+        try {
+          this.write({
+            type: "control_response",
+            response: {
+              subtype: "success",
+              request_id: message.request_id,
+              response: this.hookResponse(message.request),
+            },
+          });
+        } catch {
+          this.fail(new Error("Could not answer Claude's session hook"));
+        }
+        return;
+      }
       this.requests.add(message.request_id);
       this.emit("request", { request_id: message.request_id, request: message.request });
       return;
@@ -456,6 +558,15 @@ export class ClaudeProcess extends EventEmitter {
       typeof message.model === "string"
     )
       this.model = message.model;
+    if (message.type === "user" && typeof message.uuid === "string")
+      this.pendingWorkerPrompts.delete(message.uuid);
+    if (
+      (message.type === "command_lifecycle" ||
+        (message.type === "system" && message.subtype === "command_lifecycle")) &&
+      message.state === "cancelled" &&
+      typeof message.command_uuid === "string"
+    )
+      this.pendingWorkerPrompts.delete(message.command_uuid);
     this.emit("event", message);
   }
 

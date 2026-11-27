@@ -3,6 +3,7 @@ import type {
   Project,
   QueuedMessage,
   QueueMessageRequest,
+  SessionArtifact,
   SessionSettings,
   TaskDefaults,
   ThreadDraft,
@@ -69,6 +70,8 @@ export interface UiThread {
   };
   /** ExitPlanMode plans by tool use ID; Claude's transcript does not include their text. */
   planTexts?: Record<string, string>;
+  /** Only explicitly published files, recorded relative to the session directory. */
+  sessionArtifacts?: Omit<SessionArtifact, "relativePath" | "fileName">[];
   deliveries: Record<
     string,
     {

@@ -18,7 +18,7 @@ import type { RunnerConnection } from "./rpc";
 import { AppError, assertUuid, record } from "./types";
 import type { UiService } from "./ui-service";
 import { AppManager } from "./app-management";
-import { registerUiRoutes } from "./ui-routes";
+import { registerSessionArtifacts, registerUiRoutes } from "./ui-routes";
 import { BrowserExtensionServer, type BrowserExtensionOptions } from "./browser-extension";
 import {
   CLAUDE_BROWSER_EXTENSION_ORIGIN,
@@ -354,6 +354,7 @@ export async function buildApp(
       port: manager.config.port,
       credential: manager.config.token,
       thread: (id) => (Object.hasOwn(ui.store.data.threads, id) ? ui.summary(id) : undefined),
+      ...(openRouter ? { artifactTool: registerSessionArtifacts(app, ui) } : {}),
       enqueue: (id, input, clientMessageId) => {
         if (!manager.accepting)
           throw new AppError("unavailable", "The application is preparing a restart", 503);
@@ -370,6 +371,7 @@ export async function buildApp(
     manager.setBrowserLaunch((id) => browserExtension.launchConfig(id));
     browserExtension.registerRoutes();
     stopVoice = await registerUiRoutes(app, ui, browserExtension);
+    if (openRouter) app.addHook("onListen", async () => ui.startDispatch());
     app.get("/api/v1/ui/events", { websocket: true }, (socket) => {
       let authenticated = false;
       const send = (frame: unknown) => {

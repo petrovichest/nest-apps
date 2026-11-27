@@ -45,6 +45,11 @@ type Options = {
   thread(id: string): SessionLookup | undefined;
   resolveThreadId?(id: string): string | undefined;
   enqueue(id: string, text: string, messageId: string): Promise<unknown>;
+  artifactTool?: {
+    definition: { name: string; description: string; inputSchema: unknown };
+    available(id: string): Promise<boolean>;
+    publish(id: string, args: unknown, metadata: unknown): Promise<unknown>;
+  };
 };
 
 function object(value: unknown): Record<string, unknown> {
@@ -366,13 +371,26 @@ export function registerSessionMessaging(app: FastifyInstance, options: Options)
         }
         case "ping":
           return result({});
-        case "tools/list":
-          return result({ tools: [SESSION_SEND_TOOL] });
+        case "tools/list": {
+          const artifact = options.artifactTool;
+          return result({
+            tools: [
+              SESSION_SEND_TOOL,
+              ...(artifact && (await artifact.available(id)) ? [artifact.definition] : []),
+            ],
+          });
+        }
         case "tools/call": {
           const params = object(message.params);
-          if (params.name !== SESSION_SEND_TOOL.name) return error(-32602, "Unknown tool");
+          const artifact = options.artifactTool;
           try {
-            const receipt = await send(id, params.arguments, requestId);
+            let receipt: unknown;
+            if (params.name === SESSION_SEND_TOOL.name)
+              receipt = await send(id, params.arguments, requestId);
+            else if (artifact && params.name === artifact.definition.name) {
+              requireSession(options, id);
+              receipt = await artifact.publish(id, params.arguments, params._meta);
+            } else return error(-32602, "Unknown tool");
             return result({ content: [{ type: "text", text: JSON.stringify(receipt) }] });
           } catch (error) {
             return result({ isError: true, content: [{ type: "text", text: publicError(error) }] });

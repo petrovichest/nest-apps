@@ -648,15 +648,18 @@ export class KanbanService {
           id === WORKER_ARCHITECT_ID
             ? "Поприветствуй пользователя и спроси, какого работника он хочет создать для этого проекта."
             : "Поприветствуй пользователя и спроси, с чего начать.";
-        return await this.launchWorker({
-          id: creationId,
-          kind: "execute",
-          projectPath,
-          cwd: projectPath,
-          title: profile.name,
-          prompt: `${context}\n\n${greeting}`,
-          ...(settings ? { settings } : {}),
-        });
+        return await this.launchWorker(
+          {
+            id: creationId,
+            kind: "execute",
+            projectPath,
+            cwd: projectPath,
+            title: profile.name,
+            prompt: `${context}\n\n${greeting}`,
+            ...(settings ? { settings } : {}),
+          },
+          this.beforeWorkerThreadPublish(session),
+        );
       } catch (error) {
         await this.failWorker(creationId, message(error));
         throw error;
@@ -1160,7 +1163,8 @@ export class KanbanService {
   }
 
   private beforeWorkerThreadPublish(session?: WorkerSession, parent?: WorkerSession) {
-    if (!session?.parentId) return undefined;
+    // OpenNest configures a worker's native context channel before its first dispatch.
+    if (!session || (!session.parentId && this.options.provider !== "open")) return undefined;
     return (threadId: string) => {
       // The creation event carries provenance. Attach durably after admission so a crash
       // before sending still retries with the original creation ID.

@@ -8,6 +8,7 @@ import type { Config } from "./config";
 import type { ClaudeAccounts, ClaudeLaunchAccount } from "./accounts";
 import { listHistory, readHistory } from "./history";
 import { readJson, writeJsonAtomic } from "./io";
+import { artifactSessionKey } from "./artifact-tool";
 import { RunnerConnection } from "./rpc";
 import {
   AppError,
@@ -160,6 +161,11 @@ export class SystemdLauncher implements SessionLauncher {
 }
 
 type LaunchIntent = { sessionId: string; requestId: string; fingerprint: string };
+type MessageContent = {
+  files?: RunnerAttachment[];
+  images?: RunnerAttachment[];
+  workerMemory?: string;
+};
 type CreateSession = {
   endpoint?: string | null;
   sessionId: string;
@@ -169,13 +175,12 @@ type CreateSession = {
   model?: string;
   effort?: string;
   permissionMode?: ClaudePermissionMode;
-  files?: RunnerAttachment[];
-  images?: RunnerAttachment[];
-};
+} & MessageContent;
 
 export class SessionManager {
   private connections = new Map<string, RunnerConnection>();
   private sessionMessagingMcp?: (id: string) => { url: string; headers: Record<string, string> };
+  private workerSession?: (id: string) => boolean;
   private browserLaunch?: (
     id: string,
   ) => { bindingId: string; mcpConfig: Record<string, unknown> } | undefined;
@@ -211,6 +216,14 @@ export class SessionManager {
 
   setSessionMessagingMcp(provider: NonNullable<SessionManager["sessionMessagingMcp"]>): void {
     this.sessionMessagingMcp = provider;
+  }
+
+  get artifactsEnabled(): boolean {
+    return Boolean(this.config.openRouter && this.sessionMessagingMcp);
+  }
+
+  setWorkerMemorySessions(provider: NonNullable<SessionManager["workerSession"]>): void {
+    this.workerSession = provider;
   }
 
   private directory(id: string): string {
@@ -391,6 +404,10 @@ export class SessionManager {
       attachmentRoot: join(this.config.stateDir, "attachments"),
       ...(browser ? { browser: { bindingId: browser.bindingId, configPath: mcpConfigPath } } : {}),
       ...(messaging ? { sessionMessagingConfigPath: mcpConfigPath } : {}),
+      ...(openRouter && messaging
+        ? { artifactSigningKey: artifactSessionKey(this.config.token, id) }
+        : {}),
+      ...(openRouter && this.workerSession?.(id) ? { workerTurnMemory: true } : {}),
       protocolVersion: RUNNER_PROTOCOL_VERSION,
     };
   }
@@ -509,6 +526,7 @@ export class SessionManager {
         text: input.prompt,
         ...(input.files?.length ? { files: input.files } : {}),
         ...(input.images?.length ? { images: input.images } : {}),
+        ...(input.workerMemory === undefined ? {} : { workerMemory: input.workerMemory }),
       });
     });
   }
@@ -527,7 +545,7 @@ export class SessionManager {
     id: string,
     requestId: string,
     prompt: string,
-    content?: { files?: RunnerAttachment[]; images?: RunnerAttachment[] },
+    content?: MessageContent,
     launch?: {
       model?: string;
       effort?: string;
@@ -581,7 +599,7 @@ export class SessionManager {
     id: string,
     requestId: string,
     prompt: string,
-    content?: { files?: RunnerAttachment[]; images?: RunnerAttachment[] },
+    content?: MessageContent,
   ): Promise<unknown> {
     this.assertAccepting();
     assertUuid(id, "sessionId");
