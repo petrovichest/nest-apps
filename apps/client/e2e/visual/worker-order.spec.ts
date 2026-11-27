@@ -362,14 +362,32 @@ for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT]) {
           const create = page.getByRole("dialog", { name: add });
           async function checkPicker(container: Locator, name: string) {
             await container.locator(".kanban-assignee-trigger").click();
-            await expect(container.locator(".kanban-assignee-options button")).toHaveText([
-              ru ? "Стандартная сессия" : "Standard session",
-              ...ordered,
-            ]);
+            const list = container.locator(".kanban-assignee-options");
+            const options = list.getByRole("button");
+            const expectedOrder = [ru ? "Стандартная сессия" : "Standard session", ...ordered];
+            await expect(options).toHaveText(expectedOrder);
             if (container === create) {
-              await expect(
-                container.locator(".kanban-assignee-options button").last(),
-              ).toBeInViewport({ ratio: 1 });
+              const search = container.getByRole("searchbox");
+              const geometry = () =>
+                Promise.all([
+                  container.boundingBox(),
+                  search.boundingBox(),
+                  container.evaluate((element) => element.scrollTop),
+                  page.evaluate(() => document.scrollingElement!.scrollTop),
+                ]);
+              const beforeScroll = await geometry();
+              // Search stays fixed while the results scroll to reveal the last worker.
+              await list.evaluate((element) => (element.scrollTop = element.scrollHeight));
+              const last = options.last();
+              await expect(last).toBeInViewport({ ratio: 1 });
+              expect(
+                await last.evaluate(
+                  (element, { x, y }) => element.contains(document.elementFromPoint(x, y)),
+                  await center(last),
+                ),
+              ).toBe(true);
+              expect(await geometry()).toEqual(beforeScroll);
+              await expect(options).toHaveText(expectedOrder);
             }
             await waitForVisualReady(page);
             await screenshot(name);
