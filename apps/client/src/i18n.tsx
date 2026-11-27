@@ -140,6 +140,7 @@ const ENGLISH: Record<string, string> = {
     "Could not connect to Google through the proxy. Check its address and credentials.",
   "Доска задач": "Task board",
   "Выбрать проект": "Choose project",
+  "Сначала отправьте или отмените запись.": "Send or discard the recording first.",
   "Доска проекта {{project}}": "Board for {{project}}",
   "Открыть доску задач проекта {{project}}": "Open the task board of {{project}}",
   "Развернуть стадию «{{name}}», задач: {{count}}": "Expand stage “{{name}}”, tasks: {{count}}",

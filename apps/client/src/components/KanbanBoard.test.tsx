@@ -149,11 +149,16 @@ function show(
 function chooseProject(target: Project) {
   const trigger = screen.getByLabelText("Выбрать проект", { selector: "summary" });
   fireEvent.keyDown(trigger, { key: "ArrowDown" });
-  fireEvent.click(
-    within(screen.getByRole("group", { name: "Выбрать проект" })).getByRole("button", {
-      name: target.displayName,
-    }),
-  );
+  const option = within(screen.getByRole("group", { name: "Выбрать проект" })).getByRole("button", {
+    name: target.displayName,
+  });
+  fireEvent.click(option);
+  return option;
+}
+
+function expectProjectSwitchBlocked() {
+  expect(chooseProject(secondProject)).toBeDisabled();
+  expect(api.readKanban).not.toHaveBeenCalledWith(secondProject.id);
 }
 beforeEach(() => {
   api = {
@@ -320,49 +325,62 @@ describe("KanbanBoard", () => {
     expect(api.createKanbanCard).not.toHaveBeenCalled();
   });
 
-  it.each(["recording", "failed upload", "pending upload"] as const)(
-    "does not carry a header %s to another project",
-    async (phase) => {
-      const stopTrack = installRecorder();
-      let rejectUpload!: (error: Error) => void;
-      const upload = new Promise<Board>((_resolve, reject) => (rejectUpload = reject));
-      if (phase === "failed upload") {
-        api.createKanbanCard.mockRejectedValueOnce(new Error("Voice upload failed"));
-      } else if (phase === "pending upload") {
-        api.createKanbanCard.mockReturnValueOnce(upload);
-      }
+  it("blocks the picker during microphone permission and recording, then switches after cancel", async () => {
+    const { getUserMedia, stream, stopTrack } = installRecorder();
+    let allowMicrophone!: (value: typeof stream) => void;
+    getUserMedia.mockReturnValueOnce(new Promise((resolve) => (allowMicrophone = resolve)));
+    show(voice, undefined, [], [project, secondProject]);
+    await screen.findByRole("button", { name: "Task one" });
+    const microphone = screen.getByRole("button", { name: "Надиктовать задачу" });
+    fireEvent.click(microphone);
+    expect(microphone).toBeDisabled();
+    expectProjectSwitchBlocked();
+
+    await act(async () => allowMicrophone(stream));
+    const stop = await screen.findByRole("button", { name: "Остановить запись и создать задачу" });
+    expectProjectSwitchBlocked();
+    expect(stop).toBeEnabled();
+    expect(stopTrack).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Отменить запись" }));
+
+    expect(chooseProject(secondProject)).toBeEnabled();
+    await waitFor(() => expect(api.readKanban).toHaveBeenLastCalledWith(secondProject.id));
+    expect(api.createKanbanCard).not.toHaveBeenCalled();
+    expect(stopTrack).toHaveBeenCalledOnce();
+  });
+
+  it.each(["retry", "discard"] as const)(
+    "keeps an unsent header recording on its board until %s",
+    async (resolution) => {
+      installRecorder();
+      api.createKanbanCard.mockRejectedValueOnce(new Error("Voice upload failed"));
       show(voice, undefined, [], [project, secondProject]);
       await screen.findByRole("button", { name: "Task one" });
       fireEvent.click(screen.getByRole("button", { name: "Надиктовать задачу" }));
-      const stop = await screen.findByRole("button", {
-        name: "Остановить запись и создать задачу",
-      });
-      if (phase !== "recording") {
-        fireEvent.click(stop);
-        await waitFor(() =>
-          expect(api.createKanbanCard).toHaveBeenCalledExactlyOnceWith(
-            project.id,
-            expect.objectContaining({ audio: expect.any(Object) }),
-          ),
-        );
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Остановить запись и создать задачу" }),
+      );
+      const retry = await screen.findByRole("button", { name: "Отправить запись ещё раз" });
+      expectProjectSwitchBlocked();
+      expect(retry).toBeEnabled();
+      const discard = screen.getByRole("button", { name: "Удалить запись" });
+      fireEvent.click(resolution === "retry" ? retry : discard);
+      await waitFor(() => expect(retry).not.toBeInTheDocument());
+      expect(chooseProject(secondProject)).toBeEnabled();
+      await waitFor(() => expect(api.readKanban).toHaveBeenLastCalledWith(secondProject.id));
+
+      expect(api.createKanbanCard).toHaveBeenCalledTimes(resolution === "retry" ? 2 : 1);
+      expect(api.createKanbanCard.mock.calls[0]![0]).toBe(project.id);
+      if (resolution === "retry") {
+        expect(api.createKanbanCard.mock.calls[1]).toEqual(api.createKanbanCard.mock.calls[0]);
       }
-      if (phase === "failed upload")
-        await screen.findByRole("button", { name: "Отправить запись ещё раз" });
-
-      chooseProject(secondProject);
-      if (phase === "pending upload")
-        await act(async () => rejectUpload(new Error("Previous project upload failed")));
-
-      expect(await screen.findByRole("button", { name: "Надиктовать задачу" })).toBeEnabled();
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Отправить запись ещё раз" })).toBeNull();
-      expect(api.createKanbanCard).toHaveBeenCalledTimes(phase === "recording" ? 0 : 1);
-      expect(stopTrack).toHaveBeenCalledOnce();
     },
   );
 
-  it("does not start uploading audio that finishes encoding after leaving its board", async () => {
+  it("blocks the picker before the audio request starts and until the upload succeeds", async () => {
     installRecorder();
+    let finishUpload!: (value: Board) => void;
+    api.createKanbanCard.mockReturnValueOnce(new Promise((resolve) => (finishUpload = resolve)));
     let reader: FileReader | undefined;
     const read = vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (
       this: FileReader,
@@ -377,15 +395,47 @@ describe("KanbanBoard", () => {
         await screen.findByRole("button", { name: "Остановить запись и создать задачу" }),
       );
       expect(reader).toBeDefined();
-      chooseProject(secondProject);
+      expect(api.createKanbanCard).not.toHaveBeenCalled();
+      expectProjectSwitchBlocked();
       await act(async () => {
         Object.defineProperty(reader!, "result", { value: "data:audio/webm;base64,YXVkaW8=" });
         reader!.dispatchEvent(new Event("load"));
       });
-      expect(api.createKanbanCard).not.toHaveBeenCalled();
+      expect(api.createKanbanCard).toHaveBeenCalledExactlyOnceWith(
+        project.id,
+        expect.objectContaining({ audio: expect.objectContaining({ data: "YXVkaW8=" }) }),
+      );
+      expectProjectSwitchBlocked();
+
+      await act(async () => finishUpload(board()));
+      expect(chooseProject(secondProject)).toBeEnabled();
+      await waitFor(() => expect(api.readKanban).toHaveBeenLastCalledWith(secondProject.id));
     } finally {
       read.mockRestore();
     }
+  });
+
+  it("preserves a recording in the open card panel until it is discarded", async () => {
+    installRecorder();
+    api.kanbanAction.mockRejectedValueOnce(new Error("Voice upload failed"));
+    show(voice, undefined, [], [project, secondProject]);
+    fireEvent.click(await screen.findByRole("button", { name: "Task one" }));
+    const panel = within(screen.getByRole("complementary", { name: "Task one" }));
+    fireEvent.click(panel.getByRole("button", { name: "Дописать" }));
+    fireEvent.click(panel.getByRole("button", { name: "Начать запись" }));
+    const stop = await panel.findByRole("button", { name: "Остановить запись и отправить" });
+    expectProjectSwitchBlocked();
+    fireEvent.click(stop);
+    await panel.findByRole("button", { name: "Отправить запись ещё раз" });
+    expectProjectSwitchBlocked();
+    fireEvent.click(panel.getByRole("button", { name: "Удалить запись" }));
+
+    expect(chooseProject(secondProject)).toBeEnabled();
+    await waitFor(() => expect(api.readKanban).toHaveBeenLastCalledWith(secondProject.id));
+    expect(api.kanbanAction).toHaveBeenCalledExactlyOnceWith(
+      project.id,
+      expect.objectContaining({ action: "append", cardIds: ["one"] }),
+    );
   });
 
   it("keeps a failed new task editable and sends only its text and creation identity", async () => {
@@ -1292,6 +1342,8 @@ describe("KanbanBoard", () => {
 
 function installRecorder() {
   const stopTrack = vi.fn();
+  const stream = { getTracks: () => [{ stop: stopTrack }] };
+  const getUserMedia = vi.fn().mockResolvedValue(stream);
   class FakeMediaRecorder extends EventTarget {
     static isTypeSupported() {
       return true;
@@ -1311,7 +1363,7 @@ function installRecorder() {
   vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
   Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
-    value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: stopTrack }] }) },
+    value: { getUserMedia },
   });
-  return stopTrack;
+  return { getUserMedia, stream, stopTrack };
 }

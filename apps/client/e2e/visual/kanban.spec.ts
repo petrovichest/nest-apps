@@ -253,6 +253,116 @@ for (const [device, viewport] of [
           await capture("05-back");
         });
       }
+
+      const language = theme === (isPhone ? "dark" : "light") ? "ru" : "en";
+      test(`keeps an unsent recording on its board in ${theme} ${language}`, async ({
+        page,
+      }, info) => {
+        await installVisualFixture(page, { theme, language });
+        await mockProjectBoards(page);
+        await page.addInitScript(() => {
+          class Recorder extends EventTarget {
+            static isTypeSupported() {
+              return true;
+            }
+            state = "inactive";
+            start() {
+              this.state = "recording";
+            }
+            stop() {
+              this.state = "inactive";
+              const data = new Blob(["audio"], { type: "audio/webm" });
+              this.dispatchEvent(Object.assign(new Event("dataavailable"), { data }));
+              this.dispatchEvent(new Event("stop"));
+            }
+          }
+          Object.defineProperty(window, "MediaRecorder", { configurable: true, value: Recorder });
+          Object.defineProperty(navigator, "mediaDevices", {
+            configurable: true,
+            value: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) },
+          });
+        });
+        await page.route(
+          "https://codexnest.visual/api/v1/projects/project-nest/kanban/cards",
+          (route) => {
+            const headers = {
+              "access-control-allow-origin": "*",
+              "access-control-allow-headers": "Authorization, Content-Type",
+              "access-control-allow-methods": "POST, OPTIONS",
+            };
+            if (route.request().method() === "OPTIONS")
+              return route.fulfill({ status: 204, headers });
+            expect(route.request().method()).toBe("POST");
+            expect(route.request().postDataJSON().audio.data).toBe("YXVkaW8=");
+            return route.fulfill({
+              status: 422,
+              headers,
+              json: {
+                error: { code: "invalid_audio", message: "Не удалось отправить запись на сервер" },
+              },
+            });
+          },
+        );
+
+        const ru = language === "ru";
+        const pickerLabel = ru ? "Выбрать проект" : "Choose project";
+        const reason = ru
+          ? "Сначала отправьте или отмените запись."
+          : "Send or discard the recording first.";
+        const header = page.locator(".kanban-pane .workspace-header");
+        const trigger = header.locator(`summary[aria-label="${pickerLabel}"]`);
+        const options = header.getByRole("group", { name: pickerLabel });
+        const current = options.getByRole("button", { name: "CodexNest" });
+        const alternative = options.getByRole("button", { name: "Минеральный атлас" });
+        const open = () => (isPhone ? trigger.tap() : trigger.click());
+        const capture = async (state: string) => {
+          await waitForVisualReady(page);
+          await page.screenshot({
+            path: info.outputPath(`${device}-${theme}-${language}-${state}.png`),
+          });
+        };
+
+        await page.goto("/projects/project-nest/kanban");
+        await header
+          .getByRole("button", { name: ru ? "Надиктовать задачу" : "Dictate a task" })
+          .click();
+        const stop = header.getByRole("button", {
+          name: ru ? "Остановить запись и создать задачу" : "Stop recording and create the task",
+        });
+        await expect(stop).toBeVisible();
+        await open();
+        await expect(options).toHaveAccessibleDescription(reason);
+        await expect(options).toBeInViewport({ ratio: 1 });
+        await expect(current).toBeEnabled();
+        await expect(alternative).toBeDisabled();
+        await capture("voice-recording");
+        if (isPhone) await alternative.tap({ force: true });
+        else await alternative.click({ force: true });
+        await expect(page).toHaveURL(/\/projects\/project-nest\/kanban$/);
+        await trigger.press("End");
+        await expect(current).toBeFocused();
+        await page.keyboard.press("Escape");
+        await expect(options).toBeHidden();
+        await expect(trigger).toBeFocused();
+        await expect(stop).toBeEnabled();
+
+        await stop.click();
+        const discard = page.getByRole("button", {
+          name: ru ? "Удалить запись" : "Discard the recording",
+        });
+        await expect(discard).toBeVisible();
+        await open();
+        await expect(alternative).toBeDisabled();
+        await capture("voice-retry");
+        await trigger.press("Escape");
+        await discard.click();
+        await open();
+        await expect(options.getByText(reason)).toHaveCount(0);
+        await expect(alternative).toBeEnabled();
+        if (isPhone) await alternative.tap();
+        else await alternative.click();
+        await expect(page).toHaveURL(/\/projects\/project-mineral\/kanban$/);
+      });
     }
   });
 }
