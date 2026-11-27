@@ -137,6 +137,7 @@ export function Composer({
   contextCompacting = false,
   onCompactContext,
   running = false,
+  queueOnly = false,
   settings,
   onSettingsChange,
   hideSettings = false,
@@ -204,6 +205,7 @@ export function Composer({
   contextCompacting?: boolean;
   onCompactContext?(): void;
   running?: boolean;
+  queueOnly?: boolean;
   settings: SessionSettings;
   onSettingsChange(value: UpdateThreadSettingsRequest): void;
   hideSettings?: boolean;
@@ -248,6 +250,7 @@ export function Composer({
   children?: ReactNode;
 }) {
   const { language, t } = useI18n();
+  const queueInputLabel = t("Сообщение в очередь");
   const { message: messageFontSize } = useTypography();
   const creating = projects !== undefined;
   const formRef = useRef<HTMLFormElement>(null);
@@ -1839,7 +1842,13 @@ export function Composer({
             editor={pasteEditor}
             pasteEnabled={!goalMode}
             ref={textareaRef}
-            aria-label={running ? t("Направить текущую задачу") : t("Сообщение для Codex")}
+            aria-label={
+              queueOnly
+                ? queueInputLabel
+                : running
+                  ? t("Направить текущую задачу")
+                  : t("Сообщение для Codex")
+            }
             rows={1}
             maxLength={goalMode ? 4_000 : undefined}
             readOnly={speechBusy}
@@ -1885,11 +1894,13 @@ export function Composer({
             onSelect={captureInsertionPoint}
             onKeyDown={keyboardSubmit}
             placeholder={
-              goalMode
-                ? t("Опишите проверяемый результат цели…")
-                : running
-                  ? t("Направить текущую задачу…")
-                  : t("Спросите что угодно")
+              queueOnly
+                ? `${queueInputLabel}…`
+                : goalMode
+                  ? t("Опишите проверяемый результат цели…")
+                  : running
+                    ? t("Направить текущую задачу…")
+                    : t("Спросите что угодно")
             }
           />
           <div className="composer-toolbar" onMouseDownCapture={preserveTextareaFocus}>

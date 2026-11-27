@@ -4129,6 +4129,7 @@ export function ThreadPage({
     <div className="thread-workspace">
       <div className="conversation-pane">
         <WorkspaceHeader
+          focusTitle={(location.state as { focusThreadTitle?: boolean } | null)?.focusThreadTitle}
           title={
             showNewSessionChrome
               ? t("Новая задача")
@@ -4198,6 +4199,13 @@ export function ThreadPage({
                     className="thread-action-menu fork-children-menu"
                     data-dismiss-on-outside-click
                     ref={forkChildrenMenuRef}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Escape" || !event.currentTarget.open) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      event.currentTarget.open = false;
+                      event.currentTarget.querySelector("summary")?.focus();
+                    }}
                   >
                     <summary
                       aria-label={t("Показать ответвления: {{count}}", {

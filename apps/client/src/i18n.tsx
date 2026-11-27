@@ -591,6 +591,7 @@ const ENGLISH: Record<string, string> = {
   "Не удалось удалить проект": "Failed to remove project",
   "Не удалось создать сессию": "Failed to create session",
   "Не удалось создать ответвление сессии": "Failed to fork session",
+  "Удалить неудавшееся ответвление?": "Delete the failed fork?",
   "Не удалось начать создание ответвления": "Failed to start creating the fork",
   "Не удалось загрузить создаваемое ответвление": "Failed to load the pending fork",
   "Не удалось загрузить исходную историю": "Failed to load the source history",
@@ -1348,6 +1349,7 @@ const ENGLISH: Record<string, string> = {
   "Для доступа к микрофону откройте CodexNest по HTTPS":
     "Open CodexNest over HTTPS to access the microphone",
   "Добавить в очередь": "Add to queue",
+  "Сообщение в очередь": "Message to queue",
   "Добавляется…": "Adding…",
   "Добавить изображения": "Add images",
   "Добавить файлы": "Add files",
@@ -1658,6 +1660,19 @@ export function localizeKnownServerText(
     if (value === "Search result changed; search again")
       return "История изменилась. Повторите поиск.";
     if (value === "Session history is unavailable") return "История сессии недоступна";
+    if (value === "Claude Code context compaction is disabled")
+      return "Сжатие контекста отключено в Claude Code.";
+    if (value === "Choose a supported OpenRouter model for context compression")
+      return "Выберите модель OpenRouter, которая поддерживает сжатие контекста.";
+    if (value === "Configure an OpenRouter key before compressing context")
+      return "Настройте ключ OpenRouter для сжатия контекста.";
+    if (
+      value ===
+      "Claude Code did not confirm a compact context. Check the model and compaction settings. An accepted command will not be sent again."
+    )
+      return "Claude Code не подтвердил сжатие. Проверьте модель и настройки сжатия. Принятая команда не будет отправлена повторно.";
+    if (value === "The native fork could not be materialized")
+      return "Не удалось подготовить историю новой ветки.";
     if (value === "Context can be compacted when the session is idle")
       return "Контекст можно сжать, когда сессия свободна";
     if (value === "The draft changed before voice upload") {
