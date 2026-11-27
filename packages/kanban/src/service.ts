@@ -106,7 +106,13 @@ export type KanbanProviderAdapter = {
   architectSkill?(cwd: string): Promise<string | undefined>;
   chooseModel?(prompt: string, cwd: string): Promise<string | undefined>;
   available?(): boolean;
-  launch(input: KanbanLaunch): Promise<{ threadId: string; sessionUrl?: string }>;
+  /** Set launch metadata before publishing the new thread and admitting its first prompt. */
+  launch(
+    input: KanbanLaunch,
+    beforePublish?: (threadId: string) => void,
+  ): Promise<{ threadId: string; sessionUrl?: string }>;
+  /** Read an existing creation receipt from local state during startup recovery. */
+  createdThreadId?(id: string, projectPath: string | null): string | null | undefined;
   resume(input: {
     threadId: string;
     prompt: string;
@@ -394,6 +400,7 @@ export class KanbanService {
   private workerThreads = new Map<
     string,
     Pick<WorkerSession, "id" | "workerId" | "projectKey" | "projectPath"> & {
+      attached: boolean;
       summary: WorkerSessionSummary;
     }
   >();
@@ -598,7 +605,7 @@ export class KanbanService {
         projectPath,
         creationId,
       );
-      const session = await this.registerWorkerSession({
+      const { session } = await this.registerWorkerSession({
         id: creationId,
         profile,
         projectKey,
@@ -806,7 +813,7 @@ export class KanbanService {
     title: string;
     boardId?: string;
     cardIds?: string[];
-  }): Promise<WorkerSession> {
+  }): Promise<{ session: WorkerSession; parent?: WorkerSession }> {
     const { id, profile, projectKey, projectPath, title, boardId, cardIds } = input;
     const provider = this.options.provider;
     return this.processes.update((sessions) => {
@@ -823,14 +830,17 @@ export class KanbanService {
           existing.status = "queued";
           delete existing.error;
         }
-        return existing;
+        return {
+          session: existing,
+          parent: existing.parentId ? sessions[existing.parentId] : undefined,
+        };
       }
       const now = Date.now();
       const projectName = projectPath
         ? (this.options.adapter.projects?.().find(({ path }) => path === projectPath)
             ?.displayName ?? basename(projectPath))
         : null;
-      return (sessions[id] = {
+      const session: WorkerSession = {
         id,
         processId: id,
         parentId: null,
@@ -848,7 +858,9 @@ export class KanbanService {
         status: "queued",
         createdAt: now,
         updatedAt: now,
-      });
+      };
+      sessions[id] = session;
+      return { session };
     });
   }
 
@@ -1066,7 +1078,7 @@ export class KanbanService {
 
   async workerTurnMemory(threadId: string, cwd: string): Promise<string | undefined> {
     const worker = this.workerThreads.get(threadId);
-    if (!worker?.projectKey || !worker.projectPath) return undefined;
+    if (!worker?.attached || !worker.projectKey || !worker.projectPath) return undefined;
     if (cwd !== worker.projectPath && (await this.workers.projectKey(cwd)) !== worker.projectKey)
       return undefined;
     const { memory } = await this.workers.snapshot(worker.workerId, worker.projectKey);
@@ -1078,34 +1090,49 @@ export class KanbanService {
 
   private indexWorkerThread(
     session: WorkerSession,
-    sessions: Record<string, WorkerSession>,
+    parent: WorkerSession | undefined,
+    threadId = session.threadId,
   ): boolean {
-    if (!session.threadId || session.provider !== this.options.provider) return false;
-    const parent = session.parentId ? sessions[session.parentId] : undefined;
+    if (!threadId || session.provider !== this.options.provider) return false;
+    const attached = threadId === session.threadId;
+    const delegated = session.parentId ? true : undefined;
     const parentThreadId = parent?.provider === session.provider ? parent.threadId : null;
-    const previous = this.workerThreads.get(session.threadId);
+    const previous = this.workerThreads.get(threadId);
     if (
       previous?.id === session.id &&
       previous.workerId === session.workerId &&
       previous.projectKey === session.projectKey &&
+      previous.attached === attached &&
       previous.summary.name === session.workerName &&
+      previous.summary.delegated === delegated &&
       previous.summary.parentThreadId === (parentThreadId ?? undefined)
     )
       return false;
-    if (previous && previous.id !== session.id) this.observedStates.delete(session.threadId);
-    this.workerThreads.set(session.threadId, {
+    if (previous && previous.id !== session.id) this.observedStates.delete(threadId);
+    this.workerThreads.set(threadId, {
       id: session.id,
       workerId: session.workerId,
       projectKey: session.projectKey,
       projectPath: session.projectPath,
+      attached,
       summary: {
         name: session.workerName,
         workerId: session.workerId,
         projectKey: session.projectKey,
+        ...(delegated ? { delegated } : {}),
         ...(parentThreadId ? { parentThreadId } : {}),
       },
     });
     return true;
+  }
+
+  private beforeWorkerThreadPublish(session?: WorkerSession, parent?: WorkerSession) {
+    if (!session?.parentId) return undefined;
+    return (threadId: string) => {
+      // The creation event carries provenance. Attach durably after admission so a crash
+      // before sending still retries with the original creation ID.
+      this.indexWorkerThread(session, parent, threadId);
+    };
   }
 
   private async attachWorker(id: string, threadId: string): Promise<void> {
@@ -1122,15 +1149,15 @@ export class KanbanService {
     for (const session of Object.values(sessions)) {
       if (
         (session.id === id || session.parentId === id) &&
-        this.indexWorkerThread(session, sessions)
+        this.indexWorkerThread(session, session.parentId ? sessions[session.parentId] : undefined)
       ) {
         this.options.onWorkerSessionChanged?.(session.threadId!);
       }
     }
   }
 
-  private async launchWorker(job: KanbanLaunch) {
-    const launched = await this.options.adapter.launch(job);
+  private async launchWorker(job: KanbanLaunch, beforePublish?: (threadId: string) => void) {
+    const launched = await this.options.adapter.launch(job, beforePublish);
     await this.attachWorker(job.id, launched.threadId);
     const state = await this.options.adapter.threadState?.(launched.threadId);
     if (state && state !== "idle") await this.notifyThread(launched.threadId, state);
@@ -1292,18 +1319,21 @@ export class KanbanService {
         session.id,
         true,
       );
-      await this.launchWorker({
-        id: session.id,
-        kind: "execute",
-        projectPath,
-        cwd: projectPath,
-        title: session.title,
-        prompt:
-          `${context}\n\n${session.kind === "assignment" ? "Поручение" : "Вопрос"} от «${sender.workerName}»\n` +
-          `${session.description}\n\nОжидаемый результат: ${session.expectedResult}\n` +
-          "Ответь отправителю через worker_finish.",
-        ...(settings ? { settings } : {}),
-      });
+      await this.launchWorker(
+        {
+          id: session.id,
+          kind: "execute",
+          projectPath,
+          cwd: projectPath,
+          title: session.title,
+          prompt:
+            `${context}\n\n${session.kind === "assignment" ? "Поручение" : "Вопрос"} от «${sender.workerName}»\n` +
+            `${session.description}\n\nОжидаемый результат: ${session.expectedResult}\n` +
+            "Ответь отправителю через worker_finish.",
+          ...(settings ? { settings } : {}),
+        },
+        this.beforeWorkerThreadPublish(current, sender),
+      );
     });
   }
 
@@ -1611,7 +1641,19 @@ export class KanbanService {
       this.indexThreads(document);
     }
     const sessions = await this.processes.read();
-    for (const session of Object.values(sessions)) this.indexWorkerThread(session, sessions);
+    for (const session of Object.values(sessions)) {
+      if (session.provider !== this.options.provider) continue;
+      const threadId =
+        session.threadId ??
+        (session.parentId
+          ? this.options.adapter.createdThreadId?.(session.id, session.projectPath)
+          : null);
+      this.indexWorkerThread(
+        session,
+        session.parentId ? sessions[session.parentId] : undefined,
+        threadId ?? null,
+      );
+    }
     await this.refreshWorkerSignals().catch((error) => this.options.onError?.(error));
     for (const path of [this.store.boardsDirectory, join(this.store.directory, "inbox")]) {
       const watcher = watch(path, (_event, name) => {
@@ -2621,7 +2663,8 @@ export class KanbanService {
     if (this.closed || !this.options.adapter.threadSummary) return;
     this.schedule();
     const changes: ThreadSignal[] = [];
-    for (const [threadId, { id }] of this.workerThreads) {
+    for (const [threadId, { id, attached }] of this.workerThreads) {
+      if (!attached) continue;
       const summary = this.options.adapter.threadSummary(threadId);
       if (!summary || (summary.state === "idle" && !summary.awaitingPlanResponse)) continue;
       const change = this.stageThreadSignal(summary, id);
@@ -2636,7 +2679,8 @@ export class KanbanService {
   /** Called from local session notifications; unknown sessions are a constant-time no-op. */
   notifyThread(threadId: string, state: string, summary?: WorkerThreadSummary): Promise<void> {
     const known = this.threads.get(threadId);
-    const workerSessionId = this.workerThreads.get(threadId)?.id;
+    const worker = this.workerThreads.get(threadId);
+    const workerSessionId = worker?.attached ? worker.id : undefined;
     if ((!known && !workerSessionId) || this.closed) return Promise.resolve();
 
     const lastSignal = this.observedSignals.get(threadId);
@@ -3152,18 +3196,21 @@ export class KanbanService {
             sessionUrl:
               document.board.runs.find((item) => item.threadId === resume)?.sessionUrl ?? undefined,
           })
-        : await this.options.adapter.launch({
-            id: run.id,
-            projectPath: document.board.projectPath,
-            cwd: document.board.projectPath,
-            prompt: worker
-              ? `${worker.context}\n\n${workerSession?.parentId ? "Это подзадача от другого работника. По окончании передай итог через worker_finish.\n\n" : ""}Задача:\n${prompt}`
-              : prompt,
-            ...imageInput,
-            kind: run.kind,
-            title,
-            ...(worker?.settings ? { settings: worker.settings } : {}),
-          });
+        : await this.options.adapter.launch(
+            {
+              id: run.id,
+              projectPath: document.board.projectPath,
+              cwd: document.board.projectPath,
+              prompt: worker
+                ? `${worker.context}\n\n${workerSession?.session.parentId ? "Это подзадача от другого работника. По окончании передай итог через worker_finish.\n\n" : ""}Задача:\n${prompt}`
+                : prompt,
+              ...imageInput,
+              kind: run.kind,
+              title,
+              ...(worker?.settings ? { settings: worker.settings } : {}),
+            },
+            this.beforeWorkerThreadPublish(workerSession?.session, workerSession?.parent),
+          );
       // Register before publishing running state: an immediate native completion must
       // already resolve to this run, including a continuation of an existing thread.
       if (this.threads.get(launched.threadId)?.runId !== runId)

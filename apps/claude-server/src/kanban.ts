@@ -56,7 +56,8 @@ export async function registerClaudeKanban(
       architectSkill: async (cwd) =>
         readArchitectSkill((await listClaudeSkills(configDir, cwd)).skills),
       available: () => ui.manager.accepting,
-      async launch(job) {
+      createdThreadId: (id) => ui.store.data.creations[id]?.threadId,
+      async launch(job, beforePublish) {
         const project = ui.store.data.projects.find((item) => item.path === job.projectPath);
         if (job.projectPath && !project) throw new Error("Project not found");
         const configured = ui.store.data.taskDefaults.classificationModel;
@@ -66,13 +67,19 @@ export async function registerClaudeKanban(
               openRouter.models.find((model) => model.isDefault)
             )?.id
           : (configured ?? "haiku");
-        const { thread } = await ui.createThread(project?.id ?? "", job.id, undefined, {
-          cwd: job.cwd,
-          title: job.title,
-          // Task classification is a short routine step: unless settings choose a model, run it
-          // on the fastest, cheapest one.
-          ...(job.kind === "classify" ? { model: classifyModel } : {}),
-        });
+        const { thread } = await ui.createThread(
+          project?.id ?? "",
+          job.id,
+          undefined,
+          {
+            cwd: job.cwd,
+            title: job.title,
+            // Task classification is a short routine step: unless settings choose a model, run it
+            // on the fastest, cheapest one.
+            ...(job.kind === "classify" ? { model: classifyModel } : {}),
+          },
+          beforePublish,
+        );
         // Settings chosen in the task field, applied like a new session's before its first message.
         if (job.settings)
           await ui.settings(thread.id, {

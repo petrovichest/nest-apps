@@ -614,6 +614,7 @@ export class Engine extends EventEmitter {
       title?: string;
       settings?: Partial<SessionSettings>;
       parentThreadId?: string;
+      beforePublish?: (threadId: string) => void;
     } = {},
   ) {
     return this.serial(async () => {
@@ -634,6 +635,7 @@ export class Engine extends EventEmitter {
             "Native session creation was interrupted; inspect history before retrying.",
             409,
           );
+        options.beforePublish?.(prior.threadId);
         return { thread: this.summary(prior.threadId), draft: this.thread(prior.threadId).draft };
       }
       this.data.creations[creationId] = { projectId, threadId: null };
@@ -645,6 +647,7 @@ export class Engine extends EventEmitter {
           permission: this.permissionRules(),
         },
       });
+      options.beforePublish?.(session.id);
       this.importSession(session, cwd);
       const stored = this.thread(session.id);
       stored.permissionVersion = this.data.permissionVersion;

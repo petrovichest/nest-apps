@@ -13,7 +13,7 @@ final class NotificationEventTracker {
 
     private final Map<String, String> threadStates = new HashMap<>();
     private final Map<String, String> threadTitles = new HashMap<>();
-    private final Set<String> parentThreadIds = new HashSet<>();
+    private final Set<String> notifiableThreadIds = new HashSet<>();
     private final Map<String, String> attentionThreads = new HashMap<>();
     private long lastObservedAt;
     private long lastSequence = -1;
@@ -77,7 +77,7 @@ final class NotificationEventTracker {
         long newest = cutoff;
         threadStates.clear();
         threadTitles.clear();
-        parentThreadIds.clear();
+        notifiableThreadIds.clear();
         attentionThreads.clear();
         List<JSONObject> missedThreads = new ArrayList<>();
         List<CodexNotification> missedAttention = new ArrayList<>();
@@ -94,11 +94,11 @@ final class NotificationEventTracker {
                 long updatedAt = thread.optLong("updatedAt", 0);
                 threadStates.put(id, state);
                 threadTitles.put(id, title);
-                if (isParentThread(thread)) parentThreadIds.add(id);
+                if (isNotifiableThread(thread)) notifiableThreadIds.add(id);
                 newest = Math.max(newest, updatedAt);
                 if (
                     !firstConnection &&
-                    parentThreadIds.contains(id) &&
+                    notifiableThreadIds.contains(id) &&
                     (updatedAt > cutoff ||
                         ("needsAttention".equals(state) && previousThreadStates.containsKey(id))) &&
                     (thread.optBoolean("unread", false) || "needsAttention".equals(state)) &&
@@ -123,7 +123,7 @@ final class NotificationEventTracker {
                 if (
                     !firstConnection &&
                     threadId != null &&
-                    parentThreadIds.contains(threadId) &&
+                    notifiableThreadIds.contains(threadId) &&
                     createdAt > cutoff &&
                     !"needsAttention".equals(previousThreadStates.get(threadId)) &&
                     missedAttentionThreads.add(threadId)
@@ -155,10 +155,10 @@ final class NotificationEventTracker {
             String title = thread.optString("title", defaultThreadTitle);
             String previous = threadStates.put(id, state);
             threadTitles.put(id, title);
-            if (isParentThread(thread)) {
-                parentThreadIds.add(id);
+            if (isNotifiableThread(thread)) {
+                notifiableThreadIds.add(id);
             } else {
-                parentThreadIds.remove(id);
+                notifiableThreadIds.remove(id);
             }
             if (!state.equals(previous)) {
                 addStateNotification(notifications, thread);
@@ -168,7 +168,7 @@ final class NotificationEventTracker {
             String id = event.optString("threadId");
             threadStates.remove(id);
             threadTitles.remove(id);
-            parentThreadIds.remove(id);
+            notifiableThreadIds.remove(id);
         } else if ("attention.upserted".equals(type)) {
             JSONObject request = event.getJSONObject("attention");
             String id = request.optString("id");
@@ -177,7 +177,7 @@ final class NotificationEventTracker {
                 attentionThreads.put(id, threadId);
                 if (
                     threadId != null &&
-                    parentThreadIds.contains(threadId) &&
+                    notifiableThreadIds.contains(threadId) &&
                     !"needsAttention".equals(threadStates.get(threadId))
                 ) {
                     notifications.add(
@@ -202,7 +202,7 @@ final class NotificationEventTracker {
         String state = notificationState(thread);
         String threadId = thread.optString("id");
         String title = thread.optString("title", defaultThreadTitle);
-        if (!parentThreadIds.contains(threadId)) return;
+        if (!notifiableThreadIds.contains(threadId)) return;
         if ("completed".equals(state)) {
             notifications.add(
                 new CodexNotification(
@@ -237,9 +237,14 @@ final class NotificationEventTracker {
             : title;
     }
 
-    private static boolean isParentThread(JSONObject thread) {
+    private static boolean isNotifiableThread(JSONObject thread) {
         JSONObject relation = thread.optJSONObject("relation");
-        return relation != null && "session".equals(relation.optString("kind"));
+        if (relation == null || !"session".equals(relation.optString("kind"))) return false;
+        JSONObject worker = thread.optJSONObject("workerSession");
+        if (worker == null) return true;
+        String parentThreadId = nullableString(worker, "parentThreadId");
+        return !Boolean.TRUE.equals(worker.opt("delegated")) &&
+            (parentThreadId == null || parentThreadId.isEmpty());
     }
 
     private static String notificationState(JSONObject thread) {
