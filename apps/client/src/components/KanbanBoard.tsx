@@ -2371,9 +2371,8 @@ function fitAssigneePopover(picker: HTMLDetailsElement, popover: HTMLDivElement)
     const room = opensBeside ? sideRoom : opensAbove ? above : bottom - start;
     popover.style.left = `${(opensBeside ? sideStart : anchor.left) - origin.left}px`;
     popover.style.width = `${opensBeside ? Math.min(anchor.width, sideWidth) : anchor.width}px`;
-    popover.style.top = opensAbove
-      ? `calc(${aboveEnd - origin.top}px - var(--kanban-assignee-limit))`
-      : `${(opensBeside ? sideTop : start) - origin.top}px`;
+    popover.style.top = opensAbove ? "auto" : `${(opensBeside ? sideTop : start) - origin.top}px`;
+    popover.style.bottom = opensAbove ? `${origin.bottom - aboveEnd}px` : "auto";
     popover.style.setProperty("--kanban-assignee-room", `${Math.max(0, room)}px`);
     return;
   }

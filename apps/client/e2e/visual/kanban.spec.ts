@@ -1714,6 +1714,42 @@ for (const viewport of [
   });
 }
 
+test("Kanban keeps the short assignee list attached above the creation dialog", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 920, height: 1000 });
+  const { labels, workers } = await installKanbanAccessFixture(page);
+  workers.splice(3);
+  await page.getByRole("button", { name: labels.add, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: labels.add, exact: true });
+  const menu = dialog.locator(".kanban-assignee-popover");
+  const initialForm = await dialog.boundingBox();
+  const verticalGap = async () => {
+    const form = (await dialog.boundingBox())!;
+    const list = (await menu.boundingBox())!;
+    return form.y - list.y - list.height;
+  };
+
+  await dialog.locator(".kanban-assignee-trigger").click();
+  await expect(menu.getByRole("button")).toHaveCount(4);
+  await expect.poll(verticalGap).toBeCloseTo(8);
+  await menu.getByRole("searchbox").fill(workers[0]!.name + " ");
+  await expect(menu.getByRole("button")).toHaveCount(1);
+  await expect.poll(verticalGap).toBeCloseTo(8);
+  expect(await dialog.boundingBox()).toEqual(initialForm);
+
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await expect
+    .poll(async () => {
+      const form = (await dialog.boundingBox())!;
+      const list = (await menu.boundingBox())!;
+      return list.x - form.x - form.width;
+    })
+    .toBeCloseTo(8);
+  await page.setViewportSize({ width: 920, height: 1000 });
+  await expect.poll(verticalGap).toBeCloseTo(8);
+});
+
 test("Kanban retries the unavailable catalogue and refreshes order on each opening", async ({
   page,
 }, info) => {
