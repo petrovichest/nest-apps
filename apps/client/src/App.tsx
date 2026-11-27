@@ -1011,16 +1011,19 @@ function Sidebar({
       .map((operation) => operation.sourceThreadId),
   );
   const tree = sidebarThreadTree(allThreads);
-  const { childrenByParent, teamParentByChild } = tree;
+  const { childrenByParent, teamParentByChild, teamStatusParentByChild } = tree;
   const threadRouteId = matchPath("/threads/:threadId", location.pathname)?.params.threadId;
   const team: SidebarTeamState = {
     activeAncestors: new Set(),
     selectedAncestors: new Set(),
+    leadsWithRunningWork: new Set(),
     parentsByChild: teamParentByChild,
   };
   for (const thread of allThreads) {
     if (isActiveFeedEligible(thread) || pendingForkSourceIds.has(thread.id))
       addTeamAncestors(team.activeAncestors, teamParentByChild, thread.id);
+    if (thread.state === "running")
+      addTeamAncestors(team.leadsWithRunningWork, teamStatusParentByChild, thread.id);
   }
   if (threadRouteId) addTeamAncestors(team.selectedAncestors, teamParentByChild, threadRouteId);
 
@@ -2167,6 +2170,7 @@ function Sidebar({
 type SidebarTeamState = {
   activeAncestors: Set<string>;
   selectedAncestors: Set<string>;
+  leadsWithRunningWork: Set<string>;
   parentsByChild: Map<string, string>;
 };
 
@@ -2202,6 +2206,7 @@ function ThreadBranch({
       <ThreadLink
         thread={thread}
         onNavigate={onNavigate}
+        hasRunningTeamWork={team.leadsWithRunningWork.has(thread.id)}
         teamLead={
           thread.teamLead ||
           childrenByParent.get(thread.id)?.some((child) => team.parentsByChild.has(child.id))
@@ -2309,6 +2314,7 @@ function ActiveThreadBranch({
         secondaryLabel={projectLabel}
         onNewSession={onNewSession}
         dissolveOnFinish={dissolveOnFinish}
+        hasRunningTeamWork={team.leadsWithRunningWork.has(thread.id)}
         teamLead={
           thread.teamLead ||
           childrenByParent.get(thread.id)?.some((child) => team.parentsByChild.has(child.id))
@@ -2440,6 +2446,7 @@ function ThreadLink({
   secondaryLabel,
   onNewSession,
   dissolveOnFinish = false,
+  hasRunningTeamWork = false,
   teamLead = false,
   subagentCount = 0,
   subagentsExpanded = false,
@@ -2451,6 +2458,7 @@ function ThreadLink({
   secondaryLabel?: string;
   onNewSession?(projectId: string): void;
   dissolveOnFinish?: boolean;
+  hasRunningTeamWork?: boolean;
   teamLead?: boolean;
   subagentCount?: number;
   subagentsExpanded?: boolean;
@@ -2473,6 +2481,11 @@ function ThreadLink({
   const [finishError, setFinishError] = useState<string | null>(null);
   const title = localizeKnownServerText(language, thread.title) ?? thread.title;
   const target = `/threads/${encodeURIComponent(thread.id)}`;
+  const runningTeamLabel =
+    hasRunningTeamWork && thread.state !== "running" ? t("Команда выполняет поручения") : undefined;
+  const description = [thread.workerSession && t("Сессия работника"), runningTeamLabel]
+    .filter(Boolean)
+    .join(". ");
   const agentName =
     thread.relation.kind === "subagent"
       ? thread.relation.nickname?.trim() || thread.relation.role?.trim() || null
@@ -2695,7 +2708,7 @@ function ThreadLink({
           className={({ isActive }) =>
             `thread-link${teamLead ? " team-lead" : ""}${hasActions ? " has-actions" : ""}${canFinish ? " finishable" : ""}${isActive ? " active" : ""}`
           }
-          aria-description={thread.workerSession ? t("Сессия работника") : undefined}
+          aria-description={description || undefined}
           end
           state={{ focusComposer: true }}
           to={target}
@@ -2756,7 +2769,13 @@ function ThreadLink({
               </span>
             </span>
           )}
-          <span className={threadStatusClasses(thread)} title={thread.state} />
+          <span
+            className={threadStatusClasses(
+              runningTeamLabel ? { ...thread, state: "running" } : thread,
+            )}
+            title={runningTeamLabel ?? thread.state}
+            aria-hidden={runningTeamLabel ? true : undefined}
+          />
         </NavLink>
         {subagentCount > 0 && (
           <button
@@ -2932,17 +2951,26 @@ function sidebarThreadTree(threads: ThreadSummary[]) {
   const byId = new Map(threads.map((thread) => [thread.id, thread]));
   const childrenByParent = new Map<string, ThreadSummary[]>();
   const teamParentByChild = new Map<string, string>();
+  const teamStatusParentByChild = new Map<string, string>();
   const roots: ThreadSummary[] = [];
   for (const thread of threads) {
     const { relation } = thread;
     const isSubagent = relation.kind === "subagent";
-    const parentId = isSubagent ? relation.parentThreadId : thread.workerSession?.parentThreadId;
-    const parent = parentId ? byId.get(parentId) : undefined;
-    const nestedWorker =
-      !isSubagent &&
-      !thread.pinned &&
-      parent?.id !== thread.id &&
-      parent?.archived === thread.archived;
+    const workerParentId = thread.workerSession?.parentThreadId;
+    const workerParent = workerParentId ? byId.get(workerParentId) : undefined;
+    const workerTeamParent =
+      workerParent?.archived === thread.archived && workerParent.id !== thread.id
+        ? workerParent
+        : undefined;
+    const parent = isSubagent ? byId.get(relation.parentThreadId) : workerTeamParent;
+    const managedTeamParent =
+      isSubagent && parent?.teamLead && parent.archived === thread.archived ? parent : undefined;
+    // Pinning changes where a worker is listed, so status follows the team link independently.
+    const statusParent = workerTeamParent ?? managedTeamParent;
+    if (statusParent) teamStatusParentByChild.set(thread.id, statusParent.id);
+
+    const parentId = isSubagent ? relation.parentThreadId : workerTeamParent?.id;
+    const nestedWorker = !isSubagent && !thread.pinned && workerTeamParent !== undefined;
     if (!parentId || (!isSubagent && !nestedWorker)) {
       roots.push(thread);
       continue;
@@ -2950,10 +2978,9 @@ function sidebarThreadTree(threads: ThreadSummary[]) {
     const children = childrenByParent.get(parentId) ?? [];
     children.push(thread);
     childrenByParent.set(parentId, children);
-    if (nestedWorker || (parent?.teamLead && parent.archived === thread.archived))
-      teamParentByChild.set(thread.id, parentId);
+    if (nestedWorker || managedTeamParent) teamParentByChild.set(thread.id, parentId);
   }
-  return { roots, childrenByParent, teamParentByChild };
+  return { roots, childrenByParent, teamParentByChild, teamStatusParentByChild };
 }
 
 function addTeamAncestors(
