@@ -246,7 +246,7 @@ test("the proxy serves only the staged picomatch archive on codeload", async () 
   }
 });
 
-test("registry runs real smart HTTP Git so the actual installer can shallow-fetch an exact SHA", async () => {
+test("registry supports the installer's shallow fetch and the updater's clone over smart HTTP", async () => {
   const fixture = await makeFixture();
   try {
     const source = join(fixture.root, "git-source"),
@@ -272,6 +272,11 @@ test("registry runs real smart HTTP Git so the actual installer can shallow-fetc
       env: gitEnv,
     });
     const commit = (await execute("git", ["-C", source, "rev-parse", "HEAD"])).stdout.trim();
+    // Distinct tag objects make the updater's want list large enough for Git to gzip the POST.
+    for (let index = 0; index < 32; index++) {
+      const tag = `fixture-release-${index}`;
+      await execute("git", [...identity, "tag", "-a", tag, "-m", tag], { env: gitEnv });
+    }
     await execute("git", [
       "clone",
       "--bare",
@@ -299,27 +304,28 @@ test("registry runs real smart HTTP Git so the actual installer can shallow-fetc
       "1",
     );
     const proxied = join(fixture.root, "git-proxied-checkout");
+    const url = `https://github.com:${fixture.registryPort}/petrovichest/nest-apps.git`;
+    const proxiedGit = (args) =>
+      execute(
+        "git",
+        [
+          "-c",
+          "http.sslCAInfo=" + fixture.certPath,
+          "-c",
+          `http.proxy=http://fixture-user:fixture-proxy-password@127.0.0.1:${fixture.proxyPort}`,
+          ...args,
+        ],
+        { env: { ...process.env, NO_PROXY: "127.0.0.1,localhost,::1", no_proxy: "" } },
+      );
     await execute("git", ["init", "-q", proxied]);
-    await execute(
-      "git",
-      [
-        "-C",
-        proxied,
-        "-c",
-        "http.sslCAInfo=" + fixture.certPath,
-        "-c",
-        `http.proxy=http://fixture-user:fixture-proxy-password@127.0.0.1:${fixture.proxyPort}`,
-        "fetch",
-        "--depth=1",
-        `https://github.com:${fixture.registryPort}/petrovichest/nest-apps.git`,
-        commit,
-      ],
-      { env: { ...process.env, NO_PROXY: "127.0.0.1,localhost,::1", no_proxy: "" } },
-    );
+    await proxiedGit(["-C", proxied, "fetch", "--depth=1", url, commit]);
     assert.equal(
       (await execute("git", ["-C", proxied, "rev-parse", "FETCH_HEAD"])).stdout.trim(),
       commit,
     );
+    const cloned = join(fixture.root, "git-updater-source");
+    await proxiedGit(["clone", "--filter=blob:none", "--no-checkout", url, cloned]);
+    assert.equal((await execute("git", ["-C", cloned, "rev-parse", "HEAD"])).stdout.trim(), commit);
     assert.equal((await fixture.state()).gitFailures, 0);
     assert.ok((await fixture.state()).gitRequests >= 4);
     assert.ok((await fixture.state()).proxyConnections >= 1);

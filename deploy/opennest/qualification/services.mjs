@@ -417,6 +417,7 @@ export async function createQualificationServices(options) {
         REQUEST_METHOD: request.method,
         CONTENT_TYPE: request.headers["content-type"] || "",
         CONTENT_LENGTH: request.headers["content-length"] || "",
+        HTTP_CONTENT_ENCODING: request.headers["content-encoding"] || "",
         HTTP_GIT_PROTOCOL: request.headers["git-protocol"] || "",
         SERVER_PROTOCOL: "HTTP/1.1",
         REMOTE_ADDR: request.socket.remoteAddress || "127.0.0.1",
