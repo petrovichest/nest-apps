@@ -1084,6 +1084,8 @@ const ENGLISH: Record<string, string> = {
   "Загружаем артефакты…": "Loading artifacts…",
   "Не удалось загрузить артефакты.": "Could not load artifacts.",
   "В этой сессии пока нет артефактов": "There are no artifacts in this session yet",
+  "Попросите агента опубликовать результат как артефакт.":
+    "Ask the agent to publish the result as an artifact.",
   "Файлы появятся здесь, когда Codex приложит их к ответу.":
     "Files will appear here when Codex attaches them to a response.",
   "Артефакты недоступны для этой сессии": "Artifacts are unavailable for this session",

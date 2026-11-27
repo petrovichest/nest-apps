@@ -28,6 +28,7 @@ export function SessionInspector({
   project,
   gitChanges,
   activeTab,
+  showArtifacts,
   artifacts,
   artifactCapability,
   artifactLoadState,
@@ -42,6 +43,7 @@ export function SessionInspector({
   project: Project | null;
   gitChanges: GitChangesView;
   activeTab: InspectorTab;
+  showArtifacts: boolean;
   artifacts: SessionArtifact[];
   artifactCapability: "explicit" | "unavailable" | null;
   artifactLoadState: ArtifactLoadState;
@@ -52,7 +54,16 @@ export function SessionInspector({
   onArtifactRetry(): void;
 }) {
   const { language, t } = useI18n();
+  const overviewTab = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const button = overviewTab.current;
+    if (!showArtifacts && activeTab === "artifacts" && button) {
+      const { activeElement, body } = button.ownerDocument;
+      if (activeElement === body) button.focus({ preventScroll: true });
+    }
+  }, [activeTab, open, showArtifacts]);
   if (!open) return null;
+  const selectedTab = showArtifacts ? activeTab : "overview";
   const artifactsTabLabel = artifactCapability
     ? t("Артефакты, {{count}}", { count: artifacts.length })
     : t("Артефакты");
@@ -66,17 +77,18 @@ export function SessionInspector({
       </div>
       <div className="inspector-tabs" role="tablist" aria-label={t("Разделы сведений")}>
         <button
+          ref={overviewTab}
           type="button"
           id="session-overview-tab"
           role="tab"
           aria-controls="session-overview-panel"
-          aria-selected={activeTab === "overview"}
-          className={activeTab === "overview" ? "active" : undefined}
+          aria-selected={selectedTab === "overview"}
+          className={selectedTab === "overview" ? "active" : undefined}
           onClick={() => onTabChange("overview")}
         >
           {t("Обзор")}
         </button>
-        {application.capabilities.artifacts && (
+        {showArtifacts && (
           <button
             type="button"
             id="session-artifacts-tab"
@@ -95,7 +107,7 @@ export function SessionInspector({
         )}
       </div>
 
-      {activeTab === "overview" ? (
+      {selectedTab === "overview" ? (
         <div
           id="session-overview-panel"
           className="inspector-panel inspector-overview"
@@ -208,7 +220,11 @@ export function SessionInspector({
                 <FileIcon />
               </span>
               <strong>{t("В этой сессии пока нет артефактов")}</strong>
-              <span>{t("Файлы появятся здесь, когда Codex приложит их к ответу.")}</span>
+              <span>
+                {application.isOpen
+                  ? t("Попросите агента опубликовать результат как артефакт.")
+                  : t("Файлы появятся здесь, когда Codex приложит их к ответу.")}
+              </span>
             </div>
           )}
           {artifactCapability === "unavailable" && (

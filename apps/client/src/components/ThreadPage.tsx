@@ -751,6 +751,8 @@ export function ThreadPage({
     newSessionProject ??
     state.snapshot?.projects.find((candidate) => candidate.id === summary?.projectId) ??
     null;
+  const supportsArtifacts =
+    state.snapshot?.capabilities?.artifacts ?? application.capabilities.artifacts;
   const [artifactShelf, setArtifactShelf] = useState<{
     threadId: string;
     response: ThreadArtifactsResponse;
@@ -885,6 +887,13 @@ export function ThreadPage({
     setArtifactViewer(null);
     setInspectorTab("overview");
   }, [threadId]);
+  useEffect(() => {
+    if (supportsArtifacts) return;
+    artifactRequestRun.current += 1;
+    setArtifactShelf(null);
+    setArtifactLoadState("idle");
+    setInspectorTab("overview");
+  }, [supportsArtifacts]);
   const [gitChangesState, setGitChangesState] = useState<{
     threadId: string;
     value: GitChangesView;
@@ -1287,10 +1296,10 @@ export function ThreadPage({
     const returnToInspector = artifactViewerRef.current?.returnToInspector ?? false;
     setArtifactViewer(null);
     if (returnToInspector) {
-      setInspectorTab("artifacts");
+      setInspectorTab(supportsArtifacts ? "artifacts" : "overview");
       setInspectorOpen(true);
     }
-  }, []);
+  }, [supportsArtifacts]);
 
   const loadArtifact = useCallback(
     async (artifact: ArtifactDescriptor): Promise<ArtifactLoadResult> => {
@@ -2825,7 +2834,7 @@ export function ThreadPage({
   }, [detail, isSubagent, loadOlderDetail, loadingOlder, searchTarget, threadId, turnsStart]);
 
   const loadSessionArtifacts = useCallback(async () => {
-    if (!application.capabilities.artifacts) return;
+    if (!supportsArtifacts) return;
     const run = ++artifactRequestRun.current;
     setArtifactLoadState("loading");
     try {
@@ -2839,10 +2848,11 @@ export function ThreadPage({
         setArtifactLoadState("error");
       }
     }
-  }, [api, threadId]);
+  }, [api, supportsArtifacts, threadId]);
 
   useEffect(() => {
     if (
+      !supportsArtifacts ||
       !inspectorOpen ||
       inspectorTab !== "artifacts" ||
       artifactResponse ||
@@ -2851,7 +2861,14 @@ export function ThreadPage({
       return;
     }
     void loadSessionArtifacts();
-  }, [artifactLoadState, artifactResponse, inspectorOpen, inspectorTab, loadSessionArtifacts]);
+  }, [
+    artifactLoadState,
+    artifactResponse,
+    inspectorOpen,
+    inspectorTab,
+    loadSessionArtifacts,
+    supportsArtifacts,
+  ]);
 
   const previousArtifactTurn = useRef<{
     threadId: string;
@@ -5164,7 +5181,7 @@ export function ThreadPage({
             onClose={closeArtifact}
             onDownload={downloadFile}
             onLoad={loadArtifact}
-            returnToArtifacts={artifactViewer.returnToInspector}
+            returnToArtifacts={artifactViewer.returnToInspector && supportsArtifacts}
           />
         </>
       )}
@@ -5181,6 +5198,7 @@ export function ThreadPage({
           project={project}
           gitChanges={gitChangesState?.threadId === threadId ? gitChangesState.value : null}
           activeTab={inspectorTab}
+          showArtifacts={supportsArtifacts}
           artifacts={threadArtifacts}
           artifactCapability={artifactResponse?.capability ?? null}
           artifactLoadState={artifactLoadState}
