@@ -3,15 +3,13 @@ import { useEffect, useId, useRef, useState, type CSSProperties, type MouseEvent
 import { Link, useParams, useSearchParams } from "react-router";
 import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n, type Translate } from "../i18n";
+import { workerProcessStatus, workerSessionActive } from "../worker-handoff";
 import { ArrowLeftIcon, ChevronDownIcon, ChevronRightIcon } from "./Icons";
 import { WorkersHeader } from "./WorkersHeader";
 import "./workers.css";
 
 const processesPath = "/workers/processes";
 const apps = { codex: "CodexNest", claude: "ClaudeNest", gemini: "GeminiNest", open: "OpenNest" };
-const active = (session: WorkerProcessSession) =>
-  session.status !== "completed" && session.status !== "failed";
-
 type Participant = {
   sessions: WorkerProcessSession[];
   children: Participant[];
@@ -30,7 +28,7 @@ function branch(process: WorkerProcess, sessions: WorkerProcessSession[]): Parti
 }
 
 function current({ sessions }: Participant): WorkerProcessSession {
-  return sessions.find(active) ?? sessions[sessions.length - 1]!;
+  return sessions.find(workerSessionActive) ?? sessions[sessions.length - 1]!;
 }
 
 function descendants(node: Participant): Participant[] {
@@ -221,27 +219,12 @@ function ProcessSignalLabel({ signal }: { signal: ProcessSignal }) {
   );
 }
 
-function overviewStatus(session: WorkerProcessSession): ProcessStatus {
-  switch (session.status) {
-    case "waiting":
-      return session.waitingFor.length ? "Ждёт результата" : "Ждёт ответа";
-    case "running":
-      return "В работе";
-    case "queued":
-      return "В очереди";
-    case "failed":
-      return "Ошибка";
-    case "completed":
-      return "Готово";
-  }
-}
-
 function WorkStatus({ session }: { session: WorkerProcessSession }) {
   const { t } = useI18n();
   const label =
     session.status === "completed" && session.kind === "question"
       ? "Ответил"
-      : overviewStatus(session);
+      : workerProcessStatus(session);
   return (
     <span
       className="process-status"
@@ -275,7 +258,7 @@ function ProcessOverview({
     const root = process.sessions.find(({ id }) => id === process.id);
     if (!root) continue;
 
-    const status = overviewStatus(root);
+    const status = workerProcessStatus(root);
     const projects = sections.get(status) ?? new Map();
     const group = projects.get(process.projectKey) ?? [];
     group.push({ process, root });

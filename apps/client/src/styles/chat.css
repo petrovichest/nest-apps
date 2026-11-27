@@ -1230,6 +1230,309 @@ a.native-subagent-row:hover strong {
   padding: 2px 16px 16px;
 }
 
+.worker-handoff-entry {
+  min-width: 0;
+  padding-bottom: var(--space-2);
+  font-size: var(--text-message);
+  font-weight: 400;
+  line-height: var(--leading-message);
+  overflow-wrap: anywhere;
+}
+
+.worker-handoff-entry:has(.worker-handoff-card) {
+  padding-block: var(--space-2);
+}
+
+.worker-handoff-entry + .turn-response-tail {
+  margin-top: var(--space-2);
+}
+
+.worker-handoff-event {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: var(--space-2-5);
+}
+
+.worker-handoff-event > svg {
+  width: 16px;
+  height: 16px;
+  margin-top: var(--space-0-5);
+  color: var(--muted-strong);
+  transform: rotate(45deg);
+}
+
+.worker-handoff-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+}
+
+.worker-handoff-caption,
+.worker-handoff-label,
+.worker-handoff-status,
+.worker-handoff-body dt {
+  color: var(--muted-strong);
+  font-size: var(--text-caption);
+}
+
+.worker-handoff-topic,
+.worker-handoff-body :is(p, dd) {
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.worker-handoff-card {
+  --handoff-inset: var(--chat-padding);
+  --handoff-avatar: 36px;
+  --handoff-gap: var(--space-2-5);
+  border-radius: var(--chat-radius-card);
+  background: var(--color-floating);
+  box-shadow: var(--chat-inner-shadow);
+}
+
+.worker-handoff-card > summary {
+  display: grid;
+  grid-template-columns: var(--handoff-avatar) minmax(0, 1fr) auto 16px;
+  grid-template-areas: "avatar label status arrow" "avatar title title arrow";
+  gap: var(--space-0-5) var(--handoff-gap);
+  align-items: center;
+  padding: var(--space-4) var(--handoff-inset);
+  border-radius: var(--chat-radius-card);
+  list-style: none;
+  cursor: pointer;
+}
+
+.worker-handoff-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.worker-handoff-avatar {
+  grid-area: avatar;
+  display: grid;
+  place-items: center;
+  width: var(--handoff-avatar);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--sidebar-control-active);
+  color: var(--text-strong);
+  font-size: var(--text-ui);
+}
+
+.worker-handoff-label {
+  grid-area: label;
+}
+
+.worker-handoff-title {
+  grid-area: title;
+  color: var(--text-strong);
+}
+
+.worker-handoff-status {
+  grid-area: status;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+.worker-handoff-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--status-running);
+}
+
+.worker-handoff-status[data-status="queued"] .worker-handoff-dot {
+  background: var(--status-queued);
+}
+
+.worker-handoff-status[data-status="waiting"] .worker-handoff-dot {
+  background: var(--status-attention);
+}
+
+.worker-handoff-status[data-status="completed"] .worker-handoff-dot {
+  background: var(--status-complete);
+}
+
+.worker-handoff-status[data-status="failed"] .worker-handoff-dot {
+  background: var(--status-failed);
+}
+
+.worker-handoff-chevron {
+  grid-area: arrow;
+  width: 16px;
+  height: 16px;
+  color: var(--muted-strong);
+}
+
+.worker-handoff-card[open] .worker-handoff-chevron,
+.worker-journal-toggle[aria-expanded="true"] .activity-chevron {
+  transform: rotate(180deg);
+}
+
+.worker-handoff-body {
+  display: grid;
+  gap: var(--space-2);
+  margin-inline: calc(var(--handoff-inset) + var(--handoff-avatar) + var(--handoff-gap))
+    var(--handoff-inset);
+  padding-block: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+
+.worker-handoff-body :is(p, dl, dd) {
+  margin: 0;
+}
+
+.worker-handoff-link {
+  display: inline-flex;
+  justify-self: start;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-touch-height);
+  margin-inline-start: calc(-1 * var(--space-2-5));
+  padding-inline: var(--space-2-5);
+  border-radius: 999px;
+  color: var(--text-strong);
+}
+
+.worker-handoff-link > svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.worker-handoff-card > summary:focus-visible {
+  outline: none;
+}
+
+.worker-handoff-card:has(> summary:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: var(--chat-shadow);
+}
+
+.thread-workspace .timeline .worker-journal-toggle {
+  border-radius: 999px;
+  color: var(--muted-strong);
+  font-size: var(--text-caption);
+  font-weight: 400;
+}
+
+.worker-journal-toggle > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.thread-workspace .timeline .turn-activity-disclosure .worker-journal-toggle:first-child {
+  margin-inline-start: calc(-1 * var(--space-2));
+}
+
+.thread-workspace .timeline .turn-activity-copy.worker-journal-status {
+  padding-inline: 0;
+}
+
+.thread-workspace .timeline .worker-activity-journal {
+  gap: 0;
+  max-width: 560px;
+  padding: var(--space-1) 0 0;
+}
+
+.thread-workspace .timeline .activity-command-row {
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
+}
+
+.thread-workspace .timeline .activity-command-row > summary {
+  min-height: var(--control-touch-height);
+  gap: var(--space-2-5);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-lg);
+}
+
+.activity-command-row .activity-title {
+  overflow: visible;
+  font-size: var(--text-message);
+  font-weight: 400;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.thread-workspace .timeline .activity-command-row .activity-content {
+  padding: var(--space-1) var(--space-2) var(--space-1) 28px;
+}
+
+.activity-command-row .activity-content pre {
+  margin: 0;
+  padding: var(--space-1-5) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-floating);
+  color: var(--muted-strong);
+  font-size: var(--text-code);
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+:is(.worker-handoff-link, .activity-command-row > summary):focus-visible {
+  background: var(--color-floating);
+  box-shadow: var(--chat-shadow);
+}
+
+@media (hover: hover) {
+  .worker-handoff-card:has(> summary:hover) {
+    box-shadow: var(--chat-shadow);
+  }
+
+  :is(.worker-handoff-link, .activity-command-row > summary):hover {
+    background: var(--color-floating);
+    box-shadow: var(--chat-shadow);
+  }
+}
+
+:is(.worker-handoff-link, .worker-handoff-card > summary, .activity-command-row > summary):active {
+  background: var(--sidebar-control-active);
+  box-shadow: var(--sidebar-pressed-shadow);
+}
+
+@media (max-width: 820px) {
+  .thread-workspace .turn:last-child:has(> .worker-handoff-entry) {
+    margin-bottom: 0;
+  }
+
+  .thread-workspace .user-entry:has(+ .worker-handoff-entry) {
+    margin-bottom: var(--space-1);
+  }
+
+  .worker-handoff-entry + .turn-response-tail {
+    margin-top: var(--space-1);
+  }
+
+  .worker-handoff-card {
+    --handoff-inset: var(--space-4);
+  }
+
+  .worker-handoff-card > summary {
+    padding-block: var(--space-3);
+  }
+
+  .worker-handoff-body {
+    margin-inline: var(--handoff-inset);
+    padding-bottom: var(--space-2);
+  }
+}
+
+@media (max-width: 359px) {
+  .worker-handoff-card {
+    --handoff-avatar: 32px;
+    --handoff-gap: var(--space-2);
+  }
+}
+
 .thread-workspace :is(.timeline, .artifact-document) :is(pre, .markdown-code-block) {
   border: 0;
   border-radius: var(--chat-radius-control);
