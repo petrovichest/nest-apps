@@ -11,6 +11,7 @@ import { claudeWorkerModelChooser } from "../../claude-server/src/title";
 import { AppError } from "../../claude-server/src/types";
 import { UiService } from "../../claude-server/src/ui-service";
 import { AppManager } from "./app-management";
+import { registerClaudeForkRoutes } from "./claude-forks";
 import type { Config } from "./config";
 import { OpenConnection, openProxyEnvironment, readOpenConnection } from "./connection";
 import { loadModelCatalog, loadModelEndpoints } from "./model-catalog";
@@ -88,8 +89,16 @@ export async function startClaudeRuntime(config: Config) {
         throw new AppError("conflict", "OpenNest is preparing a restart", 409);
       await manager.prepare([1]);
       try {
-        const { threads, attention } = ui.snapshot();
-        if (attention.length || threads.some((thread) => thread.currentTurnId))
+        const { threads, attention, forkOperations } = ui.snapshot();
+        if (
+          attention.length ||
+          threads.some((thread) => thread.currentTurnId) ||
+          forkOperations.some(
+            (fork) =>
+              fork.mode === "compressed" &&
+              (fork.status === "preparing" || fork.status === "reconciling"),
+          )
+        )
           throw new AppError(
             "conflict",
             "Finish active work before changing the network proxy",
@@ -139,7 +148,9 @@ export async function startClaudeRuntime(config: Config) {
         };
       },
     });
+    ui.forksEnabled = true;
     const app = await buildApp(manager, ui, {}, new AppManager(config), proxy);
+    registerClaudeForkRoutes(app, ui);
     app.addHook("onClose", async () => {
       await connection?.close();
     });

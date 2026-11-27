@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type {
+  ForkOperationSummary,
   Project,
   QueuedMessage,
   QueueMessageRequest,
@@ -37,6 +38,9 @@ export interface UiThread {
   draft: ThreadDraft | null;
   queue: QueuedMessage[];
   nativeHistory?: boolean;
+  forkedFromId?: string;
+  /** End of the native prefix inherited by a fork. Its usage was billed to the source. */
+  inheritedThrough?: string;
   /** Confirmed owner loss or forced stop; native conversation files stay untouched. */
   interruptedTurns?: Record<string, number>;
   /** Browser tools are offered to the session; the extension binding is attached separately. */
@@ -94,10 +98,22 @@ export interface StoredVoice {
   applied?: boolean;
   sendInput?: QueueMessageRequest;
 }
+export interface UiForkOperation {
+  summary: ForkOperationSummary;
+  targetId: string;
+  /** A reserved child, published atomically with the draft and queue when ready. */
+  pending?: UiThread;
+  transcriptPath: string;
+  prefixBytes: number;
+  /** Keep the operation ID reserved after the client removes a failure. */
+  removed?: true;
+}
+
 export interface UiData {
   version: 1;
   projects: Project[];
   threads: Record<string, UiThread>;
+  forkOperations?: Record<string, UiForkOperation>;
   creations: Record<string, { projectId: string; threadId: string; fingerprint?: string }>;
   projectDrafts: Record<string, ThreadDraft>;
   questionDrafts: Record<string, UserInputDraft>;
@@ -111,6 +127,26 @@ export interface UiData {
   voiceSettings?: Record<string, unknown>;
   voiceTimings?: Record<string, { audioDurationMs: number; processingMs: number }[]>;
 }
+export function findForkOperation(data: UiData, id: string): UiForkOperation | undefined {
+  return Object.hasOwn(data.forkOperations ?? {}, id) ? data.forkOperations![id] : undefined;
+}
+
+export function forkOperation(data: UiData, id: string): UiForkOperation {
+  const stored = findForkOperation(data, id);
+  if (!stored || stored.removed) throw new AppError("not_found", "Fork operation not found", 404);
+  return stored;
+}
+
+export function touchFork(operation: UiForkOperation): void {
+  operation.summary.updatedAt = Math.max(Date.now(), operation.summary.updatedAt + 1);
+  operation.summary.queuedMessageCount = operation.pending?.queue.length ?? 0;
+}
+
+export function forkTarget(data: UiData, id: string): UiThread {
+  const operation = forkOperation(data, id);
+  return operation.pending ?? data.threads[operation.summary.targetThreadId!]!;
+}
+
 const initial = (): UiData => ({
   version: 1,
   projects: [],

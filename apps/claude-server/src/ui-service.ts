@@ -35,6 +35,7 @@ import type {
   BrowserThreadStatus,
   ThreadSummary,
   UpdateThreadDraftRequest,
+  UpdateQueuedMessageRequest,
   UpdateUserInputDraftRequest,
 } from "@codexnest/protocol";
 import { AttachmentStore } from "./attachments";
@@ -44,7 +45,7 @@ import type { SessionManager } from "./manager";
 import { NativeView, type SubagentLaunch } from "./native-view";
 import { parseClaudeUsage } from "./rate-limits";
 import type { RunnerConnection } from "./rpc";
-import { UiStore, type UiThread } from "./ui-store";
+import { forkOperation, forkTarget, touchFork, UiStore, type UiThread } from "./ui-store";
 import { writeJsonAtomic } from "./io";
 import { isMainNativeEvent, nativeQuotaFailure, quotaModel } from "./quota-recovery";
 import {
@@ -126,6 +127,7 @@ export class UiService extends EventEmitter {
   readonly attachments: AttachmentStore;
   readonly instanceId = randomUUID();
   sequence = 0;
+  forksEnabled = false;
   private views = new Map<string, NativeView>();
   private owners = new Map<string, RunnerSnapshot>();
   /** Disconnected owners cannot be assumed idle until their subscription is restored. */
@@ -207,7 +209,10 @@ export class UiService extends EventEmitter {
       this.manager.accounts.on("changed", this.accountsChanged);
       this.accountsChanged(this.manager.accounts.status());
     }
-    const sessions = (await this.manager.list()) as Array<Record<string, unknown>>;
+    const pendingForks = new Set(this.unpublishedForkTargetIds());
+    const sessions = ((await this.manager.list()) as Array<Record<string, unknown>>).filter(
+      (session) => !pendingForks.has(String(session.sessionId)),
+    );
     await this.store.update((data) => {
       for (const session of sessions) {
         const id = String(session.sessionId),
@@ -405,6 +410,10 @@ export class UiService extends EventEmitter {
       event,
     } satisfies ServerFrame);
   }
+  *unpublishedForkTargetIds(): Iterable<string> {
+    for (const operation of Object.values(this.store.data.forkOperations ?? {}))
+      if (operation.summary.status !== "ready") yield operation.targetId;
+  }
   get threadIds(): string[] {
     return Object.keys(this.store.data.threads);
   }
@@ -520,7 +529,11 @@ export class UiService extends EventEmitter {
           : (owner?.permissionMode ?? this.store.data.permissionMode) === "acceptEdits"
             ? "auto"
             : "ask",
-      relation: { kind: "session", sessionId: id },
+      relation: {
+        kind: "session",
+        sessionId: id,
+        ...(thread.forkedFromId ? { forkedFromId: thread.forkedFromId } : {}),
+      },
       canAcceptDirectInput: true,
       codexSettings: {
         model: owner?.model ?? view?.model ?? thread.settings.model ?? null,
@@ -717,7 +730,7 @@ export class UiService extends EventEmitter {
         plan: true,
         team: false,
         goal: false,
-        forks: false,
+        forks: this.forksEnabled,
         browserIntegration: Boolean(this.browserStatus),
         fullTextSearch: true,
         sessionApprovalGrants: true,
@@ -739,7 +752,11 @@ export class UiService extends EventEmitter {
       models: this.modelOptions(),
       taskDefaults: this.store.data.taskDefaults,
       permissionSettings: this.permissionSettings(),
-      forkOperations: [],
+      forkOperations: this.forksEnabled
+        ? Object.values(this.store.data.forkOperations ?? {})
+            .filter((operation) => !operation.removed)
+            .map((operation) => operation.summary)
+        : [],
       voiceTranscriptions: Object.values(this.store.data.voice)
         .filter((value) => !value.cancelled && !value.applied)
         .map((value) => value.job),
@@ -785,7 +802,7 @@ export class UiService extends EventEmitter {
   private async applyPermissionsOnce(id: string): Promise<void> {
     const owner = this.owners.get(id);
     if (!owner) return;
-    const mode = this.permissionMode(id);
+    const mode = this.permissionMode(this.thread(id));
     if (
       owner.capabilities?.livePermissionMode &&
       owner.permissionMode !== mode &&
@@ -806,10 +823,8 @@ export class UiService extends EventEmitter {
     this.publish({ type: "thread.upserted", thread: this.summary(id) });
   }
   /** Plan mode follows the session; every other session uses the global permission mode. */
-  private permissionMode(id: string): ClaudePermissionMode {
-    return this.store.data.threads[id]?.settings.collaborationMode === "plan"
-      ? "plan"
-      : this.store.data.permissionMode;
+  permissionMode(thread: UiThread): ClaudePermissionMode {
+    return thread.settings.collaborationMode === "plan" ? "plan" : this.store.data.permissionMode;
   }
   /**
    * ExitPlanMode would approve the plan inside Claude's turn. Like Codex, the plan instead
@@ -930,7 +945,7 @@ export class UiService extends EventEmitter {
       this.views.set(id, view);
       return view;
     }
-    const view = new NativeView(id, thread.cwd);
+    const view = new NativeView(id, thread.cwd, undefined, thread.inheritedThrough);
     for (const continuationId of thread.quotaContinuationIds ?? [])
       view.rememberQuotaContinuation(continuationId);
     for (const [toolUseId, text] of Object.entries(thread.planTexts ?? {}))
@@ -1568,16 +1583,30 @@ export class UiService extends EventEmitter {
     this.publish({ type: "thread.upserted", thread: this.summary(id) });
     return { thread: this.summary(id), draft: this.thread(id).draft };
   }
+  createForkTarget(source: UiThread, title: string, inheritedThrough: string): UiThread {
+    return {
+      ...blankThread(randomUUID(), source.cwd, source.projectId, title),
+      settings: structuredClone(source.settings),
+      nativeHistory: true,
+      forkedFromId: source.id,
+      inheritedThrough,
+    };
+  }
+  publishForkOperation(id: string): void {
+    const operation = forkOperation(this.store.data, id);
+    this.publish({ type: "forkOperation.upserted", operation: operation.summary });
+  }
   async setDraft(
     id: string,
     value: UpdateThreadDraftRequest,
     expected?: string,
+    forFork = false,
   ): Promise<ThreadDraft> {
-    this.thread(id);
+    const target = forFork ? forkTarget(this.store.data, id) : this.thread(id);
     validateDraft(value);
-    if (value.files?.length) await this.attachments.validate(id, value.files);
-    return this.store.update((data) => {
-      const thread = data.threads[id]!,
+    if (value.files?.length) await this.attachments.validate(target.id, value.files);
+    const draft = await this.store.update((data) => {
+      const thread = forFork ? forkTarget(data, id) : data.threads[id]!,
         current = thread.draft?.updatedAt ?? null;
       // Voice preparation and autosave can save the same draft from one client.
       // A no-op must neither reject an older revision nor invalidate an admitted upload.
@@ -1609,11 +1638,19 @@ export class UiService extends EventEmitter {
         goalMode: false,
         updatedAt: Math.max(Date.now(), (current ?? 0) + 1),
       };
+      if (forFork) touchFork(forkOperation(data, id));
       return thread.draft;
     });
+    if (forFork) this.publishForkOperation(id);
+    return draft;
   }
-  async enqueue(id: string, body: QueueMessageRequest): Promise<QueuedMessage> {
-    const thread = this.thread(id),
+  async enqueue(
+    scopeId: string,
+    body: QueueMessageRequest,
+    forFork = false,
+  ): Promise<QueuedMessage> {
+    const thread = forFork ? forkTarget(this.store.data, scopeId) : this.thread(scopeId),
+      id = thread.id,
       text = typeof body.input === "string" ? body.input : "";
     if (thread.subagent)
       throw new AppError("conflict", "A subagent is controlled by its parent session", 409);
@@ -1626,11 +1663,25 @@ export class UiService extends EventEmitter {
     if (body.planImplementationMode !== undefined && body.planImplementationMode !== "default")
       throw new AppError("invalid_request", "Claude implements plans in the standard mode");
     const implementingPlan = body.planImplementationMode === "default";
+    if (
+      forFork &&
+      (implementingPlan ||
+        body.deliveryMode === "steer" ||
+        body.projectDraft ||
+        body.replyToAsyncQuestion ||
+        body.dismissUserInput)
+    )
+      throw new AppError("invalid_request", "This message action requires an existing session");
     if (body.deliveryMode !== undefined && !["queue", "steer"].includes(body.deliveryMode))
       throw new AppError("invalid_request", "Invalid message delivery mode");
     const steering = body.deliveryMode === "steer";
     const clientId = body.clientMessageId ?? randomUUID();
-    if (typeof clientId !== "string" || !clientId.trim() || clientId.length > 300)
+    if (
+      typeof clientId !== "string" ||
+      !clientId.trim() ||
+      clientId.length > 300 ||
+      clientId === "__proto__"
+    )
       throw new AppError("invalid_request", "Invalid client message ID");
     const fingerprint = hash({
       input: text,
@@ -1639,11 +1690,17 @@ export class UiService extends EventEmitter {
       files: body.files ?? [],
       ...(steering ? { deliveryMode: "steer" } : {}),
     });
-    const saved = thread.deliveries[clientId];
+    const publicMessage = (message: QueuedMessage): QueuedMessage =>
+      forFork && forkOperation(this.store.data, scopeId).pending
+        ? { ...message, threadId: scopeId }
+        : message;
+    const saved = Object.hasOwn(thread.deliveries, clientId)
+      ? thread.deliveries[clientId]
+      : undefined;
     if (saved) {
       if (saved.fingerprint !== fingerprint)
         throw new AppError("conflict", "Message ID was reused with different input", 409);
-      return (
+      return publicMessage(
         thread.queue.find((item) => item.id === saved.messageId) ?? {
           id: saved.messageId,
           threadId: id,
@@ -1652,7 +1709,7 @@ export class UiService extends EventEmitter {
           status: "dispatching",
           deliveryVersion: 1,
           ...(saved.mode ? { deliveryMode: saved.mode } : {}),
-        }
+        },
       );
     }
     if (body.files?.length) await this.attachments.validate(id, body.files);
@@ -1682,8 +1739,10 @@ export class UiService extends EventEmitter {
         );
       }
       const message = await this.store.update((data) => {
-        const current = data.threads[id]!,
-          prior = current.deliveries[clientId];
+        const current = forFork ? forkTarget(data, scopeId) : data.threads[id]!,
+          prior = Object.hasOwn(current.deliveries, clientId)
+            ? current.deliveries[clientId]
+            : undefined;
         if (prior) {
           if (prior.fingerprint !== fingerprint)
             throw new AppError("conflict", "Message ID conflict", 409);
@@ -1729,6 +1788,7 @@ export class UiService extends EventEmitter {
           provisionalTitle = current.title;
         }
         current.updatedAt = Date.now();
+        if (forFork) touchFork(forkOperation(data, scopeId));
         const sentDraft = current.draft,
           expectedDraft = (body as QueueMessageRequest & { draftUpdatedAt?: number | null })
             .draftUpdatedAt;
@@ -1759,6 +1819,10 @@ export class UiService extends EventEmitter {
         return message;
       });
       durable = true;
+      if (forFork) {
+        this.publishForkOperation(scopeId);
+        if (forkOperation(this.store.data, scopeId).pending) return publicMessage(message);
+      }
       if (clearedProject) this.publish({ type: "projectDraft.changed", ...clearedProject });
       if (fresh) {
         if (implementingPlan) {
@@ -1781,6 +1845,74 @@ export class UiService extends EventEmitter {
       if (!fresh || !durable)
         await Promise.allSettled(imageFiles.map((file) => this.attachments.remove(id, file.id)));
     }
+  }
+  async updateQueued(
+    id: string,
+    messageId: string,
+    body: UpdateQueuedMessageRequest,
+    forFork = false,
+  ): Promise<QueuedMessage> {
+    if (typeof body.input !== "string")
+      throw new AppError("invalid_request", "input must be nonempty text");
+    if (!validPastedText(body, body.input))
+      throw new AppError("invalid_request", "Invalid pasted text metadata");
+    if (!forFork) this.thread(id);
+    const entry = await this.store.update((data) => {
+      const thread = forFork ? forkTarget(data, id) : data.threads[id]!,
+        entry = thread.queue.find((item) => item.id === messageId);
+      if (!entry) throw new AppError("not_found", "Queued message not found", 404);
+      if (entry.status !== "queued" || entry.deliveryError)
+        throw new AppError("conflict", "Cannot edit a message after dispatch began", 409);
+      if (
+        forFork &&
+        !body.input.trim() &&
+        !body.pasteBlocks?.length &&
+        !entry.images?.length &&
+        !entry.files?.length
+      )
+        throw new AppError("invalid_request", "Message is empty");
+      entry.text = body.input;
+      delete entry.inlinePastes;
+      delete entry.pasteBlocks;
+      Object.assign(entry, pastedText(body));
+      for (const value of Object.values(thread.deliveries))
+        if (value.messageId === entry.id)
+          value.fingerprint = hash({
+            input: entry.text,
+            ...pastedText(entry),
+            images: entry.images ?? [],
+            files: entry.files ?? [],
+            ...(value.mode ? { deliveryMode: value.mode } : {}),
+          });
+      if (forFork) touchFork(forkOperation(data, id));
+      return entry;
+    });
+    if (forFork) {
+      this.publishForkOperation(id);
+      if (forkOperation(this.store.data, id).pending) return { ...entry, threadId: id };
+    }
+    this.publishQueue(entry.threadId);
+    return entry;
+  }
+  async deleteQueued(id: string, messageId: string, forFork = false): Promise<void> {
+    if (!forFork) this.thread(id);
+    const target = await this.store.update((data) => {
+      const thread = forFork ? forkTarget(data, id) : data.threads[id]!,
+        entry = thread.queue.find((item) => item.id === messageId);
+      if (
+        entry?.status === "dispatching" ||
+        (entry?.deliveryError && !entry.deliveryError.retryable)
+      )
+        throw new AppError("conflict", "Delivery outcome must be reconciled first", 409);
+      thread.queue = thread.queue.filter((item) => item.id !== messageId);
+      if (forFork) touchFork(forkOperation(data, id));
+      return thread.id;
+    });
+    if (forFork) {
+      this.publishForkOperation(id);
+      if (forkOperation(this.store.data, id).pending) return;
+    }
+    this.publishQueue(target);
   }
   private async refineTitle(
     id: string,
@@ -2056,7 +2188,7 @@ export class UiService extends EventEmitter {
                 model: thread.settings.model,
                 endpoint: thread.settings.openRouterEndpoint,
                 effort: thread.settings.reasoningEffort,
-                permissionMode: this.permissionMode(id),
+                permissionMode: this.permissionMode(thread),
               })
             : await this.manager.create({
                 sessionId: id,
@@ -2066,7 +2198,7 @@ export class UiService extends EventEmitter {
                 model: thread.settings.model,
                 endpoint: thread.settings.openRouterEndpoint,
                 effort: thread.settings.reasoningEffort,
-                permissionMode: this.permissionMode(id),
+                permissionMode: this.permissionMode(thread),
                 ...content,
               });
       const returned = result as CommandReceipt;

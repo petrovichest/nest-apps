@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { constants, createReadStream, type Stats } from "node:fs";
 import { access, mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -13,14 +13,16 @@ import type {
   ThreadArtifactsResponse,
   ThreadSummary,
   UpdateThreadDraftRequest,
+  UpdateQueuedMessageRequest,
   UpdateTranscriptionSettingsRequest,
   UpdateUserInputDraftRequest,
 } from "@codexnest/protocol";
 import type { UiService } from "./ui-service";
 import { registerClaudeKanban } from "./kanban";
 import { BrowserExtensionError, type BrowserExtensionServer } from "./browser-extension";
-import { mergeProjectDraft, pastedText, validPastedText } from "@codexnest/protocol";
+import { mergeProjectDraft } from "@codexnest/protocol";
 import { emptyDraft, validateDraft } from "./ui-service";
+import { forkTarget } from "./ui-store";
 import { AppError, record, type ClaudePermissionMode } from "./types";
 import { readGitChanges } from "./git-changes";
 import { transcriptPaths } from "./history";
@@ -499,17 +501,18 @@ export async function registerUiRoutes(
     ui.publish({ type: "projectDraft.changed", projectId: id, draft });
     return draft;
   });
-  for (const namespace of ["projects", "threads"])
+  for (const namespace of ["projects", "threads", ...(ui.forksEnabled ? ["fork-operations"] : [])])
     app.post(
       `/api/v1/${namespace}/:id/attachments`,
       { bodyLimit: 100 * 1024 * 1024 },
       async (request) => {
         const id = params(request).id;
         if (namespace === "projects") ui.project(id);
-        else ui.thread(id);
+        else if (namespace === "threads") ui.thread(id);
+        const target = namespace === "fork-operations" ? forkTarget(ui.store.data, id).id : id;
         const q = query(request);
         return ui.attachments.save(
-          id,
+          target,
           string(q.name, "name", 1000),
           q.mediaType ?? "application/octet-stream",
           request.body as Readable,
@@ -651,53 +654,11 @@ export async function registerUiRoutes(
   });
   app.patch("/api/v1/threads/:id/queue/:messageId", async (request) => {
     const p = params(request);
-    ui.thread(p.id);
-    const body = record(request.body);
-    const text = typeof body.input === "string" ? body.input : string(body.input, "input");
-    if (!validPastedText(body, text))
-      throw new AppError("invalid_request", "Invalid pasted text metadata");
-    const entry = await ui.store.update((data) => {
-      const thread = data.threads[p.id]!,
-        entry = thread.queue.find((item) => item.id === p.messageId);
-      if (!entry) throw new AppError("not_found", "Queued message not found", 404);
-      if (entry.status !== "queued" || entry.deliveryError)
-        throw new AppError("conflict", "Cannot edit a message after dispatch began", 409);
-      entry.text = text;
-      delete entry.inlinePastes;
-      delete entry.pasteBlocks;
-      Object.assign(entry, pastedText(body));
-      for (const value of Object.values(thread.deliveries))
-        if (value.messageId === entry.id)
-          value.fingerprint = createHash("sha256")
-            .update(
-              JSON.stringify({
-                input: text,
-                ...pastedText(entry),
-                images: entry.images ?? [],
-                files: entry.files ?? [],
-                ...(value.mode ? { deliveryMode: value.mode } : {}),
-              }),
-            )
-            .digest("hex");
-      return entry;
-    });
-    ui.publishQueue(p.id);
-    return entry;
+    return ui.updateQueued(p.id, p.messageId!, record(request.body) as UpdateQueuedMessageRequest);
   });
   app.delete("/api/v1/threads/:id/queue/:messageId", async (request, reply) => {
     const p = params(request);
-    ui.thread(p.id);
-    await ui.store.update((data) => {
-      const thread = data.threads[p.id]!,
-        entry = thread.queue.find((item) => item.id === p.messageId);
-      if (
-        entry?.status === "dispatching" ||
-        (entry?.deliveryError && !entry.deliveryError.retryable)
-      )
-        throw new AppError("conflict", "Delivery outcome must be reconciled first", 409);
-      thread.queue = thread.queue.filter((item) => item.id !== p.messageId);
-    });
-    ui.publishQueue(p.id);
+    await ui.deleteQueued(p.id, p.messageId!);
     return reply.code(204).send();
   });
   app.post("/api/v1/threads/:id/queue/:messageId/send", async (request) => {

@@ -202,19 +202,35 @@ export async function buildApp(
   app.post("/api/v1/settings/app/force-restart", async (_request, reply) =>
     reply.code(202).send(await updates.forceRestart()),
   );
-  app.get<{ Querystring: { cwd?: string } }>("/api/v1/sessions", async (request) => ({
-    sessions: await manager.list(request.query.cwd),
-  }));
+  const assertExposedSession = (id: string) => {
+    if (ui?.forksEnabled) {
+      const normalized = id.toLowerCase();
+      for (const target of ui.unpublishedForkTargetIds())
+        if (target === normalized) throw new AppError("not_found", "Session not found", 404);
+    }
+  };
+  app.get<{ Querystring: { cwd?: string } }>("/api/v1/sessions", async (request) => {
+    const sessions = await manager.list(request.query.cwd);
+    const hidden = ui?.forksEnabled ? new Set(ui.unpublishedForkTargetIds()) : undefined;
+    return {
+      sessions: hidden?.size
+        ? sessions.filter((session) => !hidden.has(String(record(session).sessionId)))
+        : sessions,
+    };
+  });
   app.get<{ Params: { id: string } }>("/api/v1/sessions/:id/history", async (request) => {
     assertUuid(request.params.id, "sessionId");
+    assertExposedSession(request.params.id);
     return readHistory(manager.config.configDir, request.params.id);
   });
-  app.get<{ Params: { id: string } }>("/api/v1/sessions/:id/snapshot", async (request) =>
-    manager.snapshot(request.params.id),
-  );
+  app.get<{ Params: { id: string } }>("/api/v1/sessions/:id/snapshot", async (request) => {
+    assertExposedSession(request.params.id);
+    return manager.snapshot(request.params.id);
+  });
   app.post("/api/v1/sessions", async (request, reply) => {
     const body = record(request.body);
     assertUuid(body.sessionId, "sessionId");
+    assertExposedSession(body.sessionId);
     assertUuid(body.requestId, "requestId");
     const result = await manager.create({
       sessionId: body.sessionId,
@@ -228,21 +244,39 @@ export async function buildApp(
   app.post<{ Params: { id: string } }>("/api/v1/sessions/:id/messages", async (request, reply) => {
     const body = record(request.body);
     assertUuid(body.requestId, "requestId");
-    return reply.code(202).send({
-      receipt: await manager.send(request.params.id, body.requestId, text(body.prompt, "prompt")),
-    });
+    assertExposedSession(request.params.id);
+    const thread = ui?.forksEnabled
+      ? ui.store.data.threads[request.params.id.toLowerCase()]
+      : undefined;
+    const launch =
+      ui && thread?.forkedFromId
+        ? {
+            model: thread.settings.model,
+            endpoint: thread.settings.openRouterEndpoint,
+            effort: thread.settings.reasoningEffort,
+            permissionMode: ui.permissionMode(thread),
+          }
+        : undefined;
+    const prompt = text(body.prompt, "prompt");
+    const receipt = launch
+      ? await manager.send(request.params.id, body.requestId, prompt, undefined, launch)
+      : await manager.send(request.params.id, body.requestId, prompt);
+    return reply.code(202).send({ receipt });
   });
   app.post<{ Params: { id: string } }>("/api/v1/sessions/:id/interrupt", async (request) => {
     const body = record(request.body);
     assertUuid(body.requestId, "requestId");
+    assertExposedSession(request.params.id);
     return manager.command(request.params.id, "interrupt", { requestId: body.requestId });
   });
-  app.post<{ Params: { id: string } }>("/api/v1/sessions/:id/release", async (request) =>
-    manager.command(request.params.id, "release", {}),
-  );
+  app.post<{ Params: { id: string } }>("/api/v1/sessions/:id/release", async (request) => {
+    assertExposedSession(request.params.id);
+    return manager.command(request.params.id, "release", {});
+  });
   app.post<{ Params: { id: string } }>("/api/v1/requests/:id/responses", async (request) => {
     const body = record(request.body);
     assertUuid(body.sessionId, "sessionId");
+    assertExposedSession(body.sessionId);
     assertUuid(body.requestId, "requestId");
     const response = record(body.response);
     if (response.behavior !== "allow" && response.behavior !== "deny")
@@ -306,6 +340,7 @@ export async function buildApp(
           if (message.type !== "subscribe")
             throw new AppError("invalid_request", "Expected subscribe or ping");
           assertUuid(message.sessionId, "sessionId");
+          assertExposedSession(message.sessionId);
           if (
             message.afterSequence !== undefined &&
             (!Number.isSafeInteger(message.afterSequence) || Number(message.afterSequence) < 0)
