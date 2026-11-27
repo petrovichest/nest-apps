@@ -746,7 +746,7 @@
   /* With an expanded sidebar or details panel, use the compact header actions. */
   @container (max-width: 640px) {
     .kanban-category-filter,
-    .kanban-archive-button,
+    .kanban-pane .workspace-header .kanban-archive-button,
     .kanban-add-button > span {
       display: none;
     }
@@ -809,11 +809,6 @@
   .kanban-pane .workspace-header:has(> .kanban-project-picker) {
     gap: var(--space-1);
     padding-inline: var(--space-1);
-  }
-
-  /* The compact actions menu already includes Archive. */
-  .kanban-pane .workspace-header:has(> .kanban-project-picker) .kanban-archive-button {
-    display: none;
   }
 
   .kanban-pane .workspace-header:has(> .kanban-project-picker) .kanban-header-microphone.timing {
@@ -1219,7 +1214,7 @@ textarea.kanban-edit-field {
   }
 
   .kanban-category-filter,
-  .kanban-archive-button,
+  .kanban-pane .workspace-header .kanban-archive-button,
   .kanban-add-button > span {
     display: none;
   }

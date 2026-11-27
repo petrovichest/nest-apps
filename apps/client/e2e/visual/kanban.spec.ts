@@ -1857,3 +1857,97 @@ test("Kanban ignores a late catalogue response from the previous project", async
     finishOld();
   }
 });
+
+test.describe("Kanban interrupted touch drag", () => {
+  test.use({ hasTouch: true, viewport: PHONE_VIEWPORT });
+
+  test("cancelling a lifted card clears its slot and the next release still reorders", async ({
+    page,
+    browserName,
+  }, info) => {
+    test.skip(browserName !== "chromium", "Touch drag input uses Chromium CDP");
+    const { patches } = await installKanbanAccessFixture(page, { manyCards: true });
+    const source = page.locator('.kanban-card[data-card-id="todo-2"]');
+    const first = page.locator('.kanban-card[data-card-id="card-0"]');
+    const slot = page.locator(".kanban-drop-slot");
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      for (const type of ["touchCancel", "touchEnd"] as const) {
+        const box = (await source.boundingBox())!;
+        const target = (await first.boundingBox())!;
+        const x = box.x + box.width / 2;
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x, y: box.y + box.height * 0.65 }],
+        });
+        await expect(source).toHaveClass(/dragging/);
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchMove",
+          touchPoints: [{ x, y: target.y + 8 }],
+        });
+        await expect(slot).toBeVisible();
+        if (type === "touchCancel") {
+          await page.screenshot({ path: info.outputPath("touch-lifted.png") });
+        }
+        await cdp.send("Input.dispatchTouchEvent", { type, touchPoints: [] });
+        await expect(slot).toBeHidden();
+        await expect(source).not.toHaveClass(/dragging/);
+        if (type === "touchCancel") {
+          await page.waitForLoadState("networkidle");
+          expect(patches).toEqual([]);
+          await page.screenshot({ path: info.outputPath("touch-cancelled.png") });
+        } else {
+          await expect.poll(() => patches).toEqual([{ beforeCardId: "card-0" }]);
+        }
+      }
+    } finally {
+      await cdp.detach();
+    }
+  });
+});
+
+test("Kanban offers one archive action and restores its visible opener at compact widths", async ({
+  page,
+}, info) => {
+  await page.setViewportSize({ width: 1000, height: 844 });
+  await installKanbanAccessFixture(page);
+  const pane = page.locator(".kanban-pane");
+  const footprint = 1000 - (await pane.boundingBox())!.width;
+  const direct = page.locator(".kanban-archive-button");
+  const compact = page.locator(".kanban-filter-menu");
+  const more = compact.locator("summary");
+  const headerArchive = page
+    .locator(".workspace-header")
+    .getByRole("button", { name: "Архив", exact: true });
+  const archive = page.getByRole("dialog", { name: "Архив" });
+
+  for (const width of [390, 360, footprint + 640]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(direct).toBeHidden();
+    await more.press("Enter");
+    await expect(headerArchive).toHaveCount(1);
+    await expect(headerArchive).toBeVisible();
+    if (width === 390) await page.screenshot({ path: info.outputPath("compact-archive.png") });
+    await headerArchive.press("Enter");
+    await expect(archive.locator("#kanban-archive-title")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(archive).toBeHidden();
+    await expect(more).toBeFocused();
+  }
+
+  await page.setViewportSize({ width: footprint + 641, height: 844 });
+  await expect(compact).toBeHidden();
+  await expect(direct).toBeVisible();
+  await expect(headerArchive).toHaveCount(1);
+  await direct.press("Enter");
+  await expect(archive).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(direct).toBeFocused();
+
+  await direct.press("Enter");
+  await expect(archive).toBeVisible();
+  await page.setViewportSize({ width: footprint + 640, height: 844 });
+  await page.keyboard.press("Escape");
+  await expect(archive).toBeHidden();
+  await expect(more).toBeFocused();
+});

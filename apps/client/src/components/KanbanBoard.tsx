@@ -881,18 +881,21 @@ function ProjectKanbanBoard({
       if (item && stage && target?.stageId === stage.id && !locked)
         void drop(item, stage, target.beforeCardId);
     };
+    const onCancel = () => {
+      if (cancel()?.lifted) endDrag();
+    };
     const onTouchMove = (event: TouchEvent) => {
       if (lift.current?.lifted) event.preventDefault();
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
-    document.addEventListener("pointercancel", onUp);
+    document.addEventListener("pointercancel", onCancel);
     document.addEventListener("touchmove", onTouchMove, { passive: false });
     return () => {
       cancel();
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
-      document.removeEventListener("pointercancel", onUp);
+      document.removeEventListener("pointercancel", onCancel);
       document.removeEventListener("touchmove", onTouchMove);
     };
     // Listeners read the latest board through touchState; they are installed once.
