@@ -609,16 +609,12 @@ describe("Composer", () => {
     textarea.setSelectionRange(4, 4);
 
     const ownedControls = view.container.querySelectorAll(
-      ".composer-toolbar button:not(:disabled), .composer-attachments button:not(:disabled), .composer-toolbar summary",
+      ".composer-toolbar button:not(:disabled), [data-kind='images'] .composer-attachments button:not(:disabled), .composer-toolbar summary",
     );
     expect(ownedControls.length).toBeGreaterThan(0);
     for (const control of ownedControls) {
-      if (control.closest(".composer-toolbar")) {
-        expect(fireEvent.pointerDown(control, { pointerType: "touch" })).toBe(true);
-        expect(fireEvent.mouseDown(control)).toBe(false);
-      } else {
-        expect(fireEvent.pointerDown(control)).toBe(false);
-      }
+      expect(fireEvent.pointerDown(control, { pointerType: "touch" })).toBe(true);
+      expect(fireEvent.mouseDown(control)).toBe(false);
       expect(textarea).toHaveFocus();
       expect(textarea.selectionStart).toBe(4);
     }
@@ -802,7 +798,7 @@ describe("Composer", () => {
     const preview = screen.getByRole("button", { name: "Открыть изображение one.png" });
 
     textarea.focus();
-    expect(fireEvent.pointerDown(preview)).toBe(false);
+    expect(fireEvent.mouseDown(preview)).toBe(false);
     fireEvent.click(preview);
     fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
     expect(textarea).toHaveFocus();

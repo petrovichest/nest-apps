@@ -128,7 +128,9 @@ test("files dropped on history attach to the draft with upload feedback and imag
 test.describe("mobile chat composer", () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
 
-  test("touch opens attachments and submits from the focused textarea", async ({ page }, info) => {
+  test("touch opens, previews and removes attachments before submitting from the focused textarea", async ({
+    page,
+  }, info) => {
     await openChat(page, "dark");
     const text = "Проверка отправки касанием";
     await page.route("**/api/v1/threads/session-main/queue", async (route) => {
@@ -166,9 +168,21 @@ test.describe("mobile chat composer", () => {
     const picker = await chooser;
     expect(await picker.element().getAttribute("accept")).toBe("image/*");
     await expect(menu).toBeHidden();
-    await picker.setFiles([]);
+    await picker.setFiles({ name: "screen.png", mimeType: "image/png", buffer: png });
     await textarea.focus();
     await expect(textarea).toBeFocused();
+
+    const preview = page.getByRole("button", { name: "Открыть изображение screen.png" });
+    await preview.tap();
+    const viewer = page.getByRole("dialog", { name: "Просмотр изображений" });
+    await expect(viewer.getByRole("img", { name: "screen.png" })).toBeVisible();
+    await viewer.getByRole("button", { name: "Закрыть", exact: true }).tap();
+    await expect(viewer).toBeHidden();
+    await expect(textarea).toBeFocused();
+    await page.getByRole("button", { name: "Удалить изображение screen.png" }).tap();
+    await expect(preview).toHaveCount(0);
+    await expect(textarea).toBeFocused();
+    await expect(textarea).toHaveValue(text);
 
     const delivered = page.waitForResponse(
       (response) =>

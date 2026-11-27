@@ -1614,7 +1614,7 @@ export function Composer({
               className="composer-attachments"
               role="group"
               aria-label={t("Изображения")}
-              onPointerDownCapture={preserveTextareaFocus}
+              onMouseDownCapture={preserveTextareaFocus}
             >
               {images.map((image, index) => (
                 <div
