@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -291,6 +292,10 @@ function ProjectKanbanBoard({
   } | null>(null);
   const [stageDrag, setStageDrag] = useState<string | null>(null);
   const [headerRetry, setHeaderRetry] = useState<Recording | null>(null);
+  const [pendingRecordings, setPendingRecordings] = useState(0);
+  const changePendingRecordings: PendingRecordingChange = useCallback((delta) => {
+    setPendingRecordings((count) => count + delta);
+  }, []);
   const [stageDropId, setStageDropId] = useState<string | null>(null);
   const [workerOptions, setWorkerOptions] = useState<{
     projectId: string;
@@ -644,8 +649,13 @@ function ProjectKanbanBoard({
     return true;
   }
   async function sendHeaderRecording(recording: Recording) {
-    const ok = await createTask({ id: `voice:${recording.id}`, text: "", images: [], recording });
-    setHeaderRetry(ok ? null : recording);
+    changePendingRecordings(1);
+    try {
+      const ok = await createTask({ id: `voice:${recording.id}`, text: "", images: [], recording });
+      setHeaderRetry(ok ? null : recording);
+    } finally {
+      changePendingRecordings(-1);
+    }
   }
   const setDropTarget = (value: { stageId: string; beforeCardId: string | null } | null) => {
     dropRef.current = value;
@@ -1338,7 +1348,12 @@ function ProjectKanbanBoard({
           subtitle={projectName}
           subtitleControl={
             projects.length > (project ? 1 : 0) ? (
-              <BoardProjectPicker projects={projects} projectId={projectId} name={projectName} />
+              <BoardProjectPicker
+                projects={projects}
+                projectId={projectId}
+                name={projectName}
+                switchBlocked={pendingRecordings > 0 || headerRetry !== null}
+              />
             ) : undefined
           }
           leadingIcon={<KanbanIcon />}
@@ -1436,6 +1451,7 @@ function ProjectKanbanBoard({
                   config={transcriptionConfig}
                   busy={busy}
                   onRecorded={(recording) => void sendHeaderRecording(recording)}
+                  onPendingRecordingChange={changePendingRecordings}
                 />
                 <button
                   className="kanban-add-button"
@@ -1860,6 +1876,7 @@ function ProjectKanbanBoard({
                     busy={busy}
                     error={error}
                     config={transcriptionConfig}
+                    onPendingRecordingChange={changePendingRecordings}
                     onSubmit={async (value) => {
                       let audio: KanbanAudioInput | undefined;
                       try {
@@ -1895,6 +1912,7 @@ function ProjectKanbanBoard({
                     busy={busy}
                     error={error}
                     config={transcriptionConfig}
+                    onPendingRecordingChange={changePendingRecordings}
                     onSubmit={async (value) => {
                       let audio: KanbanAudioInput | undefined;
                       try {
@@ -2182,8 +2200,13 @@ function ProjectKanbanBoard({
             transcriptionConfig={transcriptionConfig}
             transcriptionProvider={transcriptionProvider}
             onRecordingReady={async (recording) => {
-              if (!(await submitTask(recording)))
-                throw new Error(t("Не удалось отправить запись на сервер"));
+              changePendingRecordings(1);
+              try {
+                if (!(await submitTask(recording)))
+                  throw new Error(t("Не удалось отправить запись на сервер"));
+              } finally {
+                changePendingRecordings(-1);
+              }
             }}
             error={error}
           />
@@ -2215,7 +2238,7 @@ function handleHeaderPickerKey(event: ReactKeyboardEvent<HTMLDetailsElement>) {
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
   menu.open = true;
-  const options = [...menu.querySelectorAll("button")];
+  const options = [...menu.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
   const current = options.findIndex((option) => option === document.activeElement);
   let next = event.key === "ArrowUp" || event.key === "End" ? options.length - 1 : 0;
   if (current >= 0 && event.key.startsWith("Arrow")) {
@@ -2229,14 +2252,17 @@ function BoardProjectPicker({
   projects,
   projectId,
   name,
+  switchBlocked,
 }: {
   projects: Project[];
   projectId: string;
   name: string;
+  switchBlocked: boolean;
 }) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const valueId = useId();
+  const noteId = `${valueId}-note`;
   const label = t("Выбрать проект");
   return (
     <details
@@ -2252,12 +2278,23 @@ function BoardProjectPicker({
         <span id={valueId}>{name}</span>
         <ChevronDownIcon aria-hidden="true" />
       </summary>
-      <div className="action-menu-popover kanban-project-options" role="group" aria-label={label}>
+      <div
+        className="action-menu-popover kanban-project-options"
+        role="group"
+        aria-label={label}
+        aria-describedby={switchBlocked ? noteId : undefined}
+      >
+        {switchBlocked && (
+          <div id={noteId} className="kanban-project-note kanban-muted">
+            {t("Сначала отправьте или отмените запись.")}
+          </div>
+        )}
         {projects.map(({ id, displayName }) => (
           <button
             key={id}
             type="button"
             aria-pressed={id === projectId}
+            disabled={switchBlocked && id !== projectId}
             onClick={(event) => {
               const menu = event.currentTarget.closest("details")!;
               menu.open = false;
@@ -2477,6 +2514,7 @@ function CardImages({ projectId, card }: { projectId: string; card: KanbanCard }
 }
 
 type Recording = { id: string; audio: Blob; durationMs: number };
+type PendingRecordingChange = (delta: 1 | -1) => void;
 type ComposerValue = {
   id: string;
   text: string;
@@ -2485,6 +2523,14 @@ type ComposerValue = {
   workerId?: string;
 };
 const EMPTY_TASK_DRAFT: BoardTaskDraft = { input: "", images: [] };
+
+function useReportPendingRecording(pending: boolean, onChange: PendingRecordingChange) {
+  useLayoutEffect(() => {
+    if (!pending) return;
+    onChange(1);
+    return () => onChange(-1);
+  }, [pending, onChange]);
+}
 
 /** The board's recorder: the Composer's MIME choice, limits and microphone errors. */
 function useRecorder(
@@ -2609,6 +2655,7 @@ function TaskComposer({
   busy,
   error,
   config,
+  onPendingRecordingChange,
   onSubmit,
 }: {
   label: string;
@@ -2617,6 +2664,7 @@ function TaskComposer({
   busy: boolean;
   error: string | null;
   config: TranscriptionConfigResponse | null;
+  onPendingRecordingChange: PendingRecordingChange;
   onSubmit(value: ComposerValue): Promise<boolean>;
 }) {
   const { t } = useI18n();
@@ -2632,20 +2680,29 @@ function TaskComposer({
   };
   async function submit(recording?: Recording) {
     if (busy || reading || (!recording && !text.trim() && !images.length)) return;
-    const ok = await onSubmit({
-      id: recording ? `${identity.current}:${recording.id}` : identity.current,
-      text: text.trim(),
-      images,
-      ...(recording ? { recording } : {}),
-    });
-    if (ok) {
-      setText("");
-      setImages([]);
-      setFailedRecording(null);
-      changed();
-    } else if (recording) setFailedRecording(recording);
+    if (recording) onPendingRecordingChange(1);
+    try {
+      const ok = await onSubmit({
+        id: recording ? `${identity.current}:${recording.id}` : identity.current,
+        text: text.trim(),
+        images,
+        ...(recording ? { recording } : {}),
+      });
+      if (ok) {
+        setText("");
+        setImages([]);
+        setFailedRecording(null);
+        changed();
+      } else if (recording) setFailedRecording(recording);
+    } finally {
+      if (recording) onPendingRecordingChange(-1);
+    }
   }
   const recorder = useRecorder(config, (recording) => void submit(recording));
+  useReportPendingRecording(
+    recorder.state !== "idle" || failedRecording !== null,
+    onPendingRecordingChange,
+  );
   const recording = recorder.state === "recording";
   function attach(files: File[]) {
     setImageError(null);
@@ -2854,13 +2911,16 @@ function HeaderRecorder({
   config,
   busy,
   onRecorded,
+  onPendingRecordingChange,
 }: {
   config: TranscriptionConfigResponse | null;
   busy: boolean;
   onRecorded(recording: Recording): void;
+  onPendingRecordingChange: PendingRecordingChange;
 }) {
   const { t } = useI18n();
   const recorder = useRecorder(config, onRecorded);
+  useReportPendingRecording(recorder.state !== "idle", onPendingRecordingChange);
   const recording = recorder.state === "recording";
   if (recorder.unavailable && !recording) return null;
   return (

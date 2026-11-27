@@ -590,6 +590,11 @@
   padding-block: var(--space-1);
 }
 
+.kanban-project-note {
+  padding: var(--space-1) var(--space-2);
+  overflow-wrap: anywhere;
+}
+
 .kanban-project-options button[aria-pressed="true"] {
   --chat-button-shadow: var(--sidebar-surface-shadow);
 }
