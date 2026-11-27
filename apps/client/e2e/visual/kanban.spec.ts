@@ -1718,6 +1718,68 @@ for (const viewport of [
   });
 }
 
+test.describe("Kanban five-option assignee dropdown", () => {
+  test.use({ viewport: PHONE_VIEWPORT, hasTouch: true, isMobile: true });
+
+  for (const theme of ["light", "dark"] as const) {
+    test(`${theme}: all five options fit before scrolling and the last responds to touch`, async ({
+      page,
+    }, info) => {
+      const { labels, workers, creations, catalogueReads } = await installKanbanAccessFixture(
+        page,
+        {
+          theme,
+        },
+      );
+      workers.splice(4);
+      await page.getByRole("button", { name: labels.add, exact: true }).tap();
+      const dialog = page.getByRole("dialog", { name: labels.add, exact: true });
+      const trigger = dialog.locator(".kanban-assignee-trigger");
+      const menu = dialog.locator(".kanban-assignee-popover");
+      const list = menu.locator(".kanban-assignee-options");
+      const options = list.getByRole("button");
+      const field = dialog.getByRole("textbox", { name: labels.message });
+      await field.fill("Проверить выбор исполнителя");
+      const geometry = () =>
+        Promise.all([dialog.boundingBox(), trigger.boundingBox(), field.boundingBox()]);
+      const closed = await geometry();
+
+      await trigger.tap();
+      await expect(options).toHaveText([labels.defaultWorker, ...workers.map(({ name }) => name)]);
+      const anchor = (await trigger.boundingBox())!;
+      const popup = (await menu.boundingBox())!;
+      expect([popup.x, popup.width, popup.y]).toEqual([
+        anchor.x,
+        anchor.width,
+        anchor.y + anchor.height + 8,
+      ]);
+      for (const option of await options.all()) await expect(option).toBeInViewport({ ratio: 1 });
+      expect(await list.evaluate((element) => element.scrollTop)).toBe(0);
+      const last = options.last();
+      const label = last.getByText(workers.at(-1)!.name, { exact: true });
+      const labelEdge = (await label.boundingBox())!;
+      const listEdge = (await list.boundingBox())!;
+      const fade = await list.evaluate((element) =>
+        parseFloat(getComputedStyle(element).paddingBottom),
+      );
+      expect(labelEdge.y + labelEdge.height).toBeLessThanOrEqual(
+        listEdge.y + listEdge.height - fade,
+      );
+      const point = await expectFullyHittable(last, list);
+      expect(await geometry()).toEqual(closed);
+      await page.screenshot({ path: info.outputPath("five-workers-before-scroll.png") });
+      await page.touchscreen.tap(point.x, point.y);
+      await expect(menu).toBeHidden();
+      await expect(trigger).toHaveText(workers.at(-1)!.name);
+      expect(await geometry()).toEqual(closed);
+      expect(catalogueReads()).toBe(1);
+      await dialog.getByRole("button", { name: labels.submit, exact: true }).tap();
+      await expect(dialog).toBeHidden();
+      expect(creations[0]?.workerId).toBe(workers.at(-1)!.id);
+    });
+  }
+});
+
 test("Kanban anchors the short assignee menu to its trigger below or above", async ({
   page,
 }, info) => {
