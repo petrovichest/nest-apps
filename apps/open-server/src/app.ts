@@ -194,6 +194,7 @@ export async function buildApp(engine: Engine) {
   await registerOpenKanban(app, engine, voice);
   engine.enableCapabilities({
     browserIntegration: true,
+    artifacts: true,
     skills: true,
     sessionApprovalGrants: true,
     appUpdates: true,
