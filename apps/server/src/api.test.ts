@@ -30,6 +30,7 @@ import {
   BROWSER_TOOL_NAMES,
   type ServerEvent,
   type ThreadSummary,
+  type WorkerProcess,
 } from "@codexnest/protocol";
 import { WorkerStore } from "@nest-apps/kanban";
 
@@ -536,7 +537,14 @@ describe("project boards", () => {
 
   it("publishes the delegated worker summary before admitting its first message", async () => {
     const projectPath = await createApiTestRepository();
-    const { app, projection, store } = await createTeamHarness({ projectPath });
+    const { app, bridge, headers, projection, store } = await createTeamHarness({ projectPath });
+    const admit = Promise.withResolvers<void>();
+    const original = bridge.request.getMockImplementation()!;
+    bridge.request.mockImplementation(async (method, params = {}) => {
+      // Creation has been published by the time Kanban sets the native thread title.
+      if (method === "thread/name/set" && params.threadId === "created") await admit.promise;
+      return original(method, params);
+    });
     try {
       const directory = join(dirname(store.path), "kanban", "workers");
       const workers = new WorkerStore(directory);
@@ -586,6 +594,8 @@ describe("project boards", () => {
             expectedResult: "A verdict",
             kind: "question",
             status: "queued",
+            createdAt: 2,
+            updatedAt: 2,
           },
         }),
       );
@@ -598,12 +608,42 @@ describe("project boards", () => {
           snapshotAtAdmission ??= projection.snapshot().threads.find(({ id }) => id === "created");
       });
       await app.ready();
+      await vi.waitFor(() => expect(upserts[0]).toBeDefined());
+
+      const source = projection.summary("thread")?.workerSession;
+      expect(source).toMatchObject({ processId: "parent", sessionId: "parent" });
+      const url = `/api/v1/workers/processes?processId=${source!.processId}`;
+      expect((await app.inject({ url })).statusCode).toBe(401);
+      const directChild = async () => {
+        const response = await app.inject({ url, headers });
+        expect(response.statusCode).toBe(200);
+        expect(response.headers["cache-control"]).toBe("no-store");
+        const [process] = response.json<WorkerProcess[]>();
+        expect(process?.id).toBe(source!.processId);
+        return process?.sessions.find(({ parentId }) => parentId === source!.sessionId);
+      };
+      const queued = await directChild();
+      expect(queued).toMatchObject({ id: child, threadId: null, status: "queued", createdAt: 2 });
+      expect(queued).not.toHaveProperty("sessionUrl");
+
+      admit.resolve();
       await vi.waitFor(() => expect(snapshotAtAdmission).toBeDefined());
+      await vi.waitFor(async () =>
+        expect(await directChild()).toMatchObject({
+          id: child,
+          threadId: "created",
+          sessionUrl: "/threads/created",
+          status: "running",
+          createdAt: 2,
+        }),
+      );
 
       const workerSession = {
         name: worker.name,
         workerId: worker.id,
         projectKey,
+        processId: "parent",
+        sessionId: child,
         delegated: true,
         parentThreadId: "thread",
       };
@@ -613,6 +653,7 @@ describe("project boards", () => {
       expect(upserts[admission]?.workerSession).toEqual(workerSession);
       expect(snapshotAtAdmission?.workerSession).toEqual(workerSession);
     } finally {
+      admit.resolve();
       await app.close();
     }
   });

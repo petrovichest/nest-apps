@@ -1,6 +1,7 @@
 import { Capacitor } from "@capacitor/core";
 import { onBeforeAppReload } from "../app-reload";
 import { application } from "../application";
+import { commandLabel } from "../activity-command";
 import { useTypography } from "../typography";
 import { PasteBlocks } from "./PasteBlocks";
 import { isNativeSubagentLaunch, NativeSubagentLaunchCard } from "./NativeSubagentLaunchCard";
@@ -104,6 +105,13 @@ import { acknowledgePendingThread, releaseActiveThread } from "../push";
 import type { OptimisticMessage } from "../state";
 import { threadStatusClasses } from "../thread-status";
 import { workerMessagePresentation } from "../worker-message";
+import {
+  isWorkerHandoffEvent,
+  mergeWorkerHandoffs,
+  workerHandoffTimeline,
+  type TurnEntry,
+} from "../worker-handoff";
+import { useWorkerChildren } from "../use-worker-children";
 import { AttentionPanel } from "./AttentionPanel";
 import { AsyncQuestionCard } from "./AsyncQuestionCard";
 import { searchTargetFromState, type SearchTarget } from "./ThreadSearchDialog";
@@ -134,6 +142,7 @@ import {
   PinIcon,
   RefreshIcon,
   SendIcon,
+  SearchIcon,
   StopIcon,
   TargetIcon,
   TeamIcon,
@@ -158,6 +167,7 @@ import {
   SessionInspector,
 } from "./SessionInspector";
 import { WorkerAvatar } from "./WorkerAvatar";
+import { WorkerHandoff } from "./WorkerHandoff";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { ActionLabel } from "./ActionLabel";
 
@@ -685,6 +695,19 @@ export function ThreadPage({
     detail,
     state.snapshot?.instanceId,
     state.snapshot?.sequence,
+  );
+  const workerJournal = Boolean(summary?.workerSession);
+  const workerChildren = useWorkerChildren(
+    threadId,
+    searchTarget ? undefined : summary?.workerSession,
+    summary?.currentTurnId,
+  );
+  const handoffTimeline = useMemo(
+    () =>
+      workerJournal
+        ? workerHandoffTimeline(detail?.turns, detail?.olderTurnsCursor, workerChildren)
+        : null,
+    [detail?.turns, detail?.olderTurnsCursor, workerChildren, workerJournal],
   );
   const parentThreadId =
     summary?.relation.kind === "subagent" ? summary.relation.parentThreadId : null;
@@ -4513,9 +4536,24 @@ export function ThreadPage({
                           <div className="spinner" />
                         </div>
                       )}
+                    {!!handoffTimeline?.withoutTurn.length && (
+                      <div className="turn">
+                        {handoffTimeline.withoutTurn.map((event) => (
+                          <div className="worker-handoff-entry" key={event.id}>
+                            <WorkerHandoff event={event} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {detail?.turns.slice(turnsStart).map((turn) => {
                       const display = groupedTurnActivities.get(turn.id)!;
-                      const { entries } = display;
+                      const entries = handoffTimeline
+                        ? mergeWorkerHandoffs(
+                            display.entries,
+                            handoffTimeline.byTurn.get(turn.id),
+                            handoffTimeline.deliveries.get(turn.id),
+                          )
+                        : display.entries;
                       const technicalItems = technicalTurnActivities.get(turn.id)!;
                       const forkTarget = completedTurnForkActions.get(turn.id);
                       const turnOptimisticMessages = optimisticTurnMessages.filter(
@@ -4575,6 +4613,8 @@ export function ThreadPage({
                           items={technicalItems}
                           loaded={turn.itemsLoaded !== false}
                           interactive={!isSubagent}
+                          workerJournal={workerJournal}
+                          statusInFooter={Boolean(completionResponseId)}
                           onLoad={loadTurnJournal}
                           cwd={workspaceSummary.cwd}
                           onDownload={downloadFile}
@@ -4611,6 +4651,14 @@ export function ThreadPage({
                                         onOpenArtifact={openLinkedArtifact}
                                       />
                                     )}
+                                  </div>
+                                ) : isWorkerHandoffEvent(entry) ? (
+                                  <div
+                                    className="turn-entry worker-handoff-entry"
+                                    style={{ gridRow: index + leadingPendingRows + 1 }}
+                                    key={entry.id}
+                                  >
+                                    <WorkerHandoff event={entry} />
                                   </div>
                                 ) : (
                                   <div
@@ -5942,6 +5990,7 @@ export function Activity({
   onDownload,
   onOpenArtifact,
   onLoadImage,
+  workerJournal = false,
   forkAction,
   footerStatus,
   annotations = [],
@@ -5959,6 +6008,7 @@ export function Activity({
   onDownload?(path: string): Promise<void>;
   onOpenArtifact?(artifact: ArtifactDescriptor, opener: HTMLButtonElement | null): void;
   onLoadImage?: LocalImageLoader;
+  workerJournal?: boolean;
   forkAction?: { disabled: boolean; onFork(opener?: HTMLElement): void };
   footerStatus?: React.ReactNode;
   annotations?: PendingAnnotation[];
@@ -6333,6 +6383,22 @@ export function Activity({
     );
   }
   if (item.type === "command") {
+    if (workerJournal) {
+      const { label, icon, file } = commandLabel(item);
+      const Icon = journalCommandIcons[icon];
+      const status = item.exitCode !== null && item.exitCode !== 0 ? "failed" : item.status;
+      return (
+        <ActivityDetails
+          icon={<Icon />}
+          title={t(label, file ? { file } : undefined)}
+          status={status}
+          journalRow
+        >
+          <pre>{[item.command && `$ ${item.command}`, item.output].filter(Boolean).join("\n")}</pre>
+          {item.exitCode !== null && item.exitCode !== 0 && <small>exit {item.exitCode}</small>}
+        </ActivityDetails>
+      );
+    }
     return (
       <ActivityDetails
         icon={<TerminalIcon />}
@@ -6390,6 +6456,16 @@ export function Activity({
 }
 
 const MemoizedActivity = memo(Activity);
+
+const journalCommandIcons = {
+  team: TeamIcon,
+  worker: WorkerIcon,
+  check: CheckIcon,
+  branch: GitBranchIcon,
+  read: FileIcon,
+  search: SearchIcon,
+  terminal: TerminalIcon,
+};
 
 type NumberedAnnotation = {
   annotation: PendingAnnotation;
@@ -6968,6 +7044,8 @@ function TurnActivityDisclosure({
   items,
   loaded,
   interactive,
+  workerJournal,
+  statusInFooter,
   onLoad,
   cwd,
   onDownload,
@@ -6983,6 +7061,8 @@ function TurnActivityDisclosure({
   items: ActivityItem[];
   loaded: boolean;
   interactive: boolean;
+  workerJournal: boolean;
+  statusInFooter: boolean;
   onLoad(turnId: string): Promise<void>;
   cwd: string;
   onDownload(path: string): Promise<void>;
@@ -7019,6 +7099,8 @@ function TurnActivityDisclosure({
         waitingForUserInput={waitingForUserInput}
         capacityRetryAt={capacityRetryAt}
         loading={loading}
+        workerJournal={workerJournal}
+        statusInFooter={statusInFooter}
         disclosure={
           canOpen
             ? {
@@ -7033,11 +7115,27 @@ function TurnActivityDisclosure({
         }
       />
     ),
-    [turn, active, waitingForUserInput, capacityRetryAt, loading, canOpen, open, journalId, load],
+    [
+      turn,
+      active,
+      waitingForUserInput,
+      capacityRetryAt,
+      loading,
+      canOpen,
+      open,
+      journalId,
+      load,
+      workerJournal,
+      statusInFooter,
+    ],
   );
   if (!active && turn.status === "inProgress") return children(null, null);
   const journal = canOpen ? (
-    <div className="turn-activity-journal" id={journalId} hidden={!open}>
+    <div
+      className={`turn-activity-journal${workerJournal ? " worker-activity-journal" : ""}`}
+      id={journalId}
+      hidden={!open}
+    >
       {open && (
         <>
           {error && (
@@ -7053,6 +7151,7 @@ function TurnActivityDisclosure({
                 onDownload={onDownload}
                 onLoadImage={onLoadImage}
                 onOpenArtifact={onOpenArtifact}
+                workerJournal={workerJournal}
                 key={item.id}
               />
             ))}
@@ -7552,6 +7651,8 @@ function TurnActivityStatus({
   capacityRetryAt,
   loading = false,
   disclosure,
+  workerJournal = false,
+  statusInFooter = false,
 }: {
   turn?: TurnView;
   progress?: TurnProgress;
@@ -7560,6 +7661,8 @@ function TurnActivityStatus({
   capacityRetryAt?: number;
   loading?: boolean;
   disclosure?: { open: boolean; journalId: string; onToggle(): void };
+  workerJournal?: boolean;
+  statusInFooter?: boolean;
 }) {
   const { language, t } = useI18n();
   const isActive = active;
@@ -7631,7 +7734,26 @@ function TurnActivityStatus({
   );
   return (
     <div className={`turn-activity-row${disclosure ? "" : " turn-activity-static"}`}>
-      {disclosure ? (
+      {disclosure && workerJournal ? (
+        <>
+          {(turn?.status !== "completed" || statusInFooter) && (
+            <span className="turn-activity-copy worker-journal-status">{content}</span>
+          )}
+          <button
+            type="button"
+            className="turn-activity-copy turn-activity-toggle worker-journal-toggle"
+            aria-expanded={disclosure.open}
+            aria-controls={disclosure.journalId}
+            aria-busy={loading || undefined}
+            title={turn?.status === "completed" && !statusInFooter ? label : undefined}
+            onClick={disclosure.onToggle}
+          >
+            <TerminalIcon />
+            {t("Журнал действий")}
+            <ChevronDownIcon className="activity-chevron" />
+          </button>
+        </>
+      ) : disclosure ? (
         <button
           type="button"
           className="turn-activity-copy turn-activity-toggle"
@@ -7722,7 +7844,7 @@ function formatDuration(durationMs: number, language: UiLanguage = "ru"): string
   return minutes ? `${minutes}м ${seconds % 60}с` : `${seconds}с`;
 }
 
-function isUserEntry(entry: ActivityItem | ActivityItem[] | undefined): boolean {
+function isUserEntry(entry: TurnEntry | undefined): boolean {
   return Boolean(
     entry &&
     !Array.isArray(entry) &&
@@ -7732,16 +7854,14 @@ function isUserEntry(entry: ActivityItem | ActivityItem[] | undefined): boolean 
 
 // Style adjacent pieces as one surface without reparenting live messages or forms.
 // Their keys and DOM nodes survive streaming, question updates and user steering.
-function responsePieceClass(entries: Array<ActivityItem | ActivityItem[]>, index: number): string {
+function responsePieceClass(entries: TurnEntry[], index: number): string {
   if (isUserEntry(entries[index])) return "turn-entry user-entry";
   const start = index === 0 || isUserEntry(entries[index - 1]);
   const end = isUserEntry(entries[index + 1]);
   return `turn-entry response-piece${start ? " response-start" : ""}${end ? " response-end" : ""}`;
 }
 
-function responseSurfaceRows(
-  entries: Array<ActivityItem | ActivityItem[]>,
-): Array<[number, number]> {
+function responseSurfaceRows(entries: TurnEntry[]): Array<[number, number]> {
   const rows: Array<[number, number]> = [];
   let start: number | null = null;
   // The final row contains the stable question forms and activity disclosure.
@@ -8007,33 +8127,40 @@ function ActivityDetails({
   title,
   status,
   technicalTitle = false,
+  journalRow = false,
   children,
 }: {
   icon: React.ReactNode;
   title: string;
   status: string;
   technicalTitle?: boolean;
+  journalRow?: boolean;
   children: React.ReactNode;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   return (
-    <details className="activity-card" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <details
+      className={`activity-card${journalRow ? " activity-command-row" : ""}`}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary>
         <span className="activity-icon" aria-hidden="true">
           {icon}
         </span>
         <span className={`activity-title${technicalTitle ? " technical" : ""}`}>{title}</span>
-        <span className={`activity-status activity-status-${status}`}>
-          {status === "completed" ? (
-            <>
-              <CheckIcon aria-hidden="true" />
-              <span className="sr-only">{statusLabel(status, t)}</span>
-            </>
-          ) : (
-            statusLabel(status, t)
-          )}
-        </span>
+        {(!journalRow || status !== "completed") && (
+          <span className={`activity-status activity-status-${status}`}>
+            {status === "completed" ? (
+              <>
+                <CheckIcon aria-hidden="true" />
+                <span className="sr-only">{statusLabel(status, t)}</span>
+              </>
+            ) : (
+              statusLabel(status, t)
+            )}
+          </span>
+        )}
         <ChevronDownIcon className="activity-chevron" aria-hidden="true" />
       </summary>
       {open && <div className="activity-content">{children}</div>}
