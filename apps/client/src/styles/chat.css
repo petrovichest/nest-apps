@@ -125,7 +125,9 @@
     .kanban-board,
     .kanban-error
   )
-  :is(button, summary):not(:where(.paste-card-toggle, .kanban-card-open)),
+  :is(button, summary):not(
+    :where(.paste-card-toggle, .kanban-card-open, .worker-handoff-card > summary)
+  ),
 .thread-workspace :is(.new-session-retry, .team-session-upgrade, .scroll-to-bottom),
 .chat-dialog button,
 .chat-image-viewer .image-viewer-control {
@@ -1464,7 +1466,7 @@ a.native-subagent-row:hover strong {
   padding: var(--space-1) var(--space-2) var(--space-1) 28px;
 }
 
-.activity-command-row .activity-content pre {
+.thread-workspace .timeline .activity-command-row .activity-content pre {
   margin: 0;
   padding: var(--space-1-5) var(--space-3);
   border: 0;

@@ -296,6 +296,9 @@ for (const theme of ["light", "dark"] as const) {
         const activity = page.getByRole("button", {
           name: language === "ru" ? "Журнал действий" : "Activity log",
         });
+        const link = card.getByRole("link", {
+          name: language === "ru" ? "Открыть сессию" : "Open session",
+        });
         if (
           browserName === "chromium" &&
           width === 1440 &&
@@ -307,9 +310,29 @@ for (const theme of ["light", "dark"] as const) {
           await expect(page).toHaveScreenshot("worker-handoff-desktop-light.png");
         }
 
-        await trigger.press("Enter");
-        await expect(card).toHaveAttribute("open", "");
-        await expect(card).toHaveCSS("outline-width", "2px");
+        for (const open of [false, true]) {
+          if (open) await expect(card).toHaveAttribute("open", "");
+          else await expect(card).not.toHaveAttribute("open");
+
+          await trigger.hover();
+          await expect(card).not.toHaveCSS("box-shadow", "none");
+          await expect(trigger).toHaveCSS("border-radius", "20px");
+          await expect(trigger).toHaveCSS("box-shadow", "none");
+          await expect(trigger).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+          await page.mouse.move(0, 0);
+          await (open ? link : activity).focus();
+          await page.keyboard.press("Shift+Tab");
+          await expect(trigger).toBeFocused();
+          await expect(card).toHaveCSS("outline-width", "2px");
+          await expect(card).toHaveCSS("outline-offset", "2px");
+          await expect(card).not.toHaveCSS("box-shadow", "none");
+          await expect(trigger).toHaveCSS("outline-style", "none");
+          await expect(trigger).toHaveCSS("box-shadow", "none");
+          await expect(trigger).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+          if (!open) await page.keyboard.press("Enter");
+        }
         await expect(card).toHaveCSS("border-radius", "20px");
         await expect(card).toHaveCSS(
           "background-color",
@@ -319,13 +342,11 @@ for (const theme of ["light", "dark"] as const) {
         await expect(card).toHaveCSS("font-weight", "400");
         await expect(card.getByText(assignment.description!)).toBeVisible();
         await expect(card.getByText(assignment.expectedResult!)).toBeVisible();
-        const link = card.getByRole("link", {
-          name: language === "ru" ? "Открыть сессию" : "Open session",
-        });
         await expect(link).toHaveAttribute("href", childPath);
         await page.keyboard.press("Tab");
         await expect(link).toBeFocused();
 
+        await expect(activity).toHaveCSS("border-radius", "999px");
         await activity.click();
         const journal = page.locator(".worker-activity-journal");
         const read = journal
@@ -341,10 +362,16 @@ for (const theme of ["light", "dark"] as const) {
               ]
             : ["List workers", "Check results", "Read SKILL.md", "Check Git status"],
         );
+        await read.hover();
+        await expect(read).not.toHaveCSS("box-shadow", "none");
         await read.click();
-        await expect(journal.locator("pre")).toContainText("name: impeccable");
-        await expect(journal.locator("pre")).toHaveCSS("font-size", "14px");
-        await expect(journal.locator("pre")).toHaveCSS("font-weight", "400");
+        const output = journal.locator("pre");
+        await expect(output).toContainText("name: impeccable");
+        await expect(output).toHaveCSS("border-radius", "10px");
+        await expect(output).toHaveCSS("font-size", "14px");
+        await expect(output).toHaveCSS("font-weight", "400");
+        await expect(output).toHaveCSS("white-space", "pre-wrap");
+        await expect(output).toHaveCSS("overflow-wrap", "anywhere");
         expect(journalRequests()).toBe(1);
         const scroll = page.locator(".conversation-scroll");
         expect(await scroll.evaluate((node) => node.scrollWidth)).toBeLessThanOrEqual(
