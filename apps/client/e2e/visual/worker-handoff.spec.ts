@@ -236,6 +236,7 @@ async function installHandoffFixture(page: Page, theme: "light" | "dark", langua
     },
   );
   let sequence = seed.sequence;
+  let snapshotsSent = 0;
   let send: (event: ServerEvent) => void = () => {
     throw new Error("Stream is not ready");
   };
@@ -243,13 +244,15 @@ async function installHandoffFixture(page: Page, theme: "light" | "dark", langua
     send = (event) => ws.send(JSON.stringify({ type: "event", sequence: ++sequence, event }));
     ws.onMessage((message) => {
       const frame = JSON.parse(message.toString());
-      if (frame.type === "authenticate")
+      if (frame.type === "authenticate") {
         ws.send(
           JSON.stringify({
             type: "snapshot",
             snapshot: { ...seed, sequence, uiLanguage: language },
           }),
         );
+        snapshotsSent++;
+      }
       if (frame.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
     });
   });
@@ -260,6 +263,7 @@ async function installHandoffFixture(page: Page, theme: "light" | "dark", langua
     journalRequests: () => journalRequests,
     question,
     requests,
+    snapshotsSent: () => snapshotsSent,
     send: (event: ServerEvent) => send(event),
   };
 }
@@ -376,7 +380,11 @@ test("refreshes the selected process and replaces its reply when delivery reache
   page,
 }) => {
   await page.clock.install();
-  const { assignment, detail, requests, send } = await installHandoffFixture(page, "light", "ru");
+  const { assignment, detail, requests, send, snapshotsSent } = await installHandoffFixture(
+    page,
+    "light",
+    "ru",
+  );
   const error = "Не удалось завершить проверку.";
   assignment.status = "queued";
   assignment.threadId = null;
@@ -411,15 +419,25 @@ test("refreshes the selected process and replaces its reply when delivery reache
   await expect(card).toContainText("Ошибка");
   const replies = page.getByText(error, { exact: true });
   await expect(replies).toHaveCount(1);
+  // Send the delivery on the recovered stream, after its snapshot.
+  await expect.poll(snapshotsSent).toBe(2);
   const delivery = turn("delivery-turn", now + 6000, [workerDelivery(assignment, { error })]);
   detail.turns.push(delivery);
   send({ type: "turn.replaced", threadId: detail.summary.id, turn: delivery });
   await expect(page.locator('[data-turn-id="delivery-turn"]').getByText(error)).toBeVisible();
   await expect(replies).toHaveCount(1);
   await expect(card).toHaveAttribute("open", "");
+
+  // Foreground and stream recovery can share a read or issue one each, one interval apart.
+  await page.clock.runFor(4100);
+  await waitForVisualReady(page);
   const terminalReads = requests.length;
-  await page.clock.fastForward(8100);
-  expect(requests).toHaveLength(terminalReads);
+  expect(terminalReads).toBeLessThanOrEqual(4);
+  for (let interval = 0; interval < 2; interval++) {
+    await page.clock.runFor(4100);
+    await waitForVisualReady(page);
+    expect(requests).toHaveLength(terminalReads);
+  }
 
   await card.getByRole("link", { name: "Открыть сессию" }).click();
   await expect(page).toHaveURL(new RegExp(childPath + "$"));
