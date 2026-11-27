@@ -1158,6 +1158,7 @@ const ENGLISH: Record<string, string> = {
   "Выключить командный режим": "Disable Team mode",
   "Включить командный режим": "Enable Team mode",
   Тимлид: "Team lead",
+  "Команда выполняет поручения": "Team assignments are running",
   "Свернуть сессии команды «{{title}}»": "Collapse team sessions for “{{title}}”",
   "Показать сессии команды «{{title}}»": "Show team sessions for “{{title}}”",
   "Свернуть субагентов": "Collapse subagents",

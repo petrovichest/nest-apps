@@ -10,6 +10,7 @@ import type {
   KanbanRun,
   Project,
   QueueMessageRequest,
+  ServerEvent,
   ThreadDraft,
   ThreadSummary,
   UpdateThreadDraftRequest,
@@ -22,6 +23,7 @@ import { ApiClientError } from "./api";
 import { useTheme } from "./useTheme";
 import type { ForkOperationSummary } from "./forks";
 import { I18nProvider } from "./i18n";
+import { clientReducer, initialState } from "./state";
 
 const connection = vi.hoisted(() => vi.fn());
 const manualNavigationIntent = vi.hoisted(() => vi.fn());
@@ -2996,6 +2998,219 @@ describe("App routing and navigation", () => {
     expect(leadLink).toHaveAttribute("aria-current", "page");
   });
 
+  it.each(["projects", "active"])(
+    "shows running team work on the sidebar marker in %s",
+    async (mode) => {
+      localStorage.setItem("codexnest.sessionListMode", mode);
+      const lead: ThreadSummary = {
+        ...baseThread,
+        id: "release-lead",
+        title: "План релиза",
+        state: "completed",
+        unread: true,
+        unseen: true,
+        workerSession: { name: "Мария" },
+      };
+      const reviewer: ThreadSummary = {
+        ...lead,
+        id: "review-lead",
+        title: "Ревью",
+        teamLead: true,
+        workerSession: { name: "Ревьюер", parentThreadId: lead.id },
+      };
+      const build: ThreadSummary = {
+        ...baseThread,
+        id: "build-assignment",
+        title: "Проверить сборку",
+        state: "running",
+        relation: {
+          kind: "subagent",
+          sessionId: "build-session",
+          parentThreadId: reviewer.id,
+          nickname: null,
+          role: null,
+        },
+      };
+      const check: ThreadSummary = {
+        ...baseThread,
+        id: "check-assignment",
+        title: "Проверить фокус",
+        state: "queued",
+        workerSession: { name: "Фронтенд", parentThreadId: lead.id },
+      };
+      const instanceId = "lead-status-test";
+      let clientState = clientReducer(initialState, {
+        type: "snapshot",
+        snapshot: { ...snapshot([baseThread, lead, reviewer, build, check]), instanceId },
+      });
+      mockConnection(clientState.snapshot);
+      const view = await renderList("/threads/newer");
+      const context = connection.mock.results.at(-1)!.value;
+      function receive(event: ServerEvent) {
+        const { sequence } = clientState.snapshot!;
+        clientState = clientReducer(clientState, {
+          type: "event",
+          version: { instanceId, sequence: sequence + 1 },
+          event,
+        });
+        context.state.snapshot = clientState.snapshot;
+        view.rerender(
+          <MemoryRouter initialEntries={["/threads/newer"]} useTransitions={false}>
+            <ThemedApp
+              settings={{ baseUrl: "https://pi.local", token: "secret" }}
+              onDisconnected={() => undefined}
+            />
+          </MemoryRouter>,
+        );
+      }
+
+      const nav = within(screen.getByRole("navigation", { name: "Задачи" }));
+      const leadLink = nav.getByRole("link", { name: /План релиза Тимлид · Мария/u });
+      const marker = () => leadLink.querySelector(".status");
+      expect(marker()).toHaveClass("status-running");
+      expect(marker()).not.toHaveClass("status-pulsing");
+      expect(marker()).toHaveAttribute("title", "Команда выполняет поручения");
+      expect(leadLink).toHaveAccessibleDescription("Сессия работника. Команда выполняет поручения");
+      expect(leadLink).toHaveClass("finishable");
+      expect(nav.queryByRole("link", { name: /Ревью/u })).toBeNull();
+      expect(nav.queryByRole("link", { name: build.title })).toBeNull();
+
+      fireEvent.click(nav.getByRole("button", { name: "Показать сессии команды «План релиза»" }));
+      expect(statusFor(/Ревью Тимлид/u)).toHaveClass("status-running");
+      fireEvent.click(nav.getByRole("button", { name: "Показать сессии команды «Ревью»" }));
+      expect(statusFor(build.title)).toHaveClass("status-running");
+      expect(statusFor(check.title)).toHaveClass("status-queued");
+
+      const pinnedCheck = { ...check, state: "running" as const, pinned: true };
+      receive({ type: "thread.upserted", thread: pinnedCheck });
+      receive({ type: "thread.upserted", thread: { ...build, state: "completed" } });
+      const pinnedLink = nav.getByRole("link", { name: /^Проверить фокус/u });
+      expect(pinnedLink.closest(".thread-branch-children")).toBeNull();
+      expect(pinnedLink.querySelector(".thread-pinned-marker")).toBeInTheDocument();
+      expect(marker()).toHaveClass("status-running");
+      expect(statusFor(/Ревью Тимлид/u)).toHaveClass("status-completed-unread");
+      if (mode === "active") {
+        fireEvent.click(screen.getByRole("button", { name: "Свернуть закрепленные (1)" }));
+        expect(pinnedLink).not.toBeVisible();
+        expect(marker()).toHaveClass("status-running");
+      }
+
+      receive({ type: "thread.upserted", thread: { ...pinnedCheck, state: "interrupted" } });
+      expect(marker()).toHaveClass("status-completed-unread", "status-pulsing");
+      expect(leadLink).toHaveAccessibleDescription("Сессия работника");
+      receive({ type: "thread.upserted", thread: pinnedCheck });
+      expect(marker()).toHaveClass("status-running");
+      receive({ type: "thread.removed", threadId: pinnedCheck.id });
+      expect(marker()).toHaveClass("status-completed-unread", "status-pulsing");
+      receive({ type: "thread.upserted", thread: { ...lead, state: "running" } });
+      expect(marker()).toHaveClass("status-running");
+      expect(leadLink).toHaveAccessibleDescription("Сессия работника");
+      expect(screen.getByRole("heading", { level: 1, name: baseThread.title })).toBeVisible();
+    },
+  );
+
+  it("keeps a lead blue when project pagination hides the running branch", async () => {
+    const lead: ThreadSummary = {
+      ...baseThread,
+      id: "lead",
+      title: "План релиза",
+      state: "completed",
+      unread: true,
+    };
+    const middle: ThreadSummary = {
+      ...baseThread,
+      id: "middle",
+      title: "Доработки клиента",
+      workerSession: { name: "Фронтенд", parentThreadId: lead.id },
+    };
+    const running: ThreadSummary = {
+      ...baseThread,
+      id: "assignment",
+      title: "Проверить фокус",
+      state: "running",
+      workerSession: { name: "Контролёр", parentThreadId: middle.id },
+    };
+    const history: ThreadSummary[] = Array.from({ length: 5 }, (_, index) => ({
+      ...middle,
+      id: `history-${index}`,
+      title: `Завершённая проверка ${index + 1}`,
+      state: "completed",
+      updatedAt: running.updatedAt + index + 1,
+    }));
+    mockConnection(snapshot([baseThread, lead, middle, running, ...history]));
+    await renderList("/threads/newer");
+    fireEvent.click(screen.getByRole("button", { name: "Показать сессии команды «План релиза»" }));
+
+    expect(screen.queryByRole("link", { name: /Доработки клиента/u })).toBeNull();
+    expect(screen.queryByRole("link", { name: running.title })).toBeNull();
+    expect(statusFor(/План релиза Тимлид/u)).toHaveClass("status-running");
+    fireEvent.click(screen.getByRole("button", { name: "Показать ещё 1" }));
+    expect(statusFor(/Доработки клиента Тимлид/u)).toHaveClass("status-running");
+  });
+
+  it("limits running markers to the same team's archive branch", async () => {
+    const lead: ThreadSummary = {
+      ...baseThread,
+      id: "lead",
+      title: "Открытый тимлид",
+      state: "completed",
+      unread: true,
+    };
+    const archivedLead = { ...lead, id: "archived-lead", title: "Архивный тимлид", archived: true };
+    const archivedTeamLead = { ...archivedLead, id: "archived-team", title: "Команда в архиве" };
+    const worker: ThreadSummary = {
+      ...baseThread,
+      id: "queued-worker",
+      title: "Поручение в очереди",
+      state: "queued",
+      workerSession: { name: "Фронтенд", parentThreadId: lead.id },
+    };
+    const native: ThreadSummary = {
+      ...baseThread,
+      id: "native-agent",
+      state: "running",
+      relation: {
+        kind: "subagent",
+        sessionId: "native-session",
+        parentThreadId: worker.id,
+        nickname: "Нативный агент",
+        role: null,
+      },
+    };
+    const runningChild = (
+      id: string,
+      parentThreadId: string,
+      archived: boolean,
+    ): ThreadSummary => ({
+      ...worker,
+      id,
+      title: id,
+      state: "running",
+      archived,
+      workerSession: { name: "Ревьюер", parentThreadId },
+    });
+    mockConnection(
+      snapshot([
+        baseThread,
+        lead,
+        archivedLead,
+        archivedTeamLead,
+        worker,
+        native,
+        runningChild("archived-assignment", lead.id, true),
+        runningChild("live-assignment", archivedLead.id, false),
+        runningChild("same-archive-assignment", archivedTeamLead.id, true),
+        runningChild("unrelated-assignment", "missing-lead", false),
+      ]),
+    );
+    await renderList("/threads/newer");
+    fireEvent.click(screen.getByText("Архив", { exact: true }));
+
+    expect(statusFor(/Открытый тимлид/u)).toHaveClass("status-completed-unread");
+    expect(statusFor(archivedLead.title)).toHaveClass("status-completed-unread");
+    expect(statusFor(/Команда в архиве Тимлид/u)).toHaveClass("status-running");
+  });
+
   it("collapses running and completed subagents by default and reveals them without navigating", async () => {
     const running: ThreadSummary = {
       ...baseThread,
@@ -5182,7 +5397,7 @@ function renderApp(path: string, onDisconnected = () => undefined, baseUrl = "ht
   );
 }
 
-function statusFor(title: string): Element {
+function statusFor(title: string | RegExp): Element {
   const status = screen.getByRole("link", { name: title }).querySelector(".status");
   if (!status) throw new Error(`Missing status for ${title}`);
   return status;
