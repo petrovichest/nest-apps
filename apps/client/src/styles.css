@@ -3023,6 +3023,10 @@
   min-height: 640px;
 }
 
+.artifact-html-focus-end {
+  display: none;
+}
+
 .artifact-viewer-image {
   display: grid;
   place-items: center;
@@ -7467,6 +7471,10 @@ button.composer-card-filter:active {
 
   .artifact-viewer-backdrop {
     display: none;
+  }
+
+  .artifact-html-focus-end {
+    display: block;
   }
 
   .sidebar.open {

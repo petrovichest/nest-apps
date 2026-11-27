@@ -55,6 +55,7 @@ export function SessionInspector({
 }) {
   const { language, t } = useI18n();
   const overviewTab = useRef<HTMLButtonElement>(null);
+  const artifactsTab = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const button = overviewTab.current;
     if (!showArtifacts && activeTab === "artifacts" && button) {
@@ -90,6 +91,7 @@ export function SessionInspector({
         </button>
         {showArtifacts && (
           <button
+            ref={artifactsTab}
             type="button"
             id="session-artifacts-tab"
             role="tab"
@@ -209,7 +211,15 @@ export function SessionInspector({
           {artifactLoadState === "error" && (
             <div className="inspector-artifact-error" role="alert">
               <span>{t("Не удалось загрузить артефакты.")}</span>
-              <button type="button" onClick={onArtifactRetry}>
+              <button
+                type="button"
+                onClick={({ currentTarget }) => {
+                  if (currentTarget.ownerDocument.activeElement === currentTarget) {
+                    artifactsTab.current?.focus({ preventScroll: true });
+                  }
+                  onArtifactRetry();
+                }}
+              >
                 {t("Повторить")}
               </button>
             </div>

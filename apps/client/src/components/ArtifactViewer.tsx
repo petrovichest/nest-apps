@@ -32,7 +32,10 @@ export function ArtifactViewer({
 }) {
   const { t } = useI18n();
   const viewerRef = useRef<HTMLElement>(null);
+  const refreshButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const htmlFocusEndRef = useRef<HTMLSpanElement>(null);
+  const enteringHtmlBackward = useRef(false);
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<ArtifactLoadResult | null>(null);
   const [failed, setFailed] = useState(false);
@@ -72,23 +75,42 @@ export function ArtifactViewer({
   }, [artifact.path, opener, returnToArtifacts]);
 
   useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    const ownerDocument = viewer.ownerDocument;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
       if (
-        event.key === "Tab" &&
-        !event.defaultPrevented &&
-        viewerRef.current &&
-        window.matchMedia("(max-width: 820px)").matches &&
-        !(event.target instanceof Element && event.target.closest('[aria-modal="true"]'))
+        event.defaultPrevented ||
+        (event.key !== "Tab" && event.key !== "Escape") ||
+        ownerDocument.querySelector('[role="dialog"][aria-modal="true"]')
       ) {
-        keepTabFocus(event, viewerRef.current);
         return;
       }
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onClose();
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (!window.matchMedia("(max-width: 820px)").matches) return;
+
+      const active = ownerDocument.activeElement;
+      const htmlFocusEnd = htmlFocusEndRef.current;
+      if (
+        event.shiftKey &&
+        htmlFocusEnd &&
+        (active === refreshButtonRef.current || !viewer.contains(active))
+      ) {
+        // Start native Shift+Tab after the frame so the browser can enter at its last control.
+        enteringHtmlBackward.current = true;
+        htmlFocusEnd.focus({ preventScroll: true });
+        enteringHtmlBackward.current = false;
+        return;
+      }
+      keepTabFocus(event, viewer);
+    };
+    ownerDocument.addEventListener("keydown", handleKeyDown);
+    return () => ownerDocument.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
   useEffect(() => {
@@ -140,6 +162,7 @@ export function ArtifactViewer({
         </span>
         <span className="artifact-viewer-actions">
           <button
+            ref={refreshButtonRef}
             type="button"
             className="icon-button"
             aria-label={t("Обновить предпросмотр")}
@@ -180,7 +203,15 @@ export function ArtifactViewer({
           <ArtifactState>
             <strong>{t("Не удалось открыть файл")}</strong>
             <span>{t("Файл мог быть перемещён или удалён.")}</span>
-            <button type="button" onClick={() => setRevision((value) => value + 1)}>
+            <button
+              type="button"
+              onClick={({ currentTarget }) => {
+                if (currentTarget.ownerDocument.activeElement === currentTarget) {
+                  refreshButtonRef.current?.focus({ preventScroll: true });
+                }
+                setRevision((value) => value + 1);
+              }}
+            >
               {t("Повторить")}
             </button>
           </ArtifactState>
@@ -200,6 +231,18 @@ export function ArtifactViewer({
         )}
         {result?.state === "ready" && <ArtifactContent artifact={artifact} data={result.data} />}
       </div>
+      {result?.state === "ready" && artifact.kind === "html" && (
+        <span
+          ref={htmlFocusEndRef}
+          className="sr-only artifact-html-focus-end"
+          tabIndex={0}
+          onFocus={() => {
+            if (!enteringHtmlBackward.current) {
+              refreshButtonRef.current?.focus({ preventScroll: true });
+            }
+          }}
+        />
+      )}
     </aside>
   );
 }
@@ -245,6 +288,7 @@ function ArtifactContent({ artifact, data }: { artifact: ArtifactDescriptor; dat
       <iframe
         className="artifact-html-frame"
         title={artifact.fileName}
+        tabIndex={0}
         sandbox=""
         srcDoc={safeArtifactHtml(text)}
       />
