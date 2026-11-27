@@ -1438,6 +1438,75 @@ test("Kanban worker search keeps its result above the reduced visual viewport", 
   }
 });
 
+test.describe("Kanban skill suggestions", () => {
+  test.use({ viewport: { width: 320, height: 480 }, hasTouch: true, isMobile: true });
+
+  test("keeps keyboard options visible and inserts the last option by touch", async ({ page }) => {
+    await page.addInitScript(() => {
+      const viewport = new EventTarget();
+      Object.assign(viewport, { offsetTop: 48, height: 228, offsetLeft: 0, width: 320, scale: 1 });
+      Object.defineProperty(window, "visualViewport", { value: viewport });
+    });
+    const { labels } = await installKanbanAccessFixture(page);
+    const skills = Array.from({ length: 12 }, (_, index) => {
+      const name = "review-" + String(index + 1).padStart(2, "0");
+      return {
+        name,
+        displayName: name,
+        description: "Review the task changes",
+        shortDescription: null,
+        path: "/fixture/skills/" + name + "/SKILL.md",
+        scope: "repo",
+        enabled: true,
+      };
+    });
+    await page.route("**/api/v1/skills?**", (route) => {
+      const headers = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Authorization, Content-Type",
+      };
+      if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+      return route.fulfill({ headers, json: { cwd: "/work/codex-nest", skills, errors: [] } });
+    });
+    await page.getByRole("button", { name: labels.add, exact: true }).tap();
+    const dialog = page.getByRole("dialog", { name: labels.add, exact: true });
+    const field = dialog.getByRole("textbox", { name: labels.message });
+    const list = dialog.getByRole("listbox");
+    const options = list.getByRole("option");
+    const active = list.locator('[aria-selected="true"]');
+    const bounds = () => Promise.all([dialog.boundingBox(), field.boundingBox()]);
+    await field.fill("Run review");
+    await field.evaluate((element) => element.scrollIntoView({ block: "nearest" }));
+    await waitForVisualReady(page);
+    const closed = await bounds();
+
+    await field.fill("Run $review");
+    await expect(options).toHaveCount(12);
+    await expect(active).toContainText("$review-01");
+    await waitForVisualReady(page);
+    await expectFullyHittable(active, list);
+    const viewport = (await list.boundingBox())!;
+    expect(viewport.y).toBeGreaterThanOrEqual(48);
+    expect(viewport.y + viewport.height).toBeLessThanOrEqual(276);
+    await field.press("ArrowUp");
+    await expect(active).toContainText("$review-12");
+    await waitForVisualReady(page);
+    const { x, y } = await expectFullyHittable(active, list);
+    expect(await bounds()).toEqual(closed);
+    await page.touchscreen.tap(x, y);
+    await expect(field).toHaveValue("Run $review-12 ");
+    await expect(field).toBeFocused();
+    await expect(list).toBeHidden();
+
+    await field.fill("Run $review");
+    await expect(list).toBeVisible();
+    await field.press("Escape");
+    await expect(list).toBeHidden();
+    await expect(field).toBeFocused();
+    expect(await bounds()).toEqual(closed);
+  });
+});
+
 async function refreshKanban(page: Page) {
   const response = page.waitForResponse(
     (response) => response.url().endsWith("/kanban") && response.request().method() === "GET",

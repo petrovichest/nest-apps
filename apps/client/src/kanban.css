@@ -1544,6 +1544,17 @@ textarea.kanban-edit-field {
   background: transparent;
 }
 
+/* The backdrop positions the skill list outside the form's scrolling surface. */
+.kanban-task-dialog .composer-box:has(> .skill-autocomplete) {
+  position: static;
+}
+
+.kanban-task-dialog .skill-autocomplete {
+  right: auto;
+  max-height: min(320px, 42dvh, var(--kanban-skill-room, 100dvh));
+  overscroll-behavior: contain;
+}
+
 .kanban-text-dialog .dialog-header h2 {
   margin: 0;
   font-size: var(--text-dialog);

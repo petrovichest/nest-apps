@@ -933,6 +933,7 @@ export function Composer({
       }
       if (event.key === "Escape" && activeSkillTokenKey) {
         event.preventDefault();
+        event.stopPropagation();
         setSkillDismissedToken(activeSkillTokenKey);
         return;
       }
@@ -2184,6 +2185,7 @@ function SkillAutocomplete({
   onSelect(skill: SkillCatalogItem): void;
 }) {
   const { language, t } = useI18n();
+  const listRef = useRef<HTMLDivElement>(null);
   const activeOptionRef = useRef<HTMLButtonElement>(null);
   const errorText =
     error instanceof Error
@@ -2192,12 +2194,69 @@ function SkillAutocomplete({
         ? t("Не удалось загрузить скиллы")
         : null;
 
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const anchor = list?.parentElement;
+    const dialog = list?.closest(".kanban-task-dialog");
+    if (!list || !anchor || !dialog) return;
+    const viewport = window.visualViewport;
+    const fit = () => {
+      const origin = list.offsetParent?.getBoundingClientRect();
+      if (!origin) return;
+      const box = anchor.getBoundingClientRect();
+      const gap = 8;
+      const viewportLeft = viewport?.offsetLeft ?? 0;
+      const top = (viewport?.offsetTop ?? 0) + gap;
+      const bottom = top + (viewport?.height ?? window.innerHeight) - 2 * gap;
+      const right = viewportLeft + (viewport?.width ?? window.innerWidth) - gap;
+      const width = Math.min(box.width - 2 * gap, right - viewportLeft - gap);
+      const left = Math.max(viewportLeft + gap, Math.min(box.left + gap, right - width));
+      const aboveEnd = Math.min(box.top - gap, bottom);
+      const belowStart = Math.max(box.bottom + gap, top);
+      const above = aboveEnd - top;
+      const below = bottom - belowStart;
+      // A viewport nearly filled by the composer still needs room for a complete option.
+      const useWholeViewport = Math.max(above, below) < 96;
+      const opensBelow = above < 96 && !useWholeViewport;
+      const room = useWholeViewport ? bottom - top : opensBelow ? below : above;
+      list.style.left = `${left - origin.left}px`;
+      list.style.width = `${Math.max(0, width)}px`;
+      list.style.top =
+        opensBelow || useWholeViewport
+          ? `${(useWholeViewport ? top : belowStart) - origin.top}px`
+          : "auto";
+      list.style.bottom = opensBelow || useWholeViewport ? "auto" : `${origin.bottom - aboveEnd}px`;
+      list.style.setProperty("--kanban-skill-room", `${Math.max(0, room)}px`);
+      scrollSkillOption(list, activeOptionRef.current);
+    };
+    fit();
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
+    resize?.observe(anchor);
+    resize?.observe(dialog);
+    dialog.addEventListener("scroll", fit, { passive: true });
+    dialog.addEventListener("animationend", fit);
+    window.addEventListener("resize", fit);
+    viewport?.addEventListener("resize", fit);
+    viewport?.addEventListener("scroll", fit);
+    return () => {
+      resize?.disconnect();
+      dialog.removeEventListener("scroll", fit);
+      dialog.removeEventListener("animationend", fit);
+      window.removeEventListener("resize", fit);
+      viewport?.removeEventListener("resize", fit);
+      viewport?.removeEventListener("scroll", fit);
+    };
+  }, []);
+
   useEffect(() => {
-    activeOptionRef.current?.scrollIntoView?.({ block: "nearest" });
+    const list = listRef.current;
+    if (list?.closest(".kanban-task-dialog")) scrollSkillOption(list, activeOptionRef.current);
+    else activeOptionRef.current?.scrollIntoView?.({ block: "nearest" });
   }, [activeIndex, skills]);
 
   return (
     <div
+      ref={listRef}
       className="skill-autocomplete"
       id="composer-skill-list"
       role="listbox"
@@ -2213,7 +2272,7 @@ function SkillAutocomplete({
             className={index === activeIndex ? "active" : undefined}
             ref={index === activeIndex ? activeOptionRef : undefined}
             key={skill.path}
-            onPointerDown={(event) => event.preventDefault()}
+            onMouseDown={(event) => event.preventDefault()}
             onPointerMove={() => onActiveIndexChange(index)}
             onClick={() => onSelect(skill)}
           >
@@ -2240,6 +2299,17 @@ function SkillAutocomplete({
       )}
     </div>
   );
+}
+
+function scrollSkillOption(list: HTMLDivElement, option: HTMLButtonElement | null) {
+  if (!option) return;
+  const bounds = list.getBoundingClientRect();
+  const row = option.getBoundingClientRect();
+  const padding = parseFloat(getComputedStyle(list).paddingTop);
+  const top = bounds.top + padding;
+  const bottom = bounds.bottom - padding;
+  if (row.top < top) list.scrollTop += row.top - top;
+  else if (row.bottom > bottom) list.scrollTop += row.bottom - bottom;
 }
 
 function skillTokenAt(value: string, caret: number | null): SkillToken | null {
