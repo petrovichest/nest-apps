@@ -7,9 +7,10 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import type {
   KanbanAction,
   KanbanAudioInput,
@@ -238,21 +239,29 @@ export function cardStatusClass(
   return latest ? runStatusClass(latest, session) : null;
 }
 
-export function KanbanBoard({
-  projects,
-  threads = [],
-  transcriptionConfig = null,
-  transcriptionProvider = null,
-  onOpenNavigation,
-}: {
+type KanbanBoardProps = {
   projects: Project[];
   /** Sessions of this application; they colour the markers of the tasks they run. */
   threads?: ThreadSummary[];
   transcriptionConfig?: TranscriptionConfigResponse | null;
   transcriptionProvider?: TranscriptionProvider | null;
   onOpenNavigation(): void;
-}) {
+};
+
+export function KanbanBoard(props: KanbanBoardProps) {
   const { projectId = "" } = useParams();
+  // Route changes dispose the previous board's requests, draft and recorder together.
+  return <ProjectKanbanBoard key={projectId} projectId={projectId} {...props} />;
+}
+
+function ProjectKanbanBoard({
+  projectId,
+  projects,
+  threads = [],
+  transcriptionConfig = null,
+  transcriptionProvider = null,
+  onOpenNavigation,
+}: KanbanBoardProps & { projectId: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const project = projects.find((item) => item.id === projectId);
   // A refreshed project list (after a reconnect) must not reset the open board.
@@ -551,7 +560,7 @@ export function KanbanBoard({
   }, [cardId]);
 
   async function mutate(operation: () => Promise<Board>): Promise<boolean> {
-    if (busy) return false;
+    if (!alive.current || busy) return false;
     const generation = requestGeneration.current;
     setBusy(true);
     setError(null);
@@ -1319,13 +1328,19 @@ export function KanbanBoard({
   const activeStageId =
     board?.stages.find((stage) => stage.id === mobileStageId)?.id ?? board?.stages[0]?.id;
   const categoryCount = board?.categories.length ?? 0;
+  const projectName = project?.displayName ?? t("Проект не найден");
 
   return (
     <div className={`thread-workspace kanban-workspace${card || archiveOpen ? " has-panel" : ""}`}>
       <section className="conversation-pane kanban-pane">
         <WorkspaceHeader
           title={t("Доска задач")}
-          subtitle={project?.displayName ?? t("Проект не найден")}
+          subtitle={projectName}
+          subtitleControl={
+            projects.length > (project ? 1 : 0) ? (
+              <BoardProjectPicker projects={projects} projectId={projectId} name={projectName} />
+            ) : undefined
+          }
           leadingIcon={<KanbanIcon />}
           onOpenNavigation={onOpenNavigation}
           actions={
@@ -1335,28 +1350,7 @@ export function KanbanBoard({
                   <details
                     className="thread-action-menu kanban-category-filter"
                     data-dismiss-on-outside-click
-                    onKeyDown={(event) => {
-                      const menu = event.currentTarget;
-                      if (event.key === "Escape" && menu.open) {
-                        event.preventDefault();
-                        menu.open = false;
-                        menu.querySelector("summary")?.focus();
-                      } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-                        event.preventDefault();
-                        menu.open = true;
-                        const options = [...menu.querySelectorAll("button")];
-                        let next = options.indexOf(document.activeElement as HTMLButtonElement);
-                        if (event.key === "Home") next = 0;
-                        else if (event.key === "End") next = options.length - 1;
-                        else if (next < 0)
-                          next = event.key === "ArrowDown" ? 0 : options.length - 1;
-                        else
-                          next =
-                            (next + (event.key === "ArrowDown" ? 1 : -1) + options.length) %
-                            options.length;
-                        options[next]?.focus();
-                      }
-                    }}
+                    onKeyDown={handleHeaderPickerKey}
                   >
                     <summary className="kanban-filter" aria-label={t("Категория")}>
                       <span>
@@ -1404,6 +1398,7 @@ export function KanbanBoard({
                 <details
                   className="thread-action-menu kanban-filter-menu"
                   data-dismiss-on-outside-click
+                  onKeyDown={handleHeaderPickerKey}
                 >
                   <summary className="icon-button" aria-label={t("Ещё")}>
                     <MoreIcon />
@@ -2206,6 +2201,76 @@ export function KanbanBoard({
         />
       )}
     </div>
+  );
+}
+
+function handleHeaderPickerKey(event: ReactKeyboardEvent<HTMLDetailsElement>) {
+  const menu = event.currentTarget;
+  if (event.key === "Escape" && menu.open) {
+    event.preventDefault();
+    menu.open = false;
+    menu.querySelector("summary")?.focus();
+    return;
+  }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  menu.open = true;
+  const options = [...menu.querySelectorAll("button")];
+  const current = options.findIndex((option) => option === document.activeElement);
+  let next = event.key === "ArrowUp" || event.key === "End" ? options.length - 1 : 0;
+  if (current >= 0 && event.key.startsWith("Arrow")) {
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    next = (current + direction + options.length) % options.length;
+  }
+  options[next]?.focus();
+}
+
+function BoardProjectPicker({
+  projects,
+  projectId,
+  name,
+}: {
+  projects: Project[];
+  projectId: string;
+  name: string;
+}) {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const valueId = useId();
+  const label = t("Выбрать проект");
+  return (
+    <details
+      className="thread-action-menu kanban-project-picker"
+      data-dismiss-on-outside-click
+      onBlur={(event) => {
+        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
+          event.currentTarget.open = false;
+      }}
+      onKeyDown={handleHeaderPickerKey}
+    >
+      <summary aria-label={label} aria-describedby={valueId} title={name}>
+        <span id={valueId}>{name}</span>
+        <ChevronDownIcon aria-hidden="true" />
+      </summary>
+      <div className="action-menu-popover kanban-project-options" role="group" aria-label={label}>
+        {projects.map(({ id, displayName }) => (
+          <button
+            key={id}
+            type="button"
+            aria-pressed={id === projectId}
+            onClick={(event) => {
+              const menu = event.currentTarget.closest("details")!;
+              menu.open = false;
+              if (id === projectId) menu.querySelector("summary")?.focus();
+              else void navigate(`/projects/${encodeURIComponent(id)}/kanban`);
+            }}
+          >
+            <CheckIcon aria-hidden="true" />
+            <span>{displayName}</span>
+          </button>
+        ))}
+      </div>
+    </details>
   );
 }
 

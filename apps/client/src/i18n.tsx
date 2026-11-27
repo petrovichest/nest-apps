@@ -139,6 +139,7 @@ const ENGLISH: Record<string, string> = {
   "Не удалось подключиться к Google через прокси. Проверьте адрес и учётные данные.":
     "Could not connect to Google through the proxy. Check its address and credentials.",
   "Доска задач": "Task board",
+  "Выбрать проект": "Choose project",
   "Доска проекта {{project}}": "Board for {{project}}",
   "Открыть доску задач проекта {{project}}": "Open the task board of {{project}}",
   "Развернуть стадию «{{name}}», задач: {{count}}": "Expand stage “{{name}}”, tasks: {{count}}",

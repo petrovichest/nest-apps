@@ -535,19 +535,20 @@ describe("App routing and navigation", () => {
     const boardLink = screen.getByRole("link", { name: "Доска задач" });
     expect(boardLink).toHaveAttribute("href", "/projects/second-project/kanban");
     expect(boardLink).not.toHaveAttribute("aria-current");
+    expect(localStorage.getItem("codexnest.boardProject")).toBe("project");
     expect(api.readKanban).not.toHaveBeenCalled();
 
     fireEvent.click(boardLink);
 
     expect(await screen.findByRole("heading", { name: "Доска задач" })).toBeVisible();
     expect(boardLink).toHaveAttribute("aria-current", "page");
+    expect(localStorage.getItem("codexnest.boardProject")).toBe("second-project");
     expect(manualNavigationIntent).toHaveBeenCalledOnce();
     expect(api.readKanban).toHaveBeenCalledExactlyOnceWith("second-project");
   });
 
   it.each([
     ["/projects/second-project/kanban", "project", "second-project"],
-    ["/new?projectId=second-project", "project", "second-project"],
     ["/new?projectId=missing", "second-project", "second-project"],
     ["/new", "second-project", "second-project"],
     ["/settings", "second-project", "second-project"],
@@ -562,6 +563,21 @@ describe("App routing and navigation", () => {
       "href",
       `/projects/${expected}/kanban`,
     );
+  });
+
+  it("uses the project of a new session opened from the sidebar", async () => {
+    localStorage.setItem("codexnest.boardProject", "project");
+    const api = mockConnection(
+      snapshot([], [defaultProject(), testProject("second-project", "Второй")]),
+    );
+    await renderList("/settings");
+    fireEvent.click(screen.getByRole("button", { name: "Создать новую сессию в проекте Второй" }));
+    expect(await screen.findByRole("heading", { name: "Новая задача" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Доска задач" })).toHaveAttribute(
+      "href",
+      "/projects/second-project/kanban",
+    );
+    expect(api.readKanban).not.toHaveBeenCalled();
   });
 
   it.each(["loading", "empty"])("omits the board link while projects are %s", async (status) => {
