@@ -1733,6 +1733,52 @@ describe("shared provider board service", () => {
     expect(restart.threadId).not.toBe(run.threadId);
     expect(f.prompts.get(restart.id)).toContain("## Задача 2\n\nValidate the email field");
   });
+  it.each(["rework", "restart", "publish"] as const)(
+    "keeps a former session member in its new session during %s",
+    async (action) => {
+      const f = await fixture();
+      const { codex, claude } = f.services;
+      const first = await f.card("First task");
+      const second = await f.card("Second task");
+      await codex.action(f.project, {
+        action: "execute",
+        cardIds: [first, second],
+        clientActionId: randomUUID(),
+      });
+      const original = await f.running("execute", first, codex);
+      await f.finish(original);
+      await claude.updateCard(f.project, first, { stageId: "todo" });
+      await codex.action(f.project, {
+        action: "execute",
+        cardIds: [first],
+        clientActionId: randomUUID(),
+      });
+      const newer = await f.running("execute", first, codex);
+      expect(newer.threadId).not.toBe(original.threadId);
+      const before = await f.finish(newer);
+      const firstCard = before.cards.find((card) => card.id === first);
+
+      const provider = action === "restart" ? "claude" : "codex";
+      const kind = action === "publish" ? "publish" : "execute";
+      const after = await claude.action(f.project, {
+        action,
+        cardIds: [second],
+        clientActionId: randomUUID(),
+        ...(action === "rework" ? { comment: "Only rework the second task" } : {}),
+      });
+      expect(after.runs.at(-1)).toMatchObject({ kind, provider, cardIds: [second] });
+      expect(after.cards.find((card) => card.id === first)).toEqual(firstCard);
+
+      const next = await f.running(kind, second, f.services[provider]);
+      if (action === "restart") expect(next.threadId).not.toBe(original.threadId);
+      else expect(next.threadId).toBe(original.threadId);
+      const finished = await f.finish(next);
+      expect(finished.cards.find((card) => card.id === first)).toEqual(firstCard);
+      expect(finished.runs.findLast((run) => run.cardIds.includes(first))).toEqual(
+        runOf(before, newer.id),
+      );
+    },
+  );
   it.each([
     ["claude", "codex"],
     ["codex", "claude"],
@@ -2068,17 +2114,23 @@ describe("shared provider board service", () => {
     expect(board.cards[0]!.error).toContain("open the session");
     expect(errors).toHaveLength(1);
   });
-  it("publishes in each task's own session, one card at a time", async () => {
-    const f = await fixture();
+  it("publishes in each provider's own session even when thread IDs match", async () => {
+    let available = true;
+    const threadIds = new Map<string, string>();
+    const f = await fixture(() => available, undefined, undefined, undefined, { ids: threadIds });
     const ids: string[] = [];
     const sessions = new Map<string, KanbanRun>();
     for (const [index, provider] of (["codex", "claude"] as const).entries()) {
       const id = await f.card(`Task ${index}`);
-      await f.services[provider].action(f.project, {
+      available = false;
+      const queued = await f.services[provider].action(f.project, {
         action: "execute",
         cardIds: [id],
         clientActionId: randomUUID(),
       });
+      threadIds.set(queued.runs.at(-1)!.id, "provider-local-thread");
+      available = true;
+      f.services[provider].wake();
       const run = await f.running("execute", id, f.services[provider]);
       await f.finish(run);
       sessions.set(id, run);
@@ -2104,6 +2156,7 @@ describe("shared provider board service", () => {
     const secondCard = ids.find((id) => id !== firstCard)!;
     expect(first.threadId).toBe(sessions.get(firstCard)!.threadId);
     expect(first.provider).toBe(sessions.get(firstCard)!.provider);
+    expect(first.sessionUrl).toBe(sessions.get(firstCard)!.sessionUrl);
     expect(f.prompts.get(first.id)).toBe(PUBLISH_PROMPT);
     // The other publication waits: both push the same branch from the same folder.
     await new Promise((resolve) => setTimeout(resolve, 60));
@@ -2124,10 +2177,128 @@ describe("shared provider board service", () => {
       f.services[sessions.get(secondCard)!.provider],
     );
     expect(second.threadId).toBe(sessions.get(secondCard)!.threadId);
+    expect(second.sessionUrl).toBe(sessions.get(secondCard)!.sessionUrl);
     board = await f.finish(second, "GitHub Actions failed: lint");
     expect(stage(board, secondCard)).toBe("waiting");
     expect(board.cards.find((card) => card.id === secondCard)!.question).toContain("lint");
+    expect(f.resumes).toEqual({
+      codex: ["provider-local-thread"],
+      claude: ["provider-local-thread"],
+    });
   });
+  it("acknowledges a late publish of a Published card and accepts a new action after reopening", async () => {
+    const f = await fixture();
+    const { codex, claude } = f.services;
+    const id = await f.card("Publish once");
+    await codex.action(f.project, {
+      action: "execute",
+      cardIds: [id],
+      clientActionId: randomUUID(),
+    });
+    await f.finish(await f.running("execute", id));
+    const publish = { action: "publish" as const, cardIds: [id], clientActionId: randomUUID() };
+    await codex.action(f.project, publish);
+    const done = await f.finish(await f.running("publish", id));
+    expect(stage(done, id)).toBe("done");
+
+    const stale = { ...publish, clientActionId: randomUUID() };
+    const skipped = await claude.action(f.project, stale);
+    expect(skipped.cards).toEqual(done.cards);
+    expect(skipped.runs).toEqual(done.runs);
+
+    const ready = await claude.updateCard(f.project, id, { stageId: "ready" });
+    for (const request of [publish, stale]) {
+      const replayed = await claude.action(f.project, request);
+      expect(replayed.cards).toEqual(ready.cards);
+      expect(replayed.runs).toEqual(ready.runs);
+    }
+    expect(f.resumes.codex).toHaveLength(1);
+
+    await claude.action(f.project, { ...publish, clientActionId: randomUUID() });
+    const next = await f.running("publish", id);
+    expect(stage(await f.finish(next), id)).toBe("done");
+    expect(f.resumes.codex).toHaveLength(2);
+  });
+  it("publishes the remaining cards in a mixed batch without reopening a Published peer", async () => {
+    const f = await fixture();
+    const { codex, claude } = f.services;
+    const done = await f.card("Already published");
+    const first = await f.card("Ready to publish");
+    const second = await f.card("Also ready to publish");
+    const manual = await f.card("Nothing to push");
+    await codex.action(f.project, {
+      action: "execute",
+      cardIds: [done, first, second],
+      clientActionId: randomUUID(),
+    });
+    await f.finish(await f.running("execute", first));
+    await codex.updateCard(f.project, done, { stageId: "done" });
+    const before = await codex.updateCard(f.project, manual, { stageId: "ready" });
+    const doneCard = before.cards.find((card) => card.id === done);
+
+    const queued = await claude.action(f.project, {
+      action: "publish",
+      cardIds: [done, second, manual],
+      clientActionId: randomUUID(),
+    });
+    expect(queued.cards.find((card) => card.id === done)).toEqual(doneCard);
+    expect(stage(queued, manual)).toBe("done");
+    expect(queued.runs.filter((run) => run.kind === "publish")).toMatchObject([
+      { cardIds: [first, second] },
+    ]);
+    const finished = await f.finish(await f.running("publish", second));
+    expect(finished.cards.find((card) => card.id === done)).toEqual(doneCard);
+    expect([stage(finished, first), stage(finished, second)]).toEqual(["done", "done"]);
+    expect(f.resumes.codex).toHaveLength(1);
+  });
+  it.each(["one card", "both cards"])(
+    "groups different runs of the same continuation when publishing %s",
+    async (selection) => {
+      const f = await fixture();
+      const { codex, claude } = f.services;
+      const first = await f.card("First task");
+      const second = await f.card("Second task");
+      await codex.action(f.project, {
+        action: "execute",
+        cardIds: [first, second],
+        clientActionId: randomUUID(),
+      });
+      const original = await f.running("execute", first);
+      await f.finish(original);
+      await codex.updateCard(f.project, first, { stageId: "done" });
+
+      // A continuation rejected by the provider still has a stored resumeThreadId.
+      f.resume.mockRejectedValueOnce(new Error("Could not admit the turn"));
+      const attempted = await codex.action(f.project, {
+        action: "publish",
+        cardIds: [second],
+        clientActionId: randomUUID(),
+      });
+      const id = attempted.runs.at(-1)!.id;
+      const waiting = await until(
+        () => codex.read(f.project),
+        (board) => runOf(board, id)?.status === "waiting",
+      );
+      expect(runOf(waiting, id)).toMatchObject({ threadId: null, cardIds: [second] });
+
+      await claude.updateCard(f.project, first, { stageId: "ready" });
+      await claude.updateCard(f.project, second, { stageId: "ready" });
+      const both = selection === "both cards";
+      const published = await claude.action(f.project, {
+        action: "publish",
+        cardIds: both ? [second, first] : [first],
+        clientActionId: randomUUID(),
+      });
+      expect(published.runs.slice(waiting.runs.length)).toMatchObject([
+        { kind: "publish", provider: "codex", cardIds: both ? [second, first] : [first, second] },
+      ]);
+      const next = await f.running("publish", first);
+      expect(next.threadId).toBe(original.threadId);
+      const finished = await f.finish(next);
+      expect([stage(finished, first), stage(finished, second)]).toEqual(["done", "done"]);
+      expect(f.resumes.codex).toEqual([original.threadId]);
+    },
+  );
   it("starts a task again in the application that asks, with the original text", async () => {
     const f = await fixture();
     const id = await f.card("Draw a chart");
@@ -2178,6 +2349,38 @@ describe("shared provider board service", () => {
         clientActionId: randomUUID(),
       }),
     ).rejects.toMatchObject({ code: "already_running" });
+  });
+  it("replaces a working turn of the same session when restarting from an earlier run", async () => {
+    const f = await fixture();
+    const { codex } = f.services;
+    const first = await f.card("Already published");
+    const second = await f.card("Ready to publish");
+    await codex.action(f.project, {
+      action: "execute",
+      cardIds: [first, second],
+      clientActionId: randomUUID(),
+    });
+    const original = await f.running("execute", first);
+    await f.finish(original);
+    await codex.updateCard(f.project, first, { stageId: "done" });
+    await codex.action(f.project, {
+      action: "publish",
+      cardIds: [second],
+      clientActionId: randomUUID(),
+    });
+    const publishing = await f.running("publish", second);
+    const restarted = await codex.action(f.project, {
+      action: "restart",
+      cardIds: [first],
+      clientActionId: randomUUID(),
+    });
+    expect(runOf(restarted, publishing.id)?.status).toBe("completed");
+    const next = await f.running("execute", first);
+    expect(next.cardIds).toEqual([first, second]);
+    expect(f.interrupted.codex).toEqual([original.threadId]);
+    await codex.notifyThread(original.threadId!, "completed");
+    const board = await codex.read(f.project);
+    expect([stage(board, first), stage(board, second)]).toEqual(["working", "working"]);
   });
   it("keeps a working card in place and lets the operator move a waiting one on", async () => {
     const f = await fixture();

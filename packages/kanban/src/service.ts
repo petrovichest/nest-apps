@@ -203,10 +203,7 @@ function taskSession(data: KanbanDocument, cardId: string) {
   }
   return undefined;
 }
-/**
- * Tasks started together share one session, so its later turns carry all of them that are
- * still on the board; the card asked about stays even when archived, to fail clearly.
- */
+/** Keep the current turn's tasks that still belong to its session and are on the board. */
 function sessionCards(
   data: KanbanDocument,
   card: KanbanCard,
@@ -215,8 +212,41 @@ function sessionCards(
   if (!session) return [card];
   return session.run.cardIds.flatMap((id) => {
     const item = data.board.cards.find((value) => value.id === id);
-    return item && (item === card || item.archivedAt === undefined) ? [item] : [];
+    if (!item || (item !== card && item.archivedAt !== undefined)) return [];
+    const current = item === card ? session : taskSession(data, id);
+    const shared =
+      current?.run === session.run ||
+      (session.threadId &&
+        current?.threadId === session.threadId &&
+        current.run.provider === session.run.provider);
+    return shared ? [item] : [];
   });
+}
+function publishGroups(data: KanbanDocument, cards: KanbanCard[]) {
+  const done = role(data.board, "done");
+  const seenRuns = new Set<KanbanRun>();
+  const groups = new Map<
+    string,
+    { target: { threadId: string; provider: KanbanProvider } | null; cards: Set<KanbanCard> }
+  >();
+  for (const card of cards) {
+    if (card.stageId === done) continue;
+    const session = taskSession(data, card.id);
+    // A task without a thread has nothing to push.
+    if (!session?.threadId) {
+      groups.set(`card:${card.id}`, { target: null, cards: new Set([card]) });
+      continue;
+    }
+    if (seenRuns.has(session.run)) continue;
+    seenRuns.add(session.run);
+    const target = { threadId: session.threadId, provider: session.run.provider };
+    const key = `${target.provider}:${target.threadId}`;
+    const group = groups.get(key) ?? { target, cards: new Set<KanbanCard>() };
+    for (const item of sessionCards(data, card, session))
+      if (item.stageId !== done) group.cards.add(item);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
 }
 /** This application's sessions whose tasks all left the board and that were not archived yet. */
 function retiredSessions(data: KanbanDocument, provider: KanbanProvider): Set<string> {
@@ -2243,10 +2273,13 @@ export class KanbanService {
       const cards = ids.map((id) => findCard(data, id));
       if (cards.some((card) => card.archivedAt !== undefined))
         throw new KanbanError("archived", "Restore the task from the archive first");
-      // A turn of a shared session concerns every task in it.
-      const affected = ["rework", "restart", "publish"].includes(request.action)
-        ? [...new Set(cards.flatMap((card) => sessionCards(data, card)))]
-        : cards;
+      const publications = request.action === "publish" ? publishGroups(data, cards) : [];
+      const affected =
+        request.action === "publish"
+          ? publications.flatMap(({ cards }) => [...cards])
+          : request.action === "rework" || request.action === "restart"
+            ? [...new Set(sessionCards(data, cards[0]!))]
+            : cards;
       const affectedIds = affected.map((card) => card.id);
       if (
         request.action !== "retry-transcription" &&
@@ -2344,31 +2377,22 @@ export class KanbanService {
           delete data.cards[card.id]!.voice;
         }
       } else if (request.action === "publish") {
-        const published = new Set<string>();
-        for (const card of cards) {
-          const session = taskSession(data, card.id);
-          this.release(data, card);
-          // Nothing was done in a session, so there is nothing to push.
-          if (!session?.threadId) {
-            setStage(data, card, role(data.board, "done"));
-            continue;
-          }
-          // Tasks of one session are published by one message to it.
-          if (published.has(session.threadId)) continue;
-          published.add(session.threadId);
-          const group = sessionCards(data, card, session);
+        for (const { target, cards } of publications) {
+          const stageId = role(data.board, target ? "ready" : "done");
+          const group = [...cards];
           for (const item of [...group].reverse()) {
             this.release(data, item);
-            setStage(data, item, role(data.board, "ready"));
+            setStage(data, item, stageId);
           }
-          this.addRun(
-            data,
-            "publish",
-            group.map((item) => item.id),
-            session.run.provider,
-            undefined,
-            session.threadId,
-          );
+          if (target)
+            this.addRun(
+              data,
+              "publish",
+              group.map((item) => item.id),
+              target.provider,
+              undefined,
+              target.threadId,
+            );
         }
       } else {
         const card = cards[0]!;
@@ -2401,6 +2425,18 @@ export class KanbanService {
           this.release(data, item);
           setStage(data, item, role(data.board, "working"));
         }
+        let interruptThreadId: string | undefined;
+        // A shared session can have a newer active turn for only some of its tasks.
+        if (request.action === "restart") {
+          for (const item of affected) {
+            const replaced = item === card ? session : taskSession(data, item.id);
+            if (!replaced || !active(replaced.run)) continue;
+            replaced.run.status = "completed";
+            replaced.run.updatedAt = Date.now();
+            if (replaced.run.provider === this.options.provider && replaced.threadId)
+              interruptThreadId = replaced.threadId;
+          }
+        }
         const groups = new Map<string | undefined, string[]>();
         for (const item of affected) {
           const workerId = request.action === "rework" ? session?.run.workerId : item.workerId;
@@ -2421,13 +2457,7 @@ export class KanbanService {
           return run;
         });
         const run = runs[0]!;
-        // Starting again replaces the session: the new one gets the original task.
-        if (request.action === "restart" && session && active(session.run)) {
-          session.run.status = "completed";
-          session.run.updatedAt = Date.now();
-          if (session.run.provider === this.options.provider && session.threadId)
-            data.runs[run.id]!.interruptThreadId = session.threadId;
-        }
+        if (interruptThreadId) data.runs[run.id]!.interruptThreadId = interruptThreadId;
         const images =
           voice?.images ??
           (await this.storeImages(data.board.id, `comment-${run.id}`, commentImages));
@@ -3194,7 +3224,9 @@ export class KanbanService {
           {
             threadId: resume,
             sessionUrl:
-              document.board.runs.find((item) => item.threadId === resume)?.sessionUrl ?? undefined,
+              document.board.runs.find(
+                (item) => item.provider === run.provider && item.threadId === resume,
+              )?.sessionUrl ?? undefined,
           })
         : await this.options.adapter.launch(
             {
