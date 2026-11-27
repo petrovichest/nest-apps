@@ -115,3 +115,66 @@ test("files dropped on history attach to the draft with upload feedback and imag
   await expect(page.locator(".composer-box textarea")).toHaveValue(originalInput);
   await dataTransfer.dispose();
 });
+
+test.describe("mobile chat composer", () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+
+  test("touch opens attachments and submits from the focused textarea", async ({
+    page,
+    browserName,
+  }, info) => {
+    await openChat(page, "dark");
+    const text = "Проверка отправки касанием";
+    await page.route("**/api/v1/threads/session-main/queue", async (route) => {
+      const headers = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Authorization, Content-Type",
+        "access-control-allow-methods": "POST, OPTIONS",
+      };
+      if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+      const draft = route.request().postDataJSON();
+      return route.fulfill({
+        headers,
+        json: {
+          id: draft.clientMessageId,
+          threadId: "session-main",
+          text: draft.input,
+          status: "queued",
+          createdAt: 1,
+        },
+      });
+    });
+
+    const textarea = page.locator(".composer-box textarea");
+    await textarea.fill(text);
+    await page.setViewportSize({ width: 390, height: 500 });
+    await expect(page.locator(".composer")).toHaveClass(/keyboard-open/);
+    await page.locator(".composer-add-image").tap();
+    const menu = page.getByRole("dialog", { name: "Вложения" });
+    await expect(menu).toBeVisible();
+    await expect(textarea).toBeFocused();
+    await page.screenshot({ path: info.outputPath("chat-touch-attachments.png") });
+
+    // Mobile WebKit can handle the activation without exposing a native filechooser event.
+    const chooser = browserName === "chromium" ? page.waitForEvent("filechooser") : null;
+    await menu.getByRole("button", { name: "Добавить изображения", exact: true }).tap();
+    await expect(page.locator('.composer-toolbar input[type="file"]')).toHaveAttribute(
+      "accept",
+      "image/*",
+    );
+    await expect(menu).toBeHidden();
+    if (chooser) await (await chooser).setFiles([]);
+    await textarea.focus();
+
+    const delivered = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/threads/session-main/queue") &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Отправить", exact: true }).tap();
+    const response = await delivered;
+    expect(response.ok()).toBe(true);
+    expect(response.request().postDataJSON()).toMatchObject({ input: text });
+    await expect(textarea).toHaveValue("");
+  });
+});

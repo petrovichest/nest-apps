@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
 import {
   type ClipboardEvent,
   type KeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   useEffect,
   useId,
@@ -831,7 +831,7 @@ export function Composer({
       updateKeyboardState();
     }
 
-    function preserveFocusForButton(event: PointerEvent) {
+    function preserveFocusForButton(event: MouseEvent) {
       const button = event.target instanceof Element ? event.target.closest("button") : null;
       if (
         button instanceof HTMLButtonElement &&
@@ -845,14 +845,15 @@ export function Composer({
 
     textarea.addEventListener("focus", captureViewportBaseline);
     textarea.addEventListener("blur", updateKeyboardState);
-    document.addEventListener("pointerdown", preserveFocusForButton, true);
+    // Cancelling touch pointerdown suppresses the click in WebKit.
+    document.addEventListener("mousedown", preserveFocusForButton, true);
     window.addEventListener("resize", updateKeyboardState);
     window.visualViewport?.addEventListener("resize", updateKeyboardState);
     updateKeyboardState();
     return () => {
       textarea.removeEventListener("focus", captureViewportBaseline);
       textarea.removeEventListener("blur", updateKeyboardState);
-      document.removeEventListener("pointerdown", preserveFocusForButton, true);
+      document.removeEventListener("mousedown", preserveFocusForButton, true);
       window.removeEventListener("resize", updateKeyboardState);
       window.visualViewport?.removeEventListener("resize", updateKeyboardState);
     };
@@ -1548,7 +1549,7 @@ export function Composer({
     resizeFrameRef.current = null;
   }
 
-  function preserveTextareaFocus(event: ReactPointerEvent<HTMLElement>) {
+  function preserveTextareaFocus(event: ReactMouseEvent<HTMLElement>) {
     const textarea = textareaRef.current;
     const target = event.target instanceof Element ? event.target : null;
     const control = target?.closest<HTMLElement>(
@@ -1896,7 +1897,7 @@ export function Composer({
                   : t("Спросите что угодно")
             }
           />
-          <div className="composer-toolbar" onPointerDownCapture={preserveTextareaFocus}>
+          <div className="composer-toolbar" onMouseDownCapture={preserveTextareaFocus}>
             <div className="composer-options">
               <input
                 ref={fileInputRef}

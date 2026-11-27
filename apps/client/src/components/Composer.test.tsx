@@ -613,7 +613,12 @@ describe("Composer", () => {
     );
     expect(ownedControls.length).toBeGreaterThan(0);
     for (const control of ownedControls) {
-      expect(fireEvent.pointerDown(control)).toBe(false);
+      if (control.closest(".composer-toolbar")) {
+        expect(fireEvent.pointerDown(control, { pointerType: "touch" })).toBe(true);
+        expect(fireEvent.mouseDown(control)).toBe(false);
+      } else {
+        expect(fireEvent.pointerDown(control)).toBe(false);
+      }
       expect(textarea).toHaveFocus();
       expect(textarea.selectionStart).toBe(4);
     }
@@ -629,7 +634,7 @@ describe("Composer", () => {
     const project = screen.getByRole("combobox", { name: "Проект" });
 
     textarea.focus();
-    expect(fireEvent.pointerDown(project)).toBe(true);
+    expect(fireEvent.mouseDown(project)).toBe(true);
     project.focus();
     fireEvent.change(project, { target: { value: "two" } });
     expect(textarea).toHaveFocus();
@@ -645,7 +650,7 @@ describe("Composer", () => {
     const toggle = screen.getByRole("button", { name: "Модель и уровень рассуждений" });
 
     textarea.focus();
-    expect(fireEvent.pointerDown(toggle)).toBe(false);
+    expect(fireEvent.mouseDown(toggle)).toBe(false);
     fireEvent.click(toggle);
     fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
     expect(textarea).toHaveFocus();
@@ -1491,13 +1496,14 @@ describe("Composer", () => {
 
     fireEvent.change(textarea, { target: { value: "Сообщение" } });
     textarea.focus();
-    expect(fireEvent.pointerDown(external)).toBe(true);
+    expect(fireEvent.mouseDown(external)).toBe(true);
 
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 500 });
     fireEvent(window, new Event("resize"));
-    expect(fireEvent.pointerDown(external)).toBe(false);
-    expect(fireEvent.pointerDown(addImage)).toBe(false);
-    expect(fireEvent.pointerDown(send)).toBe(false);
+    for (const button of [external, addImage, send]) {
+      expect(fireEvent.pointerDown(button, { pointerType: "touch" })).toBe(true);
+      expect(fireEvent.mouseDown(button)).toBe(false);
+    }
     expect(textarea).toHaveFocus();
 
     fireEvent.click(external);

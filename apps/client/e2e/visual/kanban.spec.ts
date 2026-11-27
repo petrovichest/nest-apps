@@ -1156,8 +1156,8 @@ for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT, { width: 320, height: 
               const text = language === "ru" ? "Создать задачу для Анны" : "Create a task for Anna";
               const message = panel.getByRole("textbox", { name: labels.message });
               await message.fill(text);
-              if (touch && browserName === "webkit") await message.press("Control+Enter");
-              else await press(panel.getByRole("button", { name: labels.submit, exact: true }));
+              await expect(message).toBeFocused();
+              await press(panel.getByRole("button", { name: labels.submit, exact: true }));
               await expect(panel).toBeHidden();
               expect(creations).toEqual([
                 expect.objectContaining({ description: text, workerId: lastWorker.id }),
