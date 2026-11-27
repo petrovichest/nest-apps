@@ -55,16 +55,26 @@ export async function registerGeminiKanban(
           ).skills,
         ),
       available: () => engine.canAcceptWork(),
-      async launch(job) {
+      createdThreadId(id, projectPath) {
+        const project = engine.data.projects.find((candidate) => candidate.path === projectPath);
+        return engine.data.creations[`${project?.id ?? ""}:${id}`];
+      },
+      async launch(job, beforePublish) {
         const project = engine.data.projects.find((item) => item.path === job.projectPath);
         if (job.projectPath && !project) throw new Error("Project not found");
-        const { thread } = await engine.createThread(project?.id ?? "", job.id, undefined, {
-          cwd: job.cwd,
-          title: job.title,
-          ...(job.kind === "classify"
-            ? { model: engine.data.taskDefaults.classificationModel ?? "gemini-3.8-flash" }
-            : {}),
-        });
+        const { thread } = await engine.createThread(
+          project?.id ?? "",
+          job.id,
+          undefined,
+          {
+            cwd: job.cwd,
+            title: job.title,
+            ...(job.kind === "classify"
+              ? { model: engine.data.taskDefaults.classificationModel ?? "gemini-3.8-flash" }
+              : {}),
+          },
+          beforePublish,
+        );
         if (job.settings) {
           await engine.settings(thread.id, {
             collaborationMode: job.settings.collaborationMode,

@@ -1005,6 +1005,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     projectId: string,
     clientCreationId: string,
     workspace?: { cwd: string; title: string; settings?: SessionSettings },
+    beforePublish?: (threadId: string) => void,
   ): Promise<ThreadSummary> {
     const key = `${projectId}:${clientCreationId}`;
     const current = projectThreadCreations.get(key);
@@ -1016,6 +1017,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       if (previous?.threadId) {
         const existing = projection.summary(previous.threadId);
         if (existing) {
+          beforePublish?.(existing.id);
           if (projection.isUnmaterialized(existing.id)) {
             await projection.materializeEmptySession(existing.id);
           }
@@ -1059,6 +1061,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       if (workspace) started.thread.name = workspace.title;
       if (bridge.deliveryVersion === 1)
         requireDeliveryReceipt(response, clientCreationId, started.thread.id);
+      beforePublish?.(started.thread.id);
       projection.upsertThread(started.thread);
       if (bridge.deliveryVersion !== 1) await projection.markUnmaterialized(started.thread.id);
       await store.update((state) => {
@@ -4197,7 +4200,8 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         }) ?? Promise.resolve(undefined),
       projects: () => store.view().projects,
       available: () => bridge.state === "ready" && (!lifecycle || lifecycle.acceptsMutations),
-      async launch(job) {
+      createdThreadId: (id) => store.view().threadCreations?.[`kanban:${id}`]?.threadId,
+      async launch(job, beforePublish) {
         const project = store.view().projects.find((item) => item.path === job.projectPath);
         if (job.projectPath && !project) throw new ProjectNotFoundError("Project not found");
         if (job.kind === "classify") {
@@ -4245,11 +4249,16 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           }
           return { threadId: thread.id };
         }
-        const thread = await getOrCreateProjectThread(project?.id ?? "", `kanban:${job.id}`, {
-          cwd: job.cwd,
-          title: job.title,
-          ...(job.settings ? { settings: job.settings } : {}),
-        });
+        const thread = await getOrCreateProjectThread(
+          project?.id ?? "",
+          `kanban:${job.id}`,
+          {
+            cwd: job.cwd,
+            title: job.title,
+            ...(job.settings ? { settings: job.settings } : {}),
+          },
+          beforePublish,
+        );
         await queue.enqueue(thread.id, job.prompt, job.images ?? [], `kanban:${job.id}:start`);
         void queue.drain(thread.id).catch((error: unknown) => {
           app.log.warn({ err: safeError(error), threadId: thread.id }, "Kanban delivery failed");

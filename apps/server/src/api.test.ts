@@ -29,6 +29,7 @@ import {
   BROWSER_EXTENSION_WEBSOCKET_PATH,
   BROWSER_TOOL_NAMES,
   type ServerEvent,
+  type ThreadSummary,
 } from "@codexnest/protocol";
 import { WorkerStore } from "@nest-apps/kanban";
 
@@ -528,6 +529,89 @@ describe("project boards", () => {
         projectId: "project",
         cwd: "/separate/kanban/worktree",
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("publishes the delegated worker summary before admitting its first message", async () => {
+    const projectPath = await createApiTestRepository();
+    const { app, projection, store } = await createTeamHarness({ projectPath });
+    try {
+      const directory = join(dirname(store.path), "kanban", "workers");
+      const workers = new WorkerStore(directory);
+      const projectKey = await workers.projectKey(projectPath);
+      const worker = await workers.create(
+        {
+          name: "Reviewer",
+          role: "Review changes",
+          instructions: "",
+          settings: { codex: { collaborationMode: "default", model: "gpt-a" } },
+        },
+        projectKey,
+      );
+      const child = "4c2f6560-967f-4af7-b2cb-a634dc2c379b";
+      const session = {
+        processId: "parent",
+        provider: "codex",
+        projectPath,
+        projectKey,
+        projectName: "Project",
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      await writeFile(
+        join(directory, "processes.json"),
+        JSON.stringify({
+          parent: {
+            ...session,
+            id: "parent",
+            parentId: null,
+            workerId: "lead",
+            workerName: "Lead",
+            threadId: "thread",
+            title: "Lead",
+            kind: "session",
+            status: "completed",
+          },
+          [child]: {
+            ...session,
+            id: child,
+            parentId: "parent",
+            workerId: worker.id,
+            workerName: worker.name,
+            threadId: null,
+            title: "Review the release",
+            description: "Check the notes",
+            expectedResult: "A verdict",
+            kind: "question",
+            status: "queued",
+          },
+        }),
+      );
+      const upserts: ThreadSummary[] = [];
+      let snapshotAtAdmission: ThreadSummary | undefined;
+      projection.on("event", (_sequence, event: ServerEvent) => {
+        if (event.type !== "thread.upserted" || event.thread.id !== "created") return;
+        upserts.push(event.thread);
+        if (event.thread.queuedMessageCount)
+          snapshotAtAdmission ??= projection.snapshot().threads.find(({ id }) => id === "created");
+      });
+      await app.ready();
+      await vi.waitFor(() => expect(snapshotAtAdmission).toBeDefined());
+
+      const workerSession = {
+        name: worker.name,
+        workerId: worker.id,
+        projectKey,
+        delegated: true,
+        parentThreadId: "thread",
+      };
+      const admission = upserts.findIndex(({ queuedMessageCount }) => queuedMessageCount > 0);
+      expect(admission).toBeGreaterThan(0);
+      expect(upserts[0]?.workerSession).toEqual(workerSession);
+      expect(upserts[admission]?.workerSession).toEqual(workerSession);
+      expect(snapshotAtAdmission?.workerSession).toEqual(workerSession);
     } finally {
       await app.close();
     }

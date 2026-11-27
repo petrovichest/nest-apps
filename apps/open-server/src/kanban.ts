@@ -43,7 +43,8 @@ export async function registerOpenKanban(
           : undefined;
       },
       available: () => engine.canAcceptWork(),
-      async launch(job) {
+      createdThreadId: (id) => engine.data.creations[`kanban:${id}`]?.threadId,
+      async launch(job, beforePublish) {
         const project = engine.data.projects.find(
           (candidate) => candidate.path === job.projectPath,
         );
@@ -61,6 +62,7 @@ export async function registerOpenKanban(
                 ? { model: engine.data.taskDefaults.classificationModel }
                 : {}),
             },
+            beforePublish,
           },
         );
         await engine.send(thread.id, {

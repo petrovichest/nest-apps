@@ -644,12 +644,13 @@ export class Engine extends EventEmitter {
     clientId: string,
     draft?: ThreadDraft,
     options?: { cwd?: string; title?: string; model?: string },
+    beforePublish?: (threadId: string) => void,
   ) {
     const key = `${projectId}:${clientId}`;
     const pending = this.creations.get(key);
     if (pending) return pending;
-    const task = this.createThreadOnce(projectId, clientId, draft, options).finally(() =>
-      this.creations.delete(key),
+    const task = this.createThreadOnce(projectId, clientId, draft, options, beforePublish).finally(
+      () => this.creations.delete(key),
     );
     this.creations.set(key, task);
     return task;
@@ -660,14 +661,17 @@ export class Engine extends EventEmitter {
     clientId: string,
     draft?: ThreadDraft,
     options?: { cwd?: string; title?: string; model?: string },
+    beforePublish?: (threadId: string) => void,
   ) {
     const key = `${projectId}:${clientId}`;
     const existing = this.data.creations[key];
-    if (existing)
+    if (existing) {
+      beforePublish?.(existing);
       return {
         thread: this.summary(existing),
         draft: this.thread(existing).detail.draft ?? null,
       };
+    }
     const project = projectId ? this.project(projectId) : null;
     if (!project && (!options?.cwd || draft?.files?.length))
       throw new AppError("Project not found");
@@ -730,6 +734,7 @@ export class Engine extends EventEmitter {
       relation: { kind: "session", sessionId: id },
       canAcceptDirectInput: true,
     };
+    beforePublish?.(id);
     this.data.threads[id] = {
       detail: {
         summary,

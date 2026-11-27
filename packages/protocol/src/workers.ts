@@ -79,6 +79,8 @@ export type WorkerProposal = {
 /** Identity and ancestry of a session launched through the worker registry. */
 export type WorkerSessionSummary = {
   name: string;
+  /** Started by another worker, even if its parent thread is unavailable. */
+  delegated?: true;
   parentThreadId?: string;
   workerId?: string;
   projectKey?: string | null;

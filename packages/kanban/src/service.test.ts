@@ -11,6 +11,7 @@ import {
   type KanbanBoard,
   type KanbanRun,
   type WorkerProcess,
+  type WorkerSessionSummary,
 } from "@codexnest/protocol";
 import { PUBLISH_PROMPT } from "./agent.js";
 import { atomicJson, type KanbanDocument } from "./store.js";
@@ -52,7 +53,11 @@ async function fixture(
   transcribe?: (audio: Buffer, contentType: string, durationMs: number) => Promise<string>,
   classifies?: () => boolean,
   architectSkill?: (cwd: string) => Promise<string | undefined>,
-  threads?: { ids: ReadonlyMap<string, string>; states: ReadonlyMap<string, string> },
+  threads?: {
+    ids?: ReadonlyMap<string, string>;
+    states?: ReadonlyMap<string, string>;
+    earlyStates?: ReadonlyMap<string, ObservedThread["state"]>;
+  },
 ) {
   const directory = await mkdtemp(join(tmpdir(), "kanban-service-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
@@ -70,6 +75,8 @@ async function fixture(
   const questions = new Map<string, string | null>();
   const answers = new Map<string, string>();
   const threadSummaries = new Map<string, ObservedThread>();
+  const createdThreads = new Map<string, string>();
+  const workerSessionsAtSend = new Map<string, WorkerSessionSummary | undefined>();
   // Sessions whose last reply says the work was pushed.
   const pushed = new Set<string>();
   // The operator's first message, by session.
@@ -86,6 +93,11 @@ async function fixture(
       ...(transcribe ? { transcribe } : {}),
       ...(classifies ? { classifies } : {}),
       dataDir: join(directory, "shared"),
+      onWorkerSessionChanged(threadId) {
+        const summary = threadSummaries.get(threadId);
+        if (summary && threads?.earlyStates?.has(threadId))
+          void service.notifyThread(threadId, summary.state, summary);
+      },
       adapter: {
         architectSkill,
         models: () => [
@@ -105,8 +117,10 @@ async function fixture(
         chooseModel: async () =>
           JSON.stringify({ model: provider + "-model", reasoningEffort: "high" }),
         ...(available ? { available } : {}),
-        launch: async (input) => {
-          const threadId = threads?.ids.get(input.id) ?? `${provider}-${input.id}`;
+        createdThreadId: (id) => createdThreads.get(id),
+        launch: async (input, beforePublish) => {
+          const threadId = threads?.ids?.get(input.id) ?? `${provider}-${input.id}`;
+          beforePublish?.(threadId);
           prompts.set(input.id, input.prompt);
           launches[provider].push(input.id);
           inputs[provider].push(input);
@@ -116,6 +130,14 @@ async function fixture(
             unread: false,
             unseen: false,
           });
+          createdThreads.set(input.id, threadId);
+          workerSessionsAtSend.set(input.id, service.workerSession(threadId));
+          const state = threads?.earlyStates?.get(threadId);
+          if (state) {
+            const summary = { ...completedThread(threadId, Date.now()), state };
+            threadSummaries.set(threadId, summary);
+            await service.notifyThread(threadId, state, summary);
+          }
           return {
             threadId,
             sessionUrl: `/threads/${provider}-${input.id}`,
@@ -129,7 +151,9 @@ async function fixture(
           interrupted[provider].push(threadId);
         },
         threadSummary: (threadId) => threadSummaries.get(threadId),
-        ...(threads ? { threadState: (id: string) => threads.states.get(id) ?? null } : {}),
+        ...(threads?.states
+          ? { threadState: (id: string) => threads.states!.get(id) ?? null }
+          : {}),
         readReply: async (threadId) => ({
           question: questions.get(threadId) ?? null,
           published: pushed.has(threadId),
@@ -255,6 +279,8 @@ async function fixture(
     questions,
     answers,
     threadSummaries,
+    createdThreads,
+    workerSessionsAtSend,
     pushed,
     requests,
     running,
@@ -341,14 +367,22 @@ it("routes simultaneous assignments of one project worker to their original sess
     name: "Reviewer",
     workerId: team[2]!.id,
     projectKey,
+    delegated: true,
     parentThreadId: a.threadId,
   });
   expect(claude.workerSession(reviewB.threadId!)).toEqual({
     name: "Reviewer",
     workerId: team[2]!.id,
     projectKey,
+    delegated: true,
     parentThreadId: b.threadId,
   });
+  for (const [service, review] of [
+    [codex, reviewA],
+    [claude, reviewB],
+  ] as const) {
+    expect(f.workerSessionsAtSend.get(review.id)).toEqual(service.workerSession(review.threadId!));
+  }
   expect(codex.workerSession(reviewB.threadId!)).toBeUndefined();
   const board = await codex.read(f.project);
   expect(board.cards.filter(({ id }) => id === ids[0])).toEqual([
@@ -434,6 +468,21 @@ it("routes simultaneous assignments of one project worker to their original sess
   );
   expect(f.resumes.claude).toEqual([b.threadId]);
   expect(f.prompts.get(ids[1])).toContain("Release diff missing");
+
+  const reviewSummary = codex.workerSession(reviewA.threadId!);
+  f.resume.mockImplementationOnce(async (_provider, job) => {
+    expect(codex.workerSession(job.threadId)).toEqual(reviewSummary);
+  });
+  await codex.action(f.project, {
+    action: "rework",
+    cardIds: [ids[0]],
+    comment: "Check the changes again",
+    clientActionId: randomUUID(),
+  });
+  const rework = await f.running("execute", ids[0], codex);
+  expect(rework).toMatchObject({ threadId: reviewA.threadId, workerId: team[2]!.id });
+  expect(rework.id).not.toBe(reviewA.id);
+  expect(codex.workerSession(rework.threadId!)).toEqual(reviewSummary);
 });
 
 it("delegates from an existing project worker session without a board", async () => {
@@ -530,8 +579,10 @@ it("delegates from an existing project worker session without a board", async ()
     name: reviewer.name,
     workerId: reviewer.id,
     projectKey,
+    delegated: true,
     parentThreadId: threadId,
   });
+  expect(f.workerSessionsAtSend.get(childId)).toEqual(service.workerSession(child!.threadId!));
   const childInput = f.inputs.codex.find(({ id }) => id === childId);
   expect(childInput).toMatchObject({ cwd: f.project, title: request.title, settings });
   expect(childInput?.prompt).toContain("Review the changes in this project.");
@@ -630,9 +681,9 @@ it.each(["after a retry", "after restarting"])(
       ),
     ).toMatchObject({ ok: true });
     const readChild = async () => (await service.processes.read())[child];
-    const reply = await until(readChild, (session) =>
-      Boolean(session?.threadId && service.workerSession(session.threadId)),
-    );
+    const reply = await until(readChild, (session) => Boolean(session?.threadId));
+    // Let this state-only test event arrive after launch acknowledgement.
+    await service.processes.exclusive(child, async () => undefined);
     const childThreadId = reply!.threadId!;
     f.answers.set(childThreadId, "Release verified.");
     f.resume.mockRejectedValueOnce(new Error("Queue temporarily unavailable"));
@@ -649,6 +700,7 @@ it.each(["after a retry", "after restarting"])(
         name: reviewer.name,
         workerId: reviewer.id,
         projectKey,
+        delegated: true,
         parentThreadId: threadId,
       });
     }
@@ -664,6 +716,113 @@ it.each(["after a retry", "after restarting"])(
     expect(f.resumes.codex).toEqual([threadId]);
   },
 );
+
+it.each(["completed", "needsAttention"] as const)(
+  "publishes delegated metadata before an immediate %s event",
+  async (state) => {
+    const child = randomUUID();
+    const childThreadId = `codex-${child}`;
+    const f = await fixture(undefined, undefined, undefined, undefined, {
+      earlyStates: new Map([[childThreadId, state]]),
+    });
+    const service = f.services.codex;
+    const projectKey = await service.workers.projectKey(f.project);
+    const worker = (name: string) =>
+      service.workers.create({ name, role: name, instructions: "", settings: {} }, projectKey);
+    const sender = await worker("Sender");
+    const reviewer = await worker("Reviewer");
+    const source = randomUUID();
+    const { threadId } = await service.startWorker(sender.id, f.project, source);
+    f.answers.set(childThreadId, "Reviewed before launch returned.");
+    expect(
+      await f.workerTool(
+        "codex",
+        source,
+        "worker_ask",
+        {
+          workerId: reviewer.id,
+          title: "Review",
+          description: "Check the release",
+          expectedResult: "A verdict",
+        },
+        child,
+      ),
+    ).toMatchObject({ ok: true });
+
+    const status = state === "completed" ? "completed" : "waiting";
+    const signal = state === "completed" ? "unseenCompletion" : "actionRequired";
+    await until(
+      async () => (await service.processes.read())[child],
+      (session) => session?.status === status && session.threadSignal === signal,
+    );
+    const summary = {
+      name: reviewer.name,
+      workerId: reviewer.id,
+      projectKey,
+      delegated: true,
+      parentThreadId: threadId,
+    };
+    expect(f.workerSessionsAtSend.get(child)).toEqual(summary);
+    expect(f.workerSessionsAtSend.get(source)).toBeUndefined();
+    expect(service.workerSession(threadId)).not.toHaveProperty("delegated");
+    if (state === "completed") {
+      await until(
+        async () => (await service.processes.read())[child],
+        (session) => session?.delivered === true,
+      );
+      expect(f.resume).toHaveBeenCalledExactlyOnceWith(
+        "codex",
+        expect.objectContaining({ threadId, id: child, workerResult: true }),
+      );
+      expect(f.prompts.get(child)).toContain('"result":"Reviewed before launch returned."');
+    }
+  },
+);
+
+it("recovers delegation from legacy process records before the owner resumes work", async () => {
+  const f = await fixture(() => false);
+  const service = f.services.codex;
+  await service.close();
+  const oldSession: WorkerSession = {
+    id: "old",
+    processId: "missing-parent",
+    parentId: "missing-parent",
+    workerId: "reviewer",
+    workerName: "Reviewer",
+    projectKey: "project",
+    projectPath: f.project,
+    projectName: "Project",
+    threadId: "old-thread",
+    provider: "codex",
+    kind: "question",
+    status: "completed",
+    title: "Review",
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  const pending = { ...oldSession, id: "pending", threadId: null, status: "queued" as const };
+  const direct = {
+    ...oldSession,
+    id: "direct",
+    processId: "direct",
+    parentId: null,
+    kind: "session" as const,
+    threadId: "direct-thread",
+  };
+  await service.processes.update((sessions) =>
+    Object.assign(sessions, { old: oldSession, pending, direct }),
+  );
+  f.createdThreads.set(pending.id, "pending-thread");
+
+  await service.initialize();
+  const identity = { name: "Reviewer", workerId: "reviewer", projectKey: "project" };
+  expect(service.workerSession("old-thread")).toEqual({ ...identity, delegated: true });
+  expect(service.workerSession("pending-thread")).toEqual({ ...identity, delegated: true });
+  expect(service.workerSession("direct-thread")).toEqual(identity);
+  expect(service.workerSession("ordinary-thread")).toBeUndefined();
+  expect(f.services.claude.workerSession("old-thread")).toBeUndefined();
+  expect(await service.processes.read()).toEqual({ old: oldSession, pending, direct });
+});
 
 it.each(["full", "mixed"] as const)("queues follow-ups (%s summaries)", async (mode) => {
   const f = await fixture(undefined, undefined, () => false);

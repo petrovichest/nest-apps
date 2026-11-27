@@ -1460,6 +1460,7 @@ export class UiService extends EventEmitter {
     clientCreationId: string,
     draft?: UpdateThreadDraftRequest,
     workspace?: { cwd: string; title: string; model?: string },
+    beforePublish?: (threadId: string) => void,
   ): Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> {
     assertUuid(clientCreationId, "clientCreationId");
     const fingerprint = hash({
@@ -1479,6 +1480,7 @@ export class UiService extends EventEmitter {
       fingerprint,
       draft,
       workspace,
+      beforePublish,
     ).finally(() => this.creations.delete(clientCreationId));
     this.creations.set(clientCreationId, { fingerprint, promise });
     return promise;
@@ -1489,12 +1491,14 @@ export class UiService extends EventEmitter {
     fingerprint: string,
     draft?: UpdateThreadDraftRequest,
     workspace?: { cwd: string; title: string; model?: string },
+    beforePublish?: (threadId: string) => void,
   ): Promise<{ thread: ThreadSummary; draft: ThreadDraft | null }> {
     const project = projectId ? this.project(projectId) : null,
       prior = this.store.data.creations[clientCreationId];
     if (prior) {
       if (prior.projectId !== projectId || (prior.fingerprint && prior.fingerprint !== fingerprint))
         throw new AppError("conflict", "Creation ID was reused with different input", 409);
+      beforePublish?.(prior.threadId);
       return { thread: this.summary(prior.threadId), draft: this.thread(prior.threadId).draft };
     }
     if (!project && (!workspace?.cwd || draft?.files?.length))
@@ -1544,6 +1548,7 @@ export class UiService extends EventEmitter {
             updatedAt: Date.now(),
             goalMode: false,
           };
+        beforePublish?.(id);
         data.threads[id] = thread;
         data.creations[clientCreationId] = { projectId, threadId: id, fingerprint };
       });
