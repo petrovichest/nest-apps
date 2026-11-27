@@ -21,7 +21,7 @@ export async function requestBrowserNotificationPermission(): Promise<BrowserNot
 export class BrowserNotificationTracker {
   private readonly threadStates = new Map<string, string>();
   private readonly threadTitles = new Map<string, string>();
-  private readonly parentThreadIds = new Set<string>();
+  private readonly notifiableThreadIds = new Set<string>();
   private readonly attentionThreads = new Map<string, string | null>();
   private serviceWorkerRegistration: Promise<ServiceWorkerRegistration> | null = null;
   private lastObservedAt = 0;
@@ -41,7 +41,7 @@ export class BrowserNotificationTracker {
     let newest = cutoff;
     this.threadStates.clear();
     this.threadTitles.clear();
-    this.parentThreadIds.clear();
+    this.notifiableThreadIds.clear();
     this.attentionThreads.clear();
     const missedThreads: AppSnapshot["threads"] = [];
     const missedAttention = new Map<string, AppSnapshot["attention"][number]>();
@@ -49,11 +49,11 @@ export class BrowserNotificationTracker {
     for (const thread of snapshot.threads) {
       this.threadStates.set(thread.id, notificationState(thread));
       this.threadTitles.set(thread.id, thread.title);
-      if (thread.relation.kind === "session") this.parentThreadIds.add(thread.id);
+      if (isNotifiableThread(thread)) this.notifiableThreadIds.add(thread.id);
       newest = Math.max(newest, thread.updatedAt);
       if (
         !firstConnection &&
-        this.parentThreadIds.has(thread.id) &&
+        this.notifiableThreadIds.has(thread.id) &&
         (thread.updatedAt > cutoff ||
           (thread.state === "needsAttention" && previousThreadStates.has(thread.id))) &&
         (thread.unread || thread.state === "needsAttention") &&
@@ -70,7 +70,7 @@ export class BrowserNotificationTracker {
       if (
         !firstConnection &&
         attention.threadId !== null &&
-        this.parentThreadIds.has(attention.threadId) &&
+        this.notifiableThreadIds.has(attention.threadId) &&
         attention.createdAt > cutoff &&
         previousThreadStates.get(attention.threadId) !== "needsAttention"
       ) {
@@ -99,10 +99,10 @@ export class BrowserNotificationTracker {
       const state = notificationState(event.thread);
       this.threadStates.set(event.thread.id, state);
       this.threadTitles.set(event.thread.id, event.thread.title);
-      if (event.thread.relation.kind === "session") {
-        this.parentThreadIds.add(event.thread.id);
+      if (isNotifiableThread(event.thread)) {
+        this.notifiableThreadIds.add(event.thread.id);
       } else {
-        this.parentThreadIds.delete(event.thread.id);
+        this.notifiableThreadIds.delete(event.thread.id);
       }
       if (previous !== state) {
         this.showThreadState(event.thread);
@@ -111,13 +111,13 @@ export class BrowserNotificationTracker {
     } else if (event.type === "thread.removed") {
       this.threadStates.delete(event.threadId);
       this.threadTitles.delete(event.threadId);
-      this.parentThreadIds.delete(event.threadId);
+      this.notifiableThreadIds.delete(event.threadId);
     } else if (event.type === "attention.upserted") {
       if (!this.attentionThreads.has(event.attention.id)) {
         this.attentionThreads.set(event.attention.id, event.attention.threadId);
         if (
           event.attention.threadId !== null &&
-          this.parentThreadIds.has(event.attention.threadId) &&
+          this.notifiableThreadIds.has(event.attention.threadId) &&
           this.threadStates.get(event.attention.threadId) !== "needsAttention"
         ) {
           this.show(
@@ -137,7 +137,7 @@ export class BrowserNotificationTracker {
   private showThreadState(thread: ThreadSummary): void {
     const { id: threadId, title: threadTitle } = thread;
     const state = notificationState(thread);
-    if (!this.parentThreadIds.has(threadId)) return;
+    if (!this.notifiableThreadIds.has(threadId)) return;
     if (state === "completed") {
       this.show(
         translate(this.language, "Задача завершена"),
@@ -215,6 +215,14 @@ export class BrowserNotificationTracker {
       window.dispatchEvent(new PopStateEvent("popstate"));
     };
   }
+}
+
+function isNotifiableThread(thread: ThreadSummary): boolean {
+  const worker = thread.workerSession;
+  // Older servers only expose the parent thread for delegated workers.
+  return (
+    thread.relation.kind === "session" && worker?.delegated !== true && !worker?.parentThreadId
+  );
 }
 
 function notificationState(thread: ThreadSummary): ThreadSummary["state"] {

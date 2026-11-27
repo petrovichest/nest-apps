@@ -8,6 +8,13 @@ import org.junit.Test;
 
 public class NotificationEventTrackerTest {
 
+    private static final String DIRECT_WORKER = "\"workerSession\":{\"name\":\"Reviewer\"}";
+    private static final List<String> WORKER_METADATA = List.of(
+        DIRECT_WORKER,
+        "\"workerSession\":{\"name\":\"Reviewer\",\"delegated\":true}",
+        "\"workerSession\":{\"name\":\"Reviewer\",\"parentThreadId\":\"delegated-parent\"}"
+    );
+
     @Test
     public void recoveryNeverNotifiesAnErrorButActualFailureStillDoes() throws Exception {
         String[] recoveryStates = {
@@ -53,7 +60,12 @@ public class NotificationEventTrackerTest {
     }
 
     private static String snapshotFrame(String thread) {
-        return "{\"type\":\"snapshot\",\"snapshot\":{\"threads\":[" + thread + "],\"attention\":[]}}";
+        return snapshotFrame(thread, "");
+    }
+
+    private static String snapshotFrame(String thread, String attention) {
+        return "{\"type\":\"snapshot\",\"snapshot\":{\"threads\":[" + thread
+            + "],\"attention\":[" + attention + "]}}";
     }
 
     private static String eventFrame(long sequence, String thread) {
@@ -273,6 +285,78 @@ public class NotificationEventTrackerTest {
         assertEquals(0, needsAttention.size());
         assertEquals(0, reconnect.size());
         assertEquals(310, tracker.lastObservedAt());
+    }
+
+    @Test
+    public void onlyDirectWorkersNotifyFromLiveEvents() throws Exception {
+        String attention = """
+            {"id":"attention-1","threadId":"one","createdAt":200}
+            """;
+        for (String worker : WORKER_METADATA) {
+            NotificationEventTracker tracker = new NotificationEventTracker(0);
+            tracker.accept(snapshotFrame(notificationThread("running", 100, worker)));
+            assertWorkerNotification(worker, CodexNotification.Kind.ATTENTION, tracker.accept(
+                """
+                {"type":"event","sequence":2,"event":{"type":"attention.upserted","attention":%s}}
+                """.formatted(attention)
+            ));
+            tracker.accept("""
+                {"type":"event","sequence":3,"event":{"type":"attention.removed","attentionId":"attention-1"}}
+                """);
+            assertWorkerNotification(worker, CodexNotification.Kind.COMPLETED, tracker.accept(
+                eventFrame(4, notificationThread("completed", 300, worker))
+            ));
+            assertWorkerNotification(worker, CodexNotification.Kind.FAILED, tracker.accept(
+                eventFrame(5, notificationThread("failed", 400, worker))
+            ));
+            assertWorkerNotification(worker, CodexNotification.Kind.ATTENTION, tracker.accept(
+                eventFrame(6, notificationThread("needsAttention", 500, worker))
+            ));
+            assertEquals(500, tracker.lastObservedAt());
+        }
+    }
+
+    @Test
+    public void onlyDirectWorkersNotifyFromRestoredSnapshots() throws Exception {
+        for (String worker : WORKER_METADATA) {
+            assertWorkerNotification(worker, CodexNotification.Kind.COMPLETED,
+                new NotificationEventTracker(100).accept(
+                    snapshotFrame(notificationThread("completed", 200, worker))
+                )
+            );
+            assertWorkerNotification(worker, CodexNotification.Kind.FAILED,
+                new NotificationEventTracker(100).accept(
+                    snapshotFrame(notificationThread("failed", 200, worker))
+                )
+            );
+            assertWorkerNotification(worker, CodexNotification.Kind.ATTENTION,
+                new NotificationEventTracker(100).accept(
+                    snapshotFrame(notificationThread("needsAttention", 200, worker))
+                )
+            );
+            NotificationEventTracker restored = new NotificationEventTracker(100);
+            assertWorkerNotification(worker, CodexNotification.Kind.ATTENTION, restored.accept(
+                snapshotFrame(
+                    notificationThread("running", 200, worker),
+                    "{\"id\":\"attention-1\",\"threadId\":\"one\",\"createdAt\":210}"
+                )
+            ));
+            assertEquals(210, restored.lastObservedAt());
+        }
+    }
+
+    private static void assertWorkerNotification(
+        String worker,
+        CodexNotification.Kind kind,
+        List<CodexNotification> notifications
+    ) {
+        boolean direct = DIRECT_WORKER.equals(worker);
+        assertEquals(kind + " for " + worker, direct ? 1 : 0, notifications.size());
+        if (direct) {
+            assertEquals(kind, notifications.get(0).kind);
+            assertEquals("one", notifications.get(0).threadId);
+            assertEquals("Task", notifications.get(0).threadTitle);
+        }
     }
 
     @Test

@@ -208,6 +208,64 @@ describe("BrowserNotificationTracker", () => {
     expect(notifications).toHaveLength(0);
   });
 
+  it("only notifies the direct worker for live outcomes and attention", () => {
+    const tracker = new BrowserNotificationTracker();
+    const workers = workerThreads();
+    tracker.acceptSnapshot(snapshot(workers));
+
+    for (const [index, worker] of workers.entries()) {
+      const updatedAt = 20 + index * 10;
+      const attention = attentionRequest(updatedAt, worker.id);
+      tracker.acceptEvent({ type: "attention.upserted", attention });
+      tracker.acceptEvent({ type: "attention.removed", attentionId: attention.id });
+
+      for (const [offset, state] of (
+        ["completed", "failed", "needsAttention"] as const
+      ).entries()) {
+        tracker.acceptEvent({
+          type: "thread.upserted",
+          thread: { ...worker, state, currentTurnId: null, updatedAt: updatedAt + offset + 1 },
+        });
+      }
+    }
+
+    expect(notifications.map(({ title, options }) => [title, options?.body, options?.tag])).toEqual(
+      [
+        ["Codex ждёт решения", "Прямой запуск", "attention:attention-20"],
+        ["Задача завершена", "Прямой запуск", "completed:direct-worker"],
+        ["Задача завершилась с ошибкой", "Прямой запуск", "failed:direct-worker"],
+        ["Codex ждёт решения", "Прямой запуск", "needs-attention:direct-worker"],
+      ],
+    );
+  });
+
+  it.each([
+    { state: "completed", tag: "completed:direct-worker" },
+    { state: "failed", tag: "failed:direct-worker" },
+    { state: "needsAttention", tag: "needs-attention:direct-worker" },
+    { state: "running", tag: "attention:attention-30" },
+  ] as const)("only notifies the direct worker on reconnect for $tag", ({ state, tag }) => {
+    const tracker = new BrowserNotificationTracker();
+    const workers = workerThreads();
+    tracker.acceptSnapshot(snapshot(workers));
+    tracker.acceptSnapshot(
+      snapshot(
+        workers.map((worker) => ({
+          ...worker,
+          state,
+          currentTurnId: state === "running" ? worker.currentTurnId : null,
+          unread: true,
+          updatedAt: 20,
+        })),
+        state === "running"
+          ? workers.map((worker, index) => attentionRequest(30 + index, worker.id))
+          : [],
+      ),
+    );
+
+    expect(notifications.map(({ options }) => options)).toEqual([{ body: "Прямой запуск", tag }]);
+  });
+
   it("does not display system notifications while the page is visible", () => {
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     const tracker = new BrowserNotificationTracker();
@@ -348,6 +406,30 @@ function childThread(state: ThreadSummary["state"], updatedAt: number): ThreadSu
       role: null,
     },
   };
+}
+
+function workerThreads(): ThreadSummary[] {
+  const running = thread("running", 10);
+  return [
+    {
+      ...running,
+      id: "direct-worker",
+      title: "Прямой запуск",
+      workerSession: { name: "Ревьюер" },
+    },
+    {
+      ...running,
+      id: "delegated-question",
+      title: "Вопрос коллеге без родителя у провайдера",
+      workerSession: { name: "Ревьюер", delegated: true },
+    },
+    {
+      ...running,
+      id: "nested-assignment",
+      title: "Вложенное поручение на старом сервере",
+      workerSession: { name: "Ревьюер", parentThreadId: "delegated-question" },
+    },
+  ];
 }
 
 function attentionRequest(createdAt: number, threadId: string | null = "thread"): AttentionRequest {
