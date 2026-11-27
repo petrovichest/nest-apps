@@ -325,6 +325,46 @@ describe("KanbanBoard", () => {
     expect(api.createKanbanCard).not.toHaveBeenCalled();
   });
 
+  it("filters projects locally and selects a unique match after IME composition", async () => {
+    show(null, undefined, [], [project, secondProject]);
+    await screen.findByRole("button", { name: "Task one" });
+    const trigger = screen.getByLabelText("Выбрать проект", { selector: "summary" });
+    fireEvent.click(trigger);
+    const search = screen.getByRole("searchbox", { name: "Найти проект" });
+    const options = within(screen.getByRole("group", { name: "Выбрать проект" }));
+    expect(search).toHaveFocus();
+    expect(options.getAllByRole("button").map((option) => option.textContent)).toEqual([
+      project.displayName,
+      secondProject.displayName,
+    ]);
+    fireEvent.change(search, { target: { value: "unknown" } });
+    expect(options.getByRole("status")).toHaveTextContent("Совпадений нет");
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(api.readKanban).toHaveBeenCalledExactlyOnceWith(project.id);
+
+    fireEvent.change(search, { target: { value: "  sECoND  " } });
+    expect(options.getAllByRole("button")).toEqual([
+      options.getByRole("button", { name: secondProject.displayName }),
+    ]);
+    for (const key of ["Home", "End", "ArrowLeft", "ArrowDown"]) {
+      expect(fireEvent.keyDown(search, { key })).toBe(true);
+      expect(search).toHaveFocus();
+    }
+    expect(fireEvent.keyDown(search, { key: "Enter", isComposing: true })).toBe(true);
+    expect(fireEvent.keyDown(search, { key: "Enter", keyCode: 229 })).toBe(true);
+    expect(api.readKanban).toHaveBeenCalledExactlyOnceWith(project.id);
+    fireEvent.keyDown(search, { key: "Escape", isComposing: true });
+    expect(search).toBeVisible();
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+    expect(search).toHaveValue("");
+    expect(search).toHaveFocus();
+    fireEvent.change(search, { target: { value: secondProject.displayName } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    await waitFor(() => expect(api.readKanban).toHaveBeenLastCalledWith(secondProject.id));
+  });
+
   it("blocks the picker during microphone permission and recording, then switches after cancel", async () => {
     const { getUserMedia, stream, stopTrack } = installRecorder();
     let allowMicrophone!: (value: typeof stream) => void;
@@ -339,6 +379,10 @@ describe("KanbanBoard", () => {
     await act(async () => allowMicrophone(stream));
     const stop = await screen.findByRole("button", { name: "Остановить запись и создать задачу" });
     expectProjectSwitchBlocked();
+    const search = screen.getByRole("searchbox", { name: "Найти проект" });
+    fireEvent.change(search, { target: { value: secondProject.displayName } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(api.readKanban).toHaveBeenCalledExactlyOnceWith(project.id);
     expect(stop).toBeEnabled();
     expect(stopTrack).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Отменить запись" }));

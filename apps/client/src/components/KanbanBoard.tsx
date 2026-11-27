@@ -59,6 +59,7 @@ import {
   PlusIcon,
   RefreshIcon,
   RestartIcon,
+  SearchIcon,
   SendIcon,
   StopIcon,
   TrashIcon,
@@ -1339,15 +1340,16 @@ function ProjectKanbanBoard({
     board?.stages.find((stage) => stage.id === mobileStageId)?.id ?? board?.stages[0]?.id;
   const categoryCount = board?.categories.length ?? 0;
   const projectName = project?.displayName ?? t("Проект не найден");
+  const canSwitchProject = projects.length > (project ? 1 : 0);
 
   return (
     <div className={`thread-workspace kanban-workspace${card || archiveOpen ? " has-panel" : ""}`}>
       <section className="conversation-pane kanban-pane">
         <WorkspaceHeader
           title={t("Доска задач")}
-          subtitle={projectName}
-          subtitleControl={
-            projects.length > (project ? 1 : 0) ? (
+          subtitle={canSwitchProject ? undefined : projectName}
+          titleAccessory={
+            canSwitchProject ? (
               <BoardProjectPicker
                 projects={projects}
                 projectId={projectId}
@@ -2261,51 +2263,165 @@ function BoardProjectPicker({
 }) {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const pickerRef = useRef<HTMLDetailsElement>(null);
+  const triggerRef = useRef<HTMLElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const valueId = useId();
   const noteId = `${valueId}-note`;
+  const resultsId = `${valueId}-projects`;
   const label = t("Выбрать проект");
+  const searchLabel = t("Найти проект");
+  const term = query.trim().toLowerCase();
+  const matches = term
+    ? projects.filter(({ displayName }) => displayName.toLowerCase().includes(term))
+    : projects;
+
+  useLayoutEffect(() => {
+    const picker = pickerRef.current;
+    const popover = popoverRef.current;
+    if (!open || !picker || !popover) return;
+    const viewport = window.visualViewport;
+    const fit = () => {
+      const anchorBottom = picker.getBoundingClientRect().bottom;
+      const viewportTop = viewport?.offsetTop ?? 0;
+      const top = Math.max(anchorBottom, viewportTop);
+      const bottom = viewportTop + (viewport?.height ?? window.innerHeight);
+      popover.style.setProperty("--kanban-project-menu-offset", `${top - anchorBottom}px`);
+      popover.style.setProperty("--kanban-project-menu-room", `${Math.max(0, bottom - top)}px`);
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    viewport?.addEventListener("resize", fit);
+    viewport?.addEventListener("scroll", fit);
+    return () => {
+      window.removeEventListener("resize", fit);
+      viewport?.removeEventListener("resize", fit);
+      viewport?.removeEventListener("scroll", fit);
+    };
+  }, [open]);
+
+  function openPicker(picker: HTMLDetailsElement) {
+    if (!picker.open) {
+      setQuery("");
+      picker.open = true;
+      if (resultsRef.current) resultsRef.current.scrollTop = 0;
+    }
+    // Focus in the opening gesture so touch browsers can show the keyboard.
+    searchRef.current?.focus({ preventScroll: true });
+  }
+
+  function choose(id: string) {
+    if (switchBlocked && id !== projectId) return;
+    const picker = pickerRef.current;
+    if (!picker?.open) return;
+    picker.open = false;
+    if (id === projectId) triggerRef.current?.focus({ preventScroll: true });
+    else void navigate(`/projects/${encodeURIComponent(id)}/kanban`);
+  }
+
+  function handleKey(event: ReactKeyboardEvent<HTMLDetailsElement>) {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.target === searchRef.current && event.key !== "Escape") {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const available = switchBlocked ? matches.filter(({ id }) => id === projectId) : matches;
+        if (available.length === 1) choose(available[0]!.id);
+      }
+      return;
+    }
+    if (
+      event.target === triggerRef.current &&
+      ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+    ) {
+      event.preventDefault();
+      openPicker(event.currentTarget);
+      return;
+    }
+    handleHeaderPickerKey(event);
+  }
   return (
     <details
+      ref={pickerRef}
       className="thread-action-menu kanban-project-picker"
       data-dismiss-on-outside-click
       onBlur={(event) => {
         if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
           event.currentTarget.open = false;
       }}
-      onKeyDown={handleHeaderPickerKey}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      onKeyDown={handleKey}
     >
-      <summary aria-label={label} aria-describedby={valueId} title={name}>
+      <summary
+        ref={triggerRef}
+        aria-label={label}
+        aria-describedby={valueId}
+        title={name}
+        onClick={(event) => {
+          event.preventDefault();
+          const picker = pickerRef.current;
+          if (!picker) return;
+          if (picker.open) {
+            picker.open = false;
+            triggerRef.current?.focus({ preventScroll: true });
+          } else openPicker(picker);
+        }}
+      >
         <span id={valueId}>{name}</span>
         <ChevronDownIcon aria-hidden="true" />
       </summary>
       <div
+        ref={popoverRef}
         className="action-menu-popover kanban-project-options"
         role="group"
         aria-label={label}
         aria-describedby={switchBlocked ? noteId : undefined}
       >
+        <div className="kanban-project-search">
+          <SearchIcon aria-hidden="true" />
+          <input
+            ref={searchRef}
+            type="search"
+            aria-label={searchLabel}
+            aria-controls={resultsId}
+            placeholder={searchLabel}
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.currentTarget.value);
+              if (resultsRef.current) resultsRef.current.scrollTop = 0;
+            }}
+          />
+        </div>
         {switchBlocked && (
           <div id={noteId} className="kanban-project-note kanban-muted">
             {t("Сначала отправьте или отмените запись.")}
           </div>
         )}
-        {projects.map(({ id, displayName }) => (
-          <button
-            key={id}
-            type="button"
-            aria-pressed={id === projectId}
-            disabled={switchBlocked && id !== projectId}
-            onClick={(event) => {
-              const menu = event.currentTarget.closest("details")!;
-              menu.open = false;
-              if (id === projectId) menu.querySelector("summary")?.focus();
-              else void navigate(`/projects/${encodeURIComponent(id)}/kanban`);
-            }}
-          >
-            <CheckIcon aria-hidden="true" />
-            <span>{displayName}</span>
-          </button>
-        ))}
+        <div ref={resultsRef} id={resultsId} className="kanban-project-results">
+          {matches.map(({ id, displayName }) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={id === projectId}
+              disabled={switchBlocked && id !== projectId}
+              onClick={() => choose(id)}
+            >
+              <CheckIcon aria-hidden="true" />
+              <span>{displayName}</span>
+            </button>
+          ))}
+          {matches.length === 0 && (
+            <div className="kanban-project-note kanban-muted" role="status">
+              {t("Совпадений нет")}
+            </div>
+          )}
+        </div>
       </div>
     </details>
   );

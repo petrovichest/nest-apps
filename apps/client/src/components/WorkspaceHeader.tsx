@@ -6,7 +6,7 @@ import { InfoIcon, PanelLeftIcon } from "./Icons";
 export function WorkspaceHeader({
   title,
   subtitle,
-  subtitleControl,
+  titleAccessory,
   leadingIcon,
   navigation,
   onOpenNavigation,
@@ -15,7 +15,7 @@ export function WorkspaceHeader({
 }: {
   title: string;
   subtitle?: ReactNode;
-  subtitleControl?: ReactNode;
+  titleAccessory?: ReactNode;
   leadingIcon?: ReactNode;
   navigation?: ReactNode;
   onOpenNavigation(): void;
@@ -42,10 +42,11 @@ export function WorkspaceHeader({
         )}
         <div>
           <h1 className={navigation ? "sr-only" : undefined}>{title}</h1>
-          {subtitleControl ?? (subtitle && <p>{subtitle}</p>)}
+          {subtitle && <p>{subtitle}</p>}
           {navigation}
         </div>
       </div>
+      {titleAccessory}
       <div className="workspace-actions">
         {actions}
         {onToggleInspector && (
