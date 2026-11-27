@@ -21,14 +21,14 @@ export function ArtifactViewer({
   onClose,
   onDownload,
   onLoad,
-  returnToArtifacts = false,
+  returnToInspector,
 }: {
   artifact: ArtifactDescriptor;
   opener: HTMLButtonElement | null;
   onClose(): void;
   onDownload(path: string): Promise<void>;
   onLoad(artifact: ArtifactDescriptor): Promise<ArtifactLoadResult>;
-  returnToArtifacts?: boolean;
+  returnToInspector?: "artifacts" | "overview";
 }) {
   const { t } = useI18n();
   const viewerRef = useRef<HTMLElement>(null);
@@ -41,6 +41,8 @@ export function ArtifactViewer({
   const [failed, setFailed] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadFailed, setDownloadFailed] = useState(false);
+  const returnToArtifacts = returnToInspector === "artifacts";
+  const restoreInspectorFocus = returnToInspector !== undefined;
 
   useEffect(() => {
     let current = true;
@@ -59,20 +61,30 @@ export function ArtifactViewer({
   }, [artifact, onLoad, revision]);
 
   useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    const workspace = viewer.closest(".thread-workspace");
     closeButtonRef.current?.focus();
     return () => {
       window.setTimeout(() => {
-        const target = opener?.isConnected
-          ? opener
-          : [
-              ...document.querySelectorAll<HTMLButtonElement>(
-                ".inspector-artifact-open[data-artifact-path]",
-              ),
-            ].find((button) => button.dataset.artifactPath === artifact.path);
+        if (viewer.isConnected) return;
+        if (opener?.isConnected) {
+          opener.focus();
+          return;
+        }
+        if (!restoreInspectorFocus || !workspace) return;
+        const row = [
+          ...workspace.querySelectorAll<HTMLButtonElement>(
+            ".inspector-artifact-open[data-artifact-path]",
+          ),
+        ].find((button) => button.dataset.artifactPath === artifact.path);
+        const target =
+          row ??
+          workspace.querySelector<HTMLButtonElement>('#session-overview-tab[aria-selected="true"]');
         target?.focus();
       }, 0);
     };
-  }, [artifact.path, opener, returnToArtifacts]);
+  }, [artifact.path, opener, restoreInspectorFocus]);
 
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -185,6 +197,7 @@ export function ArtifactViewer({
             ref={closeButtonRef}
             type="button"
             className="icon-button"
+            data-artifact-viewer-close
             aria-label={returnToArtifacts ? t("Вернуться к артефактам") : t("Закрыть предпросмотр")}
             onClick={onClose}
           >

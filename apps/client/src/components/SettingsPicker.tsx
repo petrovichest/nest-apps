@@ -251,6 +251,13 @@ function developerName(id: string): string {
   return openRouterDevelopers[id] ?? id;
 }
 
+function modelSettingsReturnFocus(opener: HTMLElement | null): HTMLElement | null {
+  const viewerClose = opener
+    ?.closest(".thread-workspace")
+    ?.querySelector<HTMLButtonElement>("[data-artifact-viewer-close]");
+  return viewerClose && window.matchMedia("(max-width: 820px)").matches ? viewerClose : opener;
+}
+
 function ModelSettingsPopup({
   models,
   model,
@@ -331,6 +338,7 @@ function ModelSettingsPopup({
       closeOnEscape
       initialFocusRef={closeButtonRef}
       returnFocusRef={openerRef}
+      resolveReturnFocus={modelSettingsReturnFocus}
       onClose={onClose}
     >
       <section className="model-settings-section">

@@ -54,6 +54,22 @@ describe("safeArtifactHtml", () => {
     expect(html).not.toContain("<form");
     expect(html).toContain("Content-Security-Policy");
   });
+
+  it("keeps fragment links in srcdoc without accepting other URLs", () => {
+    const doc = new DOMParser().parseFromString(
+      safeArtifactHtml(`
+        <a id="local" href=" #results " target="_blank">Results</a>
+        <a id="external" href="https://example.com/#results" target="_self">External</a>
+        <a id="other" href="about:srcdoc#results">Other</a>
+      `),
+      "text/html",
+    );
+
+    expect(doc.getElementById("local")?.getAttribute("href")).toBe("about:srcdoc#results");
+    expect(doc.getElementById("local")?.getAttribute("target")).toBe("_self");
+    expect(doc.getElementById("external")?.getAttribute("href")).toBeNull();
+    expect(doc.getElementById("other")?.getAttribute("href")).toBeNull();
+  });
 });
 
 describe("localDownloadPath", () => {

@@ -5181,7 +5181,13 @@ export function ThreadPage({
             onClose={closeArtifact}
             onDownload={downloadFile}
             onLoad={loadArtifact}
-            returnToArtifacts={artifactViewer.returnToInspector && supportsArtifacts}
+            returnToInspector={
+              artifactViewer.returnToInspector
+                ? supportsArtifacts
+                  ? "artifacts"
+                  : "overview"
+                : undefined
+            }
           />
         </>
       )}
