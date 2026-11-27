@@ -1,15 +1,4 @@
-import type {
-  ActivityItem,
-  TurnView,
-  WorkerProcessSession,
-  WorkerSessionSummary,
-} from "@codexnest/protocol";
-
-// The server branch adds these optional fields to the shared summary.
-export type WorkerProcessIdentity = WorkerSessionSummary & {
-  processId?: string;
-  sessionId?: string;
-};
+import type { ActivityItem, TurnView, WorkerProcessSession } from "@codexnest/protocol";
 
 export function workerProcessStatus(session: WorkerProcessSession) {
   switch (session.status) {

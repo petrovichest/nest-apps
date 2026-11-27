@@ -1,15 +1,19 @@
-import type { WorkerProcess, WorkerProcessSession } from "@codexnest/protocol";
+import type {
+  WorkerProcess,
+  WorkerProcessSession,
+  WorkerSessionSummary,
+} from "@codexnest/protocol";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiClientError } from "./api";
 import { useConnection } from "./connection";
-import { workerSessionActive, type WorkerProcessIdentity } from "./worker-handoff";
+import { workerSessionActive } from "./worker-handoff";
 
 const REFRESH_INTERVAL_MS = 4_000;
 const noChildren: readonly WorkerProcessSession[] = [];
 
 export function useWorkerChildren(
   threadId: string,
-  worker: WorkerProcessIdentity | undefined,
+  worker: WorkerSessionSummary | undefined,
   currentTurnId: string | null | undefined,
 ) {
   const {
