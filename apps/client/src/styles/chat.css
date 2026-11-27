@@ -1255,12 +1255,16 @@ a.native-subagent-row:hover strong {
   gap: var(--space-2-5);
 }
 
-.worker-handoff-event > svg {
+.worker-handoff-event > svg,
+.worker-handoff-reply-icon {
   width: 16px;
   height: 16px;
-  margin-top: var(--space-0-5);
   color: var(--muted-strong);
   transform: rotate(45deg);
+}
+
+.worker-handoff-event > svg {
+  margin-top: var(--space-0-5);
 }
 
 .worker-handoff-caption {
@@ -1307,6 +1311,23 @@ a.native-subagent-row:hover strong {
 
 .worker-handoff-card > summary::-webkit-details-marker {
   display: none;
+}
+
+.worker-handoff-reply {
+  --handoff-icon-column: 20px;
+}
+
+.worker-handoff-reply > summary {
+  grid-template-columns: var(--handoff-icon-column) minmax(0, 1fr) 16px;
+  grid-template-areas: "icon label arrow" "icon title arrow";
+}
+
+.worker-handoff-reply-icon {
+  grid-area: icon;
+}
+
+.worker-handoff-reply[data-status="failed"] .worker-handoff-reply-icon {
+  color: var(--status-failed);
 }
 
 .worker-handoff-avatar {
@@ -1378,6 +1399,18 @@ a.native-subagent-row:hover strong {
   gap: var(--space-2);
   margin-inline: calc(var(--handoff-inset) + var(--handoff-avatar) + var(--handoff-gap))
     var(--handoff-inset);
+}
+
+.worker-handoff-report {
+  margin-inline: calc(var(--handoff-inset) + var(--handoff-icon-column) + var(--handoff-gap))
+    var(--handoff-inset);
+}
+
+.worker-handoff-report > :last-child {
+  margin-block-end: 0;
+}
+
+:is(.worker-handoff-body, .worker-handoff-report) {
   padding-block: var(--space-3);
   border-top: 1px solid var(--line);
 }

@@ -1,9 +1,12 @@
 import type { WorkerProcessSession } from "@codexnest/protocol";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { application } from "../application";
 import { useI18n } from "../i18n";
 import { workerProcessStatus, type WorkerHandoffEvent } from "../worker-handoff";
 import { ArrowDownIcon, ArrowUpIcon, ChevronDownIcon, ChevronRightIcon } from "./Icons";
+
+type RenderReply = (text: string) => ReactNode;
 
 function WorkerStatus({ session }: { session: WorkerProcessSession }) {
   const { t } = useI18n();
@@ -40,26 +43,82 @@ function WorkerSessionLink({ session }: { session: WorkerProcessSession }) {
   ) : null;
 }
 
-export function WorkerHandoff({ event }: { event: WorkerHandoffEvent }) {
+function WorkerReply({
+  event,
+  renderReply,
+  onReplyLayoutChange,
+}: {
+  event: Extract<WorkerHandoffEvent, { type: "workerReply" }>;
+  renderReply: RenderReply;
+  onReplyLayoutChange: () => void;
+}) {
   const { t } = useI18n();
-  if (event.type === "workerReply") {
+  const [open, setOpen] = useState(false);
+  const hasReport = Boolean(event.text.trim());
+  const showingReport = hasReport && open;
+  const wasShowingReport = useRef(false);
+  useLayoutEffect(() => {
+    if (wasShowingReport.current === showingReport) return;
+    wasShowingReport.current = showingReport;
+    onReplyLayoutChange();
+  }, [showingReport, onReplyLayoutChange]);
+
+  const label = t(
+    event.status === "failed"
+      ? "Ошибка в ответе от «{{worker}}»"
+      : event.question
+        ? "Ответ от «{{worker}}»"
+        : "Результат от «{{worker}}»",
+    { worker: event.workerName },
+  );
+
+  if (!hasReport) {
     return (
       <div className="worker-handoff-event">
         <ArrowDownIcon aria-hidden="true" />
         <div>
-          <div className="worker-handoff-caption">
-            {t(
-              event.status === "failed"
-                ? "Ошибка в ответе от «{{worker}}»"
-                : event.question
-                  ? "Ответ от «{{worker}}»"
-                  : "Результат от «{{worker}}»",
-              { worker: event.workerName },
-            )}
-          </div>
-          <div className="worker-handoff-topic">{event.text || event.title}</div>
+          <div className="worker-handoff-caption">{label}</div>
+          <div className="worker-handoff-topic">{event.title}</div>
         </div>
       </div>
+    );
+  }
+
+  return (
+    <details
+      className="worker-handoff-card worker-handoff-reply"
+      data-status={event.status}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>
+        <ArrowDownIcon className="worker-handoff-reply-icon" aria-hidden="true" />
+        <span className="worker-handoff-label">{label}</span>
+        <span className="worker-handoff-title">{event.title}</span>
+        <ChevronDownIcon className="worker-handoff-chevron" aria-hidden="true" />
+      </summary>
+      {open && <div className="message worker-handoff-report">{renderReply(event.text)}</div>}
+    </details>
+  );
+}
+
+export function WorkerHandoff({
+  event,
+  renderReply,
+  onReplyLayoutChange,
+}: {
+  event: WorkerHandoffEvent;
+  renderReply: RenderReply;
+  onReplyLayoutChange: () => void;
+}) {
+  const { t } = useI18n();
+  if (event.type === "workerReply") {
+    return (
+      <WorkerReply
+        event={event}
+        renderReply={renderReply}
+        onReplyLayoutChange={onReplyLayoutChange}
+      />
     );
   }
 
