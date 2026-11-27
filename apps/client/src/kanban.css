@@ -179,13 +179,15 @@
   padding: var(--space-1) var(--space-2) var(--space-2);
 }
 
-.kanban-lane.collapsed {
-  flex: 0 0 44px;
-  min-width: 44px;
-}
+@media (min-width: 821px) {
+  .kanban-lane.collapsed {
+    flex: 0 0 44px;
+    min-width: 44px;
+  }
 
-.kanban-lane.collapsed > :not(.kanban-lane-strip) {
-  display: none;
+  .kanban-lane.collapsed > :not(.kanban-lane-strip) {
+    display: none;
+  }
 }
 
 .kanban-lane-strip {
@@ -1326,17 +1328,8 @@ textarea.kanban-edit-field {
   }
 
   .kanban-lane,
-  .kanban-lane.sized,
-  .kanban-lane.collapsed {
+  .kanban-lane.sized {
     min-width: 0;
-  }
-
-  .kanban-lane.collapsed > :not(.kanban-lane-strip, .kanban-lane-menu) {
-    display: revert;
-  }
-
-  .kanban-lane.collapsed > .kanban-lane-cards {
-    display: flex;
   }
 
   .kanban-lane-head {

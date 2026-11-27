@@ -906,7 +906,11 @@ const accessRoute = "/projects/project-nest/kanban";
 
 async function installKanbanAccessFixture(
   page: Page,
-  { theme = "light", language = "ru" }: { theme?: "light" | "dark"; language?: "ru" | "en" } = {},
+  {
+    theme = "light",
+    language = "ru",
+    manyCards = false,
+  }: { theme?: "light" | "dark"; language?: "ru" | "en"; manyCards?: boolean } = {},
 ) {
   const board = seedBoard();
   const ru = language === "ru";
@@ -918,6 +922,20 @@ async function installKanbanAccessFixture(
     archivedAt: board.updatedAt,
   };
   board.cards.push(archived);
+  if (manyCards) {
+    for (const stageId of ["todo", "ready"]) {
+      for (let index = 1; index <= 25; index++) {
+        const title = `${stageId} position ${index}`;
+        board.cards.push({
+          ...card,
+          stageId,
+          id: `${stageId}-${index}`,
+          title,
+          description: title,
+        });
+      }
+    }
+  }
   card.description = Array.from({ length: 60 }, (_, index) =>
     ru ? `Строка ${index + 1}. Проверено вручную.` : `Line ${index + 1}. Verified by hand.`,
   ).join("\n");
@@ -955,6 +973,7 @@ async function installKanbanAccessFixture(
       const cardId = new URL(route.request().url()).pathname.split("/").at(-1);
       const updated = board.cards.find((item) => item.id === cardId)!;
       if ("workerId" in patch) updated.workerId = patch.workerId ?? undefined;
+      if (patch.stageId) updated.stageId = patch.stageId;
       if (patch.archived === false) delete updated.archivedAt;
       board.revision++;
     }
@@ -1394,4 +1413,142 @@ test("Kanban worker search keeps its result above the reduced visual viewport", 
     await page.keyboard.press("Escape");
     await expect(surface).toBeHidden();
   }
+});
+
+async function refreshKanban(page: Page) {
+  const response = page.waitForResponse(
+    (response) => response.url().endsWith("/kanban") && response.request().method() === "GET",
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await (await response).finished();
+}
+
+for (const [theme, language] of [
+  ["light", "ru"],
+  ["dark", "en"],
+] as const) {
+  const ru = language === "ru";
+
+  test(`Kanban starts an explicitly selected mobile stage at the top, ${theme} ${language}`, async ({
+    page,
+  }, info) => {
+    await page.setViewportSize(PHONE_VIEWPORT);
+    await installKanbanAccessFixture(page, { theme, language, manyCards: true });
+    const scroller = page.locator(".kanban-scroll");
+    const todo = page.getByRole("tab", { name: ru ? /^К выполнению/ : /^To do/ });
+    const ready = page.getByRole("tab", { name: ru ? /^Готовые/ : /^Ready/ });
+    const scroll = () =>
+      scroller.evaluate((node) => {
+        node.scrollTop = 950;
+        return node.scrollTop;
+      });
+    const position = () => scroller.evaluate((node) => node.scrollTop);
+    expect(await scroll()).toBe(950);
+    await refreshKanban(page);
+    expect(await position()).toBe(950);
+
+    await ready.click();
+    await expect(ready).toHaveAttribute("aria-selected", "true");
+    await expect.poll(position).toBe(0);
+    await expect(
+      page.getByRole("link", { name: "Добавить поиск по категориям", exact: true }),
+    ).toBeInViewport();
+    await page.screenshot({ path: info.outputPath("stage-start.png") });
+
+    expect(await scroll()).toBe(950);
+    await ready.click();
+    expect(await position()).toBe(950);
+    await ready.press("ArrowRight");
+    await expect(
+      page.getByRole("tab", { name: ru ? /^Опубликовано/ : /^Published/ }),
+    ).toBeFocused();
+    expect(await position()).toBe(0);
+    await todo.click();
+    await expect(
+      page.getByRole("button", { name: "Сохранить настройки фильтров", exact: true }),
+    ).toBeInViewport();
+  });
+
+  test(`Kanban mobile stages retain bulk actions while desktop columns retain their layout, ${theme} ${language}`, async ({
+    page,
+  }, info) => {
+    await installKanbanAccessFixture(page, { theme, language, manyCards: true });
+    const todo = page.locator('.kanban-lane[data-stage-id="todo"]');
+    const ready = page.locator('.kanban-lane[data-stage-id="ready"]');
+    await todo.getByRole("separator").press("ArrowRight");
+    const width = (await todo.boundingBox())!.width;
+    for (const lane of [todo, ready]) {
+      await lane.locator(".kanban-lane-menu > summary").click();
+      await lane.getByRole("button", { name: ru ? "Свернуть" : "Collapse", exact: true }).click();
+      await expect(lane.locator(".kanban-lane-strip")).toBeVisible();
+      await expect(lane.locator(".kanban-lane-action")).toBeHidden();
+    }
+    await page.setViewportSize(PHONE_VIEWPORT);
+    await todo.getByRole("checkbox").nth(0).check();
+    await todo.getByRole("checkbox").nth(1).check();
+    await expect(
+      todo.getByRole("button", { name: ru ? "Запустить вместе (2)" : "Start together (2)" }),
+    ).toBeEnabled();
+    await page.screenshot({ path: info.outputPath("mobile-start-together.png") });
+    await page.getByRole("tab", { name: ru ? /^Готовые/ : /^Ready/ }).click();
+    await expect(
+      ready.getByRole("button", { name: ru ? "Опубликовать все" : "Publish all" }),
+    ).toBeEnabled();
+    await page.screenshot({ path: info.outputPath("mobile-publish-all.png") });
+
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await expect(ready.locator(".kanban-lane-strip")).toBeVisible();
+    await todo.locator(".kanban-lane-strip").click();
+    await expect.poll(async () => (await todo.boundingBox())?.width).toBe(width);
+  });
+}
+
+test("Kanban keeps action and refresh errors until their own retry", async ({ page }, info) => {
+  const { card } = await installKanbanAccessFixture(page);
+  const endpoint = "**/api/v1/projects/project-nest/kanban**";
+  const readError = "Тестовая ошибка загрузки";
+  const patchError = "Тестовая ошибка сохранения";
+  let failRead = false;
+  let failPatch = true;
+  await page.route(endpoint, (route) => {
+    const method = route.request().method();
+    const message =
+      method === "GET" && failRead
+        ? readError
+        : method === "PATCH" && failPatch
+          ? patchError
+          : null;
+    if (!message) return route.fallback();
+    return route.fulfill({
+      status: method === "GET" ? 503 : 409,
+      headers: { "access-control-allow-origin": "*" },
+      json: { error: { code: "fixture", message } },
+    });
+  });
+
+  await page.getByRole("button", { name: card.title, exact: true }).click();
+  const panel = page.getByRole("complementary", { name: card.title });
+  const stage = panel.getByRole("combobox", { name: "Стадия" });
+  await stage.selectOption("ready");
+  const actionAlert = panel.getByRole("alert").filter({ hasText: patchError });
+  await expect(actionAlert).toBeVisible();
+  await refreshKanban(page);
+  await expect(actionAlert).toBeVisible();
+
+  failRead = true;
+  await refreshKanban(page);
+  const banner = page.locator(".kanban-error");
+  await expect(banner).toContainText(readError);
+  await expect(actionAlert).toBeVisible();
+  failRead = false;
+  await banner.getByRole("button", { name: "Повторить" }).click();
+  await expect(banner).not.toContainText(readError);
+  await expect(actionAlert).toBeVisible();
+  await page.screenshot({ path: info.outputPath("edit-error-after-refresh.png") });
+
+  failPatch = false;
+  await stage.selectOption("ready");
+  await expect(actionAlert).toBeHidden();
+  await expect(stage).toHaveValue("ready");
+  await expect(banner).toBeHidden();
 });

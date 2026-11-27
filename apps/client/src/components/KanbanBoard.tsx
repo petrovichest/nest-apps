@@ -289,7 +289,11 @@ function ProjectKanbanBoard({
   const { api, state } = useConnection();
   const { t, language } = useI18n();
   const [board, setBoard] = useState<Board | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const error = actionError ?? loadError;
+  const refreshBoard = useRef<(() => Promise<void>) | null>(null);
+  const boardScroll = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [dialog, setDialog] = useState<"create" | "stage" | null>(null);
@@ -398,6 +402,7 @@ function ProjectKanbanBoard({
     let inFlight = false;
     setBoard(null);
     setError(null);
+    setLoadError(null);
     setLoading(true);
     setCardId(null);
     setCategory("");
@@ -418,16 +423,17 @@ function ProjectKanbanBoard({
         const next = await api.readKanban(projectId);
         if (alive.current && requestGeneration.current === generation) {
           receive(next);
-          setError(null);
+          setLoadError(null);
         }
       } catch (caught) {
         if (alive.current && requestGeneration.current === generation)
-          setError(displayError(caught));
+          setLoadError(displayError(caught));
       } finally {
         inFlight = false;
         if (alive.current && requestGeneration.current === generation) setLoading(false);
       }
     }
+    refreshBoard.current = hasProject ? refresh : null;
     if (hasProject) void refresh();
     else setLoading(false);
     // Only the visible board refreshes. Session views add no board requests.
@@ -441,6 +447,7 @@ function ProjectKanbanBoard({
     window.addEventListener("focus", onVisible);
     return () => {
       alive.current = false;
+      refreshBoard.current = null;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
@@ -1240,21 +1247,19 @@ function ProjectKanbanBoard({
         </header>
         {/* Column steps stay while the column has cards for them and only switch off,
             so ticking a task or starting a publication never moves the cards below. */}
-        {stage.role === "todo" &&
-          cards.filter((item) => selectable(board_, item)).length > 1 &&
-          !collapsed && (
-            <button
-              className="kanban-lane-action"
-              disabled={busy || together.length < 2}
-              onClick={() => void startTogether()}
-            >
-              <PlayIcon />
-              {together.length > 1
-                ? t("Запустить вместе ({{count}})", { count: together.length })
-                : t("Запустить вместе")}
-            </button>
-          )}
-        {stage.role === "ready" && cards.length > 0 && !collapsed && (
+        {stage.role === "todo" && cards.filter((item) => selectable(board_, item)).length > 1 && (
+          <button
+            className="kanban-lane-action"
+            disabled={busy || together.length < 2}
+            onClick={() => void startTogether()}
+          >
+            <PlayIcon />
+            {together.length > 1
+              ? t("Запустить вместе ({{count}})", { count: together.length })
+              : t("Запустить вместе")}
+          </button>
+        )}
+        {stage.role === "ready" && cards.length > 0 && (
           <button
             className="kanban-lane-action"
             disabled={busy || readyIds.length === 0}
@@ -1334,6 +1339,12 @@ function ProjectKanbanBoard({
 
   const activeStageId =
     board?.stages.find((stage) => stage.id === mobileStageId)?.id ?? board?.stages[0]?.id;
+  function selectMobileStage(id: string) {
+    if (id === activeStageId) return;
+    if (boardScroll.current) boardScroll.current.scrollTop = 0;
+    setMobileStageId(id);
+  }
+
   const categoryCount = board?.categories.length ?? 0;
   const projectName = project?.displayName ?? t("Проект не найден");
   const canSwitchProject = projects.length > (project ? 1 : 0);
@@ -1477,6 +1488,7 @@ function ProjectKanbanBoard({
           </div>
         ) : (
           <div
+            ref={boardScroll}
             className="kanban-scroll"
             onScroll={(event) =>
               event.currentTarget.toggleAttribute(
@@ -1488,7 +1500,10 @@ function ProjectKanbanBoard({
             <div className="kanban-board">
               {(error || headerRetry) && (
                 <div className="kanban-error" role="alert">
-                  <span>{headerRetry ? (error ?? t("Запись не отправлена.")) : error}</span>
+                  <div>
+                    {headerRetry ? (actionError ?? t("Запись не отправлена.")) : error}
+                    {!headerRetry && actionError && loadError && <div>{loadError}</div>}
+                  </div>
                   {headerRetry ? (
                     <span className="kanban-error-actions">
                       <button disabled={busy} onClick={() => void sendHeaderRecording(headerRetry)}>
@@ -1505,15 +1520,12 @@ function ProjectKanbanBoard({
                         {t("Удалить запись")}
                       </button>
                     </span>
-                  ) : (
-                    <button
-                      disabled={busy}
-                      onClick={() => void mutate(() => api.readKanban(projectId))}
-                    >
+                  ) : loadError ? (
+                    <button disabled={busy} onClick={() => void refreshBoard.current?.()}>
                       <RefreshIcon />
                       {t("Повторить")}
                     </button>
-                  )}
+                  ) : null}
                 </div>
               )}
               {board && (
@@ -1533,8 +1545,8 @@ function ProjectKanbanBoard({
                           ];
                         if (!next) return;
                         event.preventDefault();
-                        setMobileStageId(next.id);
                         document.getElementById(`kanban-tab-${next.id}`)?.focus();
+                        selectMobileStage(next.id);
                       }}
                     >
                       {board.stages.map((stage) => (
@@ -1545,7 +1557,7 @@ function ProjectKanbanBoard({
                           aria-selected={stage.id === activeStageId}
                           aria-controls={`kanban-lane-${stage.id}`}
                           tabIndex={stage.id === activeStageId ? 0 : -1}
-                          onClick={() => setMobileStageId(stage.id)}
+                          onClick={() => selectMobileStage(stage.id)}
                         >
                           {stageLabel(stage, t)}
                           <span className="kanban-lane-count">
