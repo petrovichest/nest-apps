@@ -1254,9 +1254,10 @@ for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT]) {
       const draftSearch = dialog.getByRole("searchbox", { name: labels.search });
       await expect(draftSearch).toBeFocused();
       await draftSearch.fill("no-result-357");
+      await dialog.getByRole("heading", { name: labels.add, exact: true }).click();
+      await expect(draftSearch).toBeHidden();
       const message = dialog.getByRole("textbox", { name: labels.message });
       await message.click();
-      await expect(draftSearch).toBeHidden();
       await expect(message).toBeFocused();
       await draftTrigger.press("Enter");
       await expect(draftSearch).toHaveValue("");
@@ -1658,9 +1659,10 @@ for (const viewport of [
     test("a single pointer action opens attachments or closes the form with the picker open", async ({
       page,
     }, info) => {
-      const { labels } = await installKanbanAccessFixture(page, {
+      const { labels, workers } = await installKanbanAccessFixture(page, {
         theme: touch ? "dark" : "light",
       });
+      workers.splice(0, workers.length - 3);
       const activate = (locator: Locator) => (touch ? locator.tap() : locator.click());
       await activate(page.getByRole("button", { name: labels.add, exact: true }));
       const dialog = page.getByRole("dialog", { name: labels.add, exact: true });
@@ -1685,7 +1687,9 @@ for (const viewport of [
         if (touch) await page.touchscreen.tap(point.x, point.y);
         else await page.mouse.click(point.x, point.y);
       };
-      await field.fill("Описание задачи");
+      // Keep the toolbar outside the short menu after filtering.
+      const draft = "Описание задачи\nСтрока 2\nСтрока 3\nСтрока 4\nСтрока 5";
+      await field.fill(draft);
       const closed = await geometry();
       await activate(trigger);
       await expect(choice).toBeAttached();
@@ -1707,47 +1711,60 @@ for (const viewport of [
       expect(await geometry()).toEqual(closed);
       await activate(trigger);
       await expect(choice).toBeAttached();
-      await expect(field).toHaveValue("Описание задачи");
+      await expect(field).toHaveValue(draft);
       await pointerAtCenter(close);
       await expect(dialog).toBeHidden();
     });
   });
 }
 
-test("Kanban keeps the short assignee list attached above the creation dialog", async ({
+test("Kanban anchors the short assignee menu to its trigger below or above", async ({
   page,
-}) => {
-  await page.setViewportSize({ width: 920, height: 1000 });
+}, info) => {
   const { labels, workers } = await installKanbanAccessFixture(page);
   workers.splice(3);
+  // Model a trigger near the bottom when the viewport gets shorter.
+  await page.addStyleTag({
+    content: "@media (max-height: 500px) { .kanban-task-dialog { margin-block-start: 240px; } }",
+  });
   await page.getByRole("button", { name: labels.add, exact: true }).click();
   const dialog = page.getByRole("dialog", { name: labels.add, exact: true });
   const menu = dialog.locator(".kanban-assignee-popover");
+  const trigger = dialog.locator(".kanban-assignee-trigger");
   const initialForm = await dialog.boundingBox();
-  const verticalGap = async () => {
-    const form = (await dialog.boundingBox())!;
+  const offsets = async (above: boolean) => {
+    const anchor = (await trigger.boundingBox())!;
     const list = (await menu.boundingBox())!;
-    return form.y - list.y - list.height;
+    const gap = above ? anchor.y - list.y - list.height : list.y - anchor.y - anchor.height;
+    return [list.x - anchor.x, list.width - anchor.width, gap].map(Math.round);
   };
 
-  await dialog.locator(".kanban-assignee-trigger").click();
+  await trigger.click();
   await expect(menu.getByRole("button")).toHaveCount(4);
-  await expect.poll(verticalGap).toBeCloseTo(8);
-  await menu.getByRole("searchbox").fill(workers[0]!.name + " ");
-  await expect(menu.getByRole("button")).toHaveCount(1);
-  await expect.poll(verticalGap).toBeCloseTo(8);
+  await expect.poll(() => offsets(false)).toEqual([0, 0, 8]);
   expect(await dialog.boundingBox()).toEqual(initialForm);
 
+  await page.setViewportSize({ width: 390, height: 500 });
+  await expect.poll(() => offsets(true)).toEqual([0, 0, 8]);
+  const resizedForm = await dialog.boundingBox();
+  await menu.getByRole("searchbox").fill(workers[0]!.name + " ");
+  await expect(menu.getByRole("button")).toHaveCount(1);
+  await expect.poll(() => offsets(true)).toEqual([0, 0, 8]);
+  expect(await dialog.boundingBox()).toEqual(resizedForm);
+  await page.screenshot({ path: info.outputPath("creation-assignee-above.png") });
+
   await page.setViewportSize(DESKTOP_VIEWPORT);
-  await expect
-    .poll(async () => {
-      const form = (await dialog.boundingBox())!;
-      const list = (await menu.boundingBox())!;
-      return list.x - form.x - form.width;
-    })
-    .toBeCloseTo(8);
-  await page.setViewportSize({ width: 920, height: 1000 });
-  await expect.poll(verticalGap).toBeCloseTo(8);
+  await expect.poll(() => offsets(false)).toEqual([0, 0, 8]);
+  expect(await dialog.boundingBox()).toEqual(initialForm);
+
+  const lastWorker = workers.at(-1)!.name;
+  const search = menu.getByRole("searchbox");
+  await search.fill(lastWorker);
+  await expect(menu.getByRole("button")).toHaveText([lastWorker]);
+  await search.press("Enter");
+  await expect(menu).toBeHidden();
+  await expect(trigger).toHaveText(lastWorker);
+  expect(await dialog.boundingBox()).toEqual(initialForm);
 });
 
 test("Kanban retries the unavailable catalogue and refreshes order on each opening", async ({

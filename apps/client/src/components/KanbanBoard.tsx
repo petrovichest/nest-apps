@@ -2344,36 +2344,32 @@ function fitAssigneePopover(picker: HTMLDetailsElement, popover: HTMLDivElement)
   const gutter = 8;
   const scrollArea = picker.closest(".kanban-panel-body");
   if (!scrollArea) {
-    const dialog = picker.closest(".kanban-task-dialog");
+    const anchor = picker.querySelector("summary")?.getBoundingClientRect();
     const origin = popover.offsetParent?.getBoundingClientRect();
-    const header = dialog?.querySelector(".dialog-header")?.getBoundingClientRect();
-    const toolbar = dialog?.querySelector(".composer-toolbar")?.getBoundingClientRect();
-    if (!dialog || !origin || !header) return;
+    if (!anchor || !origin) return;
 
-    const anchor = picker.getBoundingClientRect();
-    const form = dialog.getBoundingClientRect();
     const top = viewportTop + gutter;
-    const bottom = Math.min(toolbar?.top ?? viewportBottom, viewportBottom) - gutter;
-    const aboveEnd = form.top - gutter;
+    const bottom = viewportBottom - gutter;
+    const aboveEnd = Math.min(anchor.top - gutter, bottom);
     const belowStart = Math.max(anchor.bottom + gutter, top);
     const above = aboveEnd - top;
     const below = bottom - belowStart;
-    // Search and one touch row need room before placement next to the trigger is useful.
+    // Fit the search and one touch row before choosing an anchored direction.
     const minimumRoom = 120;
-    const sideStart = form.right + gutter;
-    const visualRight = (viewport?.offsetLeft ?? 0) + (viewport?.width ?? window.innerWidth);
-    const sideWidth = visualRight - sideStart - gutter;
-    const sideTop = Math.max(anchor.top, top);
-    const sideRoom = viewportBottom - sideTop - gutter;
-    const opensBeside = sideWidth >= 320 && sideRoom >= minimumRoom;
-    const opensAbove = !opensBeside && above >= minimumRoom && above > below;
-    const start = below >= minimumRoom ? belowStart : Math.max(top, header.bottom + gutter);
-    const room = opensBeside ? sideRoom : opensAbove ? above : bottom - start;
-    popover.style.left = `${(opensBeside ? sideStart : anchor.left) - origin.left}px`;
-    popover.style.width = `${opensBeside ? Math.min(anchor.width, sideWidth) : anchor.width}px`;
-    popover.style.top = opensAbove ? "auto" : `${(opensBeside ? sideTop : start) - origin.top}px`;
+    const alignToViewport = Math.max(above, below) < minimumRoom;
+    const opensAbove = below < minimumRoom && !alignToViewport;
+    const room = alignToViewport ? bottom - top : opensAbove ? above : below;
+    popover.style.left = `${anchor.left - origin.left}px`;
+    popover.style.width = `${anchor.width}px`;
+    popover.style.top = opensAbove
+      ? "auto"
+      : `${(alignToViewport ? top : belowStart) - origin.top}px`;
     popover.style.bottom = opensAbove ? `${origin.bottom - aboveEnd}px` : "auto";
     popover.style.setProperty("--kanban-assignee-room", `${Math.max(0, room)}px`);
+    popover.style.setProperty(
+      "--kanban-assignee-limit",
+      alignToViewport ? "min(328px, var(--kanban-assignee-room))" : "",
+    );
     return;
   }
 
