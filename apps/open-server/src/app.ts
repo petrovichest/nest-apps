@@ -183,7 +183,9 @@ export async function buildApp(engine: Engine) {
     credential: config.token,
     thread: (id) => {
       const thread = Object.hasOwn(engine.data.threads, id) ? engine.data.threads[id] : undefined;
-      return thread && !thread.workflow?.parentId ? engine.summary(id) : undefined;
+      return thread && !thread.parentThreadId && !thread.workflow?.parentId
+        ? engine.summary(id)
+        : undefined;
     },
     enqueue: (id, input, clientMessageId) => engine.send(id, { input, clientMessageId }, true),
   });

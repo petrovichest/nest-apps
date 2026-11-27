@@ -23,6 +23,31 @@ async function api() {
 }
 
 describe("common OpenNest features", () => {
+  it("admits a native session message and keeps native subagents outside direct messaging", async () => {
+    const { app, engine, thread, project, headers } = await api();
+    const recipient = (await engine.createThread(project.id, "recipient")).thread;
+    const child = (await engine.createThread(project.id, "native-child")).thread;
+    // Imported OpenCode subagents are represented as flat conversations with ancestry.
+    engine.thread(child.id).parentThreadId = thread.id;
+    const send = (sender: string, target: string, callID: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/internal/tools",
+        headers,
+        payload: {
+          sessionID: sender,
+          messageID: "msg_test",
+          callID,
+          tool: "send_message",
+          args: { session: target, message: "Уточни результат." },
+        },
+      });
+    const accepted = await send(thread.id, recipient.id, "accepted");
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect(accepted.json()).toMatchObject({ status: "queued" });
+    expect((await send(child.id, recipient.id, "rejected-sender")).statusCode).toBe(409);
+    expect((await send(thread.id, child.id, "rejected-recipient")).statusCode).toBe(409);
+  });
   it("keeps uploads private and owned by one session, delivers file context and real image blocks", async () => {
     const { app, engine, native, thread, project, headers } = await api();
     const upload = await app.inject({
