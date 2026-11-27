@@ -238,6 +238,52 @@ export class WorkerStore {
     ];
   }
 
+  async move(id: string, projectKey: string, targetIndex: number): Promise<WorkerProfile[]> {
+    const result = await this.update(
+      (data) => {
+        const entries = Object.entries(data);
+        const projectIndexes = entries.flatMap(([, { profile }], index) =>
+          profile.projectKey !== null &&
+          profile.projectKey === projectKey &&
+          profile.id !== WORKER_ARCHITECT_ID
+            ? [index]
+            : [],
+        );
+        if (
+          !Number.isInteger(targetIndex) ||
+          targetIndex < 0 ||
+          targetIndex >= projectIndexes.length
+        )
+          throw new KanbanError(
+            "validation_failed",
+            "targetIndex must be an integer within the project's worker list",
+            400,
+          );
+        const projectEntries = projectIndexes.map((position) => entries[position]!);
+        const index = projectEntries.findIndex(([key]) => key === id);
+        if (index < 0)
+          throw new KanbanError("worker_not_found", "Worker not found in this project", 404);
+        const moved = index !== targetIndex;
+        if (moved) {
+          const [entry] = projectEntries.splice(index, 1);
+          projectEntries.splice(targetIndex, 0, entry!);
+          projectIndexes.forEach((position, index) => {
+            entries[position] = projectEntries[index]!;
+          });
+          // JSON key order stores the worker order. Keep other entries in their original slots.
+          for (const [key] of entries) delete data[key];
+          for (const [key, worker] of entries) data[key] = worker;
+        }
+        return {
+          profiles: projectEntries.map(([, worker]) => worker.profile),
+          moved,
+        };
+      },
+      ({ moved }) => moved,
+    );
+    return result.profiles;
+  }
+
   async retiredIds(): Promise<Set<string>> {
     return new Set(
       Object.values(await this.read())

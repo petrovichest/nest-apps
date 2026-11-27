@@ -77,6 +77,30 @@ it("shares profiles across app owners and confines memory to the canonical proje
   }
 });
 
+it("serializes concurrent retries of a worker move and profile edits across stores", async ({
+  onTestFinished,
+}) => {
+  const directory = await mkdtemp(join(tmpdir(), "nest-worker-order-"));
+  onTestFinished(() => rm(directory, { recursive: true, force: true }));
+  const first = new WorkerStore(directory);
+  const second = new WorkerStore(directory);
+  const project = "project";
+  const fields = { role: "Review changes", instructions: "", settings: {} };
+  const lead = await first.create({ ...fields, name: "Lead" }, project);
+  const backend = await first.create({ ...fields, name: "Backend" }, project);
+  const frontend = await first.create({ ...fields, name: "Frontend" }, project);
+
+  const [firstMove, retry, edited] = await Promise.all([
+    first.move(lead.id, project, 2),
+    second.move(lead.id, project, 2),
+    second.edit(backend.id, project, backend.revision, { ...fields, name: "Backend lead" }),
+  ]);
+  for (const order of [firstMove, retry])
+    expect(order.map(({ id }) => id)).toStrictEqual([backend.id, frontend.id, lead.id]);
+  const restarted = new WorkerStore(directory);
+  expect((await restarted.list(project)).slice(1)).toStrictEqual([edited, frontend, lead]);
+});
+
 it("fits an atomic consolidation against the final budget and preserves existing scope and entry IDs", async () => {
   const directory = await mkdtemp(join(tmpdir(), "nest-worker-memory-"));
   try {

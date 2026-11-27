@@ -33,6 +33,7 @@ import { Link, matchPath, Navigate, useLocation, useNavigate, useParams } from "
 
 import {
   DEFAULT_SESSION_SETTINGS,
+  WORKER_ARCHITECT_ID,
   isWorkerMemorySave,
   canonicalServiceTier,
   modelServiceTier,
@@ -139,6 +140,7 @@ import {
   TerminalIcon,
   ToolIcon,
   TrashIcon,
+  WorkerIcon,
   XIcon,
 } from "./Icons";
 import { ImageViewer } from "./ImageViewer";
@@ -155,6 +157,7 @@ import {
   NewSessionInspector,
   SessionInspector,
 } from "./SessionInspector";
+import { WorkerAvatar } from "./WorkerAvatar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { ActionLabel } from "./ActionLabel";
 
@@ -3987,6 +3990,9 @@ export function ThreadPage({
     summary ??
     preparationRef.current.thread ??
     pendingThreadSummary(newSessionProject!, pendingSettings);
+  const workerSession = workspaceSummary.workerSession;
+  const architectSession = workerSession?.workerId === WORKER_ARCHITECT_ID;
+  const workerName = architectSession ? t("Архитектор") : workerSession?.name;
   const waitingForUserInput = Boolean(
     workspaceSummary.currentTurnId &&
     attention.some(
@@ -4091,6 +4097,22 @@ export function ThreadPage({
           }
           subtitle={
             <span className="workspace-subtitle-row">
+              {workerSession && (
+                <span className="workspace-worker">
+                  <span className="sr-only">{t("Сессия работника")}</span>
+                  {workerSession.workerId ? (
+                    <WorkerAvatar
+                      id={workerSession.workerId}
+                      projectKey={architectSession ? null : workerSession.projectKey}
+                    />
+                  ) : (
+                    <WorkerIcon />
+                  )}
+                  <span className="workspace-worker-name" title={workerName}>
+                    {workerName}
+                  </span>
+                </span>
+              )}
               <span className="workspace-context">
                 {project?.displayName ?? workspaceSummary.cwd}
               </span>

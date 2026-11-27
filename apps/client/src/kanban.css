@@ -797,6 +797,12 @@ textarea.kanban-edit-field {
   overscroll-behavior: contain;
 }
 
+/* A task dialog needs to reserve room for the opened picker. */
+.kanban-task-dialog .kanban-assignee > .kanban-assignee-options {
+  position: static;
+  margin-block-start: var(--space-2);
+}
+
 .kanban-assignee-options button {
   color: var(--color-ink-strong);
 }

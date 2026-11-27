@@ -9,6 +9,14 @@
   align-content: start;
 }
 
+.worker-catalogue {
+  width: 100%;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr);
+  padding-block-start: calc(70px + var(--app-safe-area-top));
+  scroll-padding-block: calc(70px + var(--app-safe-area-top)) var(--space-4);
+}
+
 .workers-workspace .workspace-actions:empty {
   display: none;
 }
@@ -835,34 +843,56 @@
   font-weight: 650;
 }
 
+.worker-catalogue h2 {
+  margin-block-end: var(--space-2);
+  font-weight: var(--weight-regular);
+  overflow-wrap: anywhere;
+}
+
 .workers-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(150px, calc((100% - 12px) / 2)), 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 196px), 1fr));
+  gap: var(--space-3);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.workers-grid li {
+.workers-grid > li {
   min-width: 0;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 .workers-grid .worker-tile {
-  aspect-ratio: 1;
   display: flex;
+  flex: 1;
   flex-direction: column;
-  justify-content: center;
   align-items: flex-start;
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-  padding: 30px 14px 14px;
+  gap: var(--space-1);
+  padding: var(--space-3);
   text-align: start;
-  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border: 0;
   border-radius: var(--radius-lg);
-  background: var(--surface-raised);
+  background: var(--color-floating);
+  box-shadow: var(--chat-inner-shadow);
+}
+
+/* Long-press starts a drag without selecting the launch button's contents. */
+.worker-tile[aria-keyshortcuts] {
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.workers-grid > [data-worker-dragging] > .worker-tile {
+  background: var(--sidebar-control-active);
+  cursor: grabbing;
+}
+
+.workers-grid > [data-worker-drop] > .worker-tile {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
 }
 
 .workers-grid .worker-tile[aria-busy="true"] {
@@ -870,35 +900,75 @@
   cursor: progress;
 }
 
-.worker-tile > :is(strong, span) {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  overflow-wrap: anywhere;
+.worker-avatar {
+  display: block;
+  flex: none;
+}
+
+.worker-tile .worker-avatar {
+  margin-block-end: var(--space-1);
 }
 
 .worker-tile strong {
-  -webkit-line-clamp: 2;
+  font-weight: var(--weight-regular);
+  overflow-wrap: anywhere;
 }
 
-.worker-tile span {
+.worker-tile-role {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
-  font-size: var(--text-small);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  color: var(--color-muted-strong);
   line-height: 1.4;
 }
 
-.workers-grid .worker-tile:is(:hover, :focus-visible),
-.workers-grid .worker-tile-settings:is(:hover, :focus-visible) {
-  background: color-mix(in srgb, currentColor 8%, var(--surface-raised));
+.worker-delegation {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  max-inline-size: 100%;
+  color: var(--color-muted-strong);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-regular);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.worker-delegation > svg {
+  flex: none;
+  inline-size: 1em;
+  block-size: 1lh;
+}
+
+.worker-tile .worker-delegation {
+  margin-block-start: auto;
+  padding-block-start: var(--space-1);
+}
+
+.workers-grid :is(.worker-tile, .worker-tile-settings):focus-visible {
+  box-shadow: var(--sidebar-surface-shadow);
+}
+
+@media (hover: hover) {
+  .workers-grid :is(.worker-tile, .worker-tile-settings):hover:not(:disabled) {
+    box-shadow: var(--sidebar-surface-shadow);
+  }
+}
+
+.workers-grid :is(.worker-tile, .worker-tile-settings):active:not(:disabled) {
+  background: var(--sidebar-control-active);
+  box-shadow: var(--sidebar-pressed-shadow);
 }
 
 .workers-grid .worker-tile-settings {
   position: absolute;
-  inset-block-start: 4px;
-  inset-inline-end: 4px;
+  inset-block-start: var(--space-2);
+  inset-inline-end: var(--space-2);
   width: 40px;
   height: 40px;
-  border-radius: var(--radius-md);
+  border-radius: 999px;
 }
 
 .worker-launch-error {
@@ -986,6 +1056,40 @@
   gap: 14px;
 }
 
+.worker-proposal-identity {
+  display: flex;
+  gap: var(--space-3);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.worker-proposal-identity .dialog-heading h2 {
+  font-weight: var(--weight-regular);
+}
+
+.worker-proposal-dialog.dialog-surface {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.worker-proposal-dialog > .worker-settings-fields {
+  min-height: 0;
+  overflow: auto;
+  margin: calc(-1 * var(--space-2));
+  padding: var(--space-2);
+}
+
+.worker-proposal-dialog > :is(.dialog-header, footer) {
+  flex-shrink: 0;
+}
+
+.worker-proposal-role {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-muted-strong);
+}
+
 .worker-settings-fields :is(input, textarea, select) {
   box-sizing: border-box;
   width: 100%;
@@ -997,7 +1101,7 @@
   gap: 12px;
 }
 
-.worker-settings-fields footer {
+:is(.worker-settings-fields, .worker-proposal-dialog) > footer {
   display: flex;
   justify-content: flex-end;
 }
@@ -1031,5 +1135,11 @@
 
   .workers-content.processes-content {
     padding-block-start: calc(70px + var(--app-safe-area-top));
+  }
+}
+
+@media (max-width: 600px) {
+  .workers-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 156px), 1fr));
   }
 }

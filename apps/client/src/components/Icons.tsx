@@ -53,6 +53,13 @@ export const NewTaskIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const WorkerIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="4" y="7" width="16" height="12" rx="4" />
+    <path d="M12 4v3M9 12v2m6-2v2M2 12v2m20-2v2" />
+  </Icon>
+);
+
 export const FolderIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M3 8a3 3 0 0 1 3-3h3.1c.8 0 1.5.3 2.1.9l1.2 1.2c.6.6 1.3.9 2.1.9H18a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z" />

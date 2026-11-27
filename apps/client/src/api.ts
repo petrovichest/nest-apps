@@ -563,6 +563,13 @@ export class ApiClient {
     return this.request("/api/v1/workers/catalog", { method: "POST", body: { projectIds } });
   }
 
+  moveWorker(projectId: string, workerId: string, targetIndex: number): Promise<WorkerProfile[]> {
+    return this.request(`/api/v1/workers/order?projectId=${encodeURIComponent(projectId)}`, {
+      method: "PATCH",
+      body: { workerId, targetIndex },
+    });
+  }
+
   workerProcesses(processId?: string): Promise<WorkerProcess[]> {
     return this.request(
       `/api/v1/workers/processes${processId ? `?processId=${encodeURIComponent(processId)}` : ""}`,

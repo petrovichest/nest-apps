@@ -332,13 +332,21 @@ it("routes simultaneous assignments of one project worker to their original sess
   expect(reviewA.threadId).not.toBe(reviewB.threadId);
   expect(reviewA.workerId).toBe(team[2]!.id);
   expect(reviewB.workerId).toBe(team[2]!.id);
-  expect(codex.workerSession(a.threadId!)).toEqual({ name: "Import lead" });
+  expect(codex.workerSession(a.threadId!)).toEqual({
+    name: "Import lead",
+    workerId: team[0]!.id,
+    projectKey,
+  });
   expect(codex.workerSession(reviewA.threadId!)).toEqual({
     name: "Reviewer",
+    workerId: team[2]!.id,
+    projectKey,
     parentThreadId: a.threadId,
   });
   expect(claude.workerSession(reviewB.threadId!)).toEqual({
     name: "Reviewer",
+    workerId: team[2]!.id,
+    projectKey,
     parentThreadId: b.threadId,
   });
   expect(codex.workerSession(reviewB.threadId!)).toBeUndefined();
@@ -463,6 +471,8 @@ it("delegates from an existing project worker session without a board", async ()
   });
   const source = randomUUID();
   const { threadId } = await service.startWorker(lead.id, f.project, source);
+  const summary = { name: lead.name, workerId: lead.id, projectKey };
+  expect(service.workerSession(threadId)).toEqual(summary);
   expect(f.prompts.get(source)).not.toContain("worker_delegate");
   const request = {
     workerId: reviewer.id,
@@ -476,10 +486,12 @@ it("delegates from an existing project worker session without a board", async ()
   });
   const coordinator = await service.workers.edit(lead.id, projectKey, lead.revision, {
     ...lead,
+    name: "Renamed lead",
     coordinates: true,
   });
   await service.close();
   await service.initialize();
+  expect(service.workerSession(threadId)).toEqual(summary);
   const listed = await f.workerTool("codex", source, "worker_list", {});
   expect(listed).toMatchObject({
     ok: true,
@@ -514,6 +526,12 @@ it("delegates from an existing project worker session without a board", async ()
     workerId: reviewer.id,
   });
   expect(child?.threadId).not.toBe(threadId);
+  expect(service.workerSession(child!.threadId!)).toEqual({
+    name: reviewer.name,
+    workerId: reviewer.id,
+    projectKey,
+    parentThreadId: threadId,
+  });
   const childInput = f.inputs.codex.find(({ id }) => id === childId);
   expect(childInput).toMatchObject({ cwd: f.project, title: request.title, settings });
   expect(childInput?.prompt).toContain("Review the changes in this project.");
@@ -612,7 +630,9 @@ it.each(["after a retry", "after restarting"])(
       ),
     ).toMatchObject({ ok: true });
     const readChild = async () => (await service.processes.read())[child];
-    const reply = await until(readChild, (session) => Boolean(session?.threadId));
+    const reply = await until(readChild, (session) =>
+      Boolean(session?.threadId && service.workerSession(session.threadId)),
+    );
     const childThreadId = reply!.threadId!;
     f.answers.set(childThreadId, "Release verified.");
     f.resume.mockRejectedValueOnce(new Error("Queue temporarily unavailable"));
@@ -625,6 +645,12 @@ it.each(["after a retry", "after restarting"])(
     if (recovery === "after restarting") {
       await service.close();
       await service.initialize();
+      expect(service.workerSession(childThreadId)).toEqual({
+        name: reviewer.name,
+        workerId: reviewer.id,
+        projectKey,
+        parentThreadId: threadId,
+      });
     }
     await until(readChild, (session) => session?.delivered === true);
     expect(f.resume.mock.calls).toEqual([
@@ -1017,7 +1043,7 @@ it("creates a worker with explicit approval, groups its tasks and shares its pro
     status: 400,
   });
   expect(f.inputs.codex).toEqual([]);
-  await f.services.codex.startWorker("architect", f.project, architect);
+  const { threadId } = await f.services.codex.startWorker("architect", f.project, architect);
   expect(f.inputs.codex[0]?.cwd).toBe(f.project);
   expect(f.inputs.codex[0]?.prompt).toContain(JSON.stringify({ id: "project", path: f.project }));
   expect(f.inputs.codex[0]?.settings).toBeUndefined();
@@ -1032,6 +1058,11 @@ it("creates a worker with explicit approval, groups its tasks and shares its pro
   expect(proposal).toMatchObject({
     projectId: "project",
     projectKey: await f.services.codex.workers.projectKey(f.project),
+  });
+  expect(f.services.codex.workerSession(threadId)).toEqual({
+    name: "Архитектор работников",
+    workerId: "architect",
+    projectKey: proposal.projectKey,
   });
   expect(await f.services.codex.workers.list(proposal.projectKey)).toHaveLength(1);
   const profile = await f.services.codex.workers.approveProposal(proposal);
@@ -1268,6 +1299,7 @@ describe("shared provider board service", () => {
         clientActionId: randomUUID(),
       });
       const executor = await f.running("execute", id, service);
+      expect(service.workerSession(executor.threadId!)).toBeUndefined();
       const launch = f.inputs[provider].find((input) => input.id === executor.id)!;
       expect(launch).toMatchObject({
         cwd: f.project,

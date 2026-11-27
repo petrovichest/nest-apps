@@ -60,6 +60,26 @@ export function registerWorkerRoutes(
   app.get<Pick<WorkerRequest, "Querystring">>(root, (request, reply) =>
     handle(reply, async () => workers.list(await projectKey(request.query.projectId))),
   );
+  app.patch<{
+    Querystring: WorkerRequest["Querystring"];
+    Body: { workerId?: unknown; targetIndex?: unknown };
+  }>(`${root}/order`, (request, reply) =>
+    handle(reply, async () => {
+      const { projectId } = request.query;
+      if (typeof projectId !== "string" || !projectId.trim())
+        throw new KanbanError(
+          "worker_project_required",
+          "Choose a project to reorder workers",
+          400,
+        );
+      const { workerId, targetIndex } = request.body ?? {};
+      if (typeof workerId !== "string" || !workerId.trim())
+        throw new KanbanError("invalid_worker", "workerId is required", 400);
+      if (typeof targetIndex !== "number")
+        throw new KanbanError("validation_failed", "targetIndex must be a number", 400);
+      return workers.move(workerId, await workers.projectKey(projectPath(projectId)), targetIndex);
+    }),
+  );
   app.post<{ Body: { projectIds: string[] } }>(
     `${root}/catalog`,
     {
@@ -115,15 +135,7 @@ export function registerWorkerRoutes(
     return proposal;
   };
   app.get<{ Params: { id: string } }>(`${root}/proposals/:id`, (request, reply) =>
-    handle(reply, async () => {
-      const proposal = await checkedProposal(request.params.id);
-      return proposal.coordinates === undefined
-        ? proposal
-        : {
-            ...proposal,
-            role: `${proposal.role} · ${proposal.coordinates ? "Может поручать задачи" : "Поручения отключены"}`,
-          };
-    }),
+    handle(reply, () => checkedProposal(request.params.id)),
   );
   app.post<{ Params: { id: string } }>(`${root}/proposals/:id/approve`, (request, reply) =>
     handle(reply, async () => workers.approveProposal(await checkedProposal(request.params.id))),

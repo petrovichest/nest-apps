@@ -76,10 +76,15 @@
   .thread-workspace:not(.pending-fork-workspace) {
     --chat-title-line: calc(var(--text-ui) * 1.25);
     --chat-project-line: calc(var(--text-small) * 1.428571);
+    --chat-subtitle-line: var(--chat-project-line);
     --chat-header-height: max(
       44px,
-      calc(max(var(--chat-title-line), var(--chat-project-line)) + 12px)
+      calc(max(var(--chat-title-line), var(--chat-subtitle-line)) + 12px)
     );
+  }
+
+  .thread-workspace:not(.pending-fork-workspace):has(.workspace-worker) {
+    --chat-subtitle-line: max(var(--chat-project-line), calc(var(--text-caption) * 1.25));
   }
 
   .thread-workspace:not(.pending-fork-workspace) .workspace-header {
@@ -92,7 +97,7 @@
   }
 
   .thread-workspace:not(.pending-fork-workspace) .workspace-title p {
-    line-height: var(--chat-project-line);
+    line-height: var(--chat-subtitle-line);
   }
 
   .sidebar-controls {
@@ -257,7 +262,7 @@
       --chat-project-line: calc(var(--text-small) * 1.285714);
       --chat-header-height: max(
         44px,
-        calc(var(--chat-title-line) + var(--chat-project-line) + 6px)
+        calc(var(--chat-title-line) + var(--chat-subtitle-line) + 6px)
       );
     }
   }

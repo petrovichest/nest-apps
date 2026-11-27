@@ -87,6 +87,32 @@
   font-size: var(--text-small);
 }
 
+.workspace-worker {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-ink);
+  font-size: var(--text-caption);
+}
+
+.workspace-worker > svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.workspace-worker-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 520px) {
+  .workspace-worker + .workspace-context {
+    display: none;
+  }
+}
+
 /* One state rule per control family: role selectors below only supply colors.
    The neutral reset also beats legacy hover rules on touch and disabled controls. */
 .thread-workspace
@@ -1785,6 +1811,10 @@ a.native-subagent-row:hover strong {
   .thread-workspace:not(.pending-fork-workspace) .workspace-title > div:last-child {
     width: max-content;
     max-width: 100%;
+  }
+
+  .workspace-worker + .workspace-context {
+    margin-inline-start: var(--space-1);
   }
 
   .thread-workspace:not(.pending-fork-workspace) .workspace-actions {

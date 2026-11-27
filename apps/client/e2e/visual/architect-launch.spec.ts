@@ -53,7 +53,7 @@ for (const [viewport, theme] of [
       state: "queued",
       currentTurnId: null,
       queuedMessageCount: 1,
-      workerSession: { name: worker.name },
+      workerSession: { name: worker.name, workerId: worker.id, projectKey: "canonical-project" },
       settings: { ...thread.settings, collaborationMode: "default" },
       relation: { kind: "session", sessionId: "session-architect" },
     });
@@ -142,17 +142,18 @@ for (const [viewport, theme] of [
       });
     });
 
-    await page.goto(`/new?projectId=${projectId}`);
-    const catalogue = page.getByRole("link", { name: "Работники", exact: true });
-    if (viewport === PHONE_VIEWPORT)
-      await page.getByRole("button", { name: "Открыть список задач" }).click();
-    await catalogue.click();
-    await page.locator(".worker-tile").filter({ hasText: "Архитектор" }).click();
+    await page.goto("/workers");
+    const tile = page.locator(".worker-tile").filter({ hasText: "Архитектор" });
+    const cataloguePortrait = await tile.locator(".worker-avatar").innerHTML();
+    await tile.click();
     await page
       .getByRole("dialog", { name: "Запустить «Архитектор»" })
       .getByRole("button", { name: /^CodexNest/ })
       .click();
     await expect(page).toHaveURL(new RegExp(`/threads/${thread.id}$`));
+    const headerIdentity = page.locator(".workspace-header .workspace-worker");
+    await expect(headerIdentity.getByText("Архитектор", { exact: true })).toBeVisible();
+    expect(await headerIdentity.locator(".worker-avatar").innerHTML()).toBe(cataloguePortrait);
 
     const launchRow = page.locator(`[data-message-id="${clientId}"]`);
     const noStartupText = async () => {

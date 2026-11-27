@@ -80,6 +80,8 @@ export type WorkerProposal = {
 export type WorkerSessionSummary = {
   name: string;
   parentThreadId?: string;
+  workerId?: string;
+  projectKey?: string | null;
 };
 
 export type WorkerProcessSession = {

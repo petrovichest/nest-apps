@@ -67,6 +67,7 @@ import {
   SlidersIcon,
   TeamIcon,
   TrashIcon,
+  WorkerIcon,
 } from "./components/Icons";
 import { NewSession } from "./components/NewSession";
 import { PendingForkPage } from "./components/PendingForkPage";
@@ -2446,6 +2447,19 @@ function ThreadLink({
       ? thread.relation.nickname?.trim() || thread.relation.role?.trim() || null
       : null;
   const displayTitle = agentName ? `${agentName} · ${title}` : title;
+  const threadTitle = (
+    <span className="thread-link-title" ref={titleRef}>
+      <span className="thread-link-title-text">{displayTitle}</span>
+    </span>
+  );
+  const titleWithWorkerIcon = thread.workerSession ? (
+    <span className="thread-link-worker-title">
+      <WorkerIcon width={14} height={14} />
+      {threadTitle}
+    </span>
+  ) : (
+    threadTitle
+  );
   const workerName = thread.workerSession?.name;
   const leadRole = t("Тимлид");
   const caption = teamLead && workerName && workerName !== title ? workerName : secondaryLabel;
@@ -2650,6 +2664,7 @@ function ThreadLink({
           className={({ isActive }) =>
             `thread-link${teamLead ? " team-lead" : ""}${hasActions ? " has-actions" : ""}${canFinish ? " finishable" : ""}${isActive ? " active" : ""}`
           }
+          aria-description={thread.workerSession ? t("Сессия работника") : undefined}
           end
           state={{ focusComposer: true }}
           to={target}
@@ -2669,9 +2684,7 @@ function ThreadLink({
         >
           {caption || teamLead ? (
             <span className="thread-link-copy">
-              <span className="thread-link-title" ref={titleRef}>
-                <span className="thread-link-title-text">{displayTitle}</span>
-              </span>
+              {titleWithWorkerIcon}
               {teamLead && " "}
               <span className="thread-link-project" title={teamLead ? caption : undefined}>
                 {teamLead && !captionNamesLead && leadRole}
@@ -2680,9 +2693,7 @@ function ThreadLink({
               </span>
             </span>
           ) : (
-            <span className="thread-link-title" ref={titleRef}>
-              <span className="thread-link-title-text">{displayTitle}</span>
-            </span>
+            titleWithWorkerIcon
           )}
           {(thread.pinned || hasBrowserStatus) && (
             <span className="thread-markers">

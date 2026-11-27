@@ -398,6 +398,18 @@
   box-shadow: var(--sidebar-surface-shadow);
 }
 
+.thread-link-worker-title {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.thread-link-worker-title > svg {
+  flex: none;
+}
+
 .thread-link-title {
   flex: 1;
   min-width: 0;
@@ -448,7 +460,8 @@
   line-height: 1.2;
 }
 
-.thread-link-copy .thread-link-title {
+.thread-link-copy > .thread-link-title,
+.thread-link-copy > .thread-link-worker-title {
   flex: 0 1 auto;
 }
 

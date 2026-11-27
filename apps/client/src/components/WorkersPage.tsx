@@ -9,18 +9,32 @@ import {
   type WorkerProfile,
   type WorkerProposal,
 } from "@codexnest/protocol";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { application } from "../application";
 import { useConnection } from "../connection";
 import { localizeKnownServerText, useI18n } from "../i18n";
+import { ActionLabel } from "./ActionLabel";
 import { Dialog } from "./Dialog";
-import { ChevronRightIcon, FolderIcon, SearchIcon, SlidersIcon, XIcon } from "./Icons";
+import { CheckIcon, ChevronRightIcon, FolderIcon, SearchIcon, SlidersIcon, XIcon } from "./Icons";
+import { WorkerAvatar } from "./WorkerAvatar";
+import { useWorkerGridDrag } from "./useWorkerGridDrag";
 import { WorkersHeader } from "./WorkersHeader";
 import "./workers.css";
 
 type Selection = { worker: WorkerProfile; projectId?: string };
 type WorkerLaunch = { workerId: string; projectId: string };
+
+function WorkerDelegation({ id, coordinates }: { id: string; coordinates: boolean | undefined }) {
+  const { t } = useI18n();
+  const canDelegate = id !== WORKER_ARCHITECT_ID && coordinates === true;
+  return (
+    <span className="worker-delegation">
+      {canDelegate ? <CheckIcon /> : <XIcon />}
+      <span>{canDelegate ? t("Может поручать задачи") : t("Не может поручать задачи")}</span>
+    </span>
+  );
+}
 
 export function WorkersPage({
   projects,
@@ -45,6 +59,13 @@ export function WorkersPage({
   const mounted = useRef(false);
   const [error, setError] = useState<string>();
   const [refresh, setRefresh] = useState(0);
+  const [orderStatus, setOrderStatus] = useState<{
+    projectId: string;
+    status: "saving" | "saved" | "error";
+  }>();
+  const drag = useWorkerGridDrag();
+  const orderPending = useRef(false);
+  const moveFocus = useRef<HTMLButtonElement>(null);
   const projectIds = JSON.stringify(projects.map(({ id }) => id));
 
   useEffect(() => {
@@ -71,6 +92,47 @@ export function WorkersPage({
       mounted.current = false;
     };
   }, []);
+
+  useLayoutEffect(() => {
+    const button = moveFocus.current;
+    moveFocus.current = null;
+    if (!button?.isConnected) return;
+    button.focus({ preventScroll: true });
+    button.scrollIntoView({ block: "nearest" });
+  }, [catalogue, orderStatus]);
+
+  async function moveWorker(
+    projectId: string,
+    workerId: string,
+    targetIndex: number,
+    button: HTMLButtonElement,
+  ) {
+    if (orderPending.current) return;
+    orderPending.current = true;
+    setOrderStatus({ projectId, status: "saving" });
+    try {
+      const workers = await api.moveWorker(projectId, workerId, targetIndex);
+      if (!mounted.current) return;
+      if (document.activeElement === button) moveFocus.current = button;
+      setCatalogue(
+        (current) =>
+          current && {
+            ...current,
+            projects: current.projects.map((group) =>
+              group.projectId === projectId ? { projectId, workers } : group,
+            ),
+          },
+      );
+      setOrderStatus({ projectId, status: "saved" });
+    } catch {
+      if (mounted.current) {
+        if (document.activeElement === button) moveFocus.current = button;
+        setOrderStatus({ projectId, status: "error" });
+      }
+    } finally {
+      orderPending.current = false;
+    }
+  }
 
   async function start(workerId: string, projectId: string) {
     if (launchPending.current) return;
@@ -102,18 +164,30 @@ export function WorkersPage({
 
   function group(name: string | undefined, workers: WorkerProfile[], projectId?: string) {
     if (!workers.length) return null;
+    const canReorder = projectId !== undefined && workers.length > 1;
+    const preview = drag.preview?.grid.dataset.projectId === projectId ? drag.preview : undefined;
+    const orderError = orderStatus?.projectId === projectId && orderStatus?.status === "error";
     return (
       <section key={projectId ?? "common"}>
         {name && <h2>{name}</h2>}
-        <ul className="workers-grid">
-          {workers.map((worker) => {
+        <ul className="workers-grid" data-project-id={projectId}>
+          {workers.map((worker, index) => {
+            const architect = worker.id === WORKER_ARCHITECT_ID;
+            const name = architect ? t("Архитектор") : worker.name;
+            const role = architect ? t("Помогает создать работника") : worker.role;
             const starting = opening?.workerId === worker.id && opening.projectId === projectId;
             const failed =
               launchError?.workerId === worker.id && launchError.projectId === projectId
                 ? launchError.message
                 : undefined;
             return (
-              <li key={worker.id}>
+              <li
+                key={worker.id}
+                data-worker-dragging={preview?.from === index || undefined}
+                data-worker-drop={
+                  (preview?.target === index && preview.from !== index) || undefined
+                }
+              >
                 <button
                   type="button"
                   className="worker-tile"
@@ -121,6 +195,77 @@ export function WorkersPage({
                   aria-disabled={starting || undefined}
                   aria-describedby={failed ? launchErrorId : undefined}
                   disabled={Boolean(opening) && !starting}
+                  aria-keyshortcuts={
+                    canReorder
+                      ? "Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown"
+                      : undefined
+                  }
+                  onPointerDown={
+                    canReorder
+                      ? (event) => {
+                          if (!orderPending.current && !launchPending.current) {
+                            drag.begin(
+                              event,
+                              index,
+                              (target, button) =>
+                                void moveWorker(projectId, worker.id, target, button),
+                            );
+                          }
+                        }
+                      : undefined
+                  }
+                  onKeyDown={
+                    canReorder
+                      ? (event) => {
+                          if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+                            return;
+                          const direction = {
+                            ArrowLeft: -1,
+                            ArrowRight: 1,
+                            ArrowUp: -1,
+                            ArrowDown: 1,
+                          }[event.key];
+                          if (direction === undefined) return;
+                          event.preventDefault();
+                          if (
+                            event.repeat ||
+                            drag.preview ||
+                            orderPending.current ||
+                            launchPending.current
+                          )
+                            return;
+                          const button = event.currentTarget;
+                          let target = index + direction;
+                          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                            const cards = Array.from(
+                              button.closest(".workers-grid")!.children,
+                            ) as HTMLElement[];
+                            const top = cards[index]!.offsetTop;
+                            const adjacent =
+                              direction < 0
+                                ? cards.slice(0, index).reverse()
+                                : cards.slice(index + 1);
+                            const nextRow = adjacent.find((card) => card.offsetTop !== top);
+                            if (!nextRow) return;
+                            const column = cards[index]!.offsetLeft;
+                            const destination = adjacent
+                              .filter((card) => card.offsetTop === nextRow.offsetTop)
+                              .reduce(
+                                (nearest, card) =>
+                                  Math.abs(card.offsetLeft - column) <
+                                  Math.abs(nearest.offsetLeft - column)
+                                    ? card
+                                    : nearest,
+                                nextRow,
+                              );
+                            target = cards.indexOf(destination);
+                          }
+                          if (target >= 0 && target < workers.length) {
+                            void moveWorker(projectId, worker.id, target, button);
+                          }
+                        }
+                      : undefined
+                  }
                   onClick={() => {
                     if (launchPending.current) return;
                     if (projectId) {
@@ -131,27 +276,23 @@ export function WorkersPage({
                     }
                   }}
                 >
-                  <strong>
-                    {worker.id === WORKER_ARCHITECT_ID ? t("Архитектор") : worker.name}
-                  </strong>
+                  <WorkerAvatar id={worker.id} projectKey={worker.projectKey} />
+                  <strong title={name}>{name}</strong>
                   {starting ? (
-                    <span className="working-text" role="status">
+                    <span className="worker-tile-role working-text" role="status">
                       {t("Открываем диалог…")}
                     </span>
                   ) : (
-                    <span>
-                      {worker.id === WORKER_ARCHITECT_ID
-                        ? t("Помогает создать работника")
-                        : worker.role}
+                    <span className="worker-tile-role" title={role}>
+                      {role}
                     </span>
                   )}
+                  <WorkerDelegation id={worker.id} coordinates={worker.coordinates} />
                 </button>
                 <button
                   type="button"
                   className="icon-button worker-tile-settings"
-                  aria-label={t("Настройки работника «{{name}}»", {
-                    name: worker.id === WORKER_ARCHITECT_ID ? t("Архитектор") : worker.name,
-                  })}
+                  aria-label={t("Настройки работника «{{name}}»", { name })}
                   title={t("Настройки")}
                   disabled={Boolean(opening)}
                   onClick={() => setSelection({ worker, projectId })}
@@ -167,6 +308,11 @@ export function WorkersPage({
             );
           })}
         </ul>
+        {orderError && (
+          <p className="worker-launch-error" role="alert">
+            {t("Не удалось сохранить порядок. Повторите перемещение.")}
+          </p>
+        )}
       </section>
     );
   }
@@ -175,7 +321,11 @@ export function WorkersPage({
     <div className="thread-workspace kanban-workspace workers-workspace">
       <section className="conversation-pane kanban-pane">
         <WorkersHeader onOpenNavigation={onOpenNavigation} />
-        <div className="workers-content">
+        <div
+          className="workers-content worker-catalogue"
+          onPointerDownCapture={drag.resetClick}
+          onClickCapture={drag.captureClick}
+        >
           {error && (
             <div role="alert">
               <p>{localizeKnownServerText(language, error)}</p>
@@ -196,6 +346,9 @@ export function WorkersPage({
             const name = projects.find(({ id }) => id === projectId)?.displayName;
             return name ? group(name, workers, projectId) : null;
           })}
+          <span className="sr-only" role="status">
+            {orderStatus?.status === "saved" ? t("Порядок сохранён") : ""}
+          </span>
         </div>
       </section>
       {launch && (
@@ -406,16 +559,25 @@ function WorkerProposalDialog({
       setBusy(false);
     }
   }
+  const workerId = proposal?.target?.id ?? proposal?.id;
   return (
     <Dialog
       titleId={titleId}
-      className="chat-dialog worker-settings-dialog"
+      className="chat-dialog worker-settings-dialog worker-proposal-dialog"
       closeOnBackdrop={!busy}
       closeOnEscape={!busy}
       onClose={onClose}
     >
       <div className="dialog-header">
-        <h2 id={titleId}>{proposal?.name ?? t("Профиль работника")}</h2>
+        <div className="worker-proposal-identity">
+          {workerId && <WorkerAvatar id={workerId} projectKey={proposal?.projectKey} />}
+          <div className="dialog-heading">
+            <h2 id={titleId}>{proposal?.name ?? t("Профиль работника")}</h2>
+            {workerId && proposal && (!proposal.target || proposal.coordinates !== undefined) && (
+              <WorkerDelegation id={workerId} coordinates={proposal.coordinates} />
+            )}
+          </div>
+        </div>
         <button className="icon-button" aria-label={t("Закрыть")} disabled={busy} onClick={onClose}>
           <XIcon />
         </button>
@@ -425,7 +587,7 @@ function WorkerProposalDialog({
         {!proposal && !error && <p role="status">{t("Загружаем настройки…")}</p>}
         {proposal && (
           <>
-            <p>
+            <p className="worker-proposal-role">
               {proposal.role}
               {proposal.projectName && ` · ${proposal.projectName}`}
             </p>
@@ -444,14 +606,25 @@ function WorkerProposalDialog({
                 proposal.settings.model}{" "}
               · {proposal.settings.reasoningEffort ?? t("По умолчанию")}
             </p>
-            <footer>
-              <button className="primary" disabled={busy} onClick={() => void approve()}>
-                {proposal.target ? t("Применить изменения") : t("Создать работника")}
-              </button>
-            </footer>
           </>
         )}
       </div>
+      {proposal && (
+        <footer>
+          <button
+            className="primary"
+            aria-busy={busy || undefined}
+            disabled={busy}
+            onClick={() => void approve()}
+          >
+            <ActionLabel
+              idle={proposal.target ? t("Применить изменения") : t("Создать работника")}
+              busy={proposal.target ? t("Сохраняем…") : t("Создаём…")}
+              pending={busy}
+            />
+          </button>
+        </footer>
+      )}
     </Dialog>
   );
 }

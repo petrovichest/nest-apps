@@ -1083,6 +1083,8 @@ export class KanbanService {
     const previous = this.workerThreads.get(session.threadId);
     if (
       previous?.id === session.id &&
+      previous.workerId === session.workerId &&
+      previous.projectKey === session.projectKey &&
       previous.summary.name === session.workerName &&
       previous.summary.parentThreadId === (parentThreadId ?? undefined)
     )
@@ -1095,6 +1097,8 @@ export class KanbanService {
       projectPath: session.projectPath,
       summary: {
         name: session.workerName,
+        workerId: session.workerId,
+        projectKey: session.projectKey,
         ...(parentThreadId ? { parentThreadId } : {}),
       },
     });

@@ -322,7 +322,7 @@ for (const width of [390, 1440]) {
         name: /^(Начать запись|Запись с микрофона не поддерживается на этом устройстве|Этот браузер не поддерживает запись WebM или MP4)$/,
       });
       await expect(recorder).toBeVisible();
-      await expect(create.getByRole("combobox", { name: "Исполнитель" })).toBeVisible();
+      await expect(create.locator(".kanban-assignee-trigger")).toHaveAccessibleName("Исполнитель");
       await create.getByRole("button", { name: "Добавить изображения" }).click();
       // The attachment menu opens upwards and stays inside the dialog.
       const attachments = create.getByRole("dialog", { name: "Вложения" });

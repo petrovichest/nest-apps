@@ -7,6 +7,7 @@ import type {
   ThreadDetail,
   ThreadSummary,
   TranscriptionConfigResponse,
+  UiLanguage,
 } from "@codexnest/protocol";
 
 export const DESKTOP_VIEWPORT = { width: 1440, height: 1000 } as const;
@@ -451,6 +452,7 @@ export type VisualFixtureOptions = {
   finishableSidebar?: boolean;
   forkEstimate?: "ready" | "loading" | "failure" | "unavailable";
   forkLineage?: boolean;
+  language?: UiLanguage;
   notificationPrompt?: boolean;
   preserveLocalStorage?: boolean;
   reducedMotion?: "reduce" | "no-preference";
@@ -466,6 +468,7 @@ export async function installVisualFixture(
     finishableSidebar = false,
     forkEstimate = "ready",
     forkLineage = false,
+    language,
     notificationPrompt = false,
     preserveLocalStorage = false,
     reducedMotion = "reduce",
@@ -475,7 +478,8 @@ export async function installVisualFixture(
     voiceFailure = false,
   }: VisualFixtureOptions,
 ): Promise<void> {
-  const baseSnapshot = suppliedSnapshot ?? (forkLineage ? forkSnapshot : snapshot);
+  const sourceSnapshot = suppliedSnapshot ?? (forkLineage ? forkSnapshot : snapshot);
+  const baseSnapshot = language ? { ...sourceSnapshot, uiLanguage: language } : sourceSnapshot;
   const sidebarSnapshot: AppSnapshot = finishableSidebar
     ? {
         ...baseSnapshot,
@@ -508,6 +512,7 @@ export async function installVisualFixture(
       connected: seedConnection,
       disableMotion,
       fixedNow,
+      language: seededLanguage,
       notificationPrompt: showPrompt,
       preserveLocalStorage: keepLocalStorage,
       serverOrigin,
@@ -519,7 +524,7 @@ export async function installVisualFixture(
       try {
         if (!keepLocalStorage) localStorage.clear();
         localStorage.setItem("codexnest.theme", seededTheme);
-        localStorage.setItem("codexnest.uiLanguage", "ru");
+        localStorage.setItem("codexnest.uiLanguage", seededLanguage);
         localStorage.setItem("codexnest.layoutDefaultsVersion", "1");
         localStorage.setItem("codexnest.sidebarSide", seededSidebarSide);
         localStorage.setItem("codexnest.projectListDirection", "top-down");
@@ -565,6 +570,7 @@ export async function installVisualFixture(
       connected,
       disableMotion: reducedMotion === "reduce",
       fixedNow: FIXED_NOW,
+      language: language ?? "ru",
       notificationPrompt,
       preserveLocalStorage,
       serverOrigin: SERVER_ORIGIN,
