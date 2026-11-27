@@ -8,6 +8,7 @@ import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist";
 import { type ArtifactDescriptor, formatArtifactSize, safeArtifactHtml } from "../artifacts";
 import { useI18n } from "../i18n";
 import { allowMarkdownElement } from "../markdown-elements";
+import { keepTabFocus } from "./Dialog";
 import { ArrowDownIcon, ArrowLeftIcon, FileIcon, RefreshIcon, XIcon } from "./Icons";
 
 export type ArtifactLoadResult =
@@ -30,6 +31,7 @@ export function ArtifactViewer({
   returnToArtifacts?: boolean;
 }) {
   const { t } = useI18n();
+  const viewerRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<ArtifactLoadResult | null>(null);
@@ -71,6 +73,16 @@ export function ArtifactViewer({
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      if (
+        event.key === "Tab" &&
+        !event.defaultPrevented &&
+        viewerRef.current &&
+        window.matchMedia("(max-width: 820px)").matches &&
+        !(event.target instanceof Element && event.target.closest('[aria-modal="true"]'))
+      ) {
+        keepTabFocus(event, viewerRef.current);
+        return;
+      }
       if (event.key !== "Escape") return;
       event.preventDefault();
       onClose();
@@ -108,6 +120,7 @@ export function ArtifactViewer({
 
   return (
     <aside
+      ref={viewerRef}
       className="artifact-viewer"
       aria-label={t("Просмотр файла {{name}}", { name: artifact.fileName })}
       data-android-back-layer
