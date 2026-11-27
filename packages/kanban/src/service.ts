@@ -1103,6 +1103,7 @@ export class KanbanService {
       previous.workerId === session.workerId &&
       previous.projectKey === session.projectKey &&
       previous.attached === attached &&
+      previous.summary.processId === session.processId &&
       previous.summary.name === session.workerName &&
       previous.summary.delegated === delegated &&
       previous.summary.parentThreadId === (parentThreadId ?? undefined)
@@ -1119,6 +1120,8 @@ export class KanbanService {
         name: session.workerName,
         workerId: session.workerId,
         projectKey: session.projectKey,
+        processId: session.processId,
+        sessionId: session.id,
         ...(delegated ? { delegated } : {}),
         ...(parentThreadId ? { parentThreadId } : {}),
       },

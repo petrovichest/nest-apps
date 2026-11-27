@@ -362,11 +362,15 @@ it("routes simultaneous assignments of one project worker to their original sess
     name: "Import lead",
     workerId: team[0]!.id,
     projectKey,
+    processId: a.id,
+    sessionId: a.id,
   });
   expect(codex.workerSession(reviewA.threadId!)).toEqual({
     name: "Reviewer",
     workerId: team[2]!.id,
     projectKey,
+    processId: a.id,
+    sessionId: reviewA.id,
     delegated: true,
     parentThreadId: a.threadId,
   });
@@ -374,6 +378,8 @@ it("routes simultaneous assignments of one project worker to their original sess
     name: "Reviewer",
     workerId: team[2]!.id,
     projectKey,
+    processId: b.id,
+    sessionId: reviewB.id,
     delegated: true,
     parentThreadId: b.threadId,
   });
@@ -520,7 +526,13 @@ it("delegates from an existing project worker session without a board", async ()
   });
   const source = randomUUID();
   const { threadId } = await service.startWorker(lead.id, f.project, source);
-  const summary = { name: lead.name, workerId: lead.id, projectKey };
+  const summary = {
+    name: lead.name,
+    workerId: lead.id,
+    projectKey,
+    processId: source,
+    sessionId: source,
+  };
   expect(service.workerSession(threadId)).toEqual(summary);
   expect(f.prompts.get(source)).not.toContain("worker_delegate");
   const request = {
@@ -579,6 +591,8 @@ it("delegates from an existing project worker session without a board", async ()
     name: reviewer.name,
     workerId: reviewer.id,
     projectKey,
+    processId: source,
+    sessionId: childId,
     delegated: true,
     parentThreadId: threadId,
   });
@@ -700,6 +714,8 @@ it.each(["after a retry", "after restarting"])(
         name: reviewer.name,
         workerId: reviewer.id,
         projectKey,
+        processId: source,
+        sessionId: child,
         delegated: true,
         parentThreadId: threadId,
       });
@@ -759,6 +775,8 @@ it.each(["completed", "needsAttention"] as const)(
       name: reviewer.name,
       workerId: reviewer.id,
       projectKey,
+      processId: source,
+      sessionId: child,
       delegated: true,
       parentThreadId: threadId,
     };
@@ -816,9 +834,23 @@ it("recovers delegation from legacy process records before the owner resumes wor
 
   await service.initialize();
   const identity = { name: "Reviewer", workerId: "reviewer", projectKey: "project" };
-  expect(service.workerSession("old-thread")).toEqual({ ...identity, delegated: true });
-  expect(service.workerSession("pending-thread")).toEqual({ ...identity, delegated: true });
-  expect(service.workerSession("direct-thread")).toEqual(identity);
+  expect(service.workerSession("old-thread")).toEqual({
+    ...identity,
+    processId: oldSession.processId,
+    sessionId: oldSession.id,
+    delegated: true,
+  });
+  expect(service.workerSession("pending-thread")).toEqual({
+    ...identity,
+    processId: pending.processId,
+    sessionId: pending.id,
+    delegated: true,
+  });
+  expect(service.workerSession("direct-thread")).toEqual({
+    ...identity,
+    processId: direct.processId,
+    sessionId: direct.id,
+  });
   expect(service.workerSession("ordinary-thread")).toBeUndefined();
   expect(f.services.claude.workerSession("old-thread")).toBeUndefined();
   expect(await service.processes.read()).toEqual({ old: oldSession, pending, direct });
@@ -1222,6 +1254,8 @@ it("creates a worker with explicit approval, groups its tasks and shares its pro
     name: "Архитектор работников",
     workerId: "architect",
     projectKey: proposal.projectKey,
+    processId: architect,
+    sessionId: architect,
   });
   expect(await f.services.codex.workers.list(proposal.projectKey)).toHaveLength(1);
   const profile = await f.services.codex.workers.approveProposal(proposal);

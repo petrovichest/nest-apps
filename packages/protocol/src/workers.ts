@@ -84,6 +84,10 @@ export type WorkerSessionSummary = {
   parentThreadId?: string;
   workerId?: string;
   projectKey?: string | null;
+  /** ID used to fetch the worker process. */
+  processId?: string;
+  /** ID used by direct children as their parentId in the process. */
+  sessionId?: string;
 };
 
 export type WorkerProcessSession = {
