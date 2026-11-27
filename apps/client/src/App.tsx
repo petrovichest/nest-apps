@@ -1104,12 +1104,14 @@ function Sidebar({
   const projectOrderKey = snapshot?.projects.map((project) => project.id).join(":") ?? "";
   const projects = snapshot?.projects ?? [];
   const boardRoute = matchPath("/projects/:projectId/kanban", location.pathname);
+  const newSessionProjectId =
+    location.pathname === "/new" ? new URLSearchParams(location.search).get("projectId") : null;
   const knownProject = (id: string | null | undefined) =>
     id && projects.some((project) => project.id === id) ? id : undefined;
   const viewedProjectId =
     knownProject(boardRoute?.params.projectId) ??
-    knownProject(allThreads.find((thread) => thread.id === threadRouteId)?.projectId);
-  // Board mode opens the board of the project being looked at, else the one shown last here.
+    knownProject(allThreads.find((thread) => thread.id === threadRouteId)?.projectId) ??
+    knownProject(newSessionProjectId);
   const boardProjectId =
     viewedProjectId ?? knownProject(storedBoardProject) ?? projects[0]?.id ?? null;
 
@@ -1795,6 +1797,28 @@ function Sidebar({
         >
           <TeamIcon /> {t("Работники")}
         </NavLink>
+        {application.supportsKanban && boardProjectId && (
+          <NavLink
+            to={`/projects/${encodeURIComponent(boardProjectId)}/kanban`}
+            className="sidebar-control-action"
+            onClick={(event) => {
+              if (
+                event.defaultPrevented ||
+                event.button !== 0 ||
+                event.metaKey ||
+                event.altKey ||
+                event.ctrlKey ||
+                event.shiftKey
+              ) {
+                return;
+              }
+              onManualNavigationIntent();
+              onClose();
+            }}
+          >
+            <KanbanIcon /> <span>{t("Доска задач")}</span>
+          </NavLink>
+        )}
         <button className="sidebar-control-action" onClick={onNewProject}>
           <PlusIcon />
           {t("Добавить проект")}
