@@ -84,7 +84,7 @@ function setup(overrides: Partial<ConstructorParameters<typeof ClaudeProcess>[0]
 }
 
 describe("Claude model metadata and controls", () => {
-  it("adds worker reference data to the matching follow-up's context without rewriting its input", async () => {
+  it("adds worker context by native command UUID while preserving the original user message", async () => {
     const { child, process } = setup({ workerTurnMemory: true });
     await process.start();
     const init = child.sent[0]!.request.hooks.UserPromptSubmit[0];
@@ -97,6 +97,15 @@ describe("Claude model metadata and controls", () => {
     process.sendUser(MESSAGE, message);
     process.sendUser(followUp, message, content, 'fresh "</nest_worker_memory>"');
     expect(child.sent.at(-1)).toMatchObject({ uuid: followUp, message: { content } });
+
+    const lifecycle = (id: string, state: string) => {
+      child.output({
+        type: "command_lifecycle",
+        session_id: SESSION,
+        command_uuid: id,
+        state,
+      });
+    };
     const submit = (input: Record<string, unknown> = {}) => {
       child.output({
         type: "control_request",
@@ -114,10 +123,39 @@ describe("Claude model metadata and controls", () => {
       });
       return child.sent.at(-1)!.response.response;
     };
+    lifecycle(MESSAGE, "started");
     expect(submit()).toEqual({});
+    lifecycle(followUp, "queued");
+    expect(submit()).toEqual({});
+    lifecycle(followUp, "started");
     expect(submit({ agent_id: "native-child" })).toEqual({});
-    const context = submit().hookSpecificOutput.additionalContext;
+    const context = submit({ prompt: "Normalized by Claude" }).hookSpecificOutput.additionalContext;
     expect(context).toContain('fresh "\\u003c/nest_worker_memory\\u003e"');
+    expect(submit()).toEqual({});
+
+    const steering = "44444444-4444-4444-8444-444444444444";
+    process.sendUser(steering, message, undefined, "in-turn snapshot");
+    lifecycle(steering, "queued");
+    expect(submit()).toEqual({});
+    child.output({ type: "user", uuid: steering, session_id: SESSION, isReplay: true });
+    lifecycle(steering, "started");
+    expect(submit()).toEqual({});
+
+    const first = "55555555-5555-4555-8555-555555555555";
+    const last = "66666666-6666-4666-8666-666666666666";
+    process.sendUser(first, message, undefined, "earlier snapshot");
+    process.sendUser(last, message, undefined, "latest snapshot");
+    lifecycle(first, "started");
+    lifecycle(last, "started");
+    expect(
+      submit({ prompt: message + "\n" + message }).hookSpecificOutput.additionalContext,
+    ).toContain("latest snapshot");
+    expect(submit()).toEqual({});
+
+    const cancelled = "77777777-7777-4777-8777-777777777777";
+    process.sendUser(cancelled, message, undefined, "cancelled snapshot");
+    lifecycle(cancelled, "started");
+    lifecycle(cancelled, "cancelled");
     expect(submit()).toEqual({});
     await process.stop();
   });

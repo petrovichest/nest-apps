@@ -72,7 +72,8 @@ export class ClaudeProcess extends EventEmitter {
   private lineBytes = 0;
   private controls = new Map<string, PendingControl>();
   private requests = new Set<string>();
-  private pendingWorkerPrompts = new Map<string, { text: string; memory?: string }>();
+  private readonly workerMemoryByCommand = new Map<string, string>();
+  private startedWorkerCommand?: string;
   supportedModels: ClaudeModel[] = [];
   readonly livePermissionMode = true;
   model?: string;
@@ -272,8 +273,8 @@ export class ClaudeProcess extends EventEmitter {
       parent_tool_use_id: null,
       message: { role: "user", content: content ?? text },
     });
-    if (this.options.workerTurnMemory)
-      this.pendingWorkerPrompts.set(requestId, { text, memory: workerMemory });
+    if (this.options.workerTurnMemory && workerMemory !== undefined)
+      this.workerMemoryByCommand.set(requestId, workerMemory);
   }
 
   private hookResponse(request: JsonObject): JsonObject {
@@ -320,19 +321,42 @@ export class ClaudeProcess extends EventEmitter {
       input.agent_id !== undefined
     )
       return {};
-    for (const [id, entry] of this.pendingWorkerPrompts) {
-      if (entry.text !== input.prompt) continue;
-      this.pendingWorkerPrompts.delete(id);
-      if (!entry.memory) return {};
-      const snapshot = entry.memory.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
-      return {
-        hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext: `Справочные данные для текущего хода.\n<nest_worker_memory>\n${snapshot}\n</nest_worker_memory>`,
-        },
-      };
+    const commandId = this.startedWorkerCommand;
+    this.startedWorkerCommand = undefined;
+    if (!commandId) return {};
+    const memory = this.workerMemoryByCommand.get(commandId);
+    this.workerMemoryByCommand.delete(commandId);
+    if (!memory) return {};
+    const snapshot = memory.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+    return {
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext: `Справочные данные для текущего хода.\n<nest_worker_memory>\n${snapshot}\n</nest_worker_memory>`,
+      },
+    };
+  }
+
+  private trackWorkerMemory(message: JsonObject): void {
+    if (message.session_id !== this.options.sessionId || message.parent_tool_use_id) return;
+    if (message.type === "result") this.startedWorkerCommand = undefined;
+    if (message.type === "user" && typeof message.uuid === "string")
+      this.workerMemoryByCommand.delete(message.uuid);
+    if (
+      (message.type === "command_lifecycle" ||
+        (message.type === "system" && message.subtype === "command_lifecycle")) &&
+      typeof message.command_uuid === "string"
+    ) {
+      // A new native turn reports each admitted UUID before its prompt hook. When
+      // Claude groups inputs into one turn, the last started input owns the snapshot.
+      // In-turn steering echoes the inputs before reporting "started", so their
+      // snapshots are already discarded by then.
+      if (message.state === "started")
+        this.startedWorkerCommand = this.workerMemoryByCommand.has(message.command_uuid)
+          ? message.command_uuid
+          : undefined;
+      if (message.state === "completed" || message.state === "cancelled")
+        this.workerMemoryByCommand.delete(message.command_uuid);
     }
-    return {};
   }
 
   async setModel(model: string, endpoint?: string | null): Promise<void> {
@@ -558,15 +582,7 @@ export class ClaudeProcess extends EventEmitter {
       typeof message.model === "string"
     )
       this.model = message.model;
-    if (message.type === "user" && typeof message.uuid === "string")
-      this.pendingWorkerPrompts.delete(message.uuid);
-    if (
-      (message.type === "command_lifecycle" ||
-        (message.type === "system" && message.subtype === "command_lifecycle")) &&
-      message.state === "cancelled" &&
-      typeof message.command_uuid === "string"
-    )
-      this.pendingWorkerPrompts.delete(message.command_uuid);
+    if (this.options.workerTurnMemory) this.trackWorkerMemory(message);
     this.emit("event", message);
   }
 

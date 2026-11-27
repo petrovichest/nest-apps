@@ -71,6 +71,37 @@ function stream(event: Record<string, unknown>) {
 }
 
 describe("native Claude view", () => {
+  it("keeps worker memory attachments out of live and restored conversation turns", () => {
+    const memory = {
+      type: "attachment",
+      uuid: "hook-data",
+      attachment: {
+        type: "hook_additional_context",
+        hookEvent: "UserPromptSubmit",
+        content: ["FRESH_WORKER_CONTEXT"],
+      },
+      renderedRole: "system",
+      rendered: [{ content: "<system-reminder>FRESH_WORKER_CONTEXT</system-reminder>" }],
+    };
+    const options = { sessionId: "session", cwd: "/project" };
+    const view = new NativeView(options.sessionId, options.cwd);
+    view.apply(user);
+    expect(view.apply(memory)).toEqual([]);
+    view.apply(assistant);
+    const restored = normalizeNativeEvents([user, memory, assistant], options).turns;
+    for (const turns of [view.turns(), restored]) {
+      expect(turns.map(({ id, items }) => ({ id, items }))).toMatchObject([
+        {
+          id: "user-1",
+          items: [
+            { type: "userMessage", text: "Hello" },
+            { type: "agentMessage", text: "Hello back" },
+          ],
+        },
+      ]);
+      expect(JSON.stringify(turns)).not.toContain("FRESH_WORKER_CONTEXT");
+    }
+  });
   it("follows how full the context is: latest answer, compaction, reported window", () => {
     const view = new NativeView("session", "/project");
     expect(view.context).toBeUndefined();
