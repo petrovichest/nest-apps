@@ -6562,10 +6562,13 @@ button.composer-card-filter:active {
 .dialog-surface.fork-dialog {
   display: flex;
   flex-direction: column;
-  width: min(610px, 100%);
   gap: 0;
   padding: 22px;
   overflow: hidden;
+}
+
+:where(html:not([data-application="opennest"])) .dialog-surface.fork-dialog {
+  width: min(610px, 100%);
 }
 
 .fork-dialog-body {
