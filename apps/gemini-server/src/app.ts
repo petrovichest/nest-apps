@@ -1,3 +1,5 @@
+import { SESSION_MCP_NAME } from "@codexnest/protocol";
+import { registerSessionMessaging, SESSION_MCP_PATH } from "@nest-apps/kanban";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readdir, realpath, stat } from "node:fs/promises";
@@ -124,6 +126,28 @@ export async function buildApp(engine: Engine, options: BuildAppOptions = {}) {
       this.websocketServer.close(() => done());
     },
   });
+  const messaging = registerSessionMessaging(app, {
+    provider: "gemini",
+    port: config.port,
+    credential: config.token,
+    thread: (id) => (Object.hasOwn(engine.data.threads, id) ? engine.summary(id) : undefined),
+    // The copied reference uses the native Gemini ID after the conversation starts.
+    resolveThreadId: (id) =>
+      Object.hasOwn(engine.data.threads, id)
+        ? id
+        : Object.values(engine.data.threads).find((thread) => thread.nativeId === id)?.detail
+            .summary.id,
+    enqueue: (id, input, clientMessageId) => engine.send(id, { input, clientMessageId }, true),
+  });
+  engine.setSessionMessagingMcpProvider((id) => {
+    const { url, headers } = messaging.mcp(id);
+    return {
+      type: "http",
+      name: SESSION_MCP_NAME,
+      url,
+      headers: Object.entries(headers).map(([name, value]) => ({ name, value })),
+    };
+  });
   const browser = new BrowserExtensionServer({
     app,
     engine,
@@ -196,6 +220,7 @@ export async function buildApp(engine: Engine, options: BuildAppOptions = {}) {
       path === "/api/v1/ui/events" ||
       path === BROWSER_EXTENSION_WEBSOCKET_PATH ||
       path.startsWith("/api/v1/internal/browser-mcp/") ||
+      path.startsWith(SESSION_MCP_PATH) ||
       path.startsWith("/api/v1/downloads/")
     )
       return;

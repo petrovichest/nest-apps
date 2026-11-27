@@ -1,3 +1,5 @@
+import { SESSION_SEND_TOOL } from "@codexnest/protocol";
+import type { registerSessionMessaging } from "@nest-apps/kanban";
 import { createHash } from "node:crypto";
 import { access, realpath } from "node:fs/promises";
 import { resolve, relative, isAbsolute } from "node:path";
@@ -1064,7 +1066,11 @@ export class Workflows {
   }
 }
 
-export function registerWorkflows(app: FastifyInstance, engine: Engine) {
+export function registerWorkflows(
+  app: FastifyInstance,
+  engine: Engine,
+  sendSessionMessage: ReturnType<typeof registerSessionMessaging>["send"],
+) {
   const workflows = new Workflows(engine);
   engine.setWorkflowHooks({
     validateSend: (id, input) => workflows.validateSend(id, input),
@@ -1100,13 +1106,20 @@ export function registerWorkflows(app: FastifyInstance, engine: Engine) {
     const id = text(body.sessionID, "sessionID", 200);
     const callId = text(body.callID, "callID", 500);
     if (!callId) throw new AppError("validation_failed", "Native tool call identity is required");
-    return workflows.tool(
-      id,
-      text(body.tool, "tool", 100),
-      body.args,
-      text(body.messageID, "messageID", 200),
-      callId,
-    );
+    const tool = text(body.tool, "tool", 100);
+    const messageId = text(body.messageID, "messageID", 200);
+    if (tool === SESSION_SEND_TOOL.name) {
+      try {
+        return await sendSessionMessage(id, body.args, callId, messageId);
+      } catch (error) {
+        throw new AppError(
+          "conflict",
+          error instanceof Error ? error.message : "Message could not be queued",
+          409,
+        );
+      }
+    }
+    return workflows.tool(id, tool, body.args, messageId, callId);
   });
   let listening = false;
   let recovery: Promise<void> | undefined;

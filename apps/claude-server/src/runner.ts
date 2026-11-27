@@ -1,3 +1,4 @@
+import { SESSION_MCP_NAME } from "@codexnest/protocol";
 import { validOpenRouterSlug } from "./openrouter-gateway";
 import { createHash, randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
@@ -150,12 +151,11 @@ export class SessionRunner {
           ...(descriptor.model ? { model: descriptor.model } : {}),
           ...(descriptor.effort ? { effort: descriptor.effort } : {}),
           ...(descriptor.permissionMode ? { permissionMode: descriptor.permissionMode } : {}),
-          ...(descriptor.browser
-            ? {
-                mcpConfigPath: descriptor.browser.configPath,
-                allowedMcpServers: [BROWSER_MCP_SERVER_NAME],
-              }
-            : {}),
+          mcpConfigPath: descriptor.sessionMessagingConfigPath ?? descriptor.browser?.configPath,
+          allowedMcpServers: [
+            ...(descriptor.browser ? [BROWSER_MCP_SERVER_NAME] : []),
+            ...(descriptor.sessionMessagingConfigPath ? [SESSION_MCP_NAME] : []),
+          ],
         });
     this.transport.on("event", (event: unknown) => this.onNativeEvent(event));
     this.transport.on("request", (event: unknown) => this.onRequest(event));

@@ -428,6 +428,7 @@ async function createHarness(options: { disconnectWaitMs?: number } = {}) {
     list: async () => [],
     descriptor: async () => undefined,
     close: async () => {},
+    setSessionMessagingMcp: () => {},
     setBrowserLaunch: (provider: NonNullable<SessionLaunch>) => {
       launchConfig = provider;
     },

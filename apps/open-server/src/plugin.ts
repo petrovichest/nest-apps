@@ -1,3 +1,4 @@
+import { SESSION_SEND_TOOL } from "@codexnest/protocol";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -58,6 +59,19 @@ export const OpenNestPlugin: Plugin = async () => {
     },
     tool: {
       ...browserPluginTools(call),
+      codexnest_send_message: tool({
+        description: SESSION_SEND_TOOL.description,
+        args: {
+          session: tool.schema
+            .string()
+            .max(SESSION_SEND_TOOL.inputSchema.properties.session.maxLength),
+          message: tool.schema
+            .string()
+            .max(SESSION_SEND_TOOL.inputSchema.properties.message.maxLength),
+          requestReply: tool.schema.boolean().optional(),
+        },
+        execute: call(SESSION_SEND_TOOL.name),
+      }),
       codexnest_publish_artifact: tool({
         description:
           "Publish one standalone final deliverable. Never publish source references, intermediate files, plans or checklists.",

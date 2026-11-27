@@ -268,6 +268,7 @@ export interface ThreadMetaState {
   teamOrchestration?: TeamOrchestrationState;
   managedTeamToolsAvailable?: true;
   sessionArtifactsVersion?: 1;
+  sessionMessagingToolAvailable?: true;
   sessionArtifacts?: SessionArtifactState[];
   managedParent?: {
     parentThreadId: string;
@@ -1229,6 +1230,8 @@ function validateState(value: unknown): CodexNestState {
       meta.teamToolsVersion !== undefined ||
       (meta.managedTeamToolsAvailable !== undefined && meta.managedTeamToolsAvailable !== true) ||
       (meta.sessionArtifactsVersion !== undefined && meta.sessionArtifactsVersion !== 1) ||
+      (meta.sessionMessagingToolAvailable !== undefined &&
+        meta.sessionMessagingToolAvailable !== true) ||
       (meta.sessionArtifacts !== undefined && meta.sessionArtifactsVersion !== 1) ||
       (meta.sessionArtifacts !== undefined && !isSessionArtifacts(meta.sessionArtifacts)) ||
       (meta.managedParent !== undefined && !isManagedParent(meta.managedParent)) ||

@@ -1,3 +1,4 @@
+import { SESSION_MCP_NAME } from "@codexnest/protocol";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, realpath, stat, unlink } from "node:fs/promises";
@@ -174,6 +175,7 @@ type CreateSession = {
 
 export class SessionManager {
   private connections = new Map<string, RunnerConnection>();
+  private sessionMessagingMcp?: (id: string) => { url: string; headers: Record<string, string> };
   private browserLaunch?: (
     id: string,
   ) => { bindingId: string; mcpConfig: Record<string, unknown> } | undefined;
@@ -205,6 +207,10 @@ export class SessionManager {
   /** Supplies the browser MCP configuration for owners launched from now on. */
   setBrowserLaunch(provider: NonNullable<SessionManager["browserLaunch"]>): void {
     this.browserLaunch = provider;
+  }
+
+  setSessionMessagingMcp(provider: NonNullable<SessionManager["sessionMessagingMcp"]>): void {
+    this.sessionMessagingMcp = provider;
   }
 
   private directory(id: string): string {
@@ -341,12 +347,16 @@ export class SessionManager {
     }
     const selected = account ?? (await this.accounts?.launchAccount());
     const browser = this.browserLaunch?.(id);
-    let browserDescriptor: RunnerDescriptor["browser"];
-    if (browser) {
-      // The endpoint secret stays in a private file, not in the process arguments.
-      const configPath = join(this.directory(id), "browser-mcp.json");
-      await writeJsonAtomic(configPath, browser.mcpConfig);
-      browserDescriptor = { bindingId: browser.bindingId, configPath };
+    const messaging = this.sessionMessagingMcp?.(id);
+    const mcpConfigPath = join(this.directory(id), browser ? "browser-mcp.json" : "nest-mcp.json");
+    if (browser || messaging) {
+      // Endpoint credentials stay in the private file, not in process arguments.
+      await writeJsonAtomic(mcpConfigPath, {
+        mcpServers: {
+          ...(browser?.mcpConfig.mcpServers as Record<string, unknown> | undefined),
+          ...(messaging ? { [SESSION_MCP_NAME]: { type: "http", ...messaging } } : {}),
+        },
+      });
     }
     return {
       sessionId: id,
@@ -379,7 +389,8 @@ export class SessionManager {
       effort,
       permissionMode,
       attachmentRoot: join(this.config.stateDir, "attachments"),
-      ...(browserDescriptor ? { browser: browserDescriptor } : {}),
+      ...(browser ? { browser: { bindingId: browser.bindingId, configPath: mcpConfigPath } } : {}),
+      ...(messaging ? { sessionMessagingConfigPath: mcpConfigPath } : {}),
       protocolVersion: RUNNER_PROTOCOL_VERSION,
     };
   }

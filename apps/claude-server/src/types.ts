@@ -53,6 +53,7 @@ export interface RunnerDescriptor {
   attachmentRoot?: string;
   /** Browser MCP the owner was launched with; its config file holds the endpoint secret. */
   browser?: { bindingId: string; configPath: string };
+  sessionMessagingConfigPath?: string;
   protocolVersion: 1;
 }
 

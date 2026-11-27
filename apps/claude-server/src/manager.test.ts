@@ -230,6 +230,34 @@ describe("Claude backend manager integration", () => {
     await manager.create(second);
     expect((await manager.descriptor(second.sessionId))?.browser).toBeUndefined();
   });
+  it("combines session messaging with browser MCP without placing its credential in the runner descriptor", async () => {
+    const { backend, input } = await fixture();
+    const manager = await backend();
+    const messaging = {
+      url: "http://127.0.0.1/message",
+      headers: { Authorization: "Bearer fixture" },
+    };
+    manager.setSessionMessagingMcp(() => messaging);
+    manager.setBrowserLaunch(() => ({
+      bindingId: "browser-binding",
+      mcpConfig: {
+        mcpServers: { claudenest_browser: { type: "http", url: "http://127.0.0.1/browser" } },
+      },
+    }));
+    await manager.create(input);
+    const descriptor = await manager.descriptor(input.sessionId);
+    expect(descriptor!.sessionMessagingConfigPath).toBe(descriptor!.browser?.configPath);
+    expect(JSON.stringify(descriptor)).not.toContain("Bearer fixture");
+    expect((await stat(descriptor!.sessionMessagingConfigPath!)).mode & 0o077).toBe(0);
+    expect(
+      JSON.parse(await readFile(descriptor!.sessionMessagingConfigPath!, "utf8")),
+    ).toMatchObject({
+      mcpServers: {
+        nest_sessions: { type: "http", ...messaging },
+        claudenest_browser: { type: "http" },
+      },
+    });
+  });
   it.each(["quota", "authentication"])(
     "resumes %s on the same UUID with the selected proxy and a fresh continuation once",
     async (reason) => {

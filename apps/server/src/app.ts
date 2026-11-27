@@ -105,6 +105,7 @@ export async function buildApp(config: AppConfig, services: ApiServices): Promis
     ...services,
     projectRoot: services.projectRoot ?? config.projectRoot,
     browserExtension,
+    sessionMessagingPort: config.port,
   });
   browserExtension.registerRoutes();
   registerEventsWebSocket(

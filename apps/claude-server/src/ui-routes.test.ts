@@ -70,6 +70,7 @@ async function fixture(configure?: (manager: SessionManager, ui: UiService) => P
     snapshot: async () => unexpected("snapshot"),
     command: async () => unexpected("command"),
     close: async () => {},
+    setSessionMessagingMcp: () => {},
     setBrowserLaunch: () => {},
   } as unknown as SessionManager;
   const ui = new UiService(manager);

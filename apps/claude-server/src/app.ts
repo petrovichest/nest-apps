@@ -1,3 +1,4 @@
+import { registerSessionMessaging, SESSION_MCP_PATH } from "@nest-apps/kanban";
 import { readOpenRouterKey } from "./openrouter-gateway";
 import { writeJsonAtomic } from "./io";
 import type {
@@ -129,7 +130,8 @@ export async function buildApp(
       path === "/api/v1/events" ||
       path === "/api/v1/ui/events" ||
       path === BROWSER_EXTENSION_WEBSOCKET_PATH ||
-      path.startsWith("/api/v1/internal/browser-mcp/")
+      path.startsWith("/api/v1/internal/browser-mcp/") ||
+      path.startsWith(SESSION_MCP_PATH)
     )
       return;
     const token = /^Bearer\s+(\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
@@ -347,6 +349,18 @@ export async function buildApp(
   });
   let stopVoice: (() => Promise<void>) | undefined;
   if (ui) {
+    const messaging = registerSessionMessaging(app, {
+      provider: manager.config.openRouter ? "open" : "claude",
+      port: manager.config.port,
+      credential: manager.config.token,
+      thread: (id) => (Object.hasOwn(ui.store.data.threads, id) ? ui.summary(id) : undefined),
+      enqueue: (id, input, clientMessageId) => {
+        if (!manager.accepting)
+          throw new AppError("unavailable", "The application is preparing a restart", 503);
+        return ui.enqueue(id, { input, clientMessageId, draftUpdatedAt: null });
+      },
+    });
+    manager.setSessionMessagingMcp(messaging.mcp);
     const browserExtension = new BrowserExtensionServer({
       app,
       ui,

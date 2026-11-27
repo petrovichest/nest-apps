@@ -226,6 +226,7 @@ export class Engine extends EventEmitter {
   ) => Promise<ModelOption[]>;
   private readonly pollModelsEnabled: boolean;
   private browserStatusProvider?: (threadId: string) => BrowserThreadStatus;
+  private sessionMessagingMcpProvider?: (threadId: string) => Record<string, unknown>;
   private browserMcpProvider?: (threadId: string) => Array<Record<string, unknown>>;
   private client?: AcpClient;
   private starting?: Promise<AcpClient>;
@@ -373,6 +374,10 @@ export class Engine extends EventEmitter {
   setBrowserStatusProvider(provider: (threadId: string) => BrowserThreadStatus) {
     this.browserStatusProvider = provider;
   }
+  setSessionMessagingMcpProvider(provider: (threadId: string) => Record<string, unknown>) {
+    this.sessionMessagingMcpProvider = provider;
+  }
+
   setBrowserMcpProvider(provider: (threadId: string) => Array<Record<string, unknown>>) {
     this.browserMcpProvider = provider;
   }
@@ -831,6 +836,8 @@ export class Engine extends EventEmitter {
       const thread = this.thread(id);
       const client = await this.getClient();
       const mcpServers = this.browserMcpProvider?.(id) ?? [];
+      const messaging = this.sessionMessagingMcpProvider?.(id);
+      if (messaging) mcpServers.push(messaging);
       let result: any;
       if (thread.nativeId) {
         this.replaying.add(thread.nativeId);

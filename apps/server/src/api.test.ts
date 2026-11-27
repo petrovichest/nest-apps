@@ -9000,6 +9000,136 @@ describe("browser thread lifecycle", () => {
   });
 });
 
+describe("session messaging", () => {
+  it("parks a message addressed by a copied reference, then delivers it once without clearing the draft", async () => {
+    const { app, bridge, headers, projection, store } = await createTeamHarness();
+    const sender = "20000000-0000-4000-8000-000000000001";
+    const recipient = "20000000-0000-4000-8000-000000000002";
+    const active = testTurn("already-running", "inProgress");
+    projection.upsertThread(testThread(sender));
+    projection.upsertThread({ ...testThread(recipient), turns: [active] });
+    try {
+      const draft = await app.inject({
+        method: "PUT",
+        url: `/api/v1/threads/${recipient}/draft`,
+        headers,
+        payload: { input: "Мой черновик", images: [], annotations: [], goalMode: false },
+      });
+      expect(draft.statusCode).toBe(200);
+      const send = () =>
+        callTeamTool(
+          bridge,
+          sender,
+          "send_message",
+          {
+            session: `Сессия: CodexNest\nID: ${recipient}\nФайл истории: /ignored`,
+            message: "Уточни результат",
+            requestReply: true,
+          },
+          "message-call",
+        );
+      const receipt = dynamicToolJson(await send());
+      expect(receipt).toMatchObject({ status: "queued" });
+      expect(dynamicToolJson(await send())).toEqual(receipt);
+      expect(store.snapshot().messageQueues?.[recipient]).toEqual([
+        expect.objectContaining({ id: receipt.messageId, status: "queued" }),
+      ]);
+      expect(bridge.request.mock.calls.some(([method]) => method === "turn/steer")).toBe(false);
+      expect(bridge.request.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+
+      bridge.emit("notification", {
+        method: "turn/completed",
+        params: { threadId: recipient, turn: { ...active, status: "completed" } },
+      } satisfies ServerNotification);
+      await vi.waitFor(() =>
+        expect(store.snapshot().messageReceipts?.[String(receipt.messageId)]).toMatchObject({
+          threadId: recipient,
+          status: "delivered",
+        }),
+      );
+      expect(
+        bridge.request.mock.calls.find(([method]) => method === "turn/start")?.[1],
+      ).toMatchObject({
+        threadId: recipient,
+        input: [
+          expect.objectContaining({
+            text: expect.stringContaining(`ID: ${sender}\n\nУточни результат`),
+          }),
+        ],
+      });
+      expect(store.snapshot().threadMeta[recipient]?.draft?.input).toBe("Мой черновик");
+      expect(dynamicToolJson(await send())).toEqual(receipt);
+      expect(bridge.request.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(
+        1,
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("installs the native tool for new sessions and adds the MCP tool before the next turn of an older session", async () => {
+    const { app, bridge, headers, projection, store } = await createTeamHarness();
+    const current = "20000000-0000-4000-8000-000000000003";
+    const previous = "20000000-0000-4000-8000-000000000004";
+    bridge.nextCreatedThreadId = current;
+    projection.upsertThread(testThread(previous));
+    try {
+      await app.listen({ host: "127.0.0.1", port: 0 });
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/threads",
+        headers,
+        payload: { clientCreationId: "with-messaging-tool" },
+      });
+      expect(created.statusCode).toBe(201);
+      expect(
+        bridge.request.mock.calls.find(([method]) => method === "thread/start")?.[1],
+      ).toMatchObject({
+        dynamicTools: [
+          {
+            name: "codexnest",
+            tools: expect.arrayContaining([expect.objectContaining({ name: "send_message" })]),
+          },
+        ],
+      });
+      expect(store.snapshot().threadMeta[current]?.sessionMessagingToolAvailable).toBe(true);
+
+      for (const id of [current, previous]) {
+        const started = await app.inject({
+          method: "POST",
+          url: `/api/v1/threads/${id}/turns`,
+          headers,
+          payload: { input: "Начни ход", clientMessageId: `begin:${id}` },
+        });
+        expect(started.statusCode, started.body).toBe(201);
+      }
+      const rejoined = bridge.request.mock.calls.filter(
+        ([method, params]) => method === "thread/resume" && params.threadId === previous,
+      );
+      expect(rejoined).toHaveLength(1);
+      const config = rejoined[0]![1].config as {
+        mcp_servers: { nest_sessions: { url: string; http_headers: Record<string, string> } };
+      };
+      const endpoint = config.mcp_servers.nest_sessions;
+      const result = await app.inject({
+        method: "POST",
+        url: new URL(endpoint.url).pathname,
+        headers: endpoint.http_headers,
+        payload: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      });
+      expect(result.statusCode, result.body).toBe(200);
+      expect(result.json().result.tools[0].name).toBe("send_message");
+      expect(
+        bridge.request.mock.calls.some(
+          ([method, params]) => method === "thread/resume" && params.threadId === current,
+        ),
+      ).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("explicit session artifacts", () => {
   it("does not reuse an old empty root that lacks the artifact tool", async () => {
     const { app, bridge, headers } = await createTeamHarness();

@@ -6,6 +6,8 @@ import {
   trimPastedMessage,
   rebasePastedText,
   serializePastedMessage,
+  SESSION_MCP_NAME,
+  SESSION_SEND_TOOL,
   sessionTitleSource,
   validPastedText,
   type PastedText,
@@ -15,9 +17,13 @@ import {
   ARCHITECT_PROMPT_HEADER,
   ARCHITECT_SKILL_NAME,
   firstRequest,
+  isSessionThreadId,
   KanbanService,
   lastReply,
   registerKanbanRoutes,
+  registerSessionMessaging,
+  SESSION_MCP_PATH,
+  SESSION_MESSAGE_ID_PREFIX,
   WORKER_MEMORY_GUIDANCE,
 } from "@nest-apps/kanban";
 import { constants, createReadStream, type Stats } from "node:fs";
@@ -404,8 +410,14 @@ const ROOT_DYNAMIC_TOOLS = [
   {
     type: "namespace",
     name: "codexnest",
-    description: "Publish session deliverables and manage isolated CodexNest child tasks.",
+    description:
+      "Message other Nest sessions, publish deliverables, and manage isolated CodexNest child tasks.",
     tools: [
+      dynamicTool(
+        SESSION_SEND_TOOL.name,
+        SESSION_SEND_TOOL.description,
+        SESSION_SEND_TOOL.inputSchema,
+      ),
       dynamicTool("publish_artifact", "Publish one standalone final file to the user.", {
         type: "object",
         properties: {
@@ -550,6 +562,7 @@ export interface ApiServices {
   >;
   projectRoot?: string;
   browserExtension?: BrowserExtensionServer;
+  sessionMessagingPort?: number;
 }
 
 export function registerApi(app: FastifyInstance, services: ApiServices): void {
@@ -611,6 +624,40 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
     void (lifecycle?.track(pending, "thread title generation") ?? pending);
   };
   const durableDelivery = new DurableDelivery(store, bridge);
+  const sessionMessaging = registerSessionMessaging(app, {
+    provider: "codex",
+    port: services.sessionMessagingPort ?? 4310,
+    credential: store.view().auth.tokenSha256,
+    thread: (id) =>
+      store.view().threadMeta[id]?.managedParent ? undefined : projection.summary(id),
+    enqueue: (id, input, messageId) => {
+      if (lifecycle && !lifecycle.acceptsMutations)
+        throw new ProjectConflictError("CodexNest is recovering or preparing a restart");
+      const pending = queue.enqueue(id, input, [], messageId, { automatic: true });
+      return lifecycle?.track(pending, "Session message admission") ?? pending;
+    },
+  });
+  const legacyMessagingConfigured = new Set<string>();
+  const needsLegacyMessaging = (id: string) =>
+    services.sessionMessagingPort !== undefined &&
+    isSessionThreadId(id) &&
+    !store.view().threadMeta[id]?.sessionMessagingToolAvailable &&
+    !store.view().threadMeta[id]?.managedParent;
+  const withSessionMcp = (id: string, config: Record<string, unknown>) => {
+    if (!needsLegacyMessaging(id)) return config;
+    const { url, headers } = sessionMessaging.mcp(id);
+    return {
+      ...config,
+      mcp_servers: {
+        ...(isRecord(config.mcp_servers) ? config.mcp_servers : {}),
+        [SESSION_MCP_NAME]: { url, http_headers: headers, startup_timeout_sec: 3 },
+      },
+    };
+  };
+  const sessionResumeConfig = (id: string, base: Record<string, unknown> = {}) => {
+    const config = withSessionMcp(id, browserExtension?.runtimeConfig(id, base) ?? base);
+    return Object.keys(config).length ? { config } : {};
+  };
 
   const updateThreadSettings = async (
     threadId: string,
@@ -656,8 +703,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         ...(store.view().threadMeta[threadId]?.sessionArtifactsVersion === 1
           ? { developerInstructions: SESSION_ARTIFACT_INSTRUCTIONS }
           : {}),
-        config:
-          browserExtension?.runtimeConfig(threadId, teamRuntimeConfig()) ?? teamRuntimeConfig(),
+        ...sessionResumeConfig(threadId, teamRuntimeConfig()),
       };
       try {
         await bridge.request<ThreadResumeResponse>("thread/resume", resumeParams, 30_000);
@@ -807,17 +853,35 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
             ...(store.view().threadMeta[threadId]?.sessionArtifactsVersion === 1
               ? { developerInstructions: SESSION_ARTIFACT_INSTRUCTIONS }
               : {}),
-            ...runtimeConfigOverride(
-              browserExtension,
+            ...sessionResumeConfig(
               threadId,
               currentSummary.settings.collaborationMode === "team" ? teamRuntimeConfig() : {},
             ),
           },
           30_000,
         );
+        if (needsLegacyMessaging(threadId)) legacyMessagingConfigured.add(threadId);
         summary = projection.upsertThread(resumed.thread, currentSummary.archived);
         assertDirectInput(summary);
       };
+      if (
+        !summary.currentTurnId &&
+        app.server.listening &&
+        needsLegacyMessaging(threadId) &&
+        !legacyMessagingConfigured.has(threadId)
+      ) {
+        // A loaded native thread ignores configuration overrides on a warm resume.
+        // Rejoin an older idle session once to enable its tools, retaining its history.
+        try {
+          await bridge.request("thread/unsubscribe", { threadId }, 30_000);
+          await resume();
+        } catch (error) {
+          app.log.warn(
+            { err: safeError(error), threadId },
+            "Could not configure session messaging",
+          );
+        }
+      }
       const cwd = summary.cwd;
       const kanbanStart = /^kanban:[\da-f-]{36}:start$/i.test(clientMessageId ?? "");
       let skillCatalog = skillsByCwd.get(cwd);
@@ -921,7 +985,9 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         throw error;
       }
     }
-    await projection.markMaterialized(threadId);
+    await projection.markMaterialized(threadId, {
+      preserveDraft: clientMessageId?.startsWith(SESSION_MESSAGE_ID_PREFIX),
+    });
     if (acceptedTurn) await projection.restoreDeliveredTurn(threadId, acceptedTurn);
     if (clientMessageId) {
       projection.recordUserMessage(
@@ -1080,7 +1146,11 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           name: workspace.title,
         });
       }
-      await markRootToolsAvailable(store, started.thread.id);
+      await markRootToolsAvailable(
+        store,
+        started.thread.id,
+        newRootHasSessionMessagingTool(prepared.params.dynamicTools),
+      );
       if (bridge.deliveryVersion !== 1) {
         await projection.materializeEmptySession(started.thread.id);
       }
@@ -1203,12 +1273,20 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         await coldResumeThread(
           bridge,
           threadId,
-          browserResumeParams(store, summary, projection.availableModels, baseConfig),
           browserResumeParams(
             store,
             summary,
             projection.availableModels,
-            browserExtension.mcpConfig(staleBinding.bindingId, baseConfig),
+            withSessionMcp(threadId, baseConfig),
+          ),
+          browserResumeParams(
+            store,
+            summary,
+            projection.availableModels,
+            withSessionMcp(
+              threadId,
+              browserExtension.mcpConfig(staleBinding.bindingId, baseConfig),
+            ),
           ),
           persist,
         );
@@ -1246,13 +1324,13 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           store,
           summary,
           projection.availableModels,
-          baselineConfig,
+          withSessionMcp(threadId, baselineConfig),
         );
         const browserParams = browserResumeParams(
           store,
           summary,
           projection.availableModels,
-          browserConfig,
+          withSessionMcp(threadId, browserConfig),
         );
         await coldResumeThread(bridge, threadId, browserParams, baseParams, async () => {
           await store.update((state) => {
@@ -1314,13 +1392,13 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
           store,
           summary,
           projection.availableModels,
-          browserExtension.mcpConfig(binding.bindingId, baseConfig),
+          withSessionMcp(threadId, browserExtension.mcpConfig(binding.bindingId, baseConfig)),
         );
         const baseParams = browserResumeParams(
           store,
           summary,
           projection.availableModels,
-          baseConfig,
+          withSessionMcp(threadId, baseConfig),
         );
         await coldResumeThread(bridge, threadId, baseParams, browserParams, async () => {
           await store.update((state) => {
@@ -1763,6 +1841,8 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       if (sourceMeta?.managedTeamToolsAvailable === true)
         targetMeta.managedTeamToolsAvailable = true;
       if (sourceMeta?.sessionArtifactsVersion === 1) targetMeta.sessionArtifactsVersion = 1;
+      if (operation.mode !== "compressed" && sourceMeta?.sessionMessagingToolAvailable)
+        targetMeta.sessionMessagingToolAvailable = true;
       if (pendingDraft) targetMeta.draft = pendingDraft;
       state.threadMeta[target.id] = targetMeta;
       if (pendingMessages.length) {
@@ -2355,6 +2435,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
               FORK_RPC_TIMEOUT_MS,
             ),
           ).thread;
+          await markRootToolsAvailable(store, target.id, true);
         } catch (error) {
           target = await findThreadBySource(bridge, sourceName);
           if (!target && error instanceof RpcTimeoutError) {
@@ -2576,7 +2657,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
             cwd: summary.cwd,
             excludeTurns: true,
             ...threadSettings(summary.settings, projection.availableModels),
-            ...runtimeConfigOverride(browserExtension, threadId, {}),
+            ...sessionResumeConfig(threadId),
           },
           30_000,
         );
@@ -2655,8 +2736,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
                 }
               : {
                   ...threadSettings(summary.settings, projection.availableModels),
-                  ...runtimeConfigOverride(
-                    browserExtension,
+                  ...sessionResumeConfig(
                     threadId,
                     summary.settings.collaborationMode === "team" ? teamRuntimeConfig() : {},
                   ),
@@ -2929,6 +3009,16 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       return;
     }
     if (request.method === "item/tool/call" && request.params.namespace === "codexnest") {
+      if (request.params.tool === SESSION_SEND_TOOL.name) {
+        const { threadId, arguments: args, callId, turnId } = request.params;
+        const pending = sessionMessaging
+          .send(threadId, args, callId, turnId)
+          .then(dynamicToolSuccess, (error: unknown) => dynamicToolError(safeError(error).message));
+        void (lifecycle?.track(pending, "Session message tool") ?? pending)
+          .then((response) => transport.respond(request.id, response))
+          .catch(() => undefined);
+        return;
+      }
       if (request.params.tool === "publish_artifact") {
         const pending = withKeyLock(teamParentLocks, request.params.threadId, () =>
           handlePublishArtifact(request, store, projection),
@@ -3006,6 +3096,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
   }, 30_000);
   teamWatchdogTimer.unref();
   const bridgeTeamStateHandler = (state: string) => {
+    if (state !== "ready") legacyMessagingConfigured.clear();
     if (state === "ready" || teamContinuationsClosed) return;
     teamContinuationsPaused = true;
     for (const timer of capacityRetryTimers.values()) clearTimeout(timer);
@@ -3213,6 +3304,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
         }
       }
     } else if (event.type === "thread.removed") {
+      legacyMessagingConfigured.delete(event.threadId);
       const timer = capacityRetryTimers.get(event.threadId);
       if (timer) clearTimeout(timer);
       capacityRetryTimers.delete(event.threadId);
@@ -3276,6 +3368,7 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
       parsed.pathname === "/api/v1/health" ||
       parsed.pathname.startsWith("/api/v1/internal/restart/") ||
       parsed.pathname.startsWith("/api/v1/internal/browser-mcp/") ||
+      parsed.pathname.startsWith(SESSION_MCP_PATH) ||
       parsed.pathname === "/api/v1/events" ||
       parsed.pathname === "/api/v1/browser-extension/events"
     )
@@ -5441,6 +5534,9 @@ export function registerApi(app: FastifyInstance, services: ApiServices): void {
             : {}),
           ...(sourceMeta?.sessionArtifactsVersion === 1
             ? { sessionArtifactsVersion: 1 as const }
+            : {}),
+          ...(sourceMeta?.sessionMessagingToolAvailable
+            ? { sessionMessagingToolAvailable: true as const }
             : {}),
         };
         if (state.messageQueues) delete state.messageQueues[forked.id];
@@ -8883,11 +8979,29 @@ function managedChildResumeSettings(
   });
 }
 
-async function markRootToolsAvailable(store: StateStore, threadId: string): Promise<void> {
+function newRootHasSessionMessagingTool(tools: unknown): boolean {
+  return (
+    Array.isArray(tools) &&
+    tools.some(
+      (namespace) =>
+        isRecord(namespace) &&
+        namespace.name === "codexnest" &&
+        Array.isArray(namespace.tools) &&
+        namespace.tools.some((tool) => isRecord(tool) && tool.name === SESSION_SEND_TOOL.name),
+    )
+  );
+}
+
+async function markRootToolsAvailable(
+  store: StateStore,
+  threadId: string,
+  hasMessagingTool: boolean,
+): Promise<void> {
   await store.update((state) => {
     const meta = state.threadMeta[threadId] ?? { pinned: false, lastReadUpdatedAt: 0 };
     meta.managedTeamToolsAvailable = true;
     meta.sessionArtifactsVersion = 1;
+    if (hasMessagingTool) meta.sessionMessagingToolAvailable = true;
     state.threadMeta[threadId] = meta;
   });
 }
@@ -9052,15 +9166,6 @@ function threadSettings(
     serviceTier: sessionServiceTier(settings, models),
     personality: settings.personality,
   });
-}
-
-function runtimeConfigOverride(
-  browserExtension: BrowserExtensionServer | undefined,
-  threadId: string,
-  base: Record<string, unknown>,
-): Record<string, unknown> {
-  const config = browserExtension?.runtimeConfig(threadId, base) ?? base;
-  return Object.keys(config).length ? { config } : {};
 }
 
 function browserResumeParams(

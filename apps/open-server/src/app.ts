@@ -1,3 +1,4 @@
+import { registerSessionMessaging } from "@nest-apps/kanban";
 import { timingSafeEqual } from "node:crypto";
 import { access, mkdir, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -176,7 +177,17 @@ export async function buildApp(engine: Engine) {
   registerSkillRoutes(app, engine);
   registerSearchRoutes(app, engine);
   registerForkRoutes(app, engine);
-  await registerWorkflows(app, engine);
+  const messaging = registerSessionMessaging(app, {
+    provider: "open",
+    port: config.port,
+    credential: config.token,
+    thread: (id) => {
+      const thread = Object.hasOwn(engine.data.threads, id) ? engine.data.threads[id] : undefined;
+      return thread && !thread.workflow?.parentId ? engine.summary(id) : undefined;
+    },
+    enqueue: (id, input, clientMessageId) => engine.send(id, { input, clientMessageId }, true),
+  });
+  await registerWorkflows(app, engine, messaging.send);
   const { voice } = await registerVoiceRoutes(app, engine);
   await registerOpenKanban(app, engine, voice);
   engine.enableCapabilities({

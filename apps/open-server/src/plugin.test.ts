@@ -74,6 +74,20 @@ describe("OpenNest native tool identity", () => {
     expect(f.operations.size).toBe(1);
     expect(f.requests).toHaveLength(2);
   });
+  it("routes session messages with the native sender identity", async () => {
+    const f = await fixture();
+    const args = { session: "Session: CodexNest\nID: target", message: "How did the check go?" };
+    await f.plugin.tool!.codexnest_send_message!.execute(args, f.context("call_send"));
+    expect(f.requests).toEqual([
+      {
+        tool: "send_message",
+        sessionID: "ses_fixture",
+        messageID: "msg_same_assistant",
+        callID: "call_send",
+        args,
+      },
+    ]);
+  });
   it("rejects missing native identity and never accepts a model argument as its replacement", async () => {
     const f = await fixture();
     const execute = f.plugin.tool!.get_goal!.execute;

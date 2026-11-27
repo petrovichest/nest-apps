@@ -1,3 +1,4 @@
+import { buildApp } from "./app";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -77,6 +78,53 @@ async function setup() {
 }
 
 describe("Gemini session ownership", () => {
+  it("loads the session tool and queues a message addressed to another chat by its copied native ID", async () => {
+    const { engine, fake, thread, project, config } = await setup();
+    const app = await buildApp(engine);
+    try {
+      await engine.send(thread.id, { input: "Start the recipient", clientMessageId: "first" });
+      const sender = (await engine.createThread(project.id, "sender")).thread;
+      await engine.send(sender.id, { input: "Start the sender", clientMessageId: "second" });
+      const loaded = fake.calls.filter(({ method }) => method === "session/new").at(-1)!.params
+        .mcpServers as Array<{
+        name: string;
+        url: string;
+        headers: Array<{ name: string; value: string }>;
+      }>;
+      const messaging = loaded.find(({ name }) => name === "nest_sessions")!;
+      expect(messaging.url).toContain(
+        `127.0.0.1:${config.port}/api/v1/internal/session-mcp/${sender.id}`,
+      );
+      const response = await app.inject({
+        method: "POST",
+        url: new URL(messaging.url).pathname,
+        headers: Object.fromEntries(messaging.headers.map(({ name, value }) => [name, value])),
+        payload: {
+          jsonrpc: "2.0",
+          method: "tools/call",
+          id: 1,
+          params: {
+            name: "send_message",
+            arguments: {
+              session: "Сессия: GeminiNest\nID: native-session",
+              message: "Уточни результат",
+            },
+          },
+        },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(JSON.parse(response.json().result.content[0].text)).toMatchObject({
+        status: "queued",
+      });
+      expect(engine.detail(thread.id).queuedMessages).toEqual([
+        expect.objectContaining({ text: expect.stringContaining("Уточни результат") }),
+      ]);
+      expect(fake.calls.filter(({ method }) => method === "session/prompt")).toHaveLength(2);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("admits an input once, streams native events and rejects ID reuse", async () => {
     const { engine, fake, thread } = await setup();
     const message = { input: "hello", clientMessageId: "one" };
