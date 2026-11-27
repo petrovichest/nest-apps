@@ -425,11 +425,14 @@ describe("KanbanBoard", () => {
     installRecorder();
     let finishUpload!: (value: Board) => void;
     api.createKanbanCard.mockReturnValueOnce(new Promise((resolve) => (finishUpload = resolve)));
-    let reader: FileReader | undefined;
+    let finishRead: (() => void) | undefined;
     const read = vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (
       this: FileReader,
     ) {
-      reader = this;
+      finishRead = () => {
+        Object.defineProperty(this, "result", { value: "data:audio/webm;base64,YXVkaW8=" });
+        this.dispatchEvent(new Event("load"));
+      };
     });
     try {
       show(voice, undefined, [], [project, secondProject]);
@@ -438,13 +441,10 @@ describe("KanbanBoard", () => {
       fireEvent.click(
         await screen.findByRole("button", { name: "Остановить запись и создать задачу" }),
       );
-      expect(reader).toBeDefined();
+      expect(finishRead).toBeDefined();
       expect(api.createKanbanCard).not.toHaveBeenCalled();
       expectProjectSwitchBlocked();
-      await act(async () => {
-        Object.defineProperty(reader!, "result", { value: "data:audio/webm;base64,YXVkaW8=" });
-        reader!.dispatchEvent(new Event("load"));
-      });
+      await act(async () => finishRead!());
       expect(api.createKanbanCard).toHaveBeenCalledExactlyOnceWith(
         project.id,
         expect.objectContaining({ audio: expect.objectContaining({ data: "YXVkaW8=" }) }),
