@@ -119,10 +119,7 @@ test("files dropped on history attach to the draft with upload feedback and imag
 test.describe("mobile chat composer", () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
 
-  test("touch opens attachments and submits from the focused textarea", async ({
-    page,
-    browserName,
-  }, info) => {
+  test("touch opens attachments and submits from the focused textarea", async ({ page }, info) => {
     await openChat(page, "dark");
     const text = "Проверка отправки касанием";
     await page.route("**/api/v1/threads/session-main/queue", async (route) => {
@@ -155,16 +152,14 @@ test.describe("mobile chat composer", () => {
     await expect(textarea).toBeFocused();
     await page.screenshot({ path: info.outputPath("chat-touch-attachments.png") });
 
-    // Mobile WebKit can handle the activation without exposing a native filechooser event.
-    const chooser = browserName === "chromium" ? page.waitForEvent("filechooser") : null;
+    const chooser = page.waitForEvent("filechooser");
     await menu.getByRole("button", { name: "Добавить изображения", exact: true }).tap();
-    await expect(page.locator('.composer-toolbar input[type="file"]')).toHaveAttribute(
-      "accept",
-      "image/*",
-    );
+    const picker = await chooser;
+    expect(await picker.element().getAttribute("accept")).toBe("image/*");
     await expect(menu).toBeHidden();
-    if (chooser) await (await chooser).setFiles([]);
+    await picker.setFiles([]);
     await textarea.focus();
+    await expect(textarea).toBeFocused();
 
     const delivered = page.waitForResponse(
       (response) =>

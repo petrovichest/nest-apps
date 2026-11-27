@@ -1127,13 +1127,7 @@ export function Composer({
     input.accept = imagesOnly || !onUploadFiles ? "image/*" : "";
     input.value = "";
     setAttachmentPickerOpen(false);
-    try {
-      if (typeof input.showPicker === "function") input.showPicker();
-      else input.click();
-    } catch {
-      // Cross-origin embedded clients can disallow showPicker while allowing file-input clicks.
-      input.click();
-    }
+    input.click();
   }
 
   function captureInsertionPoint() {

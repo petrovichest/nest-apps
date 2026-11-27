@@ -875,11 +875,9 @@ describe("Composer", () => {
   });
 
   describe("file attachments", () => {
-    it("opens an attachment menu, selects file types, and falls back when showPicker is blocked", () => {
+    it("opens the file input with the chosen attachment types", () => {
       const view = render(<Composer {...composerCards({ onUploadFiles: vi.fn() })} />);
       const input = view.container.querySelector<HTMLInputElement>('input[type="file"]')!;
-      const showPicker = vi.fn();
-      Object.defineProperty(input, "showPicker", { configurable: true, value: showPicker });
       const click = vi.spyOn(input, "click").mockImplementation(() => undefined);
       const trigger = screen.getByRole("button", { name: "Добавить файлы" });
       trigger.focus();
@@ -889,12 +887,9 @@ describe("Composer", () => {
       expect(within(menu).getByRole("button", { name: "Добавить файлы" })).toHaveFocus();
       fireEvent.click(within(menu).getByRole("button", { name: "Добавить изображения" }));
       expect(input.accept).toBe("image/*");
-      expect(showPicker).toHaveBeenCalledOnce();
+      expect(click).toHaveBeenCalledOnce();
       expect(screen.queryByRole("dialog", { name: "Вложения" })).toBeNull();
 
-      showPicker.mockImplementation(() => {
-        throw new DOMException("Blocked", "SecurityError");
-      });
       fireEvent.click(trigger);
       fireEvent.click(
         within(screen.getByRole("dialog", { name: "Вложения" })).getByRole("button", {
@@ -902,7 +897,7 @@ describe("Composer", () => {
         }),
       );
       expect(input.accept).toBe("");
-      expect(click).toHaveBeenCalledOnce();
+      expect(click).toHaveBeenCalledTimes(2);
     });
 
     it("dismisses the menu with Escape and an outside pointer without stopping a task", () => {
