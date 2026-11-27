@@ -549,6 +549,7 @@ test.describe("kanban project switcher above the mobile keyboard", () => {
     await results.evaluate((list) => (list.scrollTop = list.scrollHeight));
     expect(await results.evaluate((list) => list.scrollTop)).toBeGreaterThan(0);
     expect((await search.boundingBox())!.y).toBe(searchTop);
+    await expectFullyHittable(results.getByRole("button").last(), results);
     await search.fill("  ПРОекТ 12  ");
     await expect(results.getByRole("button")).toHaveText(["Проект 12"]);
     expect(await results.evaluate((list) => list.scrollTop)).toBe(0);
