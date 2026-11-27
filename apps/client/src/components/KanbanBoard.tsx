@@ -1428,7 +1428,9 @@ function ProjectKanbanBoard({
                             key={item.id}
                             aria-pressed={category === item.id}
                             onClick={(event) => {
-                              event.currentTarget.closest("details")?.removeAttribute("open");
+                              const menu = event.currentTarget.closest("details")!;
+                              menu.open = false;
+                              menu.querySelector("summary")?.focus();
                               setCategory(item.id);
                             }}
                           >
