@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
@@ -42,7 +43,7 @@ import { Composer, type ComposerImage, type ComposerRecording } from "./Composer
 import { initialSessionSettings } from "./ThreadPage";
 import { localizeKnownServerText, useI18n, type Translate } from "../i18n";
 import { threadMarkerClasses } from "../thread-status";
-import { Dialog } from "./Dialog";
+import { Dialog, keepTabFocus } from "./Dialog";
 import {
   ArchiveIcon,
   ArrowLeftIcon,
@@ -109,6 +110,23 @@ type LaneLayout = { widths: Record<string, number>; collapsed: Record<string, bo
 const LAYOUT_KEY = `${application.storagePrefix}.kanbanLayout`;
 const LANE_MIN_WIDTH = 200;
 const LANE_MAX_WIDTH = 640;
+const OVERLAY_PANEL_QUERY = "(max-width: 1279px)";
+
+function subscribePanelLayout(onChange: () => void) {
+  const media = window.matchMedia?.(OVERLAY_PANEL_QUERY);
+  media?.addEventListener("change", onChange);
+  return () => media?.removeEventListener("change", onChange);
+}
+
+function overlayPanelLayout() {
+  return window.matchMedia?.(OVERLAY_PANEL_QUERY).matches ?? false;
+}
+
+function restorePanelFocus(...candidates: (HTMLElement | null)[]) {
+  requestAnimationFrame(() => {
+    candidates.find((element) => element?.getClientRects().length)?.focus({ preventScroll: true });
+  });
+}
 const clampLane = (value: number) =>
   Math.round(Math.min(LANE_MAX_WIDTH, Math.max(LANE_MIN_WIDTH, value)));
 
@@ -302,7 +320,6 @@ function ProjectKanbanBoard({
     projectId: string;
     options?: WorkerProfile[];
   }>();
-  const workerPickerId = useId();
   const [taskDraft, setTaskDraft] = useState<BoardTaskDraft>(EMPTY_TASK_DRAFT);
   const pickWorker = dialog === "create" || cardId !== null;
   useEffect(() => {
@@ -330,97 +347,21 @@ function ProjectKanbanBoard({
     return !projectWorkers || projectWorkers.some((worker) => worker.id === id) ? id : undefined;
   }
 
-  function workerPicker(value: string | undefined, onChange: (id: string) => void, field: string) {
-    const workers = projectWorkers ?? [];
-    value = availableWorkerId(value);
-    const options = [{ id: "", name: t("Стандартная сессия") }, ...workers];
-    if (value && !options.some(({ id }) => id === value))
-      options.push({ id: value, name: t("Назначенный работник") });
-    const selected = options.find(({ id }) => id === (value ?? ""))!;
-    const valueId = `${workerPickerId}-${field}-value`;
-    const label = t("Исполнитель");
-    return (
-      <div className="kanban-assignee-field">
-        <span>{label}</span>
-        <details
-          className="thread-action-menu kanban-assignee"
-          data-dismiss-on-outside-click
-          onBlur={(event) => {
-            if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
-              event.currentTarget.open = false;
-          }}
-          onKeyDown={(event) => {
-            const menu = event.currentTarget;
-            const trigger = menu.querySelector("summary");
-            if (event.key === "Escape" && menu.open) {
-              event.preventDefault();
-              event.stopPropagation();
-              menu.open = false;
-              trigger?.focus();
-              return;
-            }
-            if (busy || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-            event.preventDefault();
-            menu.open = true;
-            const items = [...menu.querySelectorAll("button")];
-            const current = items.findIndex((item) => item === document.activeElement);
-            let next = event.key === "ArrowUp" ? items.length - 1 : 0;
-            if (event.key === "End") next = items.length - 1;
-            if (current >= 0 && event.key.startsWith("Arrow")) {
-              const direction = event.key === "ArrowDown" ? 1 : -1;
-              next = (current + direction + items.length) % items.length;
-            }
-            items[next]?.focus();
-          }}
-        >
-          <summary
-            className="kanban-assignee-trigger"
-            aria-label={label}
-            aria-describedby={valueId}
-            aria-disabled={busy || undefined}
-            onClick={(event) => {
-              if (busy) event.preventDefault();
-            }}
-          >
-            <span id={valueId}>{selected.name}</span>
-            <ChevronDownIcon />
-          </summary>
-          <div
-            className="action-menu-popover kanban-assignee-options"
-            role="group"
-            aria-label={label}
-          >
-            {options.map(({ id, name }) => (
-              <button
-                key={id}
-                type="button"
-                disabled={busy}
-                aria-pressed={id === selected.id}
-                onClick={(event) => {
-                  const menu = event.currentTarget.closest("details")!;
-                  menu.open = false;
-                  menu.querySelector("summary")?.focus();
-                  if (id !== selected.id) onChange(id);
-                }}
-              >
-                <CheckIcon aria-hidden="true" />
-                <span>{name}</span>
-              </button>
-            ))}
-          </div>
-        </details>
-      </div>
-    );
-  }
-
   const taskDraftRef = useRef(taskDraft);
   const taskDraftSave = useRef<{ projectId: string; timer: number } | null>(null);
   const taskCreationId = useRef(uuid());
   const alive = useRef(true);
   const requestGeneration = useRef(0);
   const resize = useRef<{ id: string; x: number; width: number } | null>(null);
-  const opener = useRef<HTMLElement | null>(null);
+  const cardOpener = useRef<HTMLElement | null>(null);
+  const archiveOpener = useRef<HTMLElement | null>(null);
+  const archiveButton = useRef<HTMLButtonElement>(null);
+  const compactActions = useRef<HTMLElement>(null);
+  const addTaskButton = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
   const panelTitle = useRef<HTMLHeadingElement>(null);
+  const archiveTitle = useRef<HTMLElement>(null);
+  const overlayPanel = useSyncExternalStore(subscribePanelLayout, overlayPanelLayout);
   const dropRef = useRef<{ stageId: string; beforeCardId: string | null } | null>(null);
   const lift = useRef<{
     cardId: string;
@@ -550,7 +491,11 @@ function ProjectKanbanBoard({
     if (!board || (!threadParam && !cardParam)) return;
     const run = threadParam ? board.runs.find((item) => item.threadId === threadParam) : undefined;
     const id = board.cards.some((item) => item.id === cardParam) ? cardParam : run?.cardIds[0];
-    if (id) setCardId(id);
+    if (id) {
+      cardOpener.current = null;
+      setArchiveOpen(false);
+      setCardId(id);
+    }
     setSearchParams(
       (params) => {
         params.delete("thread");
@@ -560,10 +505,6 @@ function ProjectKanbanBoard({
       { replace: true },
     );
   }, [board, threadParam, cardParam, setSearchParams]);
-
-  useEffect(() => {
-    if (cardId) panelTitle.current?.focus();
-  }, [cardId]);
 
   async function mutate(operation: () => Promise<Board>): Promise<boolean> {
     if (!alive.current || busy) return false;
@@ -724,17 +665,55 @@ function ProjectKanbanBoard({
       suppressClick.current = false;
       return;
     }
-    opener.current = from;
+    cardOpener.current = from;
     setArchiveOpen(false);
     setCardId(id);
   };
   const closeCard = useCallback(() => {
     setCardId(null);
-    const target = opener.current;
-    if (target?.isConnected) requestAnimationFrame(() => target.focus());
+    restorePanelFocus(cardOpener.current, addTaskButton.current);
+  }, []);
+  const openArchive = (from: HTMLElement | null) => {
+    archiveOpener.current = from;
+    setCardId(null);
+    setArchiveOpen(true);
+  };
+  const closeArchive = useCallback(() => {
+    setArchiveOpen(false);
+    restorePanelFocus(archiveOpener.current, archiveButton.current, compactActions.current);
   }, []);
 
   const card = board?.cards.find((item) => item.id === cardId) ?? null;
+  const archiveVisible = !card && archiveOpen && board !== null;
+  const panelOpen = card !== null || archiveVisible;
+  const modalPanel = panelOpen && overlayPanel;
+  const openCardId = card?.id;
+
+  useLayoutEffect(() => {
+    if (openCardId) panelTitle.current?.focus();
+    else if (archiveVisible) archiveTitle.current?.focus();
+  }, [openCardId, archiveVisible]);
+
+  useLayoutEffect(() => {
+    const surface = panel.current;
+    if (!modalPanel || !surface) return;
+    if (!surface.contains(document.activeElement))
+      (panelTitle.current ?? archiveTitle.current)?.focus();
+    const content = surface.closest(".content");
+    if (!content?.parentElement) return;
+    // The app navigation and notices are outside the workspace. Portalled dialogs stay available.
+    const workspace = surface.closest(".kanban-workspace");
+    const background = [...content.parentElement.children, ...content.children].filter(
+      (element): element is HTMLElement =>
+        element instanceof HTMLElement &&
+        element !== content &&
+        element !== workspace &&
+        !element.inert,
+    );
+    background.forEach((element) => (element.inert = true));
+    return () => background.forEach((element) => (element.inert = false));
+  }, [modalPanel]);
+
   const cardRuns = card
     ? board!.runs
         .filter((run) => run.cardIds.includes(card.id) && run.kind !== "classify")
@@ -789,17 +768,30 @@ function ProjectKanbanBoard({
   })();
 
   useEffect(() => {
-    if ((!card && !archiveOpen) || dialog || confirm) return;
+    if (!panelOpen || dialog || confirm || editStage) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented || busy) return;
-      if ((event.target as Element | null)?.closest?.("details[open], input, textarea, select"))
-        return;
-      if (card) closeCard();
-      else setArchiveOpen(false);
+      if (event.defaultPrevented || event.isComposing) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.('[role="dialog"]') && !panel.current?.contains(target)) return;
+      if (event.key === "Tab" && modalPanel && panel.current) keepTabFocus(event, panel.current);
+      if (event.key !== "Escape" || busy) return;
+      if (target?.closest?.("details[open], input, textarea, select")) return;
+      if (openCardId) closeCard();
+      else closeArchive();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [card, archiveOpen, dialog, confirm, busy, closeCard]);
+  }, [
+    panelOpen,
+    modalPanel,
+    openCardId,
+    dialog,
+    confirm,
+    editStage,
+    busy,
+    closeCard,
+    closeArchive,
+  ]);
 
   // Touch: a long press lifts a card; moving the finger reorders it within its stage.
   const touchState = useRef({ board, busy, dropCard });
@@ -1181,7 +1173,11 @@ function ProjectKanbanBoard({
           <h2>{name}</h2>
           <span className="kanban-lane-count">{cards.length}</span>
           <span className="kanban-lane-head-actions">
-            <details className="thread-action-menu kanban-lane-menu" data-dismiss-on-outside-click>
+            <details
+              className="thread-action-menu kanban-lane-menu"
+              data-dismiss-on-outside-click
+              onKeyDown={handleMenuKey}
+            >
               <summary
                 className="icon-button"
                 aria-label={t("Действия со стадией «{{name}}»", { name })}
@@ -1343,8 +1339,8 @@ function ProjectKanbanBoard({
   const canSwitchProject = projects.length > (project ? 1 : 0);
 
   return (
-    <div className={`thread-workspace kanban-workspace${card || archiveOpen ? " has-panel" : ""}`}>
-      <section className="conversation-pane kanban-pane">
+    <div className={`thread-workspace kanban-workspace${panelOpen ? " has-panel" : ""}`}>
+      <section className="conversation-pane kanban-pane" inert={modalPanel}>
         <WorkspaceHeader
           title={t("Доска задач")}
           subtitle={canSwitchProject ? undefined : projectName}
@@ -1367,7 +1363,7 @@ function ProjectKanbanBoard({
                   <details
                     className="thread-action-menu kanban-category-filter"
                     data-dismiss-on-outside-click
-                    onKeyDown={handleHeaderPickerKey}
+                    onKeyDown={handleMenuKey}
                   >
                     <summary className="kanban-filter" aria-label={t("Категория")}>
                       <span>
@@ -1402,12 +1398,13 @@ function ProjectKanbanBoard({
                   </details>
                 )}
                 <button
+                  ref={archiveButton}
                   className="icon-button kanban-archive-button"
                   aria-label={t("Архив")}
                   aria-pressed={archiveOpen}
-                  onClick={() => {
-                    setCardId(null);
-                    setArchiveOpen((open) => !open);
+                  onClick={(event) => {
+                    if (archiveOpen) closeArchive();
+                    else openArchive(event.currentTarget);
                   }}
                 >
                   <ArchiveIcon />
@@ -1415,9 +1412,9 @@ function ProjectKanbanBoard({
                 <details
                   className="thread-action-menu kanban-filter-menu"
                   data-dismiss-on-outside-click
-                  onKeyDown={handleHeaderPickerKey}
+                  onKeyDown={handleMenuKey}
                 >
-                  <summary className="icon-button" aria-label={t("Ещё")}>
+                  <summary ref={compactActions} className="icon-button" aria-label={t("Ещё")}>
                     <MoreIcon />
                   </summary>
                   <div className="action-menu-popover">
@@ -1443,8 +1440,7 @@ function ProjectKanbanBoard({
                       aria-pressed={archiveOpen}
                       onClick={(event) => {
                         event.currentTarget.closest("details")?.removeAttribute("open");
-                        setCardId(null);
-                        setArchiveOpen(true);
+                        openArchive(compactActions.current);
                       }}
                     >
                       <ArchiveIcon /> {t("Архив")}
@@ -1458,6 +1454,7 @@ function ProjectKanbanBoard({
                   onPendingRecordingChange={changePendingRecordings}
                 />
                 <button
+                  ref={addTaskButton}
                   className="kanban-add-button"
                   aria-label={t("Добавить задачу")}
                   onClick={() => setDialog("create")}
@@ -1638,9 +1635,13 @@ function ProjectKanbanBoard({
       </section>
       {card && board && (
         <>
-          <aside
+          <div
+            ref={panel}
             className="session-inspector open kanban-panel"
+            role={modalPanel ? "dialog" : "complementary"}
+            aria-modal={modalPanel || undefined}
             aria-labelledby="kanban-card-title"
+            tabIndex={-1}
           >
             <div className="inspector-heading">
               <strong>{t("Задача")}</strong>
@@ -1648,6 +1649,7 @@ function ProjectKanbanBoard({
                 <details
                   className="thread-action-menu kanban-panel-menu"
                   data-dismiss-on-outside-click
+                  onKeyDown={handleMenuKey}
                 >
                   <summary className="icon-button" aria-label={t("Действия с задачей")}>
                     <MoreIcon />
@@ -1778,14 +1780,17 @@ function ProjectKanbanBoard({
                     ))}
                   </select>
                 </label>
-                {workerPicker(
-                  card.workerId,
-                  (id) =>
+                <KanbanWorkerPicker
+                  key={card.id}
+                  value={availableWorkerId(card.workerId)}
+                  workers={projectWorkers}
+                  busy={busy}
+                  onChange={(id) =>
                     void mutate(() =>
                       api.updateKanbanCard(projectId, card.id, { workerId: id || null }),
-                    ),
-                  "card",
-                )}
+                    )
+                  }
+                />
               </div>
               {card.question && <p className="kanban-card-question">{card.question}</p>}
               {card.error && (
@@ -2003,28 +2008,31 @@ function ProjectKanbanBoard({
                 </section>
               )}
             </div>
-          </aside>
+          </div>
           <button
             className="inspector-backdrop"
-            aria-label={t("Закрыть задачу")}
+            aria-hidden="true"
+            tabIndex={-1}
             onClick={closeCard}
             disabled={busy}
           />
         </>
       )}
-      {!card && archiveOpen && board && (
+      {archiveVisible && board && (
         <>
-          <aside
+          <div
+            ref={panel}
             className="session-inspector open kanban-panel"
+            role={modalPanel ? "dialog" : "complementary"}
+            aria-modal={modalPanel || undefined}
             aria-labelledby="kanban-archive-title"
+            tabIndex={-1}
           >
             <div className="inspector-heading">
-              <strong id="kanban-archive-title">{t("Архив")}</strong>
-              <button
-                className="icon-button"
-                aria-label={t("Закрыть")}
-                onClick={() => setArchiveOpen(false)}
-              >
+              <strong id="kanban-archive-title" ref={archiveTitle} tabIndex={-1}>
+                {t("Архив")}
+              </strong>
+              <button className="icon-button" aria-label={t("Закрыть")} onClick={closeArchive}>
                 <XIcon />
               </button>
             </div>
@@ -2055,11 +2063,12 @@ function ProjectKanbanBoard({
                         <span className="kanban-archive-actions">
                           <button
                             disabled={busy}
-                            onClick={() =>
+                            onClick={() => {
+                              archiveTitle.current?.focus({ preventScroll: true });
                               void mutate(() =>
                                 api.updateKanbanCard(projectId, item.id, { archived: false }),
-                              )
-                            }
+                              );
+                            }}
                           >
                             <RefreshIcon /> {t("Вернуть")}
                           </button>
@@ -2077,11 +2086,12 @@ function ProjectKanbanBoard({
                 </ul>
               )}
             </div>
-          </aside>
+          </div>
           <button
             className="inspector-backdrop"
-            aria-label={t("Закрыть архив")}
-            onClick={() => setArchiveOpen(false)}
+            aria-hidden="true"
+            tabIndex={-1}
+            onClick={closeArchive}
           />
         </>
       )}
@@ -2110,7 +2120,13 @@ function ProjectKanbanBoard({
             <button
               className="danger"
               disabled={busy}
-              onClick={() => void mutate(confirmation.run).then((ok) => ok && setConfirm(null))}
+              onClick={() =>
+                void mutate(confirmation.run).then((ok) => {
+                  if (!ok) return;
+                  setConfirm(null);
+                  if (archiveVisible) restorePanelFocus(archiveTitle.current);
+                })
+              }
             >
               {busy ? t("Удаляем…") : confirmation.label}
             </button>
@@ -2141,6 +2157,7 @@ function ProjectKanbanBoard({
         <Dialog
           titleId="kanban-create-title"
           className="chat-dialog kanban-text-dialog kanban-task-dialog"
+          backdropClassName="kanban-task-backdrop"
           closeOnBackdrop={!busy}
           closeOnEscape={!busy}
           onClose={() => setDialog(null)}
@@ -2157,11 +2174,14 @@ function ProjectKanbanBoard({
             </button>
           </div>
           <div className="kanban-panel-fields kanban-worker-picker">
-            {workerPicker(
-              taskDraft.workerId,
-              (id) => editTaskDraft({ ...taskDraftRef.current, workerId: id || undefined }),
-              "draft",
-            )}
+            <KanbanWorkerPicker
+              value={availableWorkerId(taskDraft.workerId)}
+              workers={projectWorkers}
+              busy={busy}
+              onChange={(id) =>
+                editTaskDraft({ ...taskDraftRef.current, workerId: id || undefined })
+              }
+            />
           </div>
           <Composer
             autoFocus
@@ -2231,12 +2251,13 @@ function ProjectKanbanBoard({
   );
 }
 
-function handleHeaderPickerKey(event: ReactKeyboardEvent<HTMLDetailsElement>) {
+function handleMenuKey(event: ReactKeyboardEvent<HTMLDetailsElement>) {
   const menu = event.currentTarget;
   if (event.key === "Escape" && menu.open) {
     event.preventDefault();
+    event.stopPropagation();
     menu.open = false;
-    menu.querySelector("summary")?.focus();
+    menu.querySelector("summary")?.focus({ preventScroll: true });
     return;
   }
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -2250,6 +2271,228 @@ function handleHeaderPickerKey(event: ReactKeyboardEvent<HTMLDetailsElement>) {
     next = (current + direction + options.length) % options.length;
   }
   options[next]?.focus();
+}
+
+function fitAssigneePopover(picker: HTMLDetailsElement, popover: HTMLDivElement) {
+  const viewport = window.visualViewport;
+  const viewportTop = viewport?.offsetTop ?? 0;
+  const viewportHeight = viewport?.height ?? window.innerHeight;
+  const viewportBottom = viewportTop + viewportHeight;
+  const scrollArea = picker.closest(".kanban-panel-body");
+  if (!scrollArea) {
+    // Creation reserves space for the list inside the dialog, including above the keyboard.
+    const backdrop = picker.closest<HTMLElement>(".kanban-task-backdrop");
+    backdrop?.style.setProperty("--kanban-task-view-top", `${viewportTop}px`);
+    backdrop?.style.setProperty(
+      "--kanban-task-view-bottom",
+      `${window.innerHeight - viewportBottom}px`,
+    );
+    popover.style.setProperty("--kanban-assignee-room", `${Math.max(0, viewportHeight - 76)}px`);
+    popover.scrollIntoView?.({ block: "nearest" });
+    return;
+  }
+
+  const area = scrollArea.getBoundingClientRect();
+  const anchor = picker.getBoundingClientRect();
+  if (anchor.bottom <= area.top || anchor.top >= area.bottom) {
+    picker.open = false;
+    return;
+  }
+
+  const gutter = 8;
+  const top = Math.max(area.top, viewportTop) + gutter;
+  const bottom = Math.min(area.bottom, viewportBottom) - gutter;
+  const belowStart = Math.max(anchor.bottom, top) + gutter;
+  const fieldTop = picker.parentElement?.getBoundingClientRect().top ?? anchor.top;
+  const aboveEnd = Math.min(fieldTop, bottom) - gutter;
+  const below = bottom - belowStart;
+  const above = aboveEnd - top;
+  const opensBelow = below >= 328 || below >= above;
+  // When the keyboard leaves very little room, use the visible area for search and its results.
+  const alignToViewport = Math.max(below, above) < 112;
+  popover.style.top = alignToViewport
+    ? `${top - anchor.top}px`
+    : opensBelow
+      ? `${belowStart - anchor.top}px`
+      : "auto";
+  popover.style.bottom = !alignToViewport && !opensBelow ? `${anchor.bottom - aboveEnd}px` : "auto";
+  const room = alignToViewport ? bottom - top : opensBelow ? below : above;
+  popover.style.setProperty("--kanban-assignee-room", `${Math.max(0, room)}px`);
+}
+
+function KanbanWorkerPicker({
+  workers = [],
+  value,
+  busy,
+  onChange,
+}: {
+  workers?: WorkerProfile[];
+  value?: string;
+  busy: boolean;
+  onChange(id: string): void;
+}) {
+  const { t } = useI18n();
+  const menu = useRef<HTMLDetailsElement>(null);
+  const popover = useRef<HTMLDivElement>(null);
+  const search = useRef<HTMLInputElement>(null);
+  const results = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const valueId = useId();
+  const resultsId = `${valueId}-options`;
+  const label = t("Исполнитель");
+  const searchLabel = t("Найти работника");
+  const options = [{ id: "", name: t("Стандартная сессия") }, ...workers];
+  if (value && !options.some(({ id }) => id === value))
+    options.push({ id: value, name: t("Назначенный работник") });
+  const selected = options.find(({ id }) => id === (value ?? ""))!;
+  const term = query.trim().toLowerCase();
+  const matches = term ? options.filter(({ name }) => name.toLowerCase().includes(term)) : options;
+
+  useLayoutEffect(() => {
+    const picker = menu.current;
+    const popup = popover.current;
+    if (!open || !picker?.open || !popup) return;
+    const area = picker.closest(".kanban-panel-body");
+    const backdrop = picker.closest<HTMLElement>(".kanban-task-backdrop");
+    const viewport = window.visualViewport;
+    const fit = () => fitAssigneePopover(picker, popup);
+    fit();
+    area?.addEventListener("scroll", fit, { passive: true });
+    window.addEventListener("resize", fit);
+    viewport?.addEventListener("resize", fit);
+    viewport?.addEventListener("scroll", fit);
+    return () => {
+      area?.removeEventListener("scroll", fit);
+      window.removeEventListener("resize", fit);
+      viewport?.removeEventListener("resize", fit);
+      viewport?.removeEventListener("scroll", fit);
+      backdrop?.style.removeProperty("--kanban-task-view-top");
+      backdrop?.style.removeProperty("--kanban-task-view-bottom");
+    };
+  }, [open]);
+
+  function openPicker(picker: HTMLDetailsElement) {
+    setQuery("");
+    if (results.current) results.current.scrollTop = 0;
+    picker.open = true;
+    if (popover.current) fitAssigneePopover(picker, popover.current);
+    // iOS only opens the keyboard when the search receives focus in the opening gesture.
+    search.current?.focus({ preventScroll: true });
+  }
+
+  function choose(id: string) {
+    const picker = menu.current;
+    if (busy || !picker?.open) return;
+    picker.open = false;
+    picker.querySelector("summary")?.focus({ preventScroll: true });
+    if (id !== selected.id) onChange(id);
+  }
+
+  function handleKey(event: ReactKeyboardEvent<HTMLDetailsElement>) {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) {
+      if (event.key === "Escape") event.stopPropagation();
+      return;
+    }
+    const picker = event.currentTarget;
+    if (!picker.open && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      if (!busy) {
+        event.preventDefault();
+        openPicker(picker);
+      }
+      return;
+    }
+    if (event.target === search.current) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (matches.length === 1) choose(matches[0]!.id);
+        return;
+      }
+      if (event.key === "Home" || event.key === "End") return;
+    }
+    handleMenuKey(event);
+  }
+
+  return (
+    <div className="kanban-assignee-field">
+      <span>{label}</span>
+      <details
+        ref={menu}
+        className="thread-action-menu kanban-assignee"
+        data-dismiss-on-outside-click
+        onBlur={(event) => {
+          if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
+            event.currentTarget.open = false;
+        }}
+        onKeyDown={handleKey}
+        onToggle={(event) => setOpen(event.currentTarget.open)}
+      >
+        <summary
+          className="kanban-assignee-trigger"
+          aria-label={label}
+          aria-describedby={valueId}
+          aria-disabled={busy || undefined}
+          onClick={(event) => {
+            event.preventDefault();
+            const picker = menu.current;
+            if (busy || !picker) return;
+            if (picker.open) {
+              picker.open = false;
+              event.currentTarget.focus({ preventScroll: true });
+            } else openPicker(picker);
+          }}
+        >
+          <span id={valueId}>{selected.name}</span>
+          <ChevronDownIcon />
+        </summary>
+        <div
+          ref={popover}
+          className="action-menu-popover kanban-assignee-popover"
+          data-long-list={options.length >= 6 || undefined}
+          role="group"
+          aria-label={label}
+        >
+          <div className="kanban-picker-search">
+            <SearchIcon aria-hidden="true" />
+            <input
+              ref={search}
+              type="search"
+              aria-label={searchLabel}
+              aria-controls={resultsId}
+              placeholder={searchLabel}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              value={query}
+              onChange={(event) => {
+                setQuery(event.currentTarget.value);
+                if (results.current) results.current.scrollTop = 0;
+              }}
+            />
+          </div>
+          <div id={resultsId} ref={results} className="kanban-assignee-options">
+            {matches.map(({ id, name }) => (
+              <button
+                key={id}
+                type="button"
+                disabled={busy}
+                aria-pressed={id === selected.id}
+                onClick={() => choose(id)}
+              >
+                <CheckIcon aria-hidden="true" />
+                <span>{name}</span>
+              </button>
+            ))}
+            {matches.length === 0 && (
+              <div className="kanban-picker-note kanban-muted" role="status">
+                {t("Совпадений нет")}
+              </div>
+            )}
+          </div>
+        </div>
+      </details>
+    </div>
+  );
 }
 
 function BoardProjectPicker({
@@ -2343,7 +2586,7 @@ function BoardProjectPicker({
       openPicker(event.currentTarget);
       return;
     }
-    handleHeaderPickerKey(event);
+    handleMenuKey(event);
   }
   return (
     <details
@@ -2382,7 +2625,7 @@ function BoardProjectPicker({
         aria-label={label}
         aria-describedby={switchBlocked ? noteId : undefined}
       >
-        <div className="kanban-project-search">
+        <div className="kanban-picker-search">
           <SearchIcon aria-hidden="true" />
           <input
             ref={searchRef}
@@ -2401,7 +2644,7 @@ function BoardProjectPicker({
           />
         </div>
         {switchBlocked && (
-          <div id={noteId} className="kanban-project-note kanban-muted">
+          <div id={noteId} className="kanban-picker-note kanban-muted">
             {t("Сначала отправьте или отмените запись.")}
           </div>
         )}
@@ -2419,7 +2662,7 @@ function BoardProjectPicker({
             </button>
           ))}
           {matches.length === 0 && (
-            <div className="kanban-project-note kanban-muted" role="status">
+            <div className="kanban-picker-note kanban-muted" role="status">
               {t("Совпадений нет")}
             </div>
           )}

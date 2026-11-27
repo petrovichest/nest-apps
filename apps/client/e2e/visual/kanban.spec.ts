@@ -1,5 +1,9 @@
-import { expect, test, type Page } from "@playwright/test";
-import type { CreateKanbanCardRequest, KanbanBoard } from "@codexnest/protocol";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import type {
+  CreateKanbanCardRequest,
+  KanbanBoard,
+  UpdateKanbanCardRequest,
+} from "@codexnest/protocol";
 import {
   DESKTOP_VIEWPORT,
   PHONE_VIEWPORT,
@@ -625,7 +629,9 @@ for (const width of [390, 1440]) {
       await page
         .getByRole("button", { name: "Изменить задачу «Убрать пробелы в адресе»", exact: true })
         .click();
-      const panel = page.getByRole("complementary", { name: "Убрать пробелы в адресе" });
+      const panel = page.getByRole(width < 1280 ? "dialog" : "complementary", {
+        name: "Убрать пробелы в адресе",
+      });
       await expect(panel.getByRole("heading", { name: "В той же сессии" })).toBeVisible();
       await expect(
         panel.getByRole("button", { name: /Сохранить настройки фильтров/ }),
@@ -783,7 +789,9 @@ for (const width of [390, 1440]) {
         await expect(waiting).toBeHidden();
       }
       await page.getByRole("button", { name: "Сохранить настройки фильтров", exact: true }).click();
-      const panel = page.getByRole("complementary", { name: "Сохранить настройки фильтров" });
+      const panel = page.getByRole(width < 1280 ? "dialog" : "complementary", {
+        name: "Сохранить настройки фильтров",
+      });
       await expect(panel).toBeVisible();
       await expect(panel.getByRole("button", { name: "Запустить агента" })).toBeVisible();
       await panel.getByRole("combobox", { name: "Стадия", exact: true }).selectOption("ready");
@@ -831,7 +839,9 @@ for (const width of [390, 1440]) {
         },
       ]);
       await page.getByRole("button", { name: "Исправить по скриншоту", exact: true }).click();
-      const saved = page.getByRole("complementary", { name: "Исправить по скриншоту" });
+      const saved = page.getByRole(width < 1280 ? "dialog" : "complementary", {
+        name: "Исправить по скриншоту",
+      });
       await expect(saved.getByText("screenshot.png", { exact: true })).toBeVisible();
       const thumbnail = saved.getByRole("button", {
         name: "Открыть изображение Изображение 1",
@@ -876,7 +886,9 @@ for (const width of [390, 1440]) {
     await page
       .getByRole("button", { name: "Изменить задачу «Добавить поиск по категориям»", exact: true })
       .click();
-    const panel = page.getByRole("complementary", { name: "Добавить поиск по категориям" });
+    const panel = page.getByRole(width < 1280 ? "dialog" : "complementary", {
+      name: "Добавить поиск по категориям",
+    });
     const description = panel.locator(".kanban-panel-description");
     const fields = panel.locator(".kanban-panel-fields");
     await expect(fields).toBeAttached();
@@ -889,3 +901,497 @@ for (const width of [390, 1440]) {
     await page.screenshot({ path: info.outputPath(`kanban-long-description-${width}.png`) });
   });
 }
+
+const accessRoute = "/projects/project-nest/kanban";
+
+async function installKanbanAccessFixture(
+  page: Page,
+  { theme = "light", language = "ru" }: { theme?: "light" | "dark"; language?: "ru" | "en" } = {},
+) {
+  const board = seedBoard();
+  const ru = language === "ru";
+  const card = board.cards[0]!;
+  const archived = {
+    ...card,
+    id: "archived",
+    title: ru ? "Карточка в архиве" : "Archived task",
+    archivedAt: board.updatedAt,
+  };
+  board.cards.push(archived);
+  card.description = Array.from({ length: 60 }, (_, index) =>
+    ru ? `Строка ${index + 1}. Проверено вручную.` : `Line ${index + 1}. Verified by hand.`,
+  ).join("\n");
+
+  const workers = Array.from({ length: 30 }, (_, index) => ({
+    id: `worker-${index + 1}`,
+    name: ru ? `Работник ${index + 1}` : `Worker ${index + 1}`,
+  }));
+  // A distinct name at the end catches reordering and gives search a unique match.
+  workers.at(-1)!.name = ru ? "Анна Морозова" : "Anna Morozova";
+
+  const headers = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": "Authorization, Content-Type",
+    "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
+  };
+  let catalogueReads = 0;
+  const patches: UpdateKanbanCardRequest[] = [];
+  const creations: CreateKanbanCardRequest[] = [];
+  await installVisualFixture(page, { language, theme });
+  await page.route("**/api/v1/workers/catalog", (route) => {
+    if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+    catalogueReads++;
+    return route.fulfill({
+      headers,
+      json: { ready: true, projects: [{ projectId: "project-nest", workers }] },
+    });
+  });
+  await page.route("**/api/v1/projects/project-nest/kanban**", async (route) => {
+    const method = route.request().method();
+    if (method === "OPTIONS") return route.fulfill({ status: 204, headers });
+    if (method === "PATCH") {
+      const patch = route.request().postDataJSON() as UpdateKanbanCardRequest;
+      patches.push(patch);
+      const cardId = new URL(route.request().url()).pathname.split("/").at(-1);
+      const updated = board.cards.find((item) => item.id === cardId)!;
+      if ("workerId" in patch) updated.workerId = patch.workerId ?? undefined;
+      if (patch.archived === false) delete updated.archivedAt;
+      board.revision++;
+    }
+    if (method === "POST") {
+      const creation = route.request().postDataJSON() as CreateKanbanCardRequest;
+      creations.push(creation);
+      board.cards.push({
+        ...card,
+        id: "created",
+        workerId: creation.workerId,
+        title: creation.description,
+        description: creation.description,
+      });
+      board.revision++;
+    }
+    await route.fulfill({ headers, json: board });
+  });
+  await page.goto(accessRoute);
+  await expect(page.getByRole("button", { name: card.title, exact: true })).toBeVisible();
+  await waitForVisualReady(page);
+  return {
+    card,
+    archived,
+    workers,
+    patches,
+    creations,
+    catalogueReads: () => catalogueReads,
+    labels: {
+      add: ru ? "Добавить задачу" : "Add task",
+      archive: ru ? "Архив" : "Archive",
+      close: ru ? "Закрыть" : "Close",
+      search: ru ? "Найти работника" : "Find a worker",
+      defaultWorker: ru ? "Стандартная сессия" : "Standard session",
+      message: ru ? "Сообщение для Codex" : "Message for Codex",
+      submit: ru ? "Отправить" : "Submit",
+    },
+  };
+}
+
+async function scrollWorkerList(page: Page, list: Locator, input: "wheel" | "swipe" | "scrollTop") {
+  const box = (await list.boundingBox())!;
+  const { distance, top } = await list.evaluate((node) => ({
+    distance: node.scrollHeight - node.clientHeight,
+    top: node.scrollTop,
+  }));
+  expect(top).toBe(0);
+  expect(distance).toBeGreaterThan(0);
+  const x = Math.round(box.x + box.width / 2);
+  const y = Math.round(box.y + box.height / 2);
+  if (input === "swipe") {
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      const start = Math.floor(box.y + box.height - 12);
+      const end = Math.ceil(box.y + 12);
+      const steps = 5;
+      const maxSwipes = Math.ceil(distance / (start - end - 24)) + 3;
+      for (let swipe = 0; swipe < maxSwipes; swipe++) {
+        const scrollTop = await list.evaluate((node) => node.scrollTop);
+        if (scrollTop >= distance - 1) break;
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x, y: start }],
+        });
+        for (let step = 1; step <= steps; step++) {
+          await cdp.send("Input.dispatchTouchEvent", {
+            type: "touchMove",
+            touchPoints: [{ x, y: Math.round(start + ((end - start) * step) / steps) }],
+          });
+        }
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await expect.poll(() => list.evaluate((node) => node.scrollTop)).toBeGreaterThan(scrollTop);
+      }
+    } finally {
+      await cdp.detach();
+    }
+  } else if (input === "wheel") {
+    await page.mouse.move(x, y);
+    await page.mouse.wheel(0, distance + 100);
+  } else {
+    // The mobile WebKit driver supports tapping, but has no wheel or swipe API.
+    await list.evaluate((node) => (node.scrollTop = node.scrollHeight));
+  }
+  await expect
+    .poll(() => list.evaluate((node) => node.scrollTop))
+    .toBeGreaterThanOrEqual(distance - 1);
+}
+
+async function expectFullyHittable(option: Locator, list: Locator) {
+  const box = (await option.boundingBox())!;
+  const listBox = (await list.boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(listBox.y - 1);
+  expect(box.y + box.height).toBeLessThanOrEqual(listBox.y + listBox.height + 1);
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  expect(
+    await option.evaluate(
+      (node, point) => node.contains(document.elementFromPoint(point.x, point.y)),
+      { x, y },
+    ),
+  ).toBe(true);
+  return { x, y };
+}
+
+for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT, { width: 320, height: 480 }]) {
+  const touch = viewport.width < 821;
+  test.describe(`Kanban worker selection ${viewport.width}x${viewport.height}`, () => {
+    test.use({ viewport, hasTouch: touch, isMobile: touch });
+
+    for (const theme of ["light", "dark"] as const) {
+      for (const language of ["ru", "en"] as const) {
+        test(`selects the last worker in the card and in creation, ${theme} ${language}`, async ({
+          page,
+          browserName,
+        }, info) => {
+          const { card, workers, patches, creations, catalogueReads, labels } =
+            await installKanbanAccessFixture(page, { theme, language });
+          const lastWorker = workers.at(-1)!;
+          const press = (locator: Locator) => (touch ? locator.tap() : locator.click());
+          for (const surface of ["edit", "create"] as const) {
+            const editing = surface === "edit";
+            const opener = page.getByRole("button", {
+              name: editing ? card.title : labels.add,
+              exact: true,
+            });
+            await press(opener);
+            const panel = page.getByRole(editing && !touch ? "complementary" : "dialog", {
+              name: editing ? card.title : labels.add,
+            });
+            const trigger = panel.locator(".kanban-assignee-trigger");
+            const list = panel.locator(".kanban-assignee-options");
+            const search = panel.getByRole("searchbox", { name: labels.search });
+            if (editing) {
+              const body = panel.locator(".kanban-panel-body");
+              await body.evaluate((node) => (node.scrollTop = node.scrollHeight));
+              expect(await body.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
+            }
+            await press(trigger);
+            await expect(search).toBeFocused();
+            await expect(list.getByRole("button")).toHaveText([
+              labels.defaultWorker,
+              ...workers.map(({ name }) => name),
+            ]);
+            const panelBounds = (await panel.boundingBox())!;
+            const listBounds = (await list.boundingBox())!;
+            expect(listBounds.y).toBeGreaterThanOrEqual(panelBounds.y);
+            expect(listBounds.y + listBounds.height).toBeLessThanOrEqual(
+              panelBounds.y + panelBounds.height,
+            );
+            const searchY = (await search.boundingBox())!.y;
+            await scrollWorkerList(
+              page,
+              list,
+              touch ? (browserName === "chromium" ? "swipe" : "scrollTop") : "wheel",
+            );
+            expect((await search.boundingBox())!.y).toBeCloseTo(searchY, 0);
+            const last = list.getByRole("button", { name: lastWorker.name });
+            const { x, y } = await expectFullyHittable(last, list);
+            if (!touch) await page.mouse.move(x, y);
+            await page.screenshot({ path: info.outputPath(`${surface}-last-worker.png`) });
+            // Use coordinates so the driver cannot auto-scroll an obscured or clipped option into view.
+            if (touch) await page.touchscreen.tap(x, y);
+            else await page.mouse.click(x, y);
+            await expect(trigger).toContainText(lastWorker.name);
+            await expect(list).toBeHidden();
+
+            if (editing) {
+              expect(patches).toEqual([{ workerId: lastWorker.id }]);
+              await panel.getByRole("button", { name: labels.close, exact: true }).click();
+              await expect(opener).toBeFocused();
+            } else {
+              const text = language === "ru" ? "Создать задачу для Анны" : "Create a task for Anna";
+              const message = panel.getByRole("textbox", { name: labels.message });
+              await message.fill(text);
+              if (touch && browserName === "webkit") await message.press("Control+Enter");
+              else await press(panel.getByRole("button", { name: labels.submit, exact: true }));
+              await expect(panel).toBeHidden();
+              expect(creations).toEqual([
+                expect.objectContaining({ description: text, workerId: lastWorker.id }),
+              ]);
+            }
+          }
+          expect(catalogueReads()).toBe(1);
+        });
+      }
+    }
+  });
+}
+
+for (const viewport of [DESKTOP_VIEWPORT, PHONE_VIEWPORT]) {
+  const mobile = viewport.width < 821;
+  test.describe(`Kanban keyboard ${viewport.width}px`, () => {
+    test.use({ viewport });
+
+    test("search keeps the catalogue order and Escape closes one layer at a time", async ({
+      page,
+    }, info) => {
+      const { card, workers, labels, patches, catalogueReads } = await installKanbanAccessFixture(
+        page,
+        {
+          theme: mobile ? "dark" : "light",
+          language: mobile ? "en" : "ru",
+        },
+      );
+      const cardTrigger = page.getByRole("button", { name: card.title, exact: true });
+      await cardTrigger.press("Enter");
+      const panel = page.getByRole(mobile ? "dialog" : "complementary", { name: card.title });
+      const trigger = panel.locator(".kanban-assignee-trigger");
+      const list = panel.locator(".kanban-assignee-options");
+      const search = panel.getByRole("searchbox", { name: labels.search });
+      await trigger.scrollIntoViewIfNeeded();
+      await trigger.press("Enter");
+      await expect(search).toBeFocused();
+      await expect(list.getByRole("button")).toHaveCount(31);
+      const searchY = (await search.boundingBox())!.y;
+      await search.fill("no-result-357");
+      await expect(list.getByRole("status")).toHaveText(mobile ? "No matches" : "Совпадений нет");
+      await search.fill(mobile ? "worker 1" : "работник 1");
+      await search.press("Enter");
+      await expect(search).toBeFocused();
+      expect(patches).toEqual([]);
+      await search.fill(mobile ? "  MOROZ  " : "  МОРОЗ  ");
+      const matched = list.getByRole("button", { name: workers.at(-1)!.name, exact: true });
+      await expect(list.getByRole("button")).toHaveCount(1);
+      await expect(matched).toBeVisible();
+      expect((await search.boundingBox())!.y).toBeCloseTo(searchY, 0);
+      await search.dispatchEvent("keydown", { key: "Enter", isComposing: true });
+      await expect(search).toBeFocused();
+      expect(patches).toEqual([]);
+      await page.screenshot({ path: info.outputPath("edit-worker-search.png") });
+      await search.press("Enter");
+      await expect(trigger).toBeFocused();
+      await expect(trigger).toContainText(workers.at(-1)!.name);
+      expect(patches).toEqual([{ workerId: workers.at(-1)!.id }]);
+
+      await trigger.press("Enter");
+      await expect(search).toHaveValue("");
+      await expect(matched).toHaveAttribute("aria-pressed", "true");
+      await search.press("ArrowDown");
+      await expect(list.getByRole("button", { name: labels.defaultWorker })).toBeFocused();
+      await page.keyboard.press("End");
+      await expect(matched).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(list).toBeHidden();
+      await expect(trigger).toBeFocused();
+      await expect(panel).toBeVisible();
+      await page.screenshot({ path: info.outputPath("edit-picker-focus.png") });
+      await page.keyboard.press("Escape");
+      await expect(panel).toBeHidden();
+      await expect(cardTrigger).toBeFocused();
+
+      await page.getByRole("button", { name: labels.add, exact: true }).press("Enter");
+      const dialog = page.getByRole("dialog", { name: labels.add });
+      const draftTrigger = dialog.locator(".kanban-assignee-trigger");
+      await draftTrigger.press("Enter");
+      const draftSearch = dialog.getByRole("searchbox", { name: labels.search });
+      await expect(draftSearch).toBeFocused();
+      await draftSearch.fill("no-result-357");
+      const message = dialog.getByRole("textbox", { name: labels.message });
+      await message.click();
+      await expect(draftSearch).toBeHidden();
+      await expect(message).toBeFocused();
+      await draftTrigger.press("Enter");
+      await expect(draftSearch).toHaveValue("");
+      await page.keyboard.press("Escape");
+      await expect(draftTrigger).toBeFocused();
+      await expect(dialog).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(dialog).toBeHidden();
+      expect(catalogueReads()).toBe(1);
+    });
+
+    test("archive focus returns to the visible opener", async ({ page }, info) => {
+      const { archived, labels, patches } = await installKanbanAccessFixture(page, {
+        theme: mobile ? "dark" : "light",
+        language: mobile ? "en" : "ru",
+      });
+      const compact = page.locator(".kanban-filter-menu");
+      const opener = mobile ? compact.locator("summary") : page.locator(".kanban-archive-button");
+      await opener.press("Enter");
+      if (mobile)
+        await compact.getByRole("button", { name: labels.archive, exact: true }).press("Enter");
+      const archive = page.getByRole(mobile ? "dialog" : "complementary", { name: labels.archive });
+      const close = archive.getByRole("button", { name: labels.close, exact: true });
+      const restore = archive.getByRole("button", {
+        name: mobile ? "Restore" : "Вернуть",
+        exact: true,
+      });
+      const deleteTask = archive.getByRole("button", {
+        name: mobile ? "Delete permanently" : "Удалить навсегда",
+        exact: true,
+      });
+      await expect(archive.getByText(archived.title, { exact: true })).toBeVisible();
+      await expect(archive.locator("#kanban-archive-title")).toBeFocused();
+      if (mobile) {
+        await page.keyboard.press("Tab");
+        await expect(close).toBeFocused();
+        await page.keyboard.press("Shift+Tab");
+        await expect(deleteTask).toBeFocused();
+        await page.keyboard.press("Tab");
+        await expect(close).toBeFocused();
+        await page.keyboard.press("Tab");
+        await expect(restore).toBeFocused();
+        await deleteTask.press("Enter");
+        const confirm = page.getByRole("dialog", { name: "Delete the task permanently?" });
+        await expect(confirm).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(confirm).toBeHidden();
+        await expect(deleteTask).toBeFocused();
+      } else {
+        // The stage actions and navigation still receive focus beside a desktop archive.
+        const boardControl = page.locator(".kanban-add-button");
+        await boardControl.focus();
+        await expect(boardControl).toBeFocused();
+      }
+      await restore.focus();
+      await page.screenshot({ path: info.outputPath("archive-focus.png") });
+      await page.keyboard.press("Escape");
+      await expect(archive).toBeHidden();
+      await expect(opener).toBeFocused();
+      await page.screenshot({ path: info.outputPath("archive-opener-focus.png") });
+
+      await opener.press("Enter");
+      if (mobile)
+        await compact.getByRole("button", { name: labels.archive, exact: true }).press("Enter");
+      await restore.press("Enter");
+      await expect(archive.getByText(archived.title, { exact: true })).toBeHidden();
+      expect(patches).toEqual([{ archived: false }]);
+      await expect(archive.locator("#kanban-archive-title")).toBeFocused();
+      await close.click();
+      await expect(opener).toBeFocused();
+    });
+  });
+}
+
+test("Kanban changes panel modality at 1280px and keeps Tab on the mobile card", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 844 });
+  const { card } = await installKanbanAccessFixture(page);
+  const opener = page
+    .locator(".kanban-pane")
+    .getByRole("button", { name: card.title, exact: true });
+  await opener.press("Enter");
+  const desktop = page.getByRole("complementary", { name: card.title });
+  await expect(desktop).toBeVisible();
+  await expect(desktop).not.toHaveAttribute("aria-modal", "true");
+  const board = page.locator(".kanban-pane");
+  await expect(board).not.toHaveAttribute("inert");
+  await opener.focus();
+  await expect(opener).toBeFocused();
+
+  await page.setViewportSize({ width: 1279, height: 844 });
+  const overlay = page.getByRole("dialog", { name: card.title });
+  await expect(overlay).toHaveAttribute("aria-modal", "true");
+  await expect(board).toHaveAttribute("inert", "");
+  await expect(overlay.locator("#kanban-card-title")).toBeFocused();
+  await page.setViewportSize(PHONE_VIEWPORT);
+  for (const key of ["Tab", "Shift+Tab"]) {
+    for (let step = 0; step < 12; step++) {
+      await page.keyboard.press(key);
+      expect(await overlay.evaluate((node) => node.contains(document.activeElement))).toBe(true);
+    }
+  }
+  await page.keyboard.press("Escape");
+  await expect(overlay).toBeHidden();
+  await expect(opener).toBeFocused();
+});
+
+test("Kanban stage and task menus close with Escape and return focus", async ({ page }) => {
+  const { card } = await installKanbanAccessFixture(page);
+  const stage = page.locator(".kanban-lane-menu").first();
+  const stageTrigger = stage.locator("summary");
+  await stageTrigger.press("Enter");
+  await stage.getByRole("button", { name: "Изменить", exact: true }).focus();
+  await page.keyboard.press("Escape");
+  await expect(stage).not.toHaveAttribute("open");
+  await expect(stageTrigger).toBeFocused();
+
+  await page.getByRole("button", { name: card.title, exact: true }).press("Enter");
+  const panel = page.getByRole("complementary", { name: card.title });
+  const menu = panel.locator(".kanban-panel-menu");
+  const trigger = menu.locator("summary");
+  await trigger.press("Enter");
+  await menu.getByRole("button", { name: "В архив", exact: true }).focus();
+  await page.keyboard.press("Escape");
+  await expect(menu).not.toHaveAttribute("open");
+  await expect(trigger).toBeFocused();
+  await expect(panel).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+});
+
+test("Kanban worker search keeps its result above the reduced visual viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  await page.addInitScript(() => {
+    const viewport = new EventTarget();
+    Object.defineProperties(viewport, {
+      height: { writable: true, value: 480 },
+      offsetTop: { writable: true, value: 0 },
+    });
+    Object.defineProperty(window, "visualViewport", { value: viewport });
+  });
+  const { card, labels, workers } = await installKanbanAccessFixture(page);
+  for (const [opener, surfaceName] of [
+    [card.title, card.title],
+    [labels.add, labels.add],
+  ] as const) {
+    await page.getByRole("button", { name: opener, exact: true }).first().press("Enter");
+    const surface = page.getByRole("dialog", { name: surfaceName });
+    const trigger = surface.locator(".kanban-assignee-trigger");
+    await trigger.scrollIntoViewIfNeeded();
+    await trigger.press("Enter");
+    const search = surface.getByRole("searchbox", { name: labels.search });
+    await expect(search).toBeFocused();
+    await page.evaluate(() => {
+      const viewport = window.visualViewport!;
+      Object.assign(viewport, { offsetTop: 48, height: 228 });
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    await search.fill("мороз");
+    const option = surface.getByRole("button", { name: workers.at(-1)!.name, exact: true });
+    await expect(option).toBeVisible();
+    const searchBounds = (await search.boundingBox())!;
+    const optionBounds = (await option.boundingBox())!;
+    expect(searchBounds.y).toBeGreaterThanOrEqual(48);
+    expect(optionBounds.y + optionBounds.height).toBeLessThanOrEqual(276);
+    await expectFullyHittable(option, surface.locator(".kanban-assignee-options"));
+    await page.evaluate(() => {
+      const viewport = window.visualViewport!;
+      Object.assign(viewport, { offsetTop: 0, height: 480 });
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(surface).toBeHidden();
+  }
+});

@@ -59,6 +59,7 @@ const ENGLISH: Record<string, string> = {
   "Открываем диалог…": "Opening conversation…",
   "Запустить «{{name}}»": "Start “{{name}}”",
   "Найти проект": "Find a project",
+  "Найти работника": "Find a worker",
   "Проект работника больше недоступен.": "The worker’s project is no longer available.",
   "Добавьте проект, чтобы запустить работника.": "Add a project to start a worker.",
   "Загружаем работников…": "Loading workers…",

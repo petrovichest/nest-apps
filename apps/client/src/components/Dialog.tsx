@@ -21,14 +21,8 @@ type DialogProps = DialogLabel & {
   returnFocusRef?: RefObject<HTMLElement | null>;
 };
 
-const focusableSelector = [
-  "a[href]",
-  "button:not([disabled])",
-  "input:not([disabled]):not([type='hidden'])",
-  "select:not([disabled])",
-  "textarea:not([disabled])",
-  "[tabindex]:not([tabindex='-1'])",
-].join(",");
+const focusableSelector =
+  "a[href], button, input:not([type='hidden']), select, textarea, summary, [tabindex]";
 const DialogDepthContext = createContext(0);
 
 export function Dialog({
@@ -91,28 +85,7 @@ export function Dialog({
         if (latestRef.current.closeOnEscape) latestRef.current.onClose();
         return;
       }
-      if (event.key !== "Tab") return;
-
-      const focusable = focusableElements(dialogElement);
-      if (!focusable.length) {
-        event.preventDefault();
-        dialogElement.focus({ preventScroll: true });
-        return;
-      }
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const activeElement = ownerDocument.activeElement;
-      if (event.shiftKey && (activeElement === first || !dialogElement.contains(activeElement))) {
-        event.preventDefault();
-        last.focus({ preventScroll: true });
-      } else if (
-        !event.shiftKey &&
-        (activeElement === last || !dialogElement.contains(activeElement))
-      ) {
-        event.preventDefault();
-        first.focus({ preventScroll: true });
-      }
+      if (event.key === "Tab" && !event.defaultPrevented) keepTabFocus(event, dialogElement);
     }
 
     ownerDocument.addEventListener("keydown", handleKeyDown);
@@ -150,9 +123,37 @@ export function Dialog({
   );
 }
 
+export function keepTabFocus(event: KeyboardEvent, surface: HTMLElement) {
+  const focusable = focusableElements(surface);
+  const edge = event.shiftKey ? focusable[0] : focusable.at(-1);
+  const target = event.shiftKey ? focusable.at(-1) : focusable[0];
+  const activeElement = surface.ownerDocument.activeElement;
+  const pastEdge = event.shiftKey
+    ? Node.DOCUMENT_POSITION_PRECEDING
+    : Node.DOCUMENT_POSITION_FOLLOWING;
+  if (
+    !edge ||
+    !activeElement ||
+    activeElement === edge ||
+    !surface.contains(activeElement) ||
+    (edge.compareDocumentPosition(activeElement) & pastEdge) !== 0
+  ) {
+    event.preventDefault();
+    (target ?? surface).focus();
+  }
+}
+
 function focusableElements(dialog: HTMLElement): HTMLElement[] {
+  const hasLayout = dialog.getClientRects().length > 0;
   return Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector)).filter(
     (element) =>
-      element.getAttribute("aria-hidden") !== "true" && !element.closest("[hidden], [inert]"),
+      element.tabIndex >= 0 &&
+      !element.matches(":disabled") &&
+      !element.closest(
+        '[hidden], [inert], [aria-hidden="true"], details:not([open]) > :not(summary)',
+      ) &&
+      (!hasLayout ||
+        (element.getClientRects().length > 0 &&
+          getComputedStyle(element).visibility === "visible")),
   );
 }

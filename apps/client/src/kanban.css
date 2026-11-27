@@ -616,20 +616,20 @@
   border-radius: var(--chat-radius-compact);
 }
 
-.kanban-project-search {
+.kanban-picker-search {
   flex: none;
 }
 
-.kanban-project-search input[type="search"] {
+.kanban-picker-search input[type="search"] {
   font-size: max(16px, var(--text-input));
 }
 
-.kanban-project-search input::placeholder {
+.kanban-picker-search input::placeholder {
   color: var(--color-muted-strong);
   opacity: 1;
 }
 
-.kanban-project-results {
+:is(.kanban-project-results, .kanban-assignee-options) {
   display: flex;
   flex-direction: column;
   gap: var(--space-0-5);
@@ -646,7 +646,7 @@
   padding-block: var(--space-1);
 }
 
-.kanban-project-note {
+.kanban-picker-note {
   padding: var(--space-1) var(--space-2);
   overflow-wrap: anywhere;
 }
@@ -991,20 +991,44 @@ textarea.kanban-edit-field {
   outline-offset: 2px;
 }
 
-.kanban-assignee > .kanban-assignee-options {
+.kanban-assignee > .kanban-assignee-popover {
+  --kanban-assignee-limit: min(328px, 42dvh, var(--kanban-assignee-room, 100dvh));
+
   width: 100%;
-  max-height: min(280px, 38dvh);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  max-height: var(--kanban-assignee-limit);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
 }
 
-/* A task dialog needs to reserve room for the opened picker. */
-.kanban-task-dialog .kanban-assignee > .kanban-assignee-options {
+/* Keep the search field stationary while filtering a long list. */
+.kanban-assignee-popover[data-long-list] {
+  height: var(--kanban-assignee-limit);
+}
+
+.dialog-backdrop.kanban-task-backdrop {
+  inset-block: var(--kanban-task-view-top, 0px) var(--kanban-task-view-bottom, 0px);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.dialog-surface.kanban-task-dialog {
+  max-height: 100%;
+}
+
+/* Creation lays out the opened picker between the trigger and the composer. */
+.kanban-task-dialog .kanban-assignee > .kanban-assignee-popover {
   position: static;
   margin-block-start: var(--space-2);
 }
 
+.kanban-assignee-options {
+  overflow-x: hidden;
+}
+
 .kanban-assignee-options button {
+  flex: none;
+  padding-block: var(--space-1);
   color: var(--color-ink-strong);
 }
 
@@ -1016,7 +1040,7 @@ textarea.kanban-edit-field {
 }
 
 @media (pointer: coarse) {
-  .kanban-assignee > .kanban-assignee-options button {
+  .kanban-assignee .kanban-assignee-options button {
     min-height: 44px;
   }
 }

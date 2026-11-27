@@ -1660,13 +1660,13 @@
   flex: 1;
 }
 
-:is(.skills-settings-search, .task-model-search, .worker-project-search, .kanban-project-search) {
+:is(.skills-settings-search, .task-model-search, .worker-project-search, .kanban-picker-search) {
   position: relative;
   display: flex;
   align-items: center;
 }
 
-:is(.skills-settings-search, .task-model-search, .worker-project-search, .kanban-project-search)
+:is(.skills-settings-search, .task-model-search, .worker-project-search, .kanban-picker-search)
   svg {
   position: absolute;
   left: 11px;
@@ -1676,7 +1676,7 @@
   pointer-events: none;
 }
 
-:is(.skills-settings-search, .task-model-search, .worker-project-search, .kanban-project-search)
+:is(.skills-settings-search, .task-model-search, .worker-project-search, .kanban-picker-search)
   input {
   width: 100%;
   padding-left: 34px;
