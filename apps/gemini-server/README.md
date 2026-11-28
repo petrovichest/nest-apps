@@ -33,6 +33,15 @@ failed proxy configuration does not fall back to a direct connection. Native log
 process output, authorization codes and ACP traffic are never logged by Nest.
 Account/proxy changes require idle tasks. Login links expire after ten minutes.
 
+For an existing Google refresh token, save the account's proxy and choose
+**Sign in with a token**. Antigravity CLI exchanges the token and verifies access
+to the model catalog before GeminiNest activates the session. Antigravity CLI
+also performs subsequent refreshes. On the GeminiNest server this sign-in method
+requires `/usr/bin/bwrap` (bubblewrap) with support for creating a network
+namespace. The native CLI and its child processes use an isolated network with
+the account's configured proxy as their route to the internet. The imported
+credential is stored in the private GeminiNest configuration directory (0600).
+
 ## Build and install
 
 Requirements: Node 24, Linux systemd user manager, and Antigravity CLI (`agy` or `antigravity`) on PATH

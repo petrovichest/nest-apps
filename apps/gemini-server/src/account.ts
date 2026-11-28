@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { request } from "node:http";
 import { connect as tlsConnect } from "node:tls";
 import { join } from "node:path";
@@ -7,9 +8,14 @@ import type { GeminiConnectionStatus, GeminiLoginStatus } from "@codexnest/proto
 import { readJson, writeJsonAtomic } from "../../claude-server/src/io";
 import type { Config } from "./config";
 import { nativeArgs } from "./acp";
+import { readGeminiModels } from "./models";
+import { nativeConnection } from "./native-process";
 import { proxyAddress, proxyEnvironment } from "./proxy";
 
-type SavedConnection = { proxy: string; authenticated: boolean };
+type SavedConnection = { proxy: string; authenticated: boolean; method?: "refresh_token" };
+type NativeConnection = Awaited<ReturnType<typeof nativeConnection>>;
+
+export class RefreshTokenLoginError extends Error {}
 
 export class Account {
   private data: SavedConnection = { proxy: "", authenticated: false };
@@ -17,6 +23,10 @@ export class Account {
   private running?: ChildProcessWithoutNullStreams;
   private loginConnection?: Awaited<ReturnType<typeof proxyEnvironment>>;
   private timer?: NodeJS.Timeout;
+  private importing?: Promise<void>;
+  private connectionGeneration = 0;
+  private readonly connections = new Set<NativeConnection>();
+  private closed = false;
   cliVersion: string | null = null;
   constructor(
     readonly config: Config,
@@ -77,29 +87,59 @@ export class Account {
   }
 
   get loggingIn() {
-    return Boolean(this.running);
+    return Boolean(this.running || this.importing);
   }
 
   async setProxy(value: string) {
-    if (this.running) throw new Error("Завершите или отмените вход перед изменением прокси.");
-    const previous = this.data.proxy;
-    this.data.proxy = proxyAddress(value).url;
-    try {
-      await this.save();
-    } catch (error) {
-      this.data.proxy = previous;
-      throw error;
-    }
+    if (this.loggingIn) throw new Error("Завершите или отмените вход перед изменением прокси.");
+    const next = { ...this.data, proxy: proxyAddress(value).url };
+    await this.disconnect();
+    await this.save(next);
+    this.data = next;
     this.onChange();
     return this.status();
   }
 
-  async connection() {
-    return proxyEnvironment(this.data.proxy);
+  private get importedCredential() {
+    return join(this.config.configDir, "imported-antigravity-oauth-token");
+  }
+
+  async connection(): Promise<NativeConnection> {
+    if (this.closed || this.loggingIn) throw new Error("Gemini connection is unavailable");
+    const generation = this.connectionGeneration;
+    const data = this.data;
+    const connection = await nativeConnection(
+      data.proxy,
+      this.config,
+      data.method === "refresh_token" ? this.importedCredential : undefined,
+    );
+    if (
+      this.closed ||
+      this.loggingIn ||
+      this.data !== data ||
+      this.connectionGeneration !== generation
+    ) {
+      await connection.close();
+      throw new Error("Gemini connection changed");
+    }
+    const tracked = {
+      ...connection,
+      close: () => {
+        this.connections.delete(tracked);
+        return connection.close();
+      },
+    };
+    this.connections.add(tracked);
+    return tracked;
+  }
+
+  async disconnect() {
+    this.connectionGeneration++;
+    await Promise.all([...this.connections].map((connection) => connection.close()));
   }
 
   async testProxy() {
-    const connection = await this.connection();
+    const connection = await proxyEnvironment(this.data.proxy);
     try {
       await new Promise<void>((resolve, reject) => {
         const proxy = new URL(connection.env.HTTPS_PROXY!);
@@ -154,9 +194,71 @@ export class Account {
     }
   }
 
+  async importRefreshToken(refreshToken: string) {
+    if (this.loggingIn) throw new RefreshTokenLoginError("Дождитесь завершения текущего входа.");
+    if (!this.data.proxy) throw new RefreshTokenLoginError("Сначала сохраните прокси Gemini.");
+    if (!this.cliVersion) throw new RefreshTokenLoginError("Antigravity CLI не найден.");
+    if (!refreshToken || /\s/.test(refreshToken))
+      throw new RefreshTokenLoginError("Введите действующий refresh-токен Google.");
+    this.loginState = null;
+    const attempt = this.verifyAndSaveToken(refreshToken);
+    this.importing = attempt;
+    try {
+      await attempt;
+    } finally {
+      this.importing = undefined;
+    }
+    this.onChange();
+    return this.status();
+  }
+
+  private async verifyAndSaveToken(refreshToken: string) {
+    await access("/usr/bin/bwrap").catch(() => {
+      throw new RefreshTokenLoginError(
+        "Для входа по токену установите bubblewrap на сервере GeminiNest.",
+      );
+    });
+    await mkdir(this.config.stateDir, { recursive: true, mode: 0o700 });
+    const directory = await mkdtemp(join(this.config.stateDir, "token-login-"));
+    const credential = join(directory, "credential");
+    const profile = { agyBin: this.config.agyBin, nativeDir: join(directory, "native") };
+    let connection: NativeConnection | undefined;
+    try {
+      // An expired cache entry makes agy use its own OAuth client for the first exchange.
+      await writeJsonAtomic(credential, {
+        auth_method: "consumer",
+        token: { refresh_token: refreshToken, expiry: "1970-01-01T00:00:00Z" },
+      });
+      connection = await nativeConnection(this.data.proxy, profile, credential);
+      try {
+        await readGeminiModels(connection.native, connection.env);
+      } catch {
+        throw new RefreshTokenLoginError(
+          "Не удалось войти через сохранённый прокси. Проверьте токен и соединение.",
+        );
+      }
+      const session = await readJson<{ token?: { access_token?: string; refresh_token?: string } }>(
+        credential,
+      );
+      if (!session?.token?.access_token || !session.token.refresh_token)
+        throw new RefreshTokenLoginError("Antigravity CLI не сохранил сессию Google.");
+      if (this.closed) throw new Error("Gemini account is closing");
+      await mkdir(join(this.config.nativeDir, "gemininest"), { recursive: true, mode: 0o700 });
+      const next = { ...this.data, authenticated: true, method: "refresh_token" } as const;
+      await writeJsonAtomic(this.importedCredential, session);
+      if (this.data.method !== "refresh_token" || !this.data.authenticated) {
+        await this.save(next);
+        this.data = next;
+      }
+    } finally {
+      await connection?.close().catch(() => undefined);
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
   async startLogin() {
-    if (this.running) return this.status();
-    this.loginConnection = await this.connection();
+    if (this.loggingIn) return this.status();
+    this.loginConnection = await proxyEnvironment(this.data.proxy);
     const id = randomUUID();
     this.loginState = { id, state: "starting", url: null, error: null };
     const child = spawn(this.config.agyBin, [...nativeArgs(this.config), "--login"], {
@@ -188,11 +290,11 @@ export class Account {
       await connection?.close();
       if (this.running !== child) return;
       if (ok) {
-        this.data.authenticated = true;
+        const next = { proxy: this.data.proxy, authenticated: true };
         try {
-          await this.save();
+          await this.save(next);
+          this.data = next;
         } catch {
-          this.data.authenticated = false;
           ok = false;
         }
       }
@@ -262,10 +364,13 @@ export class Account {
     return this.status();
   }
 
-  private save() {
-    return writeJsonAtomic(join(this.config.configDir, "connection.json"), this.data);
+  private save(data: SavedConnection) {
+    return writeJsonAtomic(join(this.config.configDir, "connection.json"), data);
   }
   async close() {
+    this.closed = true;
+    await this.disconnect();
     await this.cancelLogin();
+    await this.importing?.catch(() => undefined);
   }
 }

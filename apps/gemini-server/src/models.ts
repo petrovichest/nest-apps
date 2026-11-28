@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
 import type { ModelOption } from "@codexnest/protocol";
 import type { Config } from "./config";
+import { spawnNative, type NativeConfig } from "./native-process";
 
 const MAX_MODELS_STDOUT_BYTES = 256 * 1024;
 const EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -139,17 +139,19 @@ export function parseGeminiModelsOutput(
 }
 
 export async function readGeminiModels(
-  config: Pick<Config, "agyBin" | "nativeDir">,
+  config: NativeConfig,
   env: NodeJS.ProcessEnv,
   preferredDefaultModelId?: string | null,
   timeoutMs = 20_000,
 ): Promise<ModelOption[]> {
   return new Promise<ModelOption[]>((resolve, reject) => {
-    const child = spawn(config.agyBin, modelsArgs(config), {
-      env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: "true" },
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
+    const child = spawnNative(config, modelsArgs(config), {
+      ...env,
+      AGY_CLI_DISABLE_AUTO_UPDATE: "true",
     });
+    child.stdin.on("error", () => undefined);
+    child.stdin.end();
+    child.stderr.resume();
     let stdout = "";
     let settled = false;
     const finish = (fn: () => void) => {

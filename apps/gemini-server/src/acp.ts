@@ -1,6 +1,7 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { Config } from "./config";
+import { spawnNative, type NativeConfig } from "./native-process";
 
 export class RpcError extends Error {
   constructor(
@@ -37,7 +38,7 @@ export class AcpClient extends EventEmitter {
   };
 
   constructor(
-    private readonly config: Pick<Config, "agyBin" | "nativeDir">,
+    private readonly config: NativeConfig,
     private readonly env: NodeJS.ProcessEnv,
   ) {
     super();
@@ -45,11 +46,7 @@ export class AcpClient extends EventEmitter {
 
   async start() {
     if (this.child) return this.initializeResult;
-    const child = spawn(this.config.agyBin, nativeArgs(this.config), {
-      env: this.env,
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: false,
-    });
+    const child = spawnNative(this.config, nativeArgs(this.config), this.env);
     this.child = child;
     child.stderr.resume();
     child.stdout.setEncoding("utf8");

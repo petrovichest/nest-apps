@@ -14,8 +14,7 @@ import {
   type VoiceTranscriptionJob,
 } from "@codexnest/protocol";
 import { AppError, blankDraft, type Engine } from "./engine";
-import { runOneShotAcpPrompt } from "./title";
-import type { Config } from "./config";
+import type { GeminiPrompt } from "./title";
 
 export const MAX_TRANSCRIPTION_BYTES = 24 * 1024 * 1024;
 export const MAX_RECORDING_SECONDS = 300;
@@ -52,8 +51,7 @@ export interface VoiceTranscriptionOptions {
 }
 
 export interface GeminiVoiceServiceOptions {
-  config?: Pick<Config, "agyBin" | "nativeDir">;
-  resolveEnv?: () => Promise<NodeJS.ProcessEnv | null>;
+  runPrompt?: (options: GeminiPrompt) => Promise<string>;
   settings?: Partial<VoiceSettings>;
   loadSettings?: () => Promise<Partial<VoiceSettings> | undefined>;
   saveSettings?: (settings: VoiceSettings) => Promise<void>;
@@ -356,14 +354,8 @@ export class GeminiVoiceService {
   }
 
   private async refine(text: string, model: string, signal?: AbortSignal): Promise<string> {
-    if (!this.options.config || !this.options.resolveEnv) {
-      throw new Error("Gemini CLI refinement is unavailable");
-    }
-    const env = await this.options.resolveEnv();
-    if (!env) throw new Error("Gemini CLI refinement is not authenticated");
-    const output = await runOneShotAcpPrompt({
-      config: this.options.config,
-      env,
+    if (!this.options.runPrompt) throw new Error("Gemini CLI refinement is unavailable");
+    const output = await this.options.runPrompt({
       model,
       prompt: `${REFINEMENT_INSTRUCTIONS}\n\n<transcript>\n${text}\n</transcript>`,
       timeoutMs: this.refinementTimeoutMs,

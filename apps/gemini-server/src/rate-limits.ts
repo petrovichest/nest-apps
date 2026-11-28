@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
 import type { CodexRateLimitWindow, CodexRateLimitsResponse } from "@codexnest/protocol";
 import type { Config } from "./config";
+import { spawnNative, type NativeConfig } from "./native-process";
 
 const FIVE_HOURS_MINS = 5 * 60;
 const SEVEN_DAYS_MINS = 7 * 24 * 60;
@@ -82,16 +82,18 @@ export function usageArgs(config: Pick<Config, "nativeDir">): string[] {
 }
 
 export async function readGeminiUsage(
-  config: Pick<Config, "agyBin" | "nativeDir">,
+  config: NativeConfig,
   env: NodeJS.ProcessEnv,
   timeoutMs = 20_000,
 ): Promise<CodexRateLimitsResponse> {
   return new Promise<CodexRateLimitsResponse>((resolve, reject) => {
-    const child = spawn(config.agyBin, usageArgs(config), {
-      env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: "true" },
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
+    const child = spawnNative(config, usageArgs(config), {
+      ...env,
+      AGY_CLI_DISABLE_AUTO_UPDATE: "true",
     });
+    child.stdin.on("error", () => undefined);
+    child.stdin.end();
+    child.stderr.resume();
     let stdout = "";
     let settled = false;
     const finish = (fn: () => void) => {

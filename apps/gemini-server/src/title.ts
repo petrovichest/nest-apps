@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReplyVerdict } from "@nest-apps/kanban";
 import { AcpClient } from "./acp";
-import type { Config } from "./config";
+import type { NativeConfig } from "./native-process";
 
 export type TitleGenerator = (prompt: string, model?: string) => Promise<string | null>;
 export type ReplyCheck = (reply: string, model?: string) => Promise<ReplyVerdict | null>;
@@ -100,20 +100,21 @@ export function parseReplyOutcome(output: string): ReplyVerdict | null {
   return null;
 }
 
-export async function runOneShotAcpPrompt(options: {
-  config: Pick<Config, "agyBin" | "nativeDir">;
-  env: NodeJS.ProcessEnv;
+export type GeminiPrompt = {
   prompt: string;
   model?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
-  createAcp?: (env: NodeJS.ProcessEnv) => AcpClient;
-}): Promise<string> {
+};
+
+export async function runOneShotAcpPrompt(
+  config: NativeConfig,
+  env: NodeJS.ProcessEnv,
+  options: GeminiPrompt,
+): Promise<string> {
   const timeoutMs = options.timeoutMs ?? 25_000;
   const cwd = await mkdtemp(join(tmpdir(), "gemininest-helper-"));
-  const client = options.createAcp
-    ? options.createAcp(options.env)
-    : new AcpClient(options.config, options.env);
+  const client = new AcpClient(config, env);
   let chunks = "";
   const onNotification = (method: string, params: any) => {
     if (
@@ -166,26 +167,17 @@ export async function runOneShotAcpPrompt(options: {
   }
 }
 
-export interface GeminiHelperOptions {
-  config: Pick<Config, "agyBin" | "nativeDir">;
-  resolveEnv: () => Promise<NodeJS.ProcessEnv | null>;
-  createAcp?: (env: NodeJS.ProcessEnv) => AcpClient;
-}
-
-export function geminiTitleGenerator(options: GeminiHelperOptions): TitleGenerator {
+export function geminiTitleGenerator(
+  runPrompt: (options: GeminiPrompt) => Promise<string>,
+): TitleGenerator {
   return async (prompt: string, model = DEFAULT_HELPER_MODEL) => {
     const trimmed = prompt.trim().slice(0, 4_000);
     if (!trimmed) return null;
     try {
-      const env = await options.resolveEnv();
-      if (!env) return null;
-      const output = await runOneShotAcpPrompt({
-        config: options.config,
-        env,
+      const output = await runPrompt({
         model,
         prompt: `${TITLE_INSTRUCTIONS}\n\n<task>\n${trimmed}\n</task>`,
         timeoutMs: 20_000,
-        createAcp: options.createAcp,
       });
       return cleanTitle(output);
     } catch {
@@ -194,20 +186,17 @@ export function geminiTitleGenerator(options: GeminiHelperOptions): TitleGenerat
   };
 }
 
-export function geminiReplyCheck(options: GeminiHelperOptions): ReplyCheck {
+export function geminiReplyCheck(
+  runPrompt: (options: GeminiPrompt) => Promise<string>,
+): ReplyCheck {
   return async (reply: string, model = DEFAULT_HELPER_MODEL) => {
     const trimmed = reply.trim().slice(-12_000);
     if (!trimmed) return null;
     try {
-      const env = await options.resolveEnv();
-      if (!env) return null;
-      const output = await runOneShotAcpPrompt({
-        config: options.config,
-        env,
+      const output = await runPrompt({
         model,
         prompt: `${ANSWER_INSTRUCTIONS}\n\n<reply>\n${trimmed}\n</reply>`,
         timeoutMs: 20_000,
-        createAcp: options.createAcp,
       });
       return parseReplyOutcome(output);
     } catch {

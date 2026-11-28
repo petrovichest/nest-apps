@@ -526,8 +526,6 @@ export class GeminiCliManager {
         (this.config as { agyBin: string }).agyBin = nextBin;
         await this.engine.account.refreshCliVersion();
         this.engine.emit("account");
-        this.engine.pollModels();
-        this.engine.pollRateLimits();
       });
 
       const finishedAt = new Date().toISOString();

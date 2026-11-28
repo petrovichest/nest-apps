@@ -15,6 +15,8 @@ export function GeminiConnectionSettings() {
   const [status, setStatus] = useState<GeminiConnectionStatus | null>(null);
   const [proxy, setProxy] = useState("");
   const [code, setCode] = useState("");
+  const [tokenLogin, setTokenLogin] = useState(false);
+  const [refreshToken, setRefreshToken] = useState("");
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -67,7 +69,7 @@ export function GeminiConnectionSettings() {
     } catch (error) {
       setError(
         error instanceof Error
-          ? error.message
+          ? t(error.message)
           : t("Не удалось выполнить действие. Повторите попытку."),
       );
     } finally {
@@ -166,14 +168,16 @@ export function GeminiConnectionSettings() {
         {!loggingIn && (
           <div className="settings-actions">
             <button
-              className="primary"
+              className={tokenLogin ? undefined : "primary"}
               type="button"
               disabled={!status?.cliVersion || !status.proxy.configured || Boolean(busy)}
-              onClick={() =>
+              onClick={() => {
+                setRefreshToken("");
+                setTokenLogin(false);
                 void run("login", async () => {
                   setStatus(await api.startGeminiLogin());
-                })
-              }
+                });
+              }}
             >
               <ActionLabel
                 idle={status?.authenticated ? t("Войти заново") : t("Войти через Google")}
@@ -181,7 +185,78 @@ export function GeminiConnectionSettings() {
                 pending={busy === "login"}
               />
             </button>
+            <button
+              type="button"
+              disabled={!status?.cliVersion || !status.proxy.configured || Boolean(busy)}
+              aria-expanded={tokenLogin}
+              aria-controls={tokenLogin ? "gemini-token-login" : undefined}
+              onClick={() => {
+                setRefreshToken("");
+                setTokenLogin(!tokenLogin);
+                setError(null);
+                setFeedback(null);
+              }}
+            >
+              {t("Войти по токену")}
+            </button>
           </div>
+        )}
+        {!loggingIn && tokenLogin && (
+          <form
+            id="gemini-token-login"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (proxy.trim() || !refreshToken.trim() || busy) return;
+              void run("token", async () => {
+                setRefreshToken("");
+                setStatus(await api.importGeminiRefreshToken(refreshToken.trim()));
+                setTokenLogin(false);
+              });
+            }}
+          >
+            <SettingsRow
+              label={t("Refresh-токен")}
+              labelFor="gemini-refresh-token"
+              description={t("Вход и обновление сессии идут через сохранённый прокси.")}
+            >
+              <input
+                id="gemini-refresh-token"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                autoFocus
+                required
+                maxLength={4096}
+                value={refreshToken}
+                disabled={Boolean(busy)}
+                onChange={(event) => setRefreshToken(event.target.value)}
+              />
+            </SettingsRow>
+            <div className="settings-actions">
+              <button
+                className="primary"
+                type="submit"
+                disabled={!refreshToken.trim() || Boolean(proxy.trim() || busy)}
+              >
+                <ActionLabel
+                  idle={t("Подключить аккаунт")}
+                  busy={t("Проверяем вход через прокси…")}
+                  pending={busy === "token"}
+                />
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(busy)}
+                onClick={() => {
+                  setRefreshToken("");
+                  setTokenLogin(false);
+                  setError(null);
+                }}
+              >
+                {t("Отмена")}
+              </button>
+            </div>
+          </form>
         )}
         {login?.state === "starting" && <p role="status">{t("Получаем ссылку для входа…")}</p>}
         {login?.state === "awaiting_code" && login.url && (

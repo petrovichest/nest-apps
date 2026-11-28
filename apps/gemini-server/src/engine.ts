@@ -40,6 +40,7 @@ import {
   runOneShotAcpPrompt,
   type ReplyCheck,
   type TitleGenerator,
+  type GeminiPrompt,
 } from "./title";
 import type { StoredVoice, VoiceSettings, VoiceTimingSample } from "./voice";
 
@@ -254,7 +255,8 @@ export class Engine extends EventEmitter {
 
   constructor(
     readonly config: Config,
-    private readonly clientFactory = (env: NodeJS.ProcessEnv) => new AcpClient(config, env),
+    private readonly clientFactory = (connection: Awaited<ReturnType<Account["connection"]>>) =>
+      new AcpClient(connection.native, connection.env),
     options: EngineOptions = {},
   ) {
     super();
@@ -266,30 +268,43 @@ export class Engine extends EventEmitter {
     this.pollModelsEnabled = options.pollModels ?? !isTestFake;
     this.account = new Account(config, () => {
       this.emit("account");
-      if (this.pollRateLimitsEnabled) this.pollRateLimits();
-      if (this.pollModelsEnabled) this.pollModels();
+      this.pollAccount();
     });
     this.attachments = new AttachmentStore(join(config.stateDir, "attachments"));
-    const resolveEnv = async () => {
-      if (!this.account.status().authenticated) return null;
-      return this.connection?.env ?? process.env;
-    };
+    const runPrompt = (prompt: GeminiPrompt) => this.runPrompt(prompt);
     this.generateTitle =
-      options.generateTitle ??
-      (isTestFake ? undefined : geminiTitleGenerator({ config, resolveEnv }));
-    this.checkReply =
-      options.checkReply ?? (isTestFake ? undefined : geminiReplyCheck({ config, resolveEnv }));
+      options.generateTitle ?? (isTestFake ? undefined : geminiTitleGenerator(runPrompt));
+    this.checkReply = options.checkReply ?? (isTestFake ? undefined : geminiReplyCheck(runPrompt));
+  }
+
+  private pollAccount() {
+    if (this.changingConnection) return;
+    if (this.pollRateLimitsEnabled) this.pollRateLimits();
+    if (this.pollModelsEnabled) this.pollModels();
+  }
+
+  private async withNativeConnection<T>(
+    action: (connection: Awaited<ReturnType<Account["connection"]>>) => Promise<T>,
+  ) {
+    if (this.changingConnection || this.account.loggingIn || this.closing)
+      throw new AppError("Настройки подключения меняются. Повторите попытку.", 409, "conflict");
+    if (!this.account.status().authenticated)
+      throw new AppError("unavailable", "Войдите в Google в настройках Gemini.", 503);
+    if (this.connection) return action(this.connection);
+    const connection = await this.account.connection();
+    try {
+      return await action(connection);
+    } finally {
+      await connection.close();
+    }
+  }
+
+  runPrompt(prompt: GeminiPrompt): Promise<string> {
+    return this.withNativeConnection(({ native, env }) => runOneShotAcpPrompt(native, env, prompt));
   }
 
   async chooseWorkerModel(prompt: string): Promise<string> {
-    if (!this.account.status().authenticated)
-      throw new AppError("Sign in to choose a worker model");
-    return runOneShotAcpPrompt({
-      config: this.config,
-      env: this.connection?.env ?? process.env,
-      prompt,
-      model: this.data.taskDefaults.model,
-    });
+    return this.runPrompt({ prompt, model: this.data.taskDefaults.model });
   }
 
   async initialize() {
@@ -484,15 +499,7 @@ export class Engine extends EventEmitter {
   }
   async readRateLimits(): Promise<CodexRateLimitsResponse> {
     if (this.customReadRateLimits) return this.customReadRateLimits();
-    if (!this.account.status().authenticated)
-      throw new AppError("unavailable", "Войдите в Google в настройках Gemini.", 503);
-    if (this.connection) return readGeminiUsage(this.config, this.connection.env);
-    const connection = await this.account.connection();
-    try {
-      return await readGeminiUsage(this.config, connection.env);
-    } finally {
-      await connection.close();
-    }
+    return this.withNativeConnection(({ native, env }) => readGeminiUsage(native, env));
   }
   private setRateLimits(state: CodexRateLimitsState): void {
     this.rateLimits = state;
@@ -535,16 +542,9 @@ export class Engine extends EventEmitter {
   async readModels(): Promise<ModelOption[]> {
     const preferredDefault = this.data.models.find((item) => item.isDefault)?.id ?? null;
     if (this.customReadModels) return this.customReadModels(preferredDefault);
-    if (!this.account.status().authenticated)
-      throw new AppError("unavailable", "Войдите в Google в настройках Gemini.", 503);
-    if (this.connection)
-      return readGeminiModels(this.config, this.connection.env, preferredDefault);
-    const connection = await this.account.connection();
-    try {
-      return await readGeminiModels(this.config, connection.env, preferredDefault);
-    } finally {
-      await connection.close();
-    }
+    return this.withNativeConnection(({ native, env }) =>
+      readGeminiModels(native, env, preferredDefault),
+    );
   }
   refreshModels(): Promise<ModelOption[]> {
     if (this.modelsRequest) return this.modelsRequest;
@@ -771,11 +771,20 @@ export class Engine extends EventEmitter {
       throw new AppError("Настройки подключения уже изменяются.", 409, "conflict");
     this.assertIdle();
     this.changingConnection = true;
+    let changed = false;
     try {
       await this.resetConnection();
-      return await action();
+      await this.account.disconnect();
+      await Promise.all([
+        this.modelsRequest?.catch(() => undefined),
+        this.rateLimitsRequest?.catch(() => undefined),
+      ]);
+      const result = await action();
+      changed = true;
+      return result;
     } finally {
       this.changingConnection = false;
+      if (changed) this.pollAccount();
     }
   }
 
@@ -787,7 +796,7 @@ export class Engine extends EventEmitter {
         throw new AppError("Войдите в Google в настройках Gemini.", 409, "conflict");
       const connection = await this.account.connection();
       this.connection = connection;
-      const client = this.clientFactory(connection.env);
+      const client = this.clientFactory(connection);
       client.onRequest = (method, params) => this.request(method, params);
       client.on("notification", (method: string, params: any) => {
         if (method === "session/update") this.update(params);

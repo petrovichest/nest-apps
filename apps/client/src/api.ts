@@ -390,6 +390,13 @@ export class ApiClient {
   startGeminiLogin(): Promise<GeminiConnectionStatus> {
     return this.request("/api/v1/settings/gemini/logins", { method: "POST" });
   }
+  importGeminiRefreshToken(refreshToken: string): Promise<GeminiConnectionStatus> {
+    return this.request("/api/v1/settings/gemini/logins/token", {
+      method: "POST",
+      body: { refreshToken },
+      timeoutMs: 50_000,
+    });
+  }
   submitGeminiLoginCode(id: string, code: string): Promise<GeminiConnectionStatus> {
     return this.request(`/api/v1/settings/gemini/logins/${encodeURIComponent(id)}/code`, {
       method: "POST",

@@ -147,6 +147,21 @@ const ENGLISH: Record<string, string> = {
     "Sign in to your Google AI Ultra account. Antigravity CLI checks sign-in and access.",
   "Требуется вход": "Sign-in required",
   "Не найден": "Not found",
+  "Войти по токену": "Sign in with a token",
+  "Refresh-токен": "Refresh token",
+  "Вход и обновление сессии идут через сохранённый прокси.":
+    "Sign-in and session refresh use the saved proxy.",
+  "Подключить аккаунт": "Connect account",
+  "Дождитесь завершения текущего входа.": "Wait for the current sign-in to finish.",
+  "Сначала сохраните прокси Gemini.": "Save the Gemini proxy first.",
+  "Antigravity CLI не найден.": "Antigravity CLI was not found.",
+  "Введите действующий refresh-токен Google.": "Enter a valid Google refresh token.",
+  "Для входа по токену установите bubblewrap на сервере GeminiNest.":
+    "Install bubblewrap on the GeminiNest server to sign in with a token.",
+  "Не удалось войти через сохранённый прокси. Проверьте токен и соединение.":
+    "Could not sign in through the saved proxy. Check the token and connection.",
+  "Antigravity CLI не сохранил сессию Google.": "Antigravity CLI did not save the Google session.",
+  "Не удалось сохранить сессию Antigravity.": "Could not save the Antigravity session.",
   "Войти через Google": "Sign in with Google",
   "Начинаем вход…": "Starting sign-in…",
   "Получаем ссылку для входа…": "Getting a sign-in link…",

@@ -40,6 +40,7 @@ import {
   type BrowserExtensionOptions,
 } from "./browser-extension";
 import { type Engine, AppError, blankDraft, object, text } from "./engine";
+import { RefreshTokenLoginError } from "./account";
 import { registerGeminiKanban } from "./kanban";
 import { nativeTranscriptPath, threadMessageMatch, turnOccurrences } from "./search";
 import { listGeminiSkills, resolveGeminiSkillPath, syncNativeSkillsConfig } from "./skills";
@@ -90,8 +91,7 @@ export async function buildApp(engine: Engine, options: BuildAppOptions = {}) {
   const voice =
     options.voice ??
     new GeminiVoiceService({
-      config,
-      resolveEnv: async () => (engine.account.status().authenticated ? process.env : null),
+      runPrompt: (prompt) => engine.runPrompt(prompt),
       loadSettings: async () => engine.data.voiceSettings,
       saveSettings: async (settings) => {
         engine.data.voiceSettings = settings;
@@ -298,6 +298,16 @@ export async function buildApp(engine: Engine, options: BuildAppOptions = {}) {
       throw new AppError(
         "Не удалось запустить вход. Настройте прокси и проверьте установку Antigravity CLI.",
       );
+    }
+  });
+  app.post("/api/v1/settings/gemini/logins/token", { bodyLimit: 8192 }, async (req) => {
+    const token = text(object(req.body).refreshToken, "refresh token", 4096).trim();
+    try {
+      return await engine.reconfigure(() => engine.account.importRefreshToken(token));
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      if (error instanceof RefreshTokenLoginError) throw new AppError(error.message);
+      throw new AppError("Не удалось сохранить сессию Antigravity.");
     }
   });
   app.post<{ Params: { id: string } }>("/api/v1/settings/gemini/logins/:id/code", (req) => {
