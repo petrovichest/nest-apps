@@ -697,7 +697,7 @@ export function ThreadPage({
     state.snapshot?.sequence,
   );
   const workerJournal = Boolean(summary?.workerSession);
-  const workerChildren = useWorkerChildren(
+  const { children: workerChildren, projectKey: workerProjectKey } = useWorkerChildren(
     threadId,
     searchTarget ? undefined : summary?.workerSession,
     summary?.currentTurnId,
@@ -4568,6 +4568,7 @@ export function ThreadPage({
                           <div className="worker-handoff-entry" key={event.id}>
                             <WorkerHandoff
                               event={event}
+                              projectKey={workerProjectKey}
                               renderReply={renderWorkerReply}
                               onReplyLayoutChange={syncWorkerReplyScroll}
                             />
@@ -4690,6 +4691,7 @@ export function ThreadPage({
                                   >
                                     <WorkerHandoff
                                       event={entry}
+                                      projectKey={workerProjectKey}
                                       renderReply={renderWorkerReply}
                                       onReplyLayoutChange={syncWorkerReplyScroll}
                                     />

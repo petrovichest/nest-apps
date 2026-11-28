@@ -5,6 +5,7 @@ import { application } from "../application";
 import { useI18n } from "../i18n";
 import { workerProcessStatus, type WorkerHandoffEvent } from "../worker-handoff";
 import { ArrowDownIcon, ArrowUpIcon, ChevronDownIcon, ChevronRightIcon } from "./Icons";
+import { WorkerAvatar } from "./WorkerAvatar";
 
 type RenderReply = (text: string) => ReactNode;
 
@@ -104,10 +105,12 @@ function WorkerReply({
 
 export function WorkerHandoff({
   event,
+  projectKey,
   renderReply,
   onReplyLayoutChange,
 }: {
   event: WorkerHandoffEvent;
+  projectKey: string | null;
   renderReply: RenderReply;
   onReplyLayoutChange: () => void;
 }) {
@@ -143,9 +146,7 @@ export function WorkerHandoff({
   return (
     <details className="worker-handoff-card">
       <summary>
-        <span className="worker-handoff-avatar" aria-hidden="true">
-          {[...session.workerName.trim()][0]?.toLocaleUpperCase()}
-        </span>
+        <WorkerAvatar id={session.workerId} projectKey={projectKey} />
         <span className="worker-handoff-label">
           {t("Поручение для «{{worker}}»", { worker: session.workerName })}
         </span>

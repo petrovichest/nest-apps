@@ -9,7 +9,13 @@ import { useConnection } from "./connection";
 import { workerSessionActive } from "./worker-handoff";
 
 const REFRESH_INTERVAL_MS = 4_000;
-const noChildren: readonly WorkerProcessSession[] = [];
+
+type WorkerChildren = {
+  children: readonly WorkerProcessSession[];
+  projectKey: WorkerProcess["projectKey"];
+};
+
+const emptyView: WorkerChildren = { children: [], projectKey: null };
 
 export function useWorkerChildren(
   threadId: string,
@@ -33,10 +39,7 @@ export function useWorkerChildren(
         : null,
     [api, instanceId, processId, sessionId, threadId],
   );
-  const [view, setView] = useState<{
-    scope: typeof scope;
-    children: WorkerProcessSession[];
-  }>();
+  const [view, setView] = useState<WorkerChildren & { scope: typeof scope }>();
   // Lifecycle signals can arrive during a read. Join it for this scope.
   const lastRead = useRef<{
     scope: typeof scope;
@@ -81,7 +84,7 @@ export function useWorkerChildren(
           process?.sessions.filter(
             ({ parentId, kind }) => parentId === scope.sessionId && kind !== "session",
           ) ?? [];
-        setView({ scope, children });
+        setView({ scope, children, projectKey: process?.projectKey ?? null });
         active = Boolean(
           currentTurnId ||
           (own && (workerSessionActive(own) || own.waitingFor.length)) ||
@@ -112,5 +115,5 @@ export function useWorkerChildren(
     };
   }, [api, appActive, currentTurnId, foregroundEpoch, network, scope, streamRecoveryEpoch]);
 
-  return scope && view?.scope === scope ? view.children : noChildren;
+  return scope && view?.scope === scope ? view : emptyView;
 }
