@@ -28,7 +28,12 @@ export class AcpClient extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
   private pending = new Map<
     number,
-    { resolve: (value: any) => void; reject: (e: Error) => void; timer?: NodeJS.Timeout }
+    {
+      method: string;
+      resolve: (value: any) => void;
+      reject: (e: Error) => void;
+      timer?: NodeJS.Timeout;
+    }
   >();
   private sequence = 0;
   private partial = "";
@@ -62,7 +67,7 @@ export class AcpClient extends EventEmitter {
         this.partial = this.partial.slice(end + 1);
         if (line.trim()) {
           try {
-            this.receive(JSON.parse(line));
+            this.receive(this.parseFrame(line));
           } catch {
             this.close();
           }
@@ -91,7 +96,7 @@ export class AcpClient extends EventEmitter {
             reject(new Error("Antigravity did not respond in time"));
           }, timeoutMs)
         : undefined;
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { method, resolve, reject, timer });
       this.write({ jsonrpc: "2.0", id, method, params });
     });
   }
@@ -112,6 +117,31 @@ export class AcpClient extends EventEmitter {
       return;
     }
     input.write(line);
+  }
+
+  private parseFrame(line: string) {
+    try {
+      return JSON.parse(line);
+    } catch (error) {
+      // agy can stop replaying a history notification mid-write and append the
+      // complete load response on the same line. The replay is already discarded by Nest.
+      const envelope = '{"jsonrpc":"2.0",';
+      if (line.startsWith(envelope + '"method":"session/update",')) {
+        const start = line.lastIndexOf(envelope);
+        if (start > 0) {
+          const response = JSON.parse(line.slice(start));
+          if (
+            this.pending.get(response.id)?.method === "session/load" &&
+            response.result &&
+            typeof response.result === "object" &&
+            !Object.hasOwn(response, "method")
+          ) {
+            return response;
+          }
+        }
+      }
+      throw error;
+    }
   }
 
   private receive(message: any) {
