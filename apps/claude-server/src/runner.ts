@@ -25,7 +25,12 @@ import type {
 export interface RunnerTransport extends EventEmitter {
   readonly pid: number | undefined;
   start(): Promise<void>;
-  sendUser(requestId: string, text: string, content?: Record<string, unknown>[]): void;
+  sendUser(
+    requestId: string,
+    text: string,
+    content?: Record<string, unknown>[],
+    workerMemory?: string,
+  ): void;
   respond(requestId: string, response: Record<string, unknown>): void;
   interrupt(): Promise<void>;
   stop(): Promise<void>;
@@ -152,6 +157,10 @@ export class SessionRunner {
           ...(descriptor.effort ? { effort: descriptor.effort } : {}),
           ...(descriptor.permissionMode ? { permissionMode: descriptor.permissionMode } : {}),
           mcpConfigPath: descriptor.sessionMessagingConfigPath ?? descriptor.browser?.configPath,
+          artifactSigning: descriptor.artifactSigningKey
+            ? { key: descriptor.artifactSigningKey, turnId: () => this.activeSendRequestId }
+            : undefined,
+          workerTurnMemory: descriptor.workerTurnMemory,
           allowedMcpServers: [
             ...(descriptor.browser ? [BROWSER_MCP_SERVER_NAME] : []),
             ...(descriptor.sessionMessagingConfigPath ? [SESSION_MCP_NAME] : []),
@@ -232,6 +241,7 @@ export class SessionRunner {
         setModel: typeof this.transport.setModel === "function",
         setPermissionMode: typeof this.transport.setPermissionMode === "function",
         steer: true,
+        ...(this.descriptor.workerTurnMemory ? { workerTurnMemory: true } : {}),
         livePermissionMode: Boolean(this.transport.livePermissionMode),
       },
       supportedModels: this.transport.supportedModels ?? [],
@@ -387,7 +397,11 @@ export class SessionRunner {
           : text(params.text, "text")
         : undefined;
     const response = method === "respond" ? record(params.response) : undefined;
-    const fingerprint = createHash("sha256").update(canonical({ method, params })).digest("hex");
+    // A new snapshot can arrive on retry. It does not change the user's delivery identity.
+    const { workerMemory, ...delivery } = params;
+    const fingerprint = createHash("sha256")
+      .update(canonical({ method, params: delivery }))
+      .digest("hex");
     const existing = this.receipts.get(requestId);
     if (existing) {
       if (existing.fingerprint !== fingerprint)
@@ -457,6 +471,14 @@ export class SessionRunner {
       method === "send" || method === "steer"
         ? await this.prepareInput(params, requestId, sendText!)
         : undefined;
+    if (
+      prepared &&
+      workerMemory !== undefined &&
+      (!this.descriptor.workerTurnMemory ||
+        typeof workerMemory !== "string" ||
+        workerMemory.length > 32_768)
+    )
+      throw new RunnerError("invalid_request", "Invalid worker memory context");
     const receipt: CommandReceipt = { requestId, kind: method, fingerprint, status: "accepted" };
     this.receipts.set(requestId, receipt);
     await this.persistReceipts();
@@ -485,7 +507,12 @@ export class SessionRunner {
         this.unacknowledgedInputs.add(requestId);
         this.awaitingResult = true;
         this.refreshState();
-        this.transport.sendUser(requestId, prepared!.text, prepared!.content);
+        this.transport.sendUser(
+          requestId,
+          prepared!.text,
+          prepared!.content,
+          typeof workerMemory === "string" ? workerMemory : undefined,
+        );
       } else if (method === "respond") {
         this.transport.respond(targetRequestId!, response!);
         this.pending.delete(targetRequestId!);

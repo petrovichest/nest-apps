@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation, useParams } from "react-router";
 
 import type { ThreadDetail, ThreadSummary } from "@codexnest/protocol";
 
@@ -89,7 +89,7 @@ describe("PendingForkPage", () => {
     expect(screen.queryByText("Более поздний ответ не показывается")).not.toBeInTheDocument();
     expect(screen.getByText("Готовим ветку")).toBeVisible();
 
-    const composer = await screen.findByRole("textbox", { name: "Направить текущую задачу" });
+    const composer = await screen.findByRole("textbox", { name: "Сообщение в очередь" });
     expect(composer).toHaveValue("Сохранённый черновик");
     fireEvent.change(composer, { target: { value: "Сообщение во время подготовки" } });
     await waitFor(() =>
@@ -115,7 +115,7 @@ describe("PendingForkPage", () => {
     const context = pendingContext(api, operation);
     connection.mockReturnValue(context);
     const rendered = renderPage(operation);
-    await screen.findByRole("textbox", { name: "Направить текущую задачу" });
+    await screen.findByRole("textbox", { name: "Сообщение в очередь" });
 
     context.state.snapshot.forkOperations = [
       { ...operation, status: "ready", targetThreadId: "target", updatedAt: 2 },
@@ -124,6 +124,49 @@ describe("PendingForkPage", () => {
 
     expect(await screen.findByTestId("ready-thread")).toHaveTextContent("target");
     expect(api.updateForkOperationDraft).toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "leaves a removed failure when source availability is %s",
+    async (sourceAvailable) => {
+      const failed = { ...operation, status: "failed" as const };
+      const api = pendingApi();
+      const context = pendingContext(api, failed);
+      connection.mockReturnValue(context);
+      const rendered = renderPage(failed);
+      await waitFor(() =>
+        expect(screen.getByRole("textbox", { name: "Сообщение в очередь" })).toHaveValue(
+          "Сохранённый черновик",
+        ),
+      );
+
+      context.state.snapshot.forkOperations = [];
+      if (!sourceAvailable) context.state.snapshot.threads = [];
+      rendered.rerender(page(failed));
+
+      const route = await screen.findByTestId("ready-thread");
+      expect(route).toHaveTextContent(sourceAvailable ? "source:true" : "home");
+      expect(api.updateForkOperationDraft).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps the pending page on a legacy snapshot without a fork operation list", async () => {
+    const api = pendingApi();
+    const context = pendingContext(api, operation);
+    connection.mockReturnValue(context);
+    const rendered = renderPage(operation);
+    await screen.findByText("Готовим ветку");
+
+    connection.mockReturnValue({
+      ...context,
+      state: {
+        ...context.state,
+        snapshot: { ...context.state.snapshot, forkOperations: undefined },
+      },
+    });
+    rendered.rerender(page(operation));
+    expect(screen.getByText("Готовим ветку")).toBeVisible();
+    expect(screen.queryByTestId("ready-thread")).toBeNull();
   });
 
   it("retries a failed operation with the same id", async () => {
@@ -170,11 +213,26 @@ function routes(initialOperation: ForkOperationSummary) {
       <Route
         path="/fork-operations/:id"
         element={
-          <PendingForkPage operationId={initialOperation.id} onOpenNavigation={() => undefined} />
+          <PendingForkPage
+            operationId={initialOperation.id}
+            onOpenNavigation={() => undefined}
+            onCloseNavigation={() => undefined}
+          />
         }
       />
-      <Route path="/threads/:id" element={<output data-testid="ready-thread">target</output>} />
+      <Route path="/threads/:id" element={<ThreadRoute />} />
+      <Route path="/" element={<output data-testid="ready-thread">home</output>} />
     </Routes>
+  );
+}
+
+function ThreadRoute() {
+  const { id } = useParams();
+  const location = useLocation();
+  return (
+    <output data-testid="ready-thread">
+      {id}:{String(location.state?.focusThreadTitle === true)}
+    </output>
   );
 }
 

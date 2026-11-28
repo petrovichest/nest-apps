@@ -8,6 +8,7 @@ import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist";
 import { type ArtifactDescriptor, formatArtifactSize, safeArtifactHtml } from "../artifacts";
 import { useI18n } from "../i18n";
 import { allowMarkdownElement } from "../markdown-elements";
+import { keepTabFocus } from "./Dialog";
 import { ArrowDownIcon, ArrowLeftIcon, FileIcon, RefreshIcon, XIcon } from "./Icons";
 
 export type ArtifactLoadResult =
@@ -20,22 +21,28 @@ export function ArtifactViewer({
   onClose,
   onDownload,
   onLoad,
-  returnToArtifacts = false,
+  returnToInspector,
 }: {
   artifact: ArtifactDescriptor;
   opener: HTMLButtonElement | null;
   onClose(): void;
   onDownload(path: string): Promise<void>;
   onLoad(artifact: ArtifactDescriptor): Promise<ArtifactLoadResult>;
-  returnToArtifacts?: boolean;
+  returnToInspector?: "artifacts" | "overview";
 }) {
   const { t } = useI18n();
+  const viewerRef = useRef<HTMLElement>(null);
+  const refreshButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const htmlFocusEndRef = useRef<HTMLSpanElement>(null);
+  const enteringHtmlBackward = useRef(false);
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<ArtifactLoadResult | null>(null);
   const [failed, setFailed] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadFailed, setDownloadFailed] = useState(false);
+  const returnToArtifacts = returnToInspector === "artifacts";
+  const restoreInspectorFocus = returnToInspector !== undefined;
 
   useEffect(() => {
     let current = true;
@@ -54,29 +61,68 @@ export function ArtifactViewer({
   }, [artifact, onLoad, revision]);
 
   useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    const workspace = viewer.closest(".thread-workspace");
     closeButtonRef.current?.focus();
     return () => {
       window.setTimeout(() => {
-        const target = opener?.isConnected
-          ? opener
-          : [
-              ...document.querySelectorAll<HTMLButtonElement>(
-                ".inspector-artifact-open[data-artifact-path]",
-              ),
-            ].find((button) => button.dataset.artifactPath === artifact.path);
+        if (viewer.isConnected) return;
+        if (opener?.isConnected) {
+          opener.focus();
+          return;
+        }
+        if (!restoreInspectorFocus || !workspace) return;
+        const row = [
+          ...workspace.querySelectorAll<HTMLButtonElement>(
+            ".inspector-artifact-open[data-artifact-path]",
+          ),
+        ].find((button) => button.dataset.artifactPath === artifact.path);
+        const target =
+          row ??
+          workspace.querySelector<HTMLButtonElement>('#session-overview-tab[aria-selected="true"]');
         target?.focus();
       }, 0);
     };
-  }, [artifact.path, opener, returnToArtifacts]);
+  }, [artifact.path, opener, restoreInspectorFocus]);
 
   useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onClose();
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    const ownerDocument = viewer.ownerDocument;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        (event.key !== "Tab" && event.key !== "Escape") ||
+        ownerDocument.querySelector('[role="dialog"][aria-modal="true"]')
+      ) {
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (!window.matchMedia("(max-width: 820px)").matches) return;
+
+      const active = ownerDocument.activeElement;
+      const htmlFocusEnd = htmlFocusEndRef.current;
+      if (
+        event.shiftKey &&
+        htmlFocusEnd &&
+        (active === refreshButtonRef.current || !viewer.contains(active))
+      ) {
+        // Start native Shift+Tab after the frame so the browser can enter at its last control.
+        enteringHtmlBackward.current = true;
+        htmlFocusEnd.focus({ preventScroll: true });
+        enteringHtmlBackward.current = false;
+        return;
+      }
+      keepTabFocus(event, viewer);
+    };
+    ownerDocument.addEventListener("keydown", handleKeyDown);
+    return () => ownerDocument.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
   useEffect(() => {
@@ -108,6 +154,7 @@ export function ArtifactViewer({
 
   return (
     <aside
+      ref={viewerRef}
       className="artifact-viewer"
       aria-label={t("Просмотр файла {{name}}", { name: artifact.fileName })}
       data-android-back-layer
@@ -127,6 +174,7 @@ export function ArtifactViewer({
         </span>
         <span className="artifact-viewer-actions">
           <button
+            ref={refreshButtonRef}
             type="button"
             className="icon-button"
             aria-label={t("Обновить предпросмотр")}
@@ -149,6 +197,7 @@ export function ArtifactViewer({
             ref={closeButtonRef}
             type="button"
             className="icon-button"
+            data-artifact-viewer-close
             aria-label={returnToArtifacts ? t("Вернуться к артефактам") : t("Закрыть предпросмотр")}
             onClick={onClose}
           >
@@ -167,7 +216,15 @@ export function ArtifactViewer({
           <ArtifactState>
             <strong>{t("Не удалось открыть файл")}</strong>
             <span>{t("Файл мог быть перемещён или удалён.")}</span>
-            <button type="button" onClick={() => setRevision((value) => value + 1)}>
+            <button
+              type="button"
+              onClick={({ currentTarget }) => {
+                if (currentTarget.ownerDocument.activeElement === currentTarget) {
+                  refreshButtonRef.current?.focus({ preventScroll: true });
+                }
+                setRevision((value) => value + 1);
+              }}
+            >
               {t("Повторить")}
             </button>
           </ArtifactState>
@@ -187,6 +244,18 @@ export function ArtifactViewer({
         )}
         {result?.state === "ready" && <ArtifactContent artifact={artifact} data={result.data} />}
       </div>
+      {result?.state === "ready" && artifact.kind === "html" && (
+        <span
+          ref={htmlFocusEndRef}
+          className="sr-only artifact-html-focus-end"
+          tabIndex={0}
+          onFocus={() => {
+            if (!enteringHtmlBackward.current) {
+              refreshButtonRef.current?.focus({ preventScroll: true });
+            }
+          }}
+        />
+      )}
     </aside>
   );
 }
@@ -232,6 +301,7 @@ function ArtifactContent({ artifact, data }: { artifact: ArtifactDescriptor; dat
       <iframe
         className="artifact-html-frame"
         title={artifact.fileName}
+        tabIndex={0}
         sandbox=""
         srcDoc={safeArtifactHtml(text)}
       />

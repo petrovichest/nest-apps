@@ -18,6 +18,7 @@ type DialogProps = DialogLabel & {
   closeOnEscape: boolean;
   initialFocusRef?: RefObject<HTMLElement | null>;
   onClose(): void;
+  resolveReturnFocus?(opener: HTMLElement | null): HTMLElement | null;
   returnFocusRef?: RefObject<HTMLElement | null>;
 };
 
@@ -34,14 +35,15 @@ export function Dialog({
   closeOnEscape,
   initialFocusRef,
   onClose,
+  resolveReturnFocus,
   returnFocusRef,
   titleId,
 }: DialogProps) {
   const depth = useContext(DialogDepthContext);
   const dialogRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
-  const latestRef = useRef({ closeOnEscape, onClose });
-  latestRef.current = { closeOnEscape, onClose };
+  const latestRef = useRef({ closeOnEscape, onClose, resolveReturnFocus });
+  latestRef.current = { closeOnEscape, onClose, resolveReturnFocus };
 
   if (!restoreFocusRef.current && typeof document !== "undefined") {
     restoreFocusRef.current =
@@ -91,7 +93,8 @@ export function Dialog({
     ownerDocument.addEventListener("keydown", handleKeyDown);
     return () => {
       ownerDocument.removeEventListener("keydown", handleKeyDown);
-      const restoreFocus = returnFocusRef?.current ?? restoreFocusRef.current;
+      const opener = returnFocusRef?.current ?? restoreFocusRef.current;
+      const restoreFocus = latestRef.current.resolveReturnFocus?.(opener) ?? opener;
       if (restoreFocus?.isConnected) restoreFocus.focus({ preventScroll: true });
     };
   }, [initialFocusRef, returnFocusRef]);

@@ -84,6 +84,81 @@ function setup(overrides: Partial<ConstructorParameters<typeof ClaudeProcess>[0]
 }
 
 describe("Claude model metadata and controls", () => {
+  it("adds worker context by native command UUID while preserving the original user message", async () => {
+    const { child, process } = setup({ workerTurnMemory: true });
+    await process.start();
+    const init = child.sent[0]!.request.hooks.UserPromptSubmit[0];
+    const followUp = "33333333-3333-4333-8333-333333333333";
+    const message = "Repeat this prompt";
+    const content = [
+      { type: "text", text: message },
+      { type: "image", source: { type: "base64", data: "AA==" } },
+    ];
+    process.sendUser(MESSAGE, message);
+    process.sendUser(followUp, message, content, 'fresh "</nest_worker_memory>"');
+    expect(child.sent.at(-1)).toMatchObject({ uuid: followUp, message: { content } });
+
+    const lifecycle = (id: string, state: string) => {
+      child.output({
+        type: "command_lifecycle",
+        session_id: SESSION,
+        command_uuid: id,
+        state,
+      });
+    };
+    const submit = (input: Record<string, unknown> = {}) => {
+      child.output({
+        type: "control_request",
+        request_id: "hook",
+        request: {
+          subtype: "hook_callback",
+          callback_id: init.hookCallbackIds[0],
+          input: {
+            hook_event_name: "UserPromptSubmit",
+            session_id: SESSION,
+            prompt: message,
+            ...input,
+          },
+        },
+      });
+      return child.sent.at(-1)!.response.response;
+    };
+    lifecycle(MESSAGE, "started");
+    expect(submit()).toEqual({});
+    lifecycle(followUp, "queued");
+    expect(submit()).toEqual({});
+    lifecycle(followUp, "started");
+    expect(submit({ agent_id: "native-child" })).toEqual({});
+    const context = submit({ prompt: "Normalized by Claude" }).hookSpecificOutput.additionalContext;
+    expect(context).toContain('fresh "\\u003c/nest_worker_memory\\u003e"');
+    expect(submit()).toEqual({});
+
+    const steering = "44444444-4444-4444-8444-444444444444";
+    process.sendUser(steering, message, undefined, "in-turn snapshot");
+    lifecycle(steering, "queued");
+    expect(submit()).toEqual({});
+    child.output({ type: "user", uuid: steering, session_id: SESSION, isReplay: true });
+    lifecycle(steering, "started");
+    expect(submit()).toEqual({});
+
+    const first = "55555555-5555-4555-8555-555555555555";
+    const last = "66666666-6666-4666-8666-666666666666";
+    process.sendUser(first, message, undefined, "earlier snapshot");
+    process.sendUser(last, message, undefined, "latest snapshot");
+    lifecycle(first, "started");
+    lifecycle(last, "started");
+    expect(
+      submit({ prompt: message + "\n" + message }).hookSpecificOutput.additionalContext,
+    ).toContain("latest snapshot");
+    expect(submit()).toEqual({});
+
+    const cancelled = "77777777-7777-4777-8777-777777777777";
+    process.sendUser(cancelled, message, undefined, "cancelled snapshot");
+    lifecycle(cancelled, "started");
+    lifecycle(cancelled, "cancelled");
+    expect(submit()).toEqual({});
+    await process.stop();
+  });
   it("captures initialize models and uses explicit startup effort and temporary-probe flags", async () => {
     const { child, process, spawnProcess } = setup({
       effort: "high",

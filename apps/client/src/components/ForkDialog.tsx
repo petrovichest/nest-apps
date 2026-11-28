@@ -1,6 +1,7 @@
 import { ActionLabel } from "./ActionLabel";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
+import { application } from "../application";
 import { useConnection } from "../connection";
 import {
   type ForkEstimateResponse,
@@ -47,9 +48,12 @@ export function ForkDialog({
   const { language, t } = useI18n();
   const operationIdRef = useRef(createOperationId());
   const submittingRef = useRef(false);
+  const modeOptionsRef = useRef<HTMLDivElement>(null);
+  const restoreModeFocusRef = useRef(false);
   const [estimate, setEstimate] = useState<ForkEstimateResponse | null>(null);
   const [estimateFailed, setEstimateFailed] = useState(false);
-  const [mode, setMode] = useState<ForkMode>("compressed");
+  const [preferredMode, setMode] = useState<ForkMode>("compressed");
+  const [arrowNavigation, setArrowNavigation] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,6 +63,11 @@ export function ForkDialog({
       .estimateFork(sourceThreadId, { lastTurnId, agentMessageId })
       .then((response) => {
         if (!active) return;
+        if (application.isOpen && response.compressed?.available === false) {
+          restoreModeFocusRef.current = Boolean(
+            modeOptionsRef.current?.querySelector('input[value="compressed"]:focus'),
+          );
+        }
         setEstimate(response);
       })
       .catch(() => {
@@ -70,23 +79,35 @@ export function ForkDialog({
     };
   }, [agentMessageId, api, lastTurnId, sourceThreadId]);
 
+  const reportedCompression = estimate?.compressed;
   const compressed: ForkModeEstimate = {
-    ...FRESH_COMPRESSED,
-    ...(estimate?.compressed ?? {}),
-    available: true,
-    estimatedBytes: null,
-    estimatedSeconds: estimate?.compressed.estimatedSeconds ?? FRESH_COMPRESSED.estimatedSeconds,
-    unavailableReason: null,
+    available: !application.isOpen || reportedCompression?.available !== false,
+    estimatedBytes: application.isOpen ? (reportedCompression?.estimatedBytes ?? null) : null,
+    estimatedSeconds: reportedCompression?.estimatedSeconds ?? FRESH_COMPRESSED.estimatedSeconds,
+    unavailableReason: application.isOpen ? (reportedCompression?.unavailableReason ?? null) : null,
   };
-  const exact = estimate?.exact ?? UNKNOWN_EXACT;
-  const selectedEstimate = mode === "compressed" ? compressed : mode === "exact" ? exact : null;
+  const exact: ForkModeEstimate = { ...UNKNOWN_EXACT, ...estimate?.exact };
+  const mode =
+    preferredMode === "compressed" && !compressed.available && exact.available
+      ? "exact"
+      : preferredMode;
+  const selectedEstimate = mode === "compressed" ? compressed : exact;
+
+  useLayoutEffect(() => {
+    if (!restoreModeFocusRef.current) return;
+    restoreModeFocusRef.current = false;
+    (
+      modeOptionsRef.current?.querySelector<HTMLInputElement>("input:checked:not(:disabled)") ??
+      modeOptionsRef.current
+    )?.focus();
+  }, [estimate]);
 
   function close() {
     if (!submittingRef.current) onClose();
   }
 
   async function create() {
-    if (!mode || !selectedEstimate?.available || submittingRef.current) return;
+    if (!selectedEstimate.available || submittingRef.current) return;
     submittingRef.current = true;
     setSubmitting(true);
     setError(null);
@@ -154,9 +175,15 @@ export function ForkDialog({
         </div>
 
         <div
-          className="fork-mode-options"
+          className={`fork-mode-options${arrowNavigation ? " arrow-navigation" : ""}`}
+          ref={modeOptionsRef}
+          tabIndex={-1}
           role="radiogroup"
           aria-label={t("Способ переноса контекста")}
+          onKeyDown={(event) => {
+            if (event.key.startsWith("Arrow")) setArrowNavigation(true);
+          }}
+          onPointerDown={() => setArrowNavigation(false)}
         >
           <ForkModeCard
             mode="compressed"
@@ -200,7 +227,7 @@ export function ForkDialog({
         <button
           type="button"
           className="primary"
-          disabled={!mode || !selectedEstimate?.available || submitting}
+          disabled={!selectedEstimate.available || submitting}
           aria-busy={submitting || undefined}
           onClick={() => void create()}
         >
@@ -263,7 +290,8 @@ function ForkModeCard({
       <span className="fork-mode-metrics" aria-busy={loading || undefined}>
         {unavailable ? (
           <span className="fork-mode-unavailable">
-            {t("Сжатый контекст для этой точки недоступен. Выберите полную историю.")}
+            {localizeKnownServerText(language, estimate.unavailableReason) ??
+              t("Этот способ сейчас недоступен")}
           </span>
         ) : (
           <>
@@ -295,7 +323,7 @@ function ForkModeCard({
 }
 
 export function formatForkBytes(bytes: number | null, language: "ru" | "en", t: Translate): string {
-  if (bytes === null) return t("неизвестно");
+  if (bytes == null) return t("неизвестно");
   const units = [t("Б"), t("КБ"), t("МБ"), t("ГБ")];
   let value = Math.max(0, bytes);
   let unit = 0;

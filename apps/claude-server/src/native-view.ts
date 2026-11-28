@@ -51,7 +51,7 @@ function textContent(content: unknown): string {
 }
 
 /** Removes transport-only attachment context while preserving user text and cards. */
-function userContent(content: unknown): {
+export function userContent(content: unknown): {
   text: string;
   images: string[];
   files: Array<{ name: string; path: string }>;
@@ -89,6 +89,40 @@ function userContent(content: unknown): {
         images.push(block.source.url);
     }
   return { text, images, files };
+}
+
+function assistantMessageId(event: Json, message: Json): string {
+  return string(message.id) || string(event.uuid) || `assistant:${stable(event)}`;
+}
+
+function assistantParts(content: unknown): Json[] {
+  return Array.isArray(content)
+    ? content.filter(object)
+    : typeof content === "string"
+      ? [{ type: "text", text: content }]
+      : [];
+}
+
+function assistantBlockOffset(event: Json): number | undefined {
+  const index = event.apiBlockIndex;
+  return typeof index === "number" && Number.isInteger(index) && index >= 0 ? index : undefined;
+}
+
+/** The client selects a text block, whereas native resume cuts at an entry UUID. */
+export function hasNativeAssistantText(event: Json, itemId: string, text: string): boolean {
+  if (
+    event.type !== "assistant" ||
+    !object(event.message) ||
+    event.message.stop_reason === "tool_use" ||
+    event.message.model === "<synthetic>"
+  )
+    return false;
+  const id = assistantMessageId(event, event.message);
+  const offset = assistantBlockOffset(event) ?? 0;
+  return assistantParts(event.message.content).some(
+    (part, index) =>
+      part.type === "text" && part.text === text && itemId === `${id}:${offset + index}`,
+  );
 }
 
 /** Pure incremental rendering of native history and live events; never does I/O. */
@@ -167,6 +201,7 @@ export class NativeView {
     readonly cwd: string,
     /** Renders one native subagent: its sidechain transcript and live events for this tool use. */
     readonly subagentToolUseId?: string,
+    private readonly inheritedThrough?: string,
   ) {}
 
   /** Keeps the native recovery input in Claude's history while hiding it in the chat. */
@@ -175,7 +210,7 @@ export class NativeView {
   }
 
   /** Follows how full the context is and accumulates what each answer billed. */
-  private trackContext(event: Json): void {
+  private trackContext(event: Json, inherited: boolean): void {
     if (event.type === "assistant" && object(event.message) && object(event.message.usage)) {
       if (event.message.model === "<synthetic>") return;
       const usage = event.message.usage;
@@ -188,7 +223,7 @@ export class NativeView {
       ])
         if (typeof usage[key] === "number" && usage[key] > 0) used += usage[key];
       if (used > 0) this.contextTokens = used;
-      this.trackUsage(event.message, usage);
+      if (!inherited) this.trackUsage(event.message, usage);
     } else if (event.type === "system" && event.subtype === "compact_boundary") {
       // The CLI's own post-compaction count leaves out the system prompt and tools, which the
       // next answer's usage includes; the size is unknown until that answer arrives.
@@ -530,6 +565,9 @@ export class NativeView {
     this.usageByModel.clear();
     this.usageByMessage.clear();
     this.usageRevision++;
+    const inheritedEnd = this.inheritedThrough
+      ? events.findIndex((event) => event.uuid === this.inheritedThrough)
+      : -1;
     for (let index = 0; index <= events.length; index++) {
       for (const { turn, item } of inputs.get(index) ?? [])
         this.apply({
@@ -542,7 +580,7 @@ export class NativeView {
               : "steer",
           message: { content: item.text },
         });
-      if (index < events.length) this.apply(events[index]!);
+      if (index < events.length) this.apply(events[index]!, index <= inheritedEnd);
     }
     for (const { item } of retained) {
       const turn = this.userTurns.get(item.id);
@@ -553,10 +591,10 @@ export class NativeView {
         if (turn.status === "inProgress") this.complete(turn, "completed", null);
   }
 
-  apply(event: Json): ServerEvent[] {
+  apply(event: Json, inherited = false): ServerEvent[] {
     event = this.withSourceMetadata(event);
     if (this.foreign(event)) return [];
-    this.trackContext(event);
+    this.trackContext(event, inherited);
     if (
       event.type === "user" &&
       (event.claudenest_quota_continuation === true ||
@@ -726,13 +764,9 @@ export class NativeView {
       const message = event.message;
       if (typeof message.model === "string" && message.model !== "<synthetic>")
         this.effectiveModel = message.model;
-      const messageId = string(message.id) || string(event.uuid) || `assistant:${stable(event)}`;
+      const messageId = assistantMessageId(event, message);
       const turn = this.ensureTurn(messageId, timestamp(event.timestamp));
-      const parts = Array.isArray(message.content)
-        ? message.content.filter(object)
-        : typeof message.content === "string"
-          ? [{ type: "text", text: message.content }]
-          : [];
+      const parts = assistantParts(message.content);
       if (message.stop_reason === "tool_use" || parts.some((part) => part.type === "tool_use"))
         this.continuingTurns.add(turn.id);
       else this.continuingTurns.delete(turn.id);
@@ -740,14 +774,7 @@ export class NativeView {
       const activeBlock = this.streams.get(messageId)?.activeBlock;
       const compactBlock =
         parts.length === 1 && message.stop_reason === null && activeBlock?.type === parts[0]?.type;
-      const blockOffset =
-        typeof event.apiBlockIndex === "number" &&
-        Number.isInteger(event.apiBlockIndex) &&
-        event.apiBlockIndex >= 0
-          ? event.apiBlockIndex
-          : compactBlock
-            ? activeBlock!.index
-            : 0;
+      const blockOffset = assistantBlockOffset(event) ?? (compactBlock ? activeBlock!.index : 0);
       if (compactBlock && string(event.uuid))
         this.sourceMetadata.set(sourceKey(event), {
           ...this.sourceMetadata.get(sourceKey(event)),

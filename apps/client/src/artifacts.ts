@@ -131,7 +131,14 @@ export function safeArtifactHtml(source: string): string {
       }
     }
     if (element instanceof HTMLAnchorElement) {
-      element.target = "_blank";
+      const fragment = element.getAttribute("href")?.trim();
+      if (fragment?.startsWith("#")) {
+        // A bare fragment in srcdoc would resolve against the embedding page.
+        element.setAttribute("href", `about:srcdoc${fragment}`);
+        element.target = "_self";
+      } else {
+        element.target = "_blank";
+      }
       element.rel = "noopener noreferrer";
     }
   }

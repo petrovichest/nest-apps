@@ -128,7 +128,10 @@ export async function registerClaudeKanban(
       },
     },
   });
-  ui.setWorkerSessionProvider((id) => service.workerSession(id));
+  ui.setWorkerSessionProvider(
+    (id) => service.workerSession(id),
+    openRouter ? (id, cwd) => service.workerTurnMemory(id, cwd) : undefined,
+  );
   registerKanbanRoutes(app, service, (id) => ui.project(id).path, provider);
   const observe = (frame: ServerFrame) => {
     if (frame.type === "event" && frame.event.type === "thread.upserted") {

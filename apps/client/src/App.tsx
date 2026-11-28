@@ -481,6 +481,7 @@ export function App({
             key={sessionWorkspaceKey}
             operationId={pendingForkOperationId}
             onOpenNavigation={() => setDrawer(true)}
+            onCloseNavigation={() => setDrawer(false)}
           />
         ) : sessionWorkspace ? (
           <NewSession
@@ -2390,7 +2391,7 @@ function ForkOperationRow({
   }
 
   async function remove() {
-    if (working) return;
+    if (working || !window.confirm(t("Удалить неудавшееся ответвление?"))) return;
     setWorking("remove");
     try {
       await api.removeForkOperation(operation.id);

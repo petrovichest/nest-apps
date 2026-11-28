@@ -5,7 +5,7 @@ import {
   rebasePastedText,
   type PastedText,
 } from "@codexnest/protocol";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router";
 
 import type { ThreadDraft, UpdateThreadDraftRequest } from "@codexnest/protocol";
@@ -33,9 +33,11 @@ const EMPTY_DRAFT: UpdateThreadDraftRequest = {
 export function PendingForkPage({
   operationId,
   onOpenNavigation,
+  onCloseNavigation,
 }: {
   operationId: string;
   onOpenNavigation(): void;
+  onCloseNavigation(): void;
 }) {
   const { api, state, dispatch, refreshDetail } = useConnection();
   const { language, t } = useI18n();
@@ -46,6 +48,16 @@ export function PendingForkPage({
   const snapshotOperation = forkOperationsFromSnapshot(state.snapshot).find(
     (candidate) => candidate.id === operationId,
   );
+  const seenOperationRef = useRef<ForkOperationSummary | null>(null);
+  const removal =
+    Array.isArray(state.snapshot?.forkOperations) && !snapshotOperation
+      ? seenOperationRef.current
+      : null;
+  const removedRef = useRef(false);
+  useLayoutEffect(() => {
+    if (snapshotOperation) seenOperationRef.current = snapshotOperation;
+    if (removal) removedRef.current = true;
+  }, [removal, snapshotOperation]);
   const [loaded, setLoaded] = useState<ForkOperationDetail | null>(null);
   const operation = snapshotOperation ?? loaded?.operation ?? stateOperation ?? null;
   const sourceId = operation?.sourceThreadId ?? stateOperation?.sourceThreadId ?? "";
@@ -67,11 +79,22 @@ export function PendingForkPage({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!removal) return;
+    const source = state.snapshot?.threads.find((thread) => thread.id === removal.sourceThreadId);
+    onCloseNavigation();
+    navigate(source ? `/threads/${encodeURIComponent(source.id)}` : "/", {
+      replace: true,
+      state: source ? { focusThreadTitle: true } : undefined,
+    });
+  }, [navigate, onCloseNavigation, removal, state.snapshot]);
+
+  useEffect(() => {
+    if (removal) return;
     let active = true;
     void api
       .readForkOperation(operationId)
       .then((detail) => {
-        if (!active) return;
+        if (!active || removedRef.current) return;
         setLoaded(detail);
         dispatch({ type: "forkOperation", operation: detail.operation });
         setQueue(detail.queuedMessages.map((message) => ({ ...message, confirmed: true })));
@@ -91,10 +114,10 @@ export function PendingForkPage({
     return () => {
       active = false;
     };
-  }, [api, dispatch, language, operationId, t]);
+  }, [api, dispatch, language, operationId, removal, t]);
 
   useEffect(() => {
-    if (!sourceId || sourceDetail) return;
+    if (removal || !sourceId || sourceDetail) return;
     void refreshDetail(sourceId).catch((caught) => {
       setError(
         caught instanceof Error
@@ -102,10 +125,15 @@ export function PendingForkPage({
           : t("Не удалось загрузить исходную историю"),
       );
     });
-  }, [language, refreshDetail, sourceDetail, sourceId, t]);
+  }, [language, refreshDetail, removal, sourceDetail, sourceId, t]);
 
   useEffect(() => {
-    if (operation?.status !== "ready" || !operation.targetThreadId || redirectingRef.current)
+    if (
+      removal ||
+      operation?.status !== "ready" ||
+      !operation.targetThreadId ||
+      redirectingRef.current
+    )
       return;
     redirectingRef.current = true;
     const textarea = document.querySelector<HTMLTextAreaElement>(
@@ -120,7 +148,7 @@ export function PendingForkPage({
         state: { focusComposer: true, restoreComposerSelection: selection },
       });
     });
-  }, [navigate, operation?.status, operation?.targetThreadId]);
+  }, [navigate, operation?.status, operation?.targetThreadId, removal]);
 
   useEffect(
     () => () => {
@@ -135,6 +163,10 @@ export function PendingForkPage({
     const index = sourceDetail.turns.findIndex((turn) => turn.id === operation.lastTurnId);
     return index < 0 ? sourceDetail.turns : sourceDetail.turns.slice(0, index + 1);
   }, [operation, sourceDetail]);
+
+  useEffect(() => onBeforeAppReload(() => flushDraft()));
+
+  if (removal) return null;
 
   if (!operation && state.snapshot && !stateOperation && !error) {
     return <Navigate to="/" replace />;
@@ -157,7 +189,8 @@ export function PendingForkPage({
     const request = draftChainRef.current
       .catch(() => undefined)
       .then(async () => {
-        await api.updateForkOperationDraft(operationId, value, { keepalive });
+        if (!removedRef.current)
+          await api.updateForkOperationDraft(operationId, value, { keepalive });
       })
       .catch(() => undefined);
     draftChainRef.current = request;
@@ -171,8 +204,6 @@ export function PendingForkPage({
     }
     return persistDraft(draftRef.current, keepalive);
   }
-
-  useEffect(() => onBeforeAppReload(() => flushDraft()));
 
   async function submit() {
     const current = structuredClone(draftRef.current);
@@ -271,6 +302,7 @@ export function PendingForkPage({
         agentMessageId: operation.agentMessageId,
         mode: operation.mode,
       });
+      if (removedRef.current) return;
       setLoaded((current) => ({
         operation: result.operation,
         queuedMessages: current?.queuedMessages ?? [],
@@ -352,6 +384,7 @@ export function PendingForkPage({
             onSubmit={() => void submit()}
             busy={busy || operation?.status === "failed"}
             running
+            queueOnly
             settings={sourceSummary.settings}
             onSettingsChange={() => undefined}
             settingsDisabled
@@ -385,10 +418,10 @@ function ForkStatusBanner({
   retrying: boolean;
   onRetry(): void;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const copy =
     operation.status === "failed"
-      ? operation.error || t("Не удалось создать ответвление.")
+      ? (localizeKnownServerText(language, operation.error) ?? t("Не удалось создать ответвление."))
       : operation.status === "ready"
         ? t("Ответвление готово. Открываем…")
         : forkStageCopy(operation, t);

@@ -112,6 +112,7 @@ describe("common OpenNest features", () => {
   });
   it("publishes only explicit project files and refuses outside/symlink download escapes", async () => {
     const { engine, app, headers, project, scratch, thread } = await api();
+    expect(engine.snapshot().capabilities.artifacts).toBe(true);
     const artifact = join(project.path, "result.md"),
       privateFile = join(scratch, "private.txt");
     await writeFile(artifact, "# Result\nDone");

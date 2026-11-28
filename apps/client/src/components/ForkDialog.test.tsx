@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { application } from "../application";
 import type { ForkEstimateResponse, ForkOperationSummary } from "../forks";
 import { translate } from "../i18n";
 import { ForkDialog, formatForkBytes, formatForkTime } from "./ForkDialog";
@@ -43,6 +44,11 @@ const operation: ForkOperationSummary = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal("crypto", { randomUUID: vi.fn(() => "stable-operation-id") });
+});
+
+const originalIsOpen = application.isOpen;
+afterEach(() => {
+  application.isOpen = originalIsOpen;
 });
 
 describe("ForkDialog", () => {
@@ -128,6 +134,53 @@ describe("ForkDialog", () => {
 
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("shows the OpenNest refusal and creates only the available exact fork", async () => {
+    application.isOpen = true;
+    const createForkOperation = vi.fn().mockResolvedValue({ operation });
+    connection.mockReturnValue({
+      api: {
+        estimateFork: vi.fn().mockResolvedValue({
+          ...estimate,
+          compressed: {
+            available: false,
+            unavailableReason: "Claude Code context compaction is disabled",
+          },
+        }),
+        createForkOperation,
+      },
+    });
+    renderDialog();
+
+    expect(await screen.findByText("Сжатие контекста отключено в Claude Code.")).toBeVisible();
+    expect(screen.getByRole("radio", { name: /Компактная/ })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: /Полная история/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Создать ветку" }));
+    await waitFor(() =>
+      expect(createForkOperation).toHaveBeenCalledWith(
+        "thread",
+        expect.objectContaining({ mode: "exact" }),
+      ),
+    );
+  });
+
+  it("keeps both OpenNest choices usable when an old estimate omits mode metadata", async () => {
+    application.isOpen = true;
+    connection.mockReturnValue({
+      api: {
+        estimateFork: vi.fn().mockResolvedValue({
+          sourceBytes: 100,
+          compressed: {},
+          exact: { available: true, estimatedBytes: 100 },
+        }),
+      },
+    });
+    renderDialog();
+
+    expect(await screen.findByText("рассчитается при создании")).toBeVisible();
+    expect(screen.getByRole("radio", { name: /Компактная/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /Полная история/ })).toBeEnabled();
   });
 
   it("formats large estimates without unbounded precision", () => {

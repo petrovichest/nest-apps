@@ -162,6 +162,7 @@ describe("SessionInspector", () => {
         project={project}
         gitChanges={{ state: "clean", filesChanged: 0, additions: 0, deletions: 0 }}
         activeTab="overview"
+        showArtifacts
         artifacts={[]}
         artifactCapability="explicit"
         artifactLoadState="idle"
@@ -189,6 +190,7 @@ describe("SessionInspector", () => {
         project={project}
         gitChanges={{ state: "clean", filesChanged: 0, additions: 0, deletions: 0 }}
         activeTab="artifacts"
+        showArtifacts
         artifacts={[artifact]}
         artifactCapability="explicit"
         artifactLoadState="idle"
@@ -223,6 +225,7 @@ describe("SessionInspector", () => {
         project={project}
         gitChanges={{ state: "clean", filesChanged: 0, additions: 0, deletions: 0 }}
         activeTab="artifacts"
+        showArtifacts
         artifacts={[]}
         artifactCapability={null}
         artifactLoadState="loading"
@@ -246,6 +249,7 @@ describe("SessionInspector", () => {
         project={project}
         gitChanges={{ state: "clean", filesChanged: 0, additions: 0, deletions: 0 }}
         activeTab="artifacts"
+        showArtifacts
         artifacts={[]}
         artifactCapability="unavailable"
         artifactLoadState="idle"
@@ -270,6 +274,7 @@ function renderInspector(gitChanges: GitChangesView, thread = summary) {
       project={project}
       gitChanges={gitChanges}
       activeTab="overview"
+      showArtifacts
       artifacts={[]}
       artifactCapability="explicit"
       artifactLoadState="idle"

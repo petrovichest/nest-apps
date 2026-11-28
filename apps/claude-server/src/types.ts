@@ -54,6 +54,8 @@ export interface RunnerDescriptor {
   /** Browser MCP the owner was launched with; its config file holds the endpoint secret. */
   browser?: { bindingId: string; configPath: string };
   sessionMessagingConfigPath?: string;
+  artifactSigningKey?: string;
+  workerTurnMemory?: true;
   protocolVersion: 1;
 }
 
@@ -101,6 +103,7 @@ export interface RunnerSnapshot {
     setPermissionMode: boolean;
     steer?: boolean;
     livePermissionMode?: boolean;
+    workerTurnMemory?: true;
   };
   supportedModels?: ClaudeModel[];
   model?: string;

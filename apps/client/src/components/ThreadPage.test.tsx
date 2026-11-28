@@ -5,9 +5,11 @@ import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { DEFAULT_SESSION_SETTINGS } from "@codexnest/protocol";
 import type {
   ActivityItem,
+  AppCapabilities,
   AttentionRequest,
   ModelOption,
   QueuedMessage,
+  ThreadArtifactsResponse,
   ThreadDetail,
   ThreadDraft,
   ThreadSummary,
@@ -19,6 +21,7 @@ import type {
 
 import { annotationStorageKey, type PendingAnnotation } from "../annotations";
 import { ApiClientError } from "../api";
+import { application } from "../application";
 import type { ForkOperationSummary } from "../forks";
 import type { OptimisticMessage } from "../state";
 import { Activity, ThreadPage, formatMessageTime, initialSessionSettings } from "./ThreadPage";
@@ -4208,6 +4211,56 @@ describe("Activity", () => {
     expect(screen.getByLabelText("Сведения о задаче")).toBeInTheDocument();
   });
 
+  it("hides the shelf and skips the artifact request when the snapshot disables it", async () => {
+    const api = threadApi();
+    mockThreadConnection(api, summary, {
+      capabilities: { ...application.capabilities, artifacts: false },
+    });
+    renderThread();
+
+    fireEvent.click(screen.getByRole("button", { name: "Показать сведения" }));
+    const inspector = within(screen.getByLabelText("Сведения о задаче"));
+    expect(inspector.getByRole("tab", { name: "Обзор", selected: true })).toBeVisible();
+    expect(inspector.queryByRole("tab", { name: /^Артефакты/u })).not.toBeInTheDocument();
+    await act(async () => {});
+    expect(api.readThreadArtifacts).not.toHaveBeenCalled();
+  });
+
+  it("returns the open inspector to overview and ignores a pending request on capability loss", async () => {
+    const api = threadApi();
+    let resolveArtifacts!: (value: ThreadArtifactsResponse) => void;
+    api.readThreadArtifacts.mockReturnValueOnce(
+      new Promise<ThreadArtifactsResponse>((resolve) => {
+        resolveArtifacts = resolve;
+      }),
+    );
+    const capabilities = { ...application.capabilities, artifacts: true };
+    const context = mockThreadConnection(api, summary, { capabilities });
+    const view = renderThread();
+
+    fireEvent.click(screen.getByRole("button", { name: "Показать сведения" }));
+    const inspector = within(screen.getByLabelText("Сведения о задаче"));
+    const artifacts = inspector.getByRole("tab", { name: "Артефакты" });
+    artifacts.focus();
+    fireEvent.click(artifacts);
+    expect(api.readThreadArtifacts).toHaveBeenCalledTimes(1);
+
+    context.state.snapshot.capabilities = { ...capabilities, artifacts: false };
+    view.rerender(threadRoute());
+    const overview = inspector.getByRole("tab", { name: "Обзор", selected: true });
+    expect(overview).toHaveFocus();
+    expect(inspector.queryByRole("tab", { name: /^Артефакты/u })).not.toBeInTheDocument();
+
+    context.state.snapshot.capabilities = capabilities;
+    view.rerender(threadRoute());
+    await act(async () => resolveArtifacts({ capability: "explicit", artifacts: [] }));
+    expect(overview).toHaveAttribute("aria-selected", "true");
+    expect(api.readThreadArtifacts).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(inspector.getByRole("tab", { name: "Артефакты" }));
+    await waitFor(() => expect(api.readThreadArtifacts).toHaveBeenCalledTimes(2));
+  });
+
   it("loads semantic artifacts lazily without loading historical turns", async () => {
     const api = threadApi();
     api.readThreadArtifacts.mockResolvedValueOnce({
@@ -8328,6 +8381,7 @@ function mockThreadConnection(
     olderTurnsCursor: string | null;
     draft: ThreadDetail["draft"];
     attention: AttentionRequest[];
+    capabilities: AppCapabilities;
   }> = {},
 ) {
   const detail = {
@@ -8346,6 +8400,7 @@ function mockThreadConnection(
       snapshot: {
         instanceId: "test-instance",
         sequence: 1,
+        capabilities: detailPatch.capabilities,
         projects: [
           {
             id: "project",

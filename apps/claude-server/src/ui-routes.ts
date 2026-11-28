@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { constants, createReadStream, type Stats } from "node:fs";
 import { access, mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -10,16 +10,19 @@ import type {
   QueueMessageRequest,
   SessionSettings,
   SessionReference,
+  ThreadArtifactsResponse,
   ThreadSummary,
   UpdateThreadDraftRequest,
+  UpdateQueuedMessageRequest,
   UpdateTranscriptionSettingsRequest,
   UpdateUserInputDraftRequest,
 } from "@codexnest/protocol";
 import type { UiService } from "./ui-service";
 import { registerClaudeKanban } from "./kanban";
 import { BrowserExtensionError, type BrowserExtensionServer } from "./browser-extension";
-import { mergeProjectDraft, pastedText, validPastedText } from "@codexnest/protocol";
+import { mergeProjectDraft } from "@codexnest/protocol";
 import { emptyDraft, validateDraft } from "./ui-service";
+import { forkTarget } from "./ui-store";
 import { AppError, record, type ClaudePermissionMode } from "./types";
 import { readGitChanges } from "./git-changes";
 import { transcriptPaths } from "./history";
@@ -27,6 +30,7 @@ import { transcriptMatch, turnOccurrences } from "./search";
 import { listClaudeSkills, setClaudeSkillEnabled } from "./skills";
 import { ClaudeVoiceService } from "./voice";
 import { UiVoiceJobs } from "./ui-voice";
+import { artifactSessionKey, authorizeArtifactCall, PUBLISH_ARTIFACT_TOOL } from "./artifact-tool";
 
 type Params = {
   id: string;
@@ -135,6 +139,82 @@ function throwDownloadFilesystemError(error: unknown): never {
     throw new AppError("invalid_request", "Invalid file path");
   throw new Error("File could not be opened", { cause: error });
 }
+
+export function registerSessionArtifacts(app: FastifyInstance, ui: UiService) {
+  const resolveArtifact = (cwd: string, path: string) => {
+    if (
+      !isAbsolute(path) &&
+      (path.includes("\\") ||
+        path.split("/").some((part) => !part || part === "." || part === ".."))
+    )
+      throw new AppError("invalid_request", "Use a workspace-relative file path");
+    return resolveDownloadFile(
+      isAbsolute(path) ? path : join(cwd, path),
+      cwd,
+      ui.attachments.root,
+      async () => false,
+    );
+  };
+  app.get("/api/v1/threads/:id/artifacts", async (request): Promise<ThreadArtifactsResponse> => {
+    const thread = ui.thread(params(request).id);
+    if (thread.subagent) return { capability: "unavailable", artifacts: [] };
+    const artifacts: ThreadArtifactsResponse["artifacts"] = [];
+    for (const artifact of thread.sessionArtifacts ?? []) {
+      try {
+        const file = await resolveArtifact(thread.cwd, artifact.path);
+        const relativePath = relative(file.root, file.path);
+        if (relativePath === artifact.path)
+          artifacts.push({ ...artifact, path: file.path, relativePath, fileName: file.fileName });
+      } catch {
+        // Deleted or newly unsafe paths are no longer offered for download.
+      }
+    }
+    return { capability: "explicit", artifacts };
+  });
+  return {
+    definition: PUBLISH_ARTIFACT_TOOL,
+    async available(id: string) {
+      const thread = Object.hasOwn(ui.store.data.threads, id) && ui.store.data.threads[id];
+      if (!thread || thread.archived || thread.subagent) return false;
+      const descriptor = await ui.manager.descriptor(id).catch(() => undefined);
+      return Boolean(descriptor?.artifactSigningKey);
+    },
+    async publish(id: string, args: unknown, metadata: unknown) {
+      if (!ui.manager.accepting)
+        throw new AppError("unavailable", "The application is preparing a restart", 503);
+      const { path, label, turnId, createdAt } = authorizeArtifactCall(
+        artifactSessionKey(ui.manager.config.token, id),
+        args,
+        metadata,
+      );
+      const { cwd } = ui.thread(id);
+      const file = await resolveArtifact(cwd, path);
+      const relativePath = relative(file.root, file.path);
+      const artifact = await ui.store.update((data) => {
+        const thread = data.threads[id];
+        if (!thread || thread.subagent || thread.archived || thread.cwd !== cwd)
+          throw new AppError("conflict", "The publishing session changed", 409);
+        const artifacts = thread.sessionArtifacts ?? [];
+        const prior = artifacts.find((artifact) => artifact.path === relativePath);
+        if (prior && prior.createdAt >= createdAt) return prior;
+        const artifact = {
+          id: prior?.id ?? randomUUID(),
+          path: relativePath,
+          label: label ?? basename(relativePath),
+          turnId,
+          createdAt,
+        };
+        thread.sessionArtifacts = [
+          artifact,
+          ...artifacts.filter((item) => item.path !== relativePath),
+        ];
+        return artifact;
+      });
+      return { published: true, artifact };
+    },
+  };
+}
+
 export async function registerUiRoutes(
   app: FastifyInstance,
   ui: UiService,
@@ -421,17 +501,18 @@ export async function registerUiRoutes(
     ui.publish({ type: "projectDraft.changed", projectId: id, draft });
     return draft;
   });
-  for (const namespace of ["projects", "threads"])
+  for (const namespace of ["projects", "threads", ...(ui.forksEnabled ? ["fork-operations"] : [])])
     app.post(
       `/api/v1/${namespace}/:id/attachments`,
       { bodyLimit: 100 * 1024 * 1024 },
       async (request) => {
         const id = params(request).id;
         if (namespace === "projects") ui.project(id);
-        else ui.thread(id);
+        else if (namespace === "threads") ui.thread(id);
+        const target = namespace === "fork-operations" ? forkTarget(ui.store.data, id).id : id;
         const q = query(request);
         return ui.attachments.save(
-          id,
+          target,
           string(q.name, "name", 1000),
           q.mediaType ?? "application/octet-stream",
           request.body as Readable,
@@ -573,53 +654,11 @@ export async function registerUiRoutes(
   });
   app.patch("/api/v1/threads/:id/queue/:messageId", async (request) => {
     const p = params(request);
-    ui.thread(p.id);
-    const body = record(request.body);
-    const text = typeof body.input === "string" ? body.input : string(body.input, "input");
-    if (!validPastedText(body, text))
-      throw new AppError("invalid_request", "Invalid pasted text metadata");
-    const entry = await ui.store.update((data) => {
-      const thread = data.threads[p.id]!,
-        entry = thread.queue.find((item) => item.id === p.messageId);
-      if (!entry) throw new AppError("not_found", "Queued message not found", 404);
-      if (entry.status !== "queued" || entry.deliveryError)
-        throw new AppError("conflict", "Cannot edit a message after dispatch began", 409);
-      entry.text = text;
-      delete entry.inlinePastes;
-      delete entry.pasteBlocks;
-      Object.assign(entry, pastedText(body));
-      for (const value of Object.values(thread.deliveries))
-        if (value.messageId === entry.id)
-          value.fingerprint = createHash("sha256")
-            .update(
-              JSON.stringify({
-                input: text,
-                ...pastedText(entry),
-                images: entry.images ?? [],
-                files: entry.files ?? [],
-                ...(value.mode ? { deliveryMode: value.mode } : {}),
-              }),
-            )
-            .digest("hex");
-      return entry;
-    });
-    ui.publishQueue(p.id);
-    return entry;
+    return ui.updateQueued(p.id, p.messageId!, record(request.body) as UpdateQueuedMessageRequest);
   });
   app.delete("/api/v1/threads/:id/queue/:messageId", async (request, reply) => {
     const p = params(request);
-    ui.thread(p.id);
-    await ui.store.update((data) => {
-      const thread = data.threads[p.id]!,
-        entry = thread.queue.find((item) => item.id === p.messageId);
-      if (
-        entry?.status === "dispatching" ||
-        (entry?.deliveryError && !entry.deliveryError.retryable)
-      )
-        throw new AppError("conflict", "Delivery outcome must be reconciled first", 409);
-      thread.queue = thread.queue.filter((item) => item.id !== p.messageId);
-    });
-    ui.publishQueue(p.id);
+    await ui.deleteQueued(p.id, p.messageId!);
     return reply.code(204).send();
   });
   app.post("/api/v1/threads/:id/queue/:messageId/send", async (request) => {

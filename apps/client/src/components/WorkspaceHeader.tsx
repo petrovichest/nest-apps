@@ -1,10 +1,11 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 import { useI18n } from "../i18n";
 import { InfoIcon, PanelLeftIcon } from "./Icons";
 
 export function WorkspaceHeader({
   title,
+  focusTitle,
   subtitle,
   titleAccessory,
   leadingIcon,
@@ -14,6 +15,7 @@ export function WorkspaceHeader({
   actions,
 }: {
   title: string;
+  focusTitle?: boolean;
   subtitle?: ReactNode;
   titleAccessory?: ReactNode;
   leadingIcon?: ReactNode;
@@ -23,6 +25,10 @@ export function WorkspaceHeader({
   actions?: ReactNode;
 }) {
   const { t } = useI18n();
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (focusTitle) titleRef.current?.focus({ preventScroll: true });
+  }, [focusTitle]);
   return (
     <header className="workspace-header">
       <div className="workspace-title">
@@ -41,7 +47,13 @@ export function WorkspaceHeader({
           </span>
         )}
         <div>
-          <h1 className={navigation ? "sr-only" : undefined}>{title}</h1>
+          <h1
+            ref={titleRef}
+            tabIndex={focusTitle ? -1 : undefined}
+            className={navigation ? "sr-only" : undefined}
+          >
+            {title}
+          </h1>
           {subtitle && <p>{subtitle}</p>}
           {navigation}
         </div>
